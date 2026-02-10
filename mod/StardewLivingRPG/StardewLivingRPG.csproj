@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>StardewLivingRPG</AssemblyName>
     <RootNamespace>StardewLivingRPG</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <!--
@@ -20,5 +21,31 @@
       <HintPath>$(SMAPI_PATH)/Stardew Valley.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="xTile">
+      <HintPath>$(SMAPI_PATH)/xTile.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
+
+  <!-- MonoGame Framework provides XNA compatibility -->
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <!--
+    Post-build: Copy mod files to Stardew Valley Mods folder
+    Requires SMAPI_PATH environment variable to be set
+  -->
+  <Target Name="CopyModToStardew" AfterTargets="Build">
+    <PropertyGroup>
+      <ModsFolder>$(SMAPI_PATH)\Mods\StardewLivingRPG</ModsFolder>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(ModsFolder)" Condition="!Exists('$(ModsFolder)')" />
+
+    <Copy SourceFiles="$(OutputPath)StardewLivingRPG.dll" DestinationFolder="$(ModsFolder)" />
+    <Copy SourceFiles="$(ProjectDir)manifest.json" DestinationFolder="$(ModsFolder)" />
+
+    <Message Text="Copied mod files to: $(ModsFolder)" Importance="high" />
+  </Target>
 </Project>

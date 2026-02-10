@@ -1,3 +1,4 @@
+using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewValley;
 using StardewValley.Menus;
@@ -11,11 +12,11 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     public RumorBoardMenu(SaveState state)
         : base(
-            xPositionOnScreen: Game1.uiViewport.Width / 2 - 420,
-            yPositionOnScreen: Game1.uiViewport.Height / 2 - 280,
-            width: 840,
-            height: 560,
-            showUpperRightCloseButton: true)
+            Game1.uiViewport.Width / 2 - 420,
+            Game1.uiViewport.Height / 2 - 280,
+            840,
+            560,
+            true)
     {
         _state = state;
     }
@@ -27,48 +28,48 @@ public sealed class RumorBoardMenu : IClickableMenu
         var x = xPositionOnScreen + 36;
         var y = yPositionOnScreen + 24;
 
-        SpriteText.drawString(b, "Community Board 2.0 (Rumor Mill)", x, y, 999, width: width - 72);
+        b.DrawString(Game1.dialogueFont, "Community Board 2.0 (Rumor Mill)", new Vector2(x, y), Game1.textColor);
         y += 52;
 
-        SpriteText.drawString(b, "Available:", x, y, 999, width: width - 72);
+        b.DrawString(Game1.smallFont, "Available:", new Vector2(x, y), Game1.textColor);
         y += 40;
 
         if (_state.Quests.Available.Count == 0)
         {
-            SpriteText.drawString(b, "No rumors posted today.", x, y, 999, width: width - 72);
+            b.DrawString(Game1.smallFont, "No rumors posted today.", new Vector2(x, y), Game1.textColor * 0.8f);
             y += 36;
         }
         else
         {
             foreach (var q in _state.Quests.Available.Take(5))
             {
-                SpriteText.drawString(b, $"- {q.QuestId}: {q.Summary}", x, y, 999, width: width - 72);
+                b.DrawString(Game1.smallFont, $"- {q.QuestId}: {q.Summary}", new Vector2(x, y), Game1.textColor);
                 y += 34;
             }
         }
 
         y += 10;
-        SpriteText.drawString(b, "Active:", x, y, 999, width: width - 72);
+        b.DrawString(Game1.smallFont, "Active:", new Vector2(x, y), Game1.textColor);
         y += 40;
 
         if (_state.Quests.Active.Count == 0)
         {
-            SpriteText.drawString(b, "No active rumor quests.", x, y, 999, width: width - 72);
+            b.DrawString(Game1.smallFont, "No active rumor quests.", new Vector2(x, y), Game1.textColor * 0.8f);
             y += 36;
         }
         else
         {
             foreach (var q in _state.Quests.Active.Take(4))
             {
-                SpriteText.drawString(b, $"- {q.QuestId} (expires day {q.ExpiresDay})", x, y, 999, width: width - 72);
+                b.DrawString(Game1.smallFont, $"- {q.QuestId} (expires day {q.ExpiresDay})", new Vector2(x, y), Game1.textColor);
                 y += 34;
             }
         }
 
         y += 12;
-        SpriteText.drawString(b, "Use console: slrpg_accept_quest <questId>", x, y, 999, width: width - 72);
+        b.DrawString(Game1.smallFont, "Use console: slrpg_accept_quest <questId>", new Vector2(x, y), Game1.textColor * 0.7f);
         y += 34;
-        SpriteText.drawString(b, "Use console: slrpg_complete_quest <questId>", x, y, 999, width: width - 72);
+        b.DrawString(Game1.smallFont, "Use console: slrpg_complete_quest <questId>", new Vector2(x, y), Game1.textColor * 0.7f);
 
         drawMouse(b);
     }
