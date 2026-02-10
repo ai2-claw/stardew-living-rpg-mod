@@ -503,6 +503,19 @@ public sealed class ModEntry : Mod
         var message = args.Length == 0 ? "How is the town market today?" : string.Join(' ', args);
         try
         {
+            if (_config.Player2BlockChatWhenLowJoules)
+            {
+                var joules = TryGetJoules(out var joulesInfo);
+                if (joules.HasValue && joules.Value < Math.Max(0, _config.Player2MinJoulesToChat))
+                {
+                    Monitor.Log($"Player2 chat blocked: low joules ({joules.Value} < {_config.Player2MinJoulesToChat}). Use slrpg_p2_status to inspect account state.", LogLevel.Warn);
+                    return;
+                }
+
+                if (joulesInfo is not null)
+                    Monitor.Log($"Player2 joules preflight | balance={joulesInfo.Joules} tier={joulesInfo.PatronTier}", LogLevel.Trace);
+            }
+
             var req = new NpcChatRequest
             {
                 SenderName = Game1.player?.Name ?? "Player",
@@ -608,15 +621,29 @@ public sealed class ModEntry : Mod
         if (!loggedIn || _player2Client is null)
             return;
 
+        var joules = TryGetJoules(out var j);
+        if (!joules.HasValue || j is null)
+            return;
+
+        Monitor.Log($"Player2 joules | balance={j.Joules} tier={j.PatronTier} user={j.UserId}", LogLevel.Info);
+    }
+
+    private int? TryGetJoules(out JoulesResponse? info)
+    {
+        info = null;
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+            return null;
+
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-            var j = _player2Client.GetJoulesAsync(_config.Player2ApiBaseUrl, _player2Key!, cts.Token).GetAwaiter().GetResult();
-            Monitor.Log($"Player2 joules | balance={j.Joules} tier={j.PatronTier} user={j.UserId}", LogLevel.Info);
+            info = _player2Client.GetJoulesAsync(_config.Player2ApiBaseUrl, _player2Key!, cts.Token).GetAwaiter().GetResult();
+            return info.Joules;
         }
         catch (Exception ex)
         {
             Monitor.Log($"Player2 joules check failed: {ex.Message}", LogLevel.Warn);
+            return null;
         }
     }
 

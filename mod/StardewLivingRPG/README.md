@@ -35,6 +35,10 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_stream_stop`: stop persistent NPC response listener
 - `slrpg_p2_status`: show login/NPC/stream state + joules balance
 
+Config knobs:
+- `Player2BlockChatWhenLowJoules` (default `true`)
+- `Player2MinJoulesToChat` (default `5`)
+
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).
 - Press `J` (default) to open the latest Newspaper issue (configurable via `config.json`).
