@@ -4,6 +4,21 @@ namespace StardewLivingRPG.Systems;
 
 public sealed class RumorBoardService
 {
+    private static readonly HashSet<string> ValidCrops = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "parsnip", "potato", "cauliflower", "blueberry", "melon", "pumpkin", "cranberry", "corn", "wheat", "tomato"
+    };
+
+    private static readonly HashSet<string> ValidResources = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "copper_ore", "iron_ore", "gold_ore", "coal", "quartz", "amethyst", "topaz"
+    };
+
+    private static readonly HashSet<string> ValidNpcTargets = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "lewis", "pierre", "robin", "linus", "haley", "alex", "demetrius", "wizard"
+    };
+
     public void RefreshDailyRumors(SaveState state)
     {
         // Keep active quests untouched; rotate available list daily.
@@ -130,7 +145,7 @@ public sealed class RumorBoardService
             return null;
 
         var safeTemplate = NormalizeTemplate(templateId);
-        var safeTarget = string.IsNullOrWhiteSpace(target) ? "parsnip" : target.Trim().ToLowerInvariant();
+        var safeTarget = NormalizeTargetForTemplate(safeTemplate, target);
         var safeUrgency = NormalizeUrgency(urgency);
 
         var (count, rewardGold, expiresDelta) = safeUrgency switch
@@ -212,8 +227,22 @@ public sealed class RumorBoardService
         {
             "deliver_item" => $"Deliver {target} x{count} to support current demand.",
             "mine_resource" => $"Gather {target} x{count} from the mines.",
-            "social_visit" => $"Visit a resident and bring {target} x{count}.",
+            "social_visit" => $"Visit {target} and bring a thoughtful gift.",
             _ => $"Supply {target} x{count} for the town market."
+        };
+    }
+
+    private static string NormalizeTargetForTemplate(string templateId, string rawTarget)
+    {
+        var t = (rawTarget ?? string.Empty).Trim().ToLowerInvariant();
+
+        return templateId switch
+        {
+            "gather_crop" => ValidCrops.Contains(t) ? t : "parsnip",
+            "deliver_item" => ValidCrops.Contains(t) ? t : "wheat",
+            "mine_resource" => ValidResources.Contains(t) ? t : "copper_ore",
+            "social_visit" => ValidNpcTargets.Contains(t) ? t : "lewis",
+            _ => ValidCrops.Contains(t) ? t : "parsnip"
         };
     }
 
