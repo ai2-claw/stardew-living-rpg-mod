@@ -1,5 +1,7 @@
 # Stardew Valley Living RPG Mod (Working Title)
 
+Related docs: [DOC_INDEX](./DOC_INDEX.md) · [DATA_MODEL](./DATA_MODEL.md) · [EVENT_RESOLUTION](./EVENT_RESOLUTION.md) · [IMPLEMENTATION_PLAN](./IMPLEMENTATION_PLAN.md)
+
 ## 1) Product Direction: Build for Stardew’s Core Audience First
 
 This mod should feel like **Stardew, but alive** — not a different genre pasted on top.

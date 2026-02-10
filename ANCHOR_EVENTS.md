@@ -1,5 +1,7 @@
 # ANCHOR_EVENTS.md
 
+Related docs: [DOC_INDEX](./DOC_INDEX.md) · [ARCHITECTURE](./ARCHITECTURE.md) · [QUEST_TEMPLATE_LIBRARY](./QUEST_TEMPLATE_LIBRARY.md)
+
 Hand-authored milestone scenes triggered by simulation thresholds.
 These are the cinematic payoffs that anchor emergent systems.
 

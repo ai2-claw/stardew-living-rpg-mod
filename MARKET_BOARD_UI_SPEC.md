@@ -1,5 +1,7 @@
 # MARKET_BOARD_UI_SPEC.md
 
+Related docs: [DOC_INDEX](./DOC_INDEX.md) · [ARCHITECTURE](./ARCHITECTURE.md) · [VERTICAL_SLICE_CHECKLIST](./VERTICAL_SLICE_CHECKLIST.md)
+
 UI/UX specification for Pierre's Market Board (non-AI gameplay anchor).
 
 ## 1) Goals

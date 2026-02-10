@@ -1,5 +1,7 @@
 # EVENT_RESOLUTION.md
 
+Related docs: [DOC_INDEX](./DOC_INDEX.md) · [DATA_MODEL](./DATA_MODEL.md) · [NPC_COMMAND_SCHEMA](./NPC_COMMAND_SCHEMA.json) · [VERTICAL_SLICE_CHECKLIST](./VERTICAL_SLICE_CHECKLIST.md)
+
 Deterministic resolver for turning AI intents + player actions into authoritative world changes.
 
 ---

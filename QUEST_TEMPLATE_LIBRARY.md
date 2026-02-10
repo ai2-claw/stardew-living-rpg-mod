@@ -1,5 +1,7 @@
 # QUEST_TEMPLATE_LIBRARY.md
 
+Related docs: [DOC_INDEX](./DOC_INDEX.md) · [ARCHITECTURE](./ARCHITECTURE.md) · [NPC_COMMAND_SCHEMA](./NPC_COMMAND_SCHEMA.json) · [ANCHOR_EVENTS](./ANCHOR_EVENTS.md)
+
 Safe quest templates used by Rumor Mill Quest Board.
 AI provides context/flavor only; objectives and rewards are template-bound.
 

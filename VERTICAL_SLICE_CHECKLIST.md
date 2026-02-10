@@ -1,5 +1,7 @@
 # VERTICAL_SLICE_CHECKLIST.md
 
+Related docs: [DOC_INDEX](./DOC_INDEX.md) · [IMPLEMENTATION_PLAN](./IMPLEMENTATION_PLAN.md) · [MARKET_BOARD_UI_SPEC](./MARKET_BOARD_UI_SPEC.md)
+
 ## Goal
 Deliver one complete loop proving this is a **gameplay system**, not chatbot wrapper.
 

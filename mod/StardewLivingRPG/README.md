@@ -1,5 +1,7 @@
 # StardewLivingRPG (SMAPI Mod Scaffold)
 
+Related docs: [../../DOC_INDEX.md](../../DOC_INDEX.md) · [../../IMPLEMENTATION_PLAN.md](../../IMPLEMENTATION_PLAN.md)
+
 M0 + M1 scaffold includes:
 - mod entry + manifest
 - config model
