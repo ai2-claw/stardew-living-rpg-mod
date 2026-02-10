@@ -43,6 +43,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_complete_quest", "Complete active quest: slrpg_complete_quest <questId>", OnCompleteQuestCommand);
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
         helper.ConsoleCommands.Add("slrpg_debug_state", "Print compact state snapshot for QA.", OnDebugStateCommand);
+        helper.ConsoleCommands.Add("slrpg_demo_bootstrap", "Seed reproducible vertical-slice scenario.", OnDemoBootstrapCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -305,5 +306,29 @@ public sealed class ModEntry : Mod
 
         Monitor.Log($"Quests | available: {_state.Quests.Available.Count}, active: {_state.Quests.Active.Count}, completed: {_state.Quests.Completed.Count}, failed: {_state.Quests.Failed.Count}", LogLevel.Info);
         Monitor.Log($"Telemetry | opens(board): {_state.Telemetry.Daily.MarketBoardOpens}, accepts: {_state.Telemetry.Daily.RumorBoardAccepts}, completes: {_state.Telemetry.Daily.RumorBoardCompletions}, anchors: {_state.Telemetry.Daily.AnchorEventsTriggered}, mutations: {_state.Telemetry.Daily.WorldMutations}", LogLevel.Info);
+    }
+
+    private void OnDemoBootstrapCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady || _salesIngestionService is null || _economyService is null)
+        {
+            Monitor.Log("World not ready.", LogLevel.Warn);
+            return;
+        }
+
+        // Seed a reproducible scenario for vertical-slice QA.
+        _state.Calendar.Season = "summer";
+        _state.Calendar.Day = Math.Max(_state.Calendar.Day, 7);
+
+        _state.Social.TownSentiment.Economy = -35; // primes anchor trigger path
+        _state.Social.TownSentiment.Community = Math.Min(_state.Social.TownSentiment.Community, 0);
+
+        _economyService.EnsureInitialized(_state.Economy);
+        _salesIngestionService.AddSale("blueberry", 300);
+        _salesIngestionService.AddSale("blueberry", 250);
+        _salesIngestionService.AddSale("blueberry", 200);
+
+        Monitor.Log("Demo bootstrap applied: summer day>=7, economy sentiment -35, queued heavy blueberry sales.", LogLevel.Info);
+        Monitor.Log("Advance one day (sleep) then run slrpg_debug_state, slrpg_open_board, slrpg_open_news, slrpg_open_rumors.", LogLevel.Info);
     }
 }

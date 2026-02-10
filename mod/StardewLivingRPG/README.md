@@ -25,6 +25,7 @@ M0 + M1 scaffold includes:
 - `slrpg_complete_quest <questId>`: complete an active rumor quest
 - `slrpg_set_sentiment economy <value>`: set economy sentiment (testing anchor trigger)
 - `slrpg_debug_state`: print compact daily diagnostics snapshot
+- `slrpg_demo_bootstrap`: seed reproducible vertical-slice scenario
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).
