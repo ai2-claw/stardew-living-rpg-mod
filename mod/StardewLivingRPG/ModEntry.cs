@@ -33,6 +33,8 @@ public sealed class ModEntry : Mod
     private string? _activeNpcId;
     private readonly ConcurrentQueue<string> _pendingPlayer2Lines = new();
     private int _player2ReadInFlight;
+    private DateTime _player2ReadStartedUtc;
+    private CancellationTokenSource? _player2ReadCts;
 
     public override void Entry(IModHelper helper)
     {
@@ -61,6 +63,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_p2_spawn", "Spawn one Player2 NPC session.", OnPlayer2SpawnNpcCommand);
         helper.ConsoleCommands.Add("slrpg_p2_chat", "Send chat to active Player2 NPC: slrpg_p2_chat <message>", OnPlayer2ChatCommand);
         helper.ConsoleCommands.Add("slrpg_p2_read_once", "Read one line from /npcs/responses stream.", OnPlayer2ReadOnceCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_read_reset", "Reset/cancel stuck Player2 read_once.", OnPlayer2ReadResetCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -136,6 +139,17 @@ public sealed class ModEntry : Mod
     {
         if (!Context.IsWorldReady)
             return;
+
+        if (_player2ReadInFlight == 1 && _player2ReadStartedUtc != default)
+        {
+            var elapsed = DateTime.UtcNow - _player2ReadStartedUtc;
+            if (elapsed > TimeSpan.FromSeconds(15))
+            {
+                _player2ReadCts?.Cancel();
+                Interlocked.Exchange(ref _player2ReadInFlight, 0);
+                _pendingPlayer2Lines.Enqueue("__ERR__Timed out waiting for Player2 stream line (>15s). Read state reset.");
+            }
+        }
 
         while (_pendingPlayer2Lines.TryDequeue(out var line))
         {
@@ -502,13 +516,15 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log("Reading one Player2 stream line in background…", LogLevel.Info);
+        _player2ReadStartedUtc = DateTime.UtcNow;
+        _player2ReadCts?.Cancel();
+        _player2ReadCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
 
         _ = Task.Run(async () =>
         {
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                var line = await _player2Client.ReadOneNpcResponseLineAsync(_config.Player2ApiBaseUrl, _player2Key!, cts.Token);
+                var line = await _player2Client.ReadOneNpcResponseLineAsync(_config.Player2ApiBaseUrl, _player2Key!, _player2ReadCts.Token);
                 _pendingPlayer2Lines.Enqueue(string.IsNullOrWhiteSpace(line) ? "__EMPTY__" : line);
             }
             catch (Exception ex)
@@ -517,9 +533,18 @@ public sealed class ModEntry : Mod
             }
             finally
             {
+                _player2ReadStartedUtc = default;
                 Interlocked.Exchange(ref _player2ReadInFlight, 0);
             }
         });
+    }
+
+    private void OnPlayer2ReadResetCommand(string name, string[] args)
+    {
+        _player2ReadCts?.Cancel();
+        _player2ReadStartedUtc = default;
+        Interlocked.Exchange(ref _player2ReadInFlight, 0);
+        Monitor.Log("Player2 read state reset.", LogLevel.Info);
     }
 
     private string BuildCompactGameStateInfo()

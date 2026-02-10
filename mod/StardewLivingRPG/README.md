@@ -30,6 +30,7 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_spawn`: spawn one Player2 NPC session
 - `slrpg_p2_chat <message>`: send chat to active Player2 NPC
 - `slrpg_p2_read_once`: read one NPC stream line from `/npcs/responses` (non-blocking background read)
+- `slrpg_p2_read_reset`: cancel/reset stuck Player2 read
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).
