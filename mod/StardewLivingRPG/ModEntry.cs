@@ -437,11 +437,57 @@ public sealed class ModEntry : Mod
             _player2Key = _player2Client
                 .LoginViaLocalAppAsync(_config.Player2LocalAuthBaseUrl, _config.Player2GameClientId, cts.Token)
                 .GetAwaiter().GetResult();
-            Monitor.Log("Player2 login successful.", LogLevel.Info);
+            Monitor.Log("Player2 login successful (local app).", LogLevel.Info);
+            return;
         }
         catch (Exception ex)
         {
-            Monitor.Log($"Player2 login failed: {ex.Message}", LogLevel.Error);
+            Monitor.Log($"Player2 local login failed: {ex.Message}", LogLevel.Warn);
+        }
+
+        try
+        {
+            var timeoutSec = Math.Max(30, _config.Player2DeviceAuthTimeoutSeconds);
+            using var authCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+
+            var start = _player2Client
+                .StartDeviceAuthAsync(_config.Player2DeviceAuthBaseUrl, _config.Player2GameClientId, authCts.Token)
+                .GetAwaiter().GetResult();
+
+            var verifyUrl = start.GetVerificationUrlOrFallback();
+            var intervalSec = Math.Clamp(start.IntervalSeconds <= 0 ? 5 : start.IntervalSeconds, 2, 15);
+
+            Monitor.Log($"Player2 device login started. Open: {verifyUrl}", LogLevel.Info);
+            Monitor.Log($"Enter code: {start.UserCode} (expires in ~{start.ExpiresIn}s).", LogLevel.Info);
+            Monitor.Log("Waiting for device authorization…", LogLevel.Info);
+
+            while (!authCts.IsCancellationRequested)
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(intervalSec));
+
+                var poll = _player2Client
+                    .PollDeviceAuthTokenAsync(_config.Player2DeviceAuthBaseUrl, start.DeviceCode, authCts.Token)
+                    .GetAwaiter().GetResult();
+
+                if (poll.IsAuthorized && !string.IsNullOrWhiteSpace(poll.P2Key))
+                {
+                    _player2Key = poll.P2Key;
+                    Monitor.Log("Player2 login successful (device flow).", LogLevel.Info);
+                    return;
+                }
+
+                if (poll.IsTerminalFailure)
+                {
+                    Monitor.Log($"Player2 device login failed: {poll.Status} {poll.ErrorMessage}".Trim(), LogLevel.Error);
+                    return;
+                }
+            }
+
+            Monitor.Log("Player2 device login timed out waiting for authorization.", LogLevel.Error);
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Player2 device login failed: {ex.Message}", LogLevel.Error);
         }
     }
 

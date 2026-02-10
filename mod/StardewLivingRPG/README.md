@@ -26,7 +26,7 @@ M0 + M1 scaffold includes:
 - `slrpg_set_sentiment economy <value>`: set economy sentiment (testing anchor trigger)
 - `slrpg_debug_state`: print compact daily diagnostics snapshot
 - `slrpg_demo_bootstrap`: seed reproducible vertical-slice scenario
-- `slrpg_p2_login`: local Player2 app auth using configured game client id
+- `slrpg_p2_login`: local Player2 app auth using configured game client id (auto-fallback to device auth)
 - `slrpg_p2_spawn`: spawn one Player2 NPC session
 - `slrpg_p2_chat <message>`: send chat to active Player2 NPC
 - `slrpg_p2_read_once`: read one NPC stream line from `/npcs/responses` (non-blocking background read)
@@ -37,6 +37,8 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_health`: compact one-line health summary (login/npc/stream/joules/last line/last command)
 
 Config knobs:
+- `Player2DeviceAuthBaseUrl` (default `https://api.player2.game/v1`)
+- `Player2DeviceAuthTimeoutSeconds` (default `120`)
 - `Player2BlockChatWhenLowJoules` (default `true`)
 - `Player2MinJoulesToChat` (default `5`)
 

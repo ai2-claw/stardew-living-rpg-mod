@@ -23,6 +23,8 @@ public sealed class ModConfig
     public string Player2GameClientId { get; set; } = "";
     public string Player2ApiBaseUrl { get; set; } = "https://api.player2.game/v1";
     public string Player2LocalAuthBaseUrl { get; set; } = "http://localhost:4315/v1";
+    public string Player2DeviceAuthBaseUrl { get; set; } = "https://api.player2.game/v1";
+    public int Player2DeviceAuthTimeoutSeconds { get; set; } = 120;
     public bool Player2BlockChatWhenLowJoules { get; set; } = true;
     public int Player2MinJoulesToChat { get; set; } = 5;
 }

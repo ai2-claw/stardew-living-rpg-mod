@@ -33,6 +33,68 @@ public sealed class Player2Client
         return data.P2Key;
     }
 
+    public async Task<DeviceAuthStartResponse> StartDeviceAuthAsync(string authBaseUrl, string gameClientId, CancellationToken ct)
+    {
+        var url = $"{authBaseUrl.TrimEnd('/')}/login/device/new";
+        var payload = new Dictionary<string, string>
+        {
+            ["game_client_id"] = gameClientId
+        };
+
+        using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload, _jsonOptions), Encoding.UTF8, "application/json")
+        };
+
+        using var res = await _http.SendAsync(msg, ct);
+        var body = await res.Content.ReadAsStringAsync(ct);
+        res.EnsureSuccessStatusCode();
+
+        var data = JsonSerializer.Deserialize<DeviceAuthStartResponse>(body, _jsonOptions) ?? new DeviceAuthStartResponse();
+        if (string.IsNullOrWhiteSpace(data.DeviceCode))
+            throw new InvalidOperationException("Player2 device auth start missing device_code.");
+
+        return data;
+    }
+
+    public async Task<DeviceAuthTokenPollResult> PollDeviceAuthTokenAsync(string authBaseUrl, string deviceCode, CancellationToken ct)
+    {
+        var url = $"{authBaseUrl.TrimEnd('/')}/login/device/token";
+        var payload = new Dictionary<string, string>
+        {
+            ["device_code"] = deviceCode
+        };
+
+        using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload, _jsonOptions), Encoding.UTF8, "application/json")
+        };
+
+        using var res = await _http.SendAsync(msg, ct);
+        var body = await res.Content.ReadAsStringAsync(ct);
+
+        if (res.IsSuccessStatusCode)
+        {
+            var ok = JsonSerializer.Deserialize<DeviceAuthTokenSuccessResponse>(body, _jsonOptions);
+            if (string.IsNullOrWhiteSpace(ok?.P2Key))
+                return new DeviceAuthTokenPollResult { Status = "pending" };
+
+            return new DeviceAuthTokenPollResult
+            {
+                Status = "authorized",
+                P2Key = ok.P2Key
+            };
+        }
+
+        var err = JsonSerializer.Deserialize<DeviceAuthTokenErrorResponse>(body, _jsonOptions);
+        var status = (err?.Status ?? err?.Error ?? "pending").Trim().ToLowerInvariant();
+        return new DeviceAuthTokenPollResult
+        {
+            Status = status,
+            ErrorMessage = err?.Message
+        };
+    }
+
     public async Task<string> SpawnNpcAsync(string apiBaseUrl, string p2Key, SpawnNpcRequest req, CancellationToken ct)
     {
         var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/spawn";
@@ -147,6 +209,71 @@ public sealed class Player2Client
     {
         public string P2Key { get; set; } = "";
     }
+
+    private sealed class DeviceAuthTokenSuccessResponse
+    {
+        [JsonPropertyName("p2key")]
+        public string P2Key { get; set; } = "";
+    }
+
+    private sealed class DeviceAuthTokenErrorResponse
+    {
+        [JsonPropertyName("status")]
+        public string? Status { get; set; }
+
+        [JsonPropertyName("error")]
+        public string? Error { get; set; }
+
+        [JsonPropertyName("message")]
+        public string? Message { get; set; }
+    }
+}
+
+public sealed class DeviceAuthStartResponse
+{
+    [JsonPropertyName("device_code")]
+    public string DeviceCode { get; set; } = string.Empty;
+
+    [JsonPropertyName("user_code")]
+    public string UserCode { get; set; } = string.Empty;
+
+    [JsonPropertyName("verification_uri")]
+    public string VerificationUri { get; set; } = string.Empty;
+
+    [JsonPropertyName("verification_url")]
+    public string VerificationUrl { get; set; } = string.Empty;
+
+    [JsonPropertyName("expires_in")]
+    public int ExpiresIn { get; set; } = 120;
+
+    [JsonPropertyName("interval")]
+    public int IntervalSeconds { get; set; } = 5;
+
+    public string GetVerificationUrlOrFallback()
+    {
+        if (!string.IsNullOrWhiteSpace(VerificationUri))
+            return VerificationUri;
+
+        if (!string.IsNullOrWhiteSpace(VerificationUrl))
+            return VerificationUrl;
+
+        return "https://player2.game/login/device";
+    }
+}
+
+public sealed class DeviceAuthTokenPollResult
+{
+    public string Status { get; set; } = "pending";
+    public string? P2Key { get; set; }
+    public string? ErrorMessage { get; set; }
+
+    public bool IsAuthorized => string.Equals(Status, "authorized", StringComparison.OrdinalIgnoreCase)
+                              || !string.IsNullOrWhiteSpace(P2Key);
+
+    public bool IsTerminalFailure => string.Equals(Status, "expired", StringComparison.OrdinalIgnoreCase)
+                                  || string.Equals(Status, "denied", StringComparison.OrdinalIgnoreCase)
+                                  || string.Equals(Status, "invalid", StringComparison.OrdinalIgnoreCase)
+                                  || string.Equals(Status, "error", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class SpawnNpcRequest
