@@ -22,6 +22,7 @@ M0 + M1 scaffold includes:
 - `slrpg_open_news`: open latest newspaper issue
 - `slrpg_open_rumors`: open Rumor Board menu
 - `slrpg_accept_quest <questId>`: accept a listed rumor quest
+- `slrpg_complete_quest <questId>`: complete an active rumor quest
 - `slrpg_set_sentiment economy <value>`: set economy sentiment (testing anchor trigger)
 
 ## In-game

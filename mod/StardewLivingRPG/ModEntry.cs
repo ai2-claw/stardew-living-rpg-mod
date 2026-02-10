@@ -40,6 +40,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
         helper.ConsoleCommands.Add("slrpg_accept_quest", "Accept rumor quest: slrpg_accept_quest <questId>", OnAcceptQuestCommand);
+        helper.ConsoleCommands.Add("slrpg_complete_quest", "Complete active quest: slrpg_complete_quest <questId>", OnCompleteQuestCommand);
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
@@ -219,6 +220,21 @@ public sealed class ModEntry : Mod
             Monitor.Log($"Accepted quest: {questId}", LogLevel.Info);
         else
             Monitor.Log($"Quest not found: {questId}", LogLevel.Warn);
+    }
+
+    private void OnCompleteQuestCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady || _rumorBoardService is null || args.Length < 1)
+        {
+            Monitor.Log("Usage: slrpg_complete_quest <questId>", LogLevel.Info);
+            return;
+        }
+
+        var questId = args[0].Trim();
+        if (_rumorBoardService.CompleteQuest(_state, questId))
+            Monitor.Log($"Completed quest: {questId}", LogLevel.Info);
+        else
+            Monitor.Log($"Active quest not found: {questId}", LogLevel.Warn);
     }
 
     private void OnSetSentimentCommand(string name, string[] args)

@@ -64,4 +64,42 @@ public sealed class RumorBoardService
         state.Telemetry.Daily.RumorBoardAccepts += 1;
         return true;
     }
+
+    public bool CompleteQuest(SaveState state, string questId)
+    {
+        var quest = state.Quests.Active.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
+        if (quest is null)
+            return false;
+
+        state.Quests.Active.Remove(quest);
+        quest.Status = "completed";
+        state.Quests.Completed.Add(quest);
+
+        state.Facts.Facts[$"quest:{quest.QuestId}:completed"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "system"
+        };
+
+        ApplyRewards(state, quest);
+        state.Telemetry.Daily.RumorBoardCompletions += 1;
+        return true;
+    }
+
+    private static void ApplyRewards(SaveState state, QuestEntry quest)
+    {
+        // Minimal reward model for now: gold -> positive economy sentiment proxy + issuer rep.
+        // (Actual wallet integration comes later.)
+        var sentimentBoost = Math.Clamp(quest.RewardGold / 250, 1, 5);
+        state.Social.TownSentiment.Economy = Math.Clamp(state.Social.TownSentiment.Economy + sentimentBoost, -100, 100);
+
+        if (!string.IsNullOrWhiteSpace(quest.Issuer))
+        {
+            state.Social.NpcReputation.TryGetValue(quest.Issuer, out var rep);
+            state.Social.NpcReputation[quest.Issuer] = Math.Clamp(rep + 3, -100, 100);
+        }
+
+        state.Telemetry.Daily.WorldMutations += 1;
+    }
 }

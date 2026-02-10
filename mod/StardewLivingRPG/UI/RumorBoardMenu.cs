@@ -67,6 +67,8 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         y += 12;
         SpriteText.drawString(b, "Use console: slrpg_accept_quest <questId>", x, y, 999, width: width - 72);
+        y += 34;
+        SpriteText.drawString(b, "Use console: slrpg_complete_quest <questId>", x, y, 999, width: width - 72);
 
         drawMouse(b);
     }
