@@ -133,7 +133,7 @@ public sealed class RumorBoardService
         return true;
     }
 
-    public string? CreateQuestFromNpcProposal(
+    public QuestProposalResult CreateQuestFromNpcProposal(
         SaveState state,
         string npcId,
         string templateId,
@@ -142,7 +142,7 @@ public sealed class RumorBoardService
         string intentKey)
     {
         if (state.Facts.ProcessedIntents.ContainsKey(intentKey))
-            return null;
+            return QuestProposalResult.Duplicate;
 
         var safeTemplate = NormalizeTemplate(templateId);
         var safeTarget = NormalizeTargetForTemplate(safeTemplate, target);
@@ -156,7 +156,7 @@ public sealed class RumorBoardService
         if (state.Quests.Available.Any(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase)) ||
             state.Quests.Active.Any(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase)) ||
             state.Quests.Completed.Any(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase)))
-            return null;
+            return QuestProposalResult.Duplicate;
 
         var quest = new QuestEntry
         {
@@ -189,7 +189,20 @@ public sealed class RumorBoardService
         };
 
         state.Telemetry.Daily.WorldMutations += 1;
-        return questId;
+
+        return new QuestProposalResult
+        {
+            CreatedQuestId = questId,
+            RequestedTemplate = templateId,
+            RequestedTarget = target,
+            RequestedUrgency = urgency,
+            AppliedTemplate = safeTemplate,
+            AppliedTarget = safeTarget,
+            AppliedUrgency = safeUrgency,
+            Count = count,
+            RewardGold = rewardGold,
+            ExpiresDelta = expiresDelta
+        };
     }
 
     private static string NormalizeTemplate(string templateId)

@@ -656,12 +656,27 @@ public sealed class ModEntry : Mod
                 var urgency = argsRoot.TryGetProperty("urgency", out var uEl) ? (uEl.GetString() ?? "low") : "low";
 
                 var intentKey = BuildIntentKey(npcId, cmdName, argsJson);
-                var createdId = _rumorBoardService?.CreateQuestFromNpcProposal(_state, npcId, templateId, target, urgency, intentKey);
+                var result = _rumorBoardService?.CreateQuestFromNpcProposal(_state, npcId, templateId, target, urgency, intentKey);
 
-                if (!string.IsNullOrWhiteSpace(createdId))
-                    Monitor.Log($"Applied NPC command: propose_quest -> created {createdId}", LogLevel.Info);
-                else
-                    Monitor.Log("NPC propose_quest ignored (duplicate or invalid).", LogLevel.Debug);
+                if (result is null)
+                {
+                    Monitor.Log("NPC propose_quest ignored (service unavailable).", LogLevel.Debug);
+                    return;
+                }
+
+                if (result.IsDuplicate || string.IsNullOrWhiteSpace(result.CreatedQuestId))
+                {
+                    Monitor.Log("NPC propose_quest ignored (duplicate).", LogLevel.Debug);
+                    return;
+                }
+
+                var fallbackUsed =
+                    !string.Equals(result.RequestedTemplate, result.AppliedTemplate, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals((result.RequestedTarget ?? string.Empty).Trim(), result.AppliedTarget, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(result.RequestedUrgency, result.AppliedUrgency, StringComparison.OrdinalIgnoreCase);
+
+                Monitor.Log($"Applied NPC command: propose_quest -> created {result.CreatedQuestId}", LogLevel.Info);
+                Monitor.Log($"Quest mapping | requested: template={result.RequestedTemplate}, target={result.RequestedTarget}, urgency={result.RequestedUrgency} | applied: template={result.AppliedTemplate}, target={result.AppliedTarget}, urgency={result.AppliedUrgency}, count={result.Count}, reward={result.RewardGold}, expires+{result.ExpiresDelta}d | fallback={fallbackUsed}", LogLevel.Info);
 
                 return;
             }
