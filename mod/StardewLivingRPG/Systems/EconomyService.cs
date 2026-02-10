@@ -93,6 +93,37 @@ public sealed class EconomyService
         }
     }
 
+    public bool TryNormalizeCropKey(string rawName, out string cropKey)
+    {
+        cropKey = string.Empty;
+        if (string.IsNullOrWhiteSpace(rawName))
+            return false;
+
+        var key = rawName.Trim().ToLowerInvariant();
+        if (BasePrices.ContainsKey(key))
+        {
+            cropKey = key;
+            return true;
+        }
+
+        // Common display-name aliases from shipped item names.
+        key = key.Replace(" ", string.Empty).Replace("'", string.Empty);
+        var alias = key switch
+        {
+            "blueberries" => "blueberry",
+            "cranberries" => "cranberry",
+            _ => key
+        };
+
+        if (BasePrices.ContainsKey(alias))
+        {
+            cropKey = alias;
+            return true;
+        }
+
+        return false;
+    }
+
     private static float ComputeSeasonalDemand(string season, string crop)
     {
         var s = season.ToLowerInvariant();

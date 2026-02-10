@@ -1,8 +1,12 @@
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
+using StardewValley;
+using StardewValley.ItemTypeDefinitions;
+using StardewValley.Menus;
 using StardewLivingRPG.Config;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Systems;
+using StardewLivingRPG.UI;
 using System.Globalization;
 
 namespace StardewLivingRPG;
@@ -26,10 +30,13 @@ public sealed class ModEntry : Mod
 
         helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
         helper.ConsoleCommands.Add("slrpg_board", "Print text market board preview.", OnBoardCommand);
+        helper.ConsoleCommands.Add("slrpg_open_board", "Open Market Board menu.", OnOpenBoardCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
+        helper.Events.GameLoop.DayEnding += OnDayEnding;
         helper.Events.GameLoop.DayStarted += OnDayStarted;
+        helper.Events.Input.ButtonPressed += OnButtonPressed;
 
         Monitor.Log("Stardew Living RPG loaded.", LogLevel.Info);
     }
@@ -47,6 +54,11 @@ public sealed class ModEntry : Mod
         StateStore.Save(Helper, _state, Monitor);
     }
 
+    private void OnDayEnding(object? sender, DayEndingEventArgs e)
+    {
+        CollectShippingBinSales();
+    }
+
     private void OnDayStarted(object? sender, DayStartedEventArgs e)
     {
         if (_dailyTickService is null)
@@ -56,7 +68,52 @@ public sealed class ModEntry : Mod
         _economyService?.IngestSales(_state.Economy, sold);
         _economyService?.RunDailyPricing(_state);
         _dailyTickService.Run(_state);
+
         Monitor.Log($"Daily tick complete for day {_state.Calendar.Day} ({_state.Calendar.Season} Y{_state.Calendar.Year}).", LogLevel.Debug);
+    }
+
+    private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        if (Game1.activeClickableMenu is not null)
+            return;
+
+        if (e.Button == _config.OpenBoardKey)
+            OpenMarketBoard();
+    }
+
+    private void CollectShippingBinSales()
+    {
+        if (!Context.IsWorldReady || _economyService is null || _salesIngestionService is null)
+            return;
+
+        var farm = Game1.getFarm();
+        if (farm is null)
+            return;
+
+        foreach (var item in farm.getShippingBin(Game1.player))
+        {
+            if (item is null)
+                continue;
+
+            var displayName = item.DisplayName ?? string.Empty;
+            if (!_economyService.TryNormalizeCropKey(displayName, out var cropKey))
+                continue;
+
+            var count = Math.Max(1, item.Stack);
+            _salesIngestionService.AddSale(cropKey, count);
+        }
+    }
+
+    private void OpenMarketBoard()
+    {
+        if (_marketBoardService is null)
+            return;
+
+        Game1.activeClickableMenu = new MarketBoardMenu(_state, _marketBoardService);
+        _state.Telemetry.Daily.MarketBoardOpens += 1;
     }
 
     private void OnSellCommand(string name, string[] args)
@@ -86,5 +143,13 @@ public sealed class ModEntry : Mod
         Monitor.Log("=== Pierre's Market Board (text preview) ===", LogLevel.Info);
         foreach (var line in _marketBoardService.BuildTopRows(_state))
             Monitor.Log(line, LogLevel.Info);
+    }
+
+    private void OnOpenBoardCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        OpenMarketBoard();
     }
 }
