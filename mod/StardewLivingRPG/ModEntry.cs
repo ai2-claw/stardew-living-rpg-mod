@@ -506,7 +506,7 @@ public sealed class ModEntry : Mod
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
                 CharacterDescription = "Mayor Lewis of Pelican Town in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Strict canon mode: never invent town names, regions, NPCs, or lore. Use only provided canon NPC list and game_state_info facts. If facts are missing or uncertain, explicitly say you are unsure and ask for clarification. For quest asks, prefer propose_quest command with safe, completable parameters.",
+                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. For quest asks, prefer propose_quest command with safe, completable parameters.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -774,7 +774,10 @@ public sealed class ModEntry : Mod
             "CANON_TOWN: Pelican Town.",
             $"CANON_NPCS: [{canonNpcs}].",
             "RULE: Never invent towns, regions, or citizens outside this canon list.",
-            "RULE: If unsure, say unsure and ask for clarification.",
+            "STYLE: Reply strictly in-character as Mayor Lewis, concise, natural, no assistant-speak.",
+            "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
+            "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
+            "RULE: If unsure, say unsure in-character and ask a short follow-up.",
             $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
             $"STATE: TopMovers [{string.Join(", ", movers)}].",
