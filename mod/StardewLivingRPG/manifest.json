@@ -1,0 +1,10 @@
+{
+  "Name": "Stardew Living RPG",
+  "Author": "OpenClaw + mx_146323",
+  "Version": "0.1.0",
+  "Description": "Living RPG systems layer for Stardew Valley (economy, interests, events, NPC intent integration).",
+  "UniqueID": "mx146323.StardewLivingRPG",
+  "EntryDll": "StardewLivingRPG.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}

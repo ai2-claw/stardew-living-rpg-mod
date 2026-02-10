@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>StardewLivingRPG</AssemblyName>
+    <RootNamespace>StardewLivingRPG</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    For local build, set SMAPI_PATH env var or edit HintPath below to your Stardew/SMAPI install.
+  -->
+  <ItemGroup>
+    <Reference Include="StardewModdingAPI">
+      <HintPath>$(SMAPI_PATH)/StardewModdingAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Stardew Valley">
+      <HintPath>$(SMAPI_PATH)/Stardew Valley.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
