@@ -148,12 +148,7 @@ public sealed class RumorBoardService
         var safeTarget = NormalizeTargetForTemplate(safeTemplate, target);
         var safeUrgency = NormalizeUrgency(urgency);
 
-        var (count, rewardGold, expiresDelta) = safeUrgency switch
-        {
-            "high" => (25, 700, 2),
-            "medium" => (20, 500, 3),
-            _ => (14, 350, 4)
-        };
+        var (count, rewardGold, expiresDelta) = BoundsForTemplateAndUrgency(safeTemplate, safeUrgency);
 
         var suffix = Math.Abs(intentKey.GetHashCode()) % 100000;
         var questId = $"quest_ai_{safeTemplate}_{safeTarget}_{state.Calendar.Day}_{suffix}";
@@ -229,6 +224,37 @@ public sealed class RumorBoardService
             "mine_resource" => $"Gather {target} x{count} from the mines.",
             "social_visit" => $"Visit {target} and bring a thoughtful gift.",
             _ => $"Supply {target} x{count} for the town market."
+        };
+    }
+
+    private static (int Count, int RewardGold, int ExpiresDelta) BoundsForTemplateAndUrgency(string templateId, string urgency)
+    {
+        return templateId switch
+        {
+            "social_visit" => urgency switch
+            {
+                "high" => (1, 400, 2),
+                "medium" => (1, 300, 3),
+                _ => (1, 220, 4)
+            },
+            "mine_resource" => urgency switch
+            {
+                "high" => (20, 800, 2),
+                "medium" => (14, 600, 3),
+                _ => (10, 450, 4)
+            },
+            "deliver_item" => urgency switch
+            {
+                "high" => (18, 650, 2),
+                "medium" => (14, 500, 3),
+                _ => (10, 360, 4)
+            },
+            _ => urgency switch // gather_crop
+            {
+                "high" => (25, 700, 2),
+                "medium" => (20, 500, 3),
+                _ => (14, 350, 4)
+            }
         };
     }
 
