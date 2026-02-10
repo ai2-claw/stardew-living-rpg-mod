@@ -26,11 +26,22 @@ M0 + M1 scaffold includes:
 - `slrpg_set_sentiment economy <value>`: set economy sentiment (testing anchor trigger)
 - `slrpg_debug_state`: print compact daily diagnostics snapshot
 - `slrpg_demo_bootstrap`: seed reproducible vertical-slice scenario
+- `slrpg_p2_login`: local Player2 app auth using configured game client id
+- `slrpg_p2_spawn`: spawn one Player2 NPC session
+- `slrpg_p2_chat <message>`: send chat to active Player2 NPC
+- `slrpg_p2_read_once`: read one NPC stream line from `/npcs/responses`
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).
 - Press `J` (default) to open the latest Newspaper issue (configurable via `config.json`).
 - Press `L` (default) to open the Rumor Board menu (configurable via `config.json`).
+
+## Player2 setup (M2)
+- In `config.json`, set:
+  - `EnablePlayer2: true`
+  - `Player2GameClientId: <your_game_client_id>`
+- Ensure Player2 desktop app is running and logged in.
+- Run `slrpg_p2_login`, then `slrpg_p2_spawn`.
 
 ## Build notes
 Set `SMAPI_PATH` to your game install path containing:

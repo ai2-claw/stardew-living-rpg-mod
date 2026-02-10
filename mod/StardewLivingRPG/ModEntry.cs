@@ -4,10 +4,12 @@ using StardewValley;
 using StardewValley.ItemTypeDefinitions;
 using StardewValley.Menus;
 using StardewLivingRPG.Config;
+using StardewLivingRPG.Integrations;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Systems;
 using StardewLivingRPG.UI;
 using System.Globalization;
+using System.Text.Json;
 
 namespace StardewLivingRPG;
 
@@ -23,6 +25,11 @@ public sealed class ModEntry : Mod
     private RumorBoardService? _rumorBoardService;
     private AnchorEventService? _anchorEventService;
 
+    // Player2 M2 runtime session state
+    private Player2Client? _player2Client;
+    private string? _player2Key;
+    private string? _activeNpcId;
+
     public override void Entry(IModHelper helper)
     {
         _config = helper.ReadConfig<ModConfig>();
@@ -33,6 +40,7 @@ public sealed class ModEntry : Mod
         _newspaperService = new NewspaperService();
         _rumorBoardService = new RumorBoardService();
         _anchorEventService = new AnchorEventService();
+        _player2Client = new Player2Client();
 
         helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
         helper.ConsoleCommands.Add("slrpg_board", "Print text market board preview.", OnBoardCommand);
@@ -44,6 +52,11 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
         helper.ConsoleCommands.Add("slrpg_debug_state", "Print compact state snapshot for QA.", OnDebugStateCommand);
         helper.ConsoleCommands.Add("slrpg_demo_bootstrap", "Seed reproducible vertical-slice scenario.", OnDemoBootstrapCommand);
+
+        helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using configured game client id.", OnPlayer2LoginCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_spawn", "Spawn one Player2 NPC session.", OnPlayer2SpawnNpcCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_chat", "Send chat to active Player2 NPC: slrpg_p2_chat <message>", OnPlayer2ChatCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_read_once", "Read one line from /npcs/responses stream.", OnPlayer2ReadOnceCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -330,5 +343,190 @@ public sealed class ModEntry : Mod
 
         Monitor.Log("Demo bootstrap applied: summer day>=7, economy sentiment -35, queued heavy blueberry sales.", LogLevel.Info);
         Monitor.Log("Advance one day (sleep) then run slrpg_debug_state, slrpg_open_board, slrpg_open_news, slrpg_open_rumors.", LogLevel.Info);
+    }
+
+    private void OnPlayer2LoginCommand(string name, string[] args)
+    {
+        if (_player2Client is null)
+            return;
+
+        if (!_config.EnablePlayer2)
+        {
+            Monitor.Log("Player2 integration disabled. Set EnablePlayer2=true in config.json.", LogLevel.Warn);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_config.Player2GameClientId))
+        {
+            Monitor.Log("Missing Player2GameClientId in config.json.", LogLevel.Warn);
+            return;
+        }
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            _player2Key = _player2Client
+                .LoginViaLocalAppAsync(_config.Player2LocalAuthBaseUrl, _config.Player2GameClientId, cts.Token)
+                .GetAwaiter().GetResult();
+            Monitor.Log("Player2 login successful.", LogLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Player2 login failed: {ex.Message}", LogLevel.Error);
+        }
+    }
+
+    private void OnPlayer2SpawnNpcCommand(string name, string[] args)
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+        {
+            Monitor.Log("Login first: slrpg_p2_login", LogLevel.Warn);
+            return;
+        }
+
+        try
+        {
+            var req = new SpawnNpcRequest
+            {
+                ShortName = "Lewis",
+                Name = "Mayor Lewis",
+                CharacterDescription = "Mayor focused on practical town stability and player cooperation.",
+                SystemPrompt = "You are Mayor Lewis. Be practical, cozy, and propose only safe, completable town actions.",
+                KeepGameState = true,
+                Commands = new List<SpawnNpcCommand>
+                {
+                    new()
+                    {
+                        Name = "propose_quest",
+                        Description = "Propose a safe rumor-board quest",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                template_id = new { type = "string" },
+                                target = new { type = "string" },
+                                urgency = new { type = "string" }
+                            },
+                            required = new[] { "template_id", "target", "urgency" }
+                        },
+                        NeverRespondWithMessage = false
+                    }
+                }
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            _activeNpcId = _player2Client
+                .SpawnNpcAsync(_config.Player2ApiBaseUrl, _player2Key!, req, cts.Token)
+                .GetAwaiter().GetResult();
+
+            Monitor.Log($"Player2 NPC spawned: {_activeNpcId}", LogLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Player2 spawn failed: {ex.Message}", LogLevel.Error);
+        }
+    }
+
+    private void OnPlayer2ChatCommand(string name, string[] args)
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(_activeNpcId))
+        {
+            Monitor.Log("Need login + spawned NPC first (slrpg_p2_login, slrpg_p2_spawn).", LogLevel.Warn);
+            return;
+        }
+
+        var message = args.Length == 0 ? "How is the town market today?" : string.Join(' ', args);
+        try
+        {
+            var req = new NpcChatRequest
+            {
+                SenderName = Game1.player?.Name ?? "Player",
+                SenderMessage = message,
+                GameStateInfo = BuildCompactGameStateInfo()
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, _activeNpcId!, req, cts.Token)
+                .GetAwaiter().GetResult();
+
+            Monitor.Log("Sent chat to Player2 NPC. Use slrpg_p2_read_once to read one streamed response line.", LogLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Player2 chat failed: {ex.Message}", LogLevel.Error);
+        }
+    }
+
+    private void OnPlayer2ReadOnceCommand(string name, string[] args)
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+        {
+            Monitor.Log("Need login first (slrpg_p2_login).", LogLevel.Warn);
+            return;
+        }
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var line = _player2Client.ReadOneNpcResponseLineAsync(_config.Player2ApiBaseUrl, _player2Key!, cts.Token)
+                .GetAwaiter().GetResult();
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                Monitor.Log("No response line received (timeout/empty).", LogLevel.Warn);
+                return;
+            }
+
+            Monitor.Log($"Player2 stream line: {line}", LogLevel.Info);
+
+            // Minimal command bridge (single command type) for M2.
+            TryApplyNpcCommandFromLine(line);
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Player2 read failed: {ex.Message}", LogLevel.Error);
+        }
+    }
+
+    private string BuildCompactGameStateInfo()
+    {
+        var movers = _state.Economy.Crops
+            .OrderByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
+            .Take(2)
+            .Select(kv => $"{kv.Key}:{kv.Value.PriceToday}g")
+            .ToArray();
+
+        return $"Day {_state.Calendar.Day} {_state.Calendar.Season}. Economy sentiment {_state.Social.TownSentiment.Economy}. Top movers [{string.Join(", ", movers)}]. Available rumor quests {_state.Quests.Available.Count}.";
+    }
+
+    private void TryApplyNpcCommandFromLine(string line)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            if (!doc.RootElement.TryGetProperty("command", out var commandArray) || commandArray.ValueKind != JsonValueKind.Array)
+                return;
+
+            foreach (var cmd in commandArray.EnumerateArray())
+            {
+                if (!cmd.TryGetProperty("name", out var nameEl))
+                    continue;
+
+                var cmdName = nameEl.GetString() ?? string.Empty;
+                if (!string.Equals(cmdName, "propose_quest", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // For M2: map propose_quest into one safe available quest via existing template generator.
+                _rumorBoardService?.RefreshDailyRumors(_state);
+                _state.Telemetry.Daily.WorldMutations += 1;
+                Monitor.Log("Applied NPC command bridge: propose_quest -> refreshed safe rumor templates.", LogLevel.Info);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
+        }
     }
 }

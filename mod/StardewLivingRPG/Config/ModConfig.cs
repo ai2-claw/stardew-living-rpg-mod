@@ -17,4 +17,10 @@ public sealed class ModConfig
 
     // Open rumor board menu.
     public SButton OpenRumorBoardKey { get; set; } = SButton.L;
+
+    // Player2 integration (M2)
+    public bool EnablePlayer2 { get; set; } = false;
+    public string Player2GameClientId { get; set; } = "";
+    public string Player2ApiBaseUrl { get; set; } = "https://api.player2.game/v1";
+    public string Player2LocalAuthBaseUrl { get; set; } = "http://localhost:4315/v1";
 }
