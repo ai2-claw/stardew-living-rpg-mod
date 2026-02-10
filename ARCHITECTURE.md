@@ -65,6 +65,12 @@ Default experience should be warm, legible, and low-friction.
 - Includes predictive signals ("Festival demand is rising next week") so planners can act early
 - Converts hidden simulation into clear player-readable world narrative
 
+## Pillar 4: Hard Assets (Non-AI Anchors)
+- Custom UI surfaces and world objects that expose simulation state directly
+- Hand-authored rewards (items/crops) that make progression tangible
+- Scripted "anchor" events that provide cinematic payoff at key thresholds
+- Template-driven quest board so objectives are always completable
+
 ---
 
 ## 5) “Town Interests” Model (Stardew-friendly alternative to factions)
@@ -186,6 +192,20 @@ Validation rules:
 - 5 validated command types wired to world state
 - Cozy Canon mode complete; Story Depth mode partial
 
+### V1.1 Hard-Asset Additions (anti-"AI wrapper" layer)
+1. **Pierre's Market Board** (in-world object + custom UI)
+   - shows `price_today`, trend arrows, and short-term demand outlook
+   - designed as a daily planning ritual (like weather/luck checks)
+2. **Heirloom Crops / Regional Specialties** (3-5 items)
+   - unlocked by high influence in specific Town Interests
+   - hand-authored sprites + hard-coded economy hooks
+3. **Anchor Events** (hybrid milestones)
+   - 1-2 hard-scripted scenes per key NPC, triggered by simulation thresholds
+   - example: low town sentiment triggers emergency town hall event
+4. **Rumor Mill Quest Board (Community Board 2.0)**
+   - AI proposes context; objectives/rewards are selected from safe quest templates
+   - guarantees completable, testable quests
+
 Success criteria:
 - noticeable world change by Day 7 of a normal run
 - repeated runs produce meaningfully different outcomes
@@ -200,10 +220,16 @@ Track:
 - quest branch divergence rate
 - market volatility vs comfort target
 - repeat-session retention signals
+- hard-asset engagement:
+  - Market Board opens/day
+  - Rumor Mill quest acceptance/completion rates
+  - Heirloom unlock rate
+  - Anchor event trigger/completion counts
 
 Player sentiment checks:
 - “Did this still feel like Stardew?”
 - “Did my choices visibly change the world?”
+- “Did the systems feel game-like, not chatbot-like?”
 
 ---
 
@@ -215,4 +241,7 @@ Player sentiment checks:
 4. `NEWSPAPER_TEMPLATES.md`
 5. `BALANCE_GUIDELINES.md`
 6. `FACT_TABLE.md` (memory-lock + one-truth records for accepted/resolved intents)
+7. `MARKET_BOARD_UI_SPEC.md` (screen states, chart glyphs, morning ritual flow)
+8. `ANCHOR_EVENTS.md` (thresholds -> scripted cutscenes)
+9. `QUEST_TEMPLATE_LIBRARY.md` (safe objective/reward templates mapped from AI context)
 
