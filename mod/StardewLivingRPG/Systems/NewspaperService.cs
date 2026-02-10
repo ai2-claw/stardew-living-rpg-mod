@@ -4,7 +4,7 @@ namespace StardewLivingRPG.Systems;
 
 public sealed class NewspaperService
 {
-    public NewspaperIssue BuildIssue(SaveState state)
+    public NewspaperIssue BuildIssue(SaveState state, string? anchorNote = null)
     {
         var deltas = state.Economy.Crops
             .Select(kv => new
@@ -33,6 +33,9 @@ public sealed class NewspaperService
 
         if (topUp is not null)
             issue.Sections.Add($"Opportunity: {Cap(topUp.Crop)} rose {(topUp.DeltaPct * 100):0.#}% to {topUp.Today}g.");
+
+        if (!string.IsNullOrWhiteSpace(anchorNote))
+            issue.Sections.Add(anchorNote);
 
         // lightweight predictive hints for planner players
         var scarcityCandidate = state.Economy.Crops

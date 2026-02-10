@@ -21,6 +21,7 @@ public sealed class ModEntry : Mod
     private SalesIngestionService? _salesIngestionService;
     private NewspaperService? _newspaperService;
     private RumorBoardService? _rumorBoardService;
+    private AnchorEventService? _anchorEventService;
 
     public override void Entry(IModHelper helper)
     {
@@ -31,6 +32,7 @@ public sealed class ModEntry : Mod
         _salesIngestionService = new SalesIngestionService();
         _newspaperService = new NewspaperService();
         _rumorBoardService = new RumorBoardService();
+        _anchorEventService = new AnchorEventService();
 
         helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
         helper.ConsoleCommands.Add("slrpg_board", "Print text market board preview.", OnBoardCommand);
@@ -38,6 +40,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
         helper.ConsoleCommands.Add("slrpg_accept_quest", "Accept rumor quest: slrpg_accept_quest <questId>", OnAcceptQuestCommand);
+        helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -76,13 +79,17 @@ public sealed class ModEntry : Mod
         _economyService?.RunDailyPricing(_state);
         _dailyTickService.Run(_state);
 
+        _rumorBoardService?.RefreshDailyRumors(_state);
+
+        string? anchorNote = null;
+        if (_anchorEventService is not null && _anchorEventService.TryTriggerEmergencyTownHall(_state, out var note))
+            anchorNote = note;
+
         if (_newspaperService is not null)
         {
-            var issue = _newspaperService.BuildIssue(_state);
+            var issue = _newspaperService.BuildIssue(_state, anchorNote);
             _state.Newspaper.Issues.Add(issue);
         }
-
-        _rumorBoardService?.RefreshDailyRumors(_state);
 
         Monitor.Log($"Daily tick complete for day {_state.Calendar.Day} ({_state.Calendar.Season} Y{_state.Calendar.Year}).", LogLevel.Debug);
     }
@@ -212,5 +219,41 @@ public sealed class ModEntry : Mod
             Monitor.Log($"Accepted quest: {questId}", LogLevel.Info);
         else
             Monitor.Log($"Quest not found: {questId}", LogLevel.Warn);
+    }
+
+    private void OnSetSentimentCommand(string name, string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Monitor.Log("Usage: slrpg_set_sentiment economy <value>", LogLevel.Info);
+            return;
+        }
+
+        var axis = args[0].Trim().ToLowerInvariant();
+        if (!int.TryParse(args[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+        {
+            Monitor.Log("Value must be an integer.", LogLevel.Warn);
+            return;
+        }
+
+        value = Math.Max(-100, Math.Min(100, value));
+        switch (axis)
+        {
+            case "economy":
+                _state.Social.TownSentiment.Economy = value;
+                Monitor.Log($"Set economy sentiment to {value}.", LogLevel.Info);
+                break;
+            case "community":
+                _state.Social.TownSentiment.Community = value;
+                Monitor.Log($"Set community sentiment to {value}.", LogLevel.Info);
+                break;
+            case "environment":
+                _state.Social.TownSentiment.Environment = value;
+                Monitor.Log($"Set environment sentiment to {value}.", LogLevel.Info);
+                break;
+            default:
+                Monitor.Log("Axis must be one of: economy|community|environment", LogLevel.Warn);
+                break;
+        }
     }
 }

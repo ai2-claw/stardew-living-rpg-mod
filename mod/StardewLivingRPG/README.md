@@ -13,6 +13,7 @@ M0 + M1 scaffold includes:
 - text market board preview command + in-game board menu shell
 - daily newspaper issue generation from economy deltas + in-game newspaper menu
 - rumor board v1 with daily template quests + accept flow
+- anchor event A1 trigger (Emergency Town Hall) with one-time fact lock + follow-up quest
 
 ## Debug console commands
 - `slrpg_sell <crop> <count>`: queue simulated crop sales for next day tick
@@ -21,6 +22,7 @@ M0 + M1 scaffold includes:
 - `slrpg_open_news`: open latest newspaper issue
 - `slrpg_open_rumors`: open Rumor Board menu
 - `slrpg_accept_quest <questId>`: accept a listed rumor quest
+- `slrpg_set_sentiment economy <value>`: set economy sentiment (testing anchor trigger)
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).
