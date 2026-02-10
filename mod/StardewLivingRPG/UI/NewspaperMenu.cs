@@ -3,6 +3,7 @@ using Microsoft.Xna.Framework.Graphics;
 using StardewValley;
 using StardewValley.Menus;
 using StardewLivingRPG.State;
+using StardewLivingRPG.Utils;
 
 namespace StardewLivingRPG.UI;
 
@@ -38,13 +39,22 @@ public sealed class NewspaperMenu : IClickableMenu
             return;
         }
 
-        b.DrawString(Game1.dialogueFont, $"Day {_issue.Day}: {_issue.Headline}", new Vector2(x, y), Game1.textColor);
-        y += 52;
+        var headline = $"Day {_issue.Day}: {_issue.Headline}";
+        var wrappedHeadline = TextWrapHelper.WrapText(Game1.dialogueFont, headline, width - 72);
+        foreach (var line in wrappedHeadline)
+        {
+            b.DrawString(Game1.dialogueFont, line, new Vector2(x, y), Game1.textColor);
+            y += 52;
+        }
 
         foreach (var s in _issue.Sections)
         {
-            b.DrawString(Game1.smallFont, s, new Vector2(x, y), Game1.textColor);
-            y += 44;
+            var wrappedSection = TextWrapHelper.WrapText(Game1.smallFont, s, width - 72);
+            foreach (var line in wrappedSection)
+            {
+                b.DrawString(Game1.smallFont, line, new Vector2(x, y), Game1.textColor);
+                y += 44;
+            }
         }
 
         y += 8;

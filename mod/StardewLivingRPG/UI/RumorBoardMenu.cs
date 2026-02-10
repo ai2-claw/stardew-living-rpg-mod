@@ -3,6 +3,7 @@ using Microsoft.Xna.Framework.Graphics;
 using StardewValley;
 using StardewValley.Menus;
 using StardewLivingRPG.State;
+using StardewLivingRPG.Utils;
 
 namespace StardewLivingRPG.UI;
 
@@ -43,8 +44,18 @@ public sealed class RumorBoardMenu : IClickableMenu
         {
             foreach (var q in _state.Quests.Available.Take(5))
             {
-                b.DrawString(Game1.smallFont, $"- {q.QuestId}: {q.Summary}", new Vector2(x, y), Game1.textColor);
-                y += 34;
+                var availableWidth = width - 72;
+                var prefix = $"- {q.QuestId}: ";
+                var prefixWidth = Game1.smallFont.MeasureString(prefix).X;
+                var summaryWidth = availableWidth - prefixWidth;
+
+                var wrappedSummary = TextWrapHelper.WrapText(Game1.smallFont, q.Summary, summaryWidth);
+                for (var i = 0; i < wrappedSummary.Length; i++)
+                {
+                    var line = i == 0 ? prefix + wrappedSummary[0] : new string(' ', prefix.Length) + wrappedSummary[i];
+                    b.DrawString(Game1.smallFont, line, new Vector2(x, y), Game1.textColor);
+                    y += 34;
+                }
             }
         }
 

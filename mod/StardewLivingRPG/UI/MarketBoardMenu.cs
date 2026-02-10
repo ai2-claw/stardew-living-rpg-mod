@@ -4,6 +4,7 @@ using StardewValley;
 using StardewValley.Menus;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Systems;
+using StardewLivingRPG.Utils;
 
 namespace StardewLivingRPG.UI;
 
@@ -38,10 +39,15 @@ public sealed class MarketBoardMenu : IClickableMenu
         b.DrawString(Game1.smallFont, "Top movers:", new Vector2(x, y), Game1.textColor);
 
         y += 44;
+        var availableWidth = width - 72;
         foreach (var line in _boardService.BuildTopRows(_state, 8))
         {
-            b.DrawString(Game1.smallFont, line, new Vector2(x, y), Game1.textColor);
-            y += 40;
+            var wrappedLines = TextWrapHelper.WrapText(Game1.smallFont, line, availableWidth);
+            foreach (var wrappedLine in wrappedLines)
+            {
+                b.DrawString(Game1.smallFont, wrappedLine, new Vector2(x, y), Game1.textColor);
+                y += 40;
+            }
         }
 
         y += 10;
