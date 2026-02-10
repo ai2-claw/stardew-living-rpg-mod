@@ -42,6 +42,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_accept_quest", "Accept rumor quest: slrpg_accept_quest <questId>", OnAcceptQuestCommand);
         helper.ConsoleCommands.Add("slrpg_complete_quest", "Complete active quest: slrpg_complete_quest <questId>", OnCompleteQuestCommand);
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
+        helper.ConsoleCommands.Add("slrpg_debug_state", "Print compact state snapshot for QA.", OnDebugStateCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -272,5 +273,37 @@ public sealed class ModEntry : Mod
                 Monitor.Log("Axis must be one of: economy|community|environment", LogLevel.Warn);
                 break;
         }
+    }
+
+    private void OnDebugStateCommand(string name, string[] args)
+    {
+        Monitor.Log("=== SLRPG State Snapshot ===", LogLevel.Info);
+        Monitor.Log($"Day {_state.Calendar.Day} | Season {_state.Calendar.Season} | Year {_state.Calendar.Year}", LogLevel.Info);
+        Monitor.Log($"Mode {_state.Config.Mode} | Sentiment E/C/Env: {_state.Social.TownSentiment.Economy}/{_state.Social.TownSentiment.Community}/{_state.Social.TownSentiment.Environment}", LogLevel.Info);
+
+        var anchorSeen = _state.Facts.Facts.ContainsKey("anchor:town_hall_crisis:seen");
+        Monitor.Log($"Anchor town_hall_crisis seen: {anchorSeen}", LogLevel.Info);
+
+        var top = _state.Economy.Crops
+            .OrderByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
+            .Take(3)
+            .ToList();
+
+        if (top.Count == 0)
+        {
+            Monitor.Log("No crop economy entries yet.", LogLevel.Info);
+        }
+        else
+        {
+            Monitor.Log("Top market movers:", LogLevel.Info);
+            foreach (var (crop, e) in top)
+            {
+                var d = e.PriceToday - e.PriceYesterday;
+                Monitor.Log($"- {crop}: {e.PriceYesterday}g -> {e.PriceToday}g ({d:+#;-#;0}) | demand {e.DemandFactor:F2}, supply {e.SupplyPressureFactor:F2}, scarcity {e.ScarcityBonus:P0}", LogLevel.Info);
+            }
+        }
+
+        Monitor.Log($"Quests | available: {_state.Quests.Available.Count}, active: {_state.Quests.Active.Count}, completed: {_state.Quests.Completed.Count}, failed: {_state.Quests.Failed.Count}", LogLevel.Info);
+        Monitor.Log($"Telemetry | opens(board): {_state.Telemetry.Daily.MarketBoardOpens}, accepts: {_state.Telemetry.Daily.RumorBoardAccepts}, completes: {_state.Telemetry.Daily.RumorBoardCompletions}, anchors: {_state.Telemetry.Daily.AnchorEventsTriggered}, mutations: {_state.Telemetry.Daily.WorldMutations}", LogLevel.Info);
     }
 }
