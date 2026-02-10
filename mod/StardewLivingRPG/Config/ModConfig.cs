@@ -11,4 +11,7 @@ public sealed class ModConfig
 
     // Open text market board menu.
     public SButton OpenBoardKey { get; set; } = SButton.K;
+
+    // Open daily newspaper menu.
+    public SButton OpenNewspaperKey { get; set; } = SButton.J;
 }

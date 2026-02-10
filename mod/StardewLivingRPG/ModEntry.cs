@@ -19,6 +19,7 @@ public sealed class ModEntry : Mod
     private EconomyService? _economyService;
     private MarketBoardService? _marketBoardService;
     private SalesIngestionService? _salesIngestionService;
+    private NewspaperService? _newspaperService;
 
     public override void Entry(IModHelper helper)
     {
@@ -27,10 +28,12 @@ public sealed class ModEntry : Mod
         _economyService = new EconomyService();
         _marketBoardService = new MarketBoardService();
         _salesIngestionService = new SalesIngestionService();
+        _newspaperService = new NewspaperService();
 
         helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
         helper.ConsoleCommands.Add("slrpg_board", "Print text market board preview.", OnBoardCommand);
         helper.ConsoleCommands.Add("slrpg_open_board", "Open Market Board menu.", OnOpenBoardCommand);
+        helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -69,6 +72,12 @@ public sealed class ModEntry : Mod
         _economyService?.RunDailyPricing(_state);
         _dailyTickService.Run(_state);
 
+        if (_newspaperService is not null)
+        {
+            var issue = _newspaperService.BuildIssue(_state);
+            _state.Newspaper.Issues.Add(issue);
+        }
+
         Monitor.Log($"Daily tick complete for day {_state.Calendar.Day} ({_state.Calendar.Season} Y{_state.Calendar.Year}).", LogLevel.Debug);
     }
 
@@ -82,6 +91,8 @@ public sealed class ModEntry : Mod
 
         if (e.Button == _config.OpenBoardKey)
             OpenMarketBoard();
+        else if (e.Button == _config.OpenNewspaperKey)
+            OpenNewspaper();
     }
 
     private void CollectShippingBinSales()
@@ -114,6 +125,12 @@ public sealed class ModEntry : Mod
 
         Game1.activeClickableMenu = new MarketBoardMenu(_state, _marketBoardService);
         _state.Telemetry.Daily.MarketBoardOpens += 1;
+    }
+
+    private void OpenNewspaper()
+    {
+        var issue = _state.Newspaper.Issues.LastOrDefault();
+        Game1.activeClickableMenu = new NewspaperMenu(issue);
     }
 
     private void OnSellCommand(string name, string[] args)
@@ -151,5 +168,13 @@ public sealed class ModEntry : Mod
             return;
 
         OpenMarketBoard();
+    }
+
+    private void OnOpenNewsCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        OpenNewspaper();
     }
 }
