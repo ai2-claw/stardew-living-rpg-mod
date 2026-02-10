@@ -34,6 +34,7 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_stream_start`: start persistent NPC response listener (auto-reconnect with backoff)
 - `slrpg_p2_stream_stop`: stop persistent NPC response listener
 - `slrpg_p2_status`: show login/NPC/stream state + joules balance
+- `slrpg_p2_health`: compact one-line health summary (login/npc/stream/joules/last line/last command)
 
 Config knobs:
 - `Player2BlockChatWhenLowJoules` (default `true`)

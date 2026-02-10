@@ -34,6 +34,9 @@ public sealed class ModEntry : Mod
     private string? _player2Key;
     private string? _activeNpcId;
     private readonly ConcurrentQueue<string> _pendingPlayer2Lines = new();
+    private DateTime _player2LastLineUtc;
+    private DateTime _player2LastCommandAppliedUtc;
+    private string _player2LastCommandApplied = "(none)";
     private int _player2ReadInFlight;
     private DateTime _player2ReadStartedUtc;
     private CancellationTokenSource? _player2ReadCts;
@@ -75,6 +78,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_p2_stream_start", "Start persistent Player2 response stream listener.", OnPlayer2StreamStartCommand);
         helper.ConsoleCommands.Add("slrpg_p2_stream_stop", "Stop persistent Player2 response stream listener.", OnPlayer2StreamStopCommand);
         helper.ConsoleCommands.Add("slrpg_p2_status", "Show Player2 session + joules + stream status.", OnPlayer2StatusCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_health", "Compact Player2 health summary line.", OnPlayer2HealthCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -186,6 +190,7 @@ public sealed class ModEntry : Mod
             }
 
             Monitor.Log($"Player2 stream line: {line}", LogLevel.Info);
+            _player2LastLineUtc = DateTime.UtcNow;
             _player2StreamBackoffSec = 1;
             TryApplyNpcCommandFromLine(line);
         }
@@ -628,6 +633,20 @@ public sealed class ModEntry : Mod
         Monitor.Log($"Player2 joules | balance={j.Joules} tier={j.PatronTier} user={j.UserId}", LogLevel.Info);
     }
 
+    private void OnPlayer2HealthCommand(string name, string[] args)
+    {
+        var loggedIn = !string.IsNullOrWhiteSpace(_player2Key);
+        var npc = string.IsNullOrWhiteSpace(_activeNpcId) ? "(none)" : _activeNpcId;
+        var running = Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1;
+        var lineAgo = _player2LastLineUtc == default ? "never" : $"{(int)(DateTime.UtcNow - _player2LastLineUtc).TotalSeconds}s";
+        var cmdAgo = _player2LastCommandAppliedUtc == default ? "never" : $"{(int)(DateTime.UtcNow - _player2LastCommandAppliedUtc).TotalSeconds}s";
+
+        var joules = TryGetJoules(out var j);
+        var joulesText = joules.HasValue && j is not null ? joules.Value.ToString() : "n/a";
+
+        Monitor.Log($"P2 health | login={loggedIn} npc={npc} stream={running}/{_player2StreamDesired} joules={joulesText} lastLineAgo={lineAgo} lastCmd={_player2LastCommandApplied} lastCmdAgo={cmdAgo}", LogLevel.Info);
+    }
+
     private int? TryGetJoules(out JoulesResponse? info)
     {
         info = null;
@@ -763,6 +782,8 @@ public sealed class ModEntry : Mod
 
                 Monitor.Log($"Applied NPC command: propose_quest -> created {result.CreatedQuestId}", LogLevel.Info);
                 Monitor.Log($"Quest mapping | requested: template={result.RequestedTemplate}, target={result.RequestedTarget}, urgency={result.RequestedUrgency} | applied: template={result.AppliedTemplate}, target={result.AppliedTarget}, urgency={result.AppliedUrgency}, count={result.Count}, reward={result.RewardGold}, expires+{result.ExpiresDelta}d | fallback={fallbackUsed}", LogLevel.Info);
+                _player2LastCommandApplied = $"propose_quest:{result.CreatedQuestId}";
+                _player2LastCommandAppliedUtc = DateTime.UtcNow;
 
                 return;
             }
