@@ -74,6 +74,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_p2_read_reset", "Reset/cancel stuck Player2 read_once.", OnPlayer2ReadResetCommand);
         helper.ConsoleCommands.Add("slrpg_p2_stream_start", "Start persistent Player2 response stream listener.", OnPlayer2StreamStartCommand);
         helper.ConsoleCommands.Add("slrpg_p2_stream_stop", "Stop persistent Player2 response stream listener.", OnPlayer2StreamStopCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_status", "Show Player2 session + joules + stream status.", OnPlayer2StatusCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -513,7 +514,7 @@ public sealed class ModEntry : Mod
             _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, _activeNpcId!, req, cts.Token)
                 .GetAwaiter().GetResult();
 
-            Monitor.Log("Sent chat to Player2 NPC. Use slrpg_p2_read_once to read one streamed response line.", LogLevel.Info);
+            Monitor.Log("Sent chat to Player2 NPC. Keep stream listener running to receive response lines.", LogLevel.Info);
         }
         catch (Exception ex)
         {
@@ -595,6 +596,28 @@ public sealed class ModEntry : Mod
         _player2StreamCts = null;
         Interlocked.Exchange(ref _player2StreamRunning, 0);
         Monitor.Log("Stopped Player2 stream listener.", LogLevel.Info);
+    }
+
+    private void OnPlayer2StatusCommand(string name, string[] args)
+    {
+        var loggedIn = !string.IsNullOrWhiteSpace(_player2Key);
+        var npc = string.IsNullOrWhiteSpace(_activeNpcId) ? "(none)" : _activeNpcId;
+        var running = Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1;
+        Monitor.Log($"Player2 status | loggedIn={loggedIn} npc={npc} streamRunning={running} desired={_player2StreamDesired}", LogLevel.Info);
+
+        if (!loggedIn || _player2Client is null)
+            return;
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            var j = _player2Client.GetJoulesAsync(_config.Player2ApiBaseUrl, _player2Key!, cts.Token).GetAwaiter().GetResult();
+            Monitor.Log($"Player2 joules | balance={j.Joules} tier={j.PatronTier} user={j.UserId}", LogLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Player2 joules check failed: {ex.Message}", LogLevel.Warn);
+        }
     }
 
     private void StartPlayer2StreamListenerAttempt()

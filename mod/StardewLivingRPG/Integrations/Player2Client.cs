@@ -66,6 +66,20 @@ public sealed class Player2Client
         res.EnsureSuccessStatusCode();
     }
 
+    public async Task<JoulesResponse> GetJoulesAsync(string apiBaseUrl, string p2Key, CancellationToken ct)
+    {
+        var url = $"{apiBaseUrl.TrimEnd('/')}/joules";
+        using var msg = new HttpRequestMessage(HttpMethod.Get, url);
+        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
+        using var res = await _http.SendAsync(msg, ct);
+        var body = await res.Content.ReadAsStringAsync(ct);
+        res.EnsureSuccessStatusCode();
+
+        var data = JsonSerializer.Deserialize<JoulesResponse>(body, _jsonOptions);
+        return data ?? new JoulesResponse();
+    }
+
     /// <summary>
     /// Reads one JSON line from /npcs/responses stream (Accept: application/json NDJSON).
     /// </summary>
@@ -203,4 +217,16 @@ public sealed class NpcChatRequest
 
     [JsonPropertyName("game_state_info")]
     public string? GameStateInfo { get; set; }
+}
+
+public sealed class JoulesResponse
+{
+    [JsonPropertyName("joules")]
+    public int Joules { get; set; }
+
+    [JsonPropertyName("patron_tier")]
+    public string PatronTier { get; set; } = string.Empty;
+
+    [JsonPropertyName("user_id")]
+    public string UserId { get; set; } = string.Empty;
 }
