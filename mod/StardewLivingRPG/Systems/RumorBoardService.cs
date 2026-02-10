@@ -118,6 +118,105 @@ public sealed class RumorBoardService
         return true;
     }
 
+    public string? CreateQuestFromNpcProposal(
+        SaveState state,
+        string npcId,
+        string templateId,
+        string target,
+        string urgency,
+        string intentKey)
+    {
+        if (state.Facts.ProcessedIntents.ContainsKey(intentKey))
+            return null;
+
+        var safeTemplate = NormalizeTemplate(templateId);
+        var safeTarget = string.IsNullOrWhiteSpace(target) ? "parsnip" : target.Trim().ToLowerInvariant();
+        var safeUrgency = NormalizeUrgency(urgency);
+
+        var (count, rewardGold, expiresDelta) = safeUrgency switch
+        {
+            "high" => (25, 700, 2),
+            "medium" => (20, 500, 3),
+            _ => (14, 350, 4)
+        };
+
+        var suffix = Math.Abs(intentKey.GetHashCode()) % 100000;
+        var questId = $"quest_ai_{safeTemplate}_{safeTarget}_{state.Calendar.Day}_{suffix}";
+
+        if (state.Quests.Available.Any(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase)) ||
+            state.Quests.Active.Any(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase)) ||
+            state.Quests.Completed.Any(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase)))
+            return null;
+
+        var quest = new QuestEntry
+        {
+            QuestId = questId,
+            TemplateId = safeTemplate,
+            Status = "available",
+            Source = "npc_intent",
+            Issuer = "lewis",
+            ExpiresDay = state.Calendar.Day + expiresDelta,
+            Summary = $"Mayor request ({safeUrgency}): {BuildSummary(safeTemplate, safeTarget, count)}",
+            TargetItem = safeTarget,
+            TargetCount = count,
+            RewardGold = rewardGold
+        };
+
+        state.Quests.Available.Add(quest);
+        state.Facts.ProcessedIntents[intentKey] = new ProcessedIntentValue
+        {
+            Day = state.Calendar.Day,
+            NpcId = npcId,
+            Command = "propose_quest",
+            Status = "applied"
+        };
+
+        state.Facts.Facts[$"quest:{questId}:proposed"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "npc_command"
+        };
+
+        state.Telemetry.Daily.WorldMutations += 1;
+        return questId;
+    }
+
+    private static string NormalizeTemplate(string templateId)
+    {
+        var t = (templateId ?? string.Empty).Trim().ToLowerInvariant();
+        return t switch
+        {
+            "gather_crop" => "gather_crop",
+            "deliver_item" => "deliver_item",
+            "mine_resource" => "mine_resource",
+            "social_visit" => "social_visit",
+            _ => "gather_crop"
+        };
+    }
+
+    private static string NormalizeUrgency(string urgency)
+    {
+        var u = (urgency ?? string.Empty).Trim().ToLowerInvariant();
+        return u switch
+        {
+            "high" => "high",
+            "medium" => "medium",
+            _ => "low"
+        };
+    }
+
+    private static string BuildSummary(string templateId, string target, int count)
+    {
+        return templateId switch
+        {
+            "deliver_item" => $"Deliver {target} x{count} to support current demand.",
+            "mine_resource" => $"Gather {target} x{count} from the mines.",
+            "social_visit" => $"Visit a resident and bring {target} x{count}.",
+            _ => $"Supply {target} x{count} for the town market."
+        };
+    }
+
     private static void ApplyRewards(SaveState state, QuestEntry quest)
     {
         // Minimal reward model for now: gold -> positive economy sentiment proxy + issuer rep.

@@ -10,6 +10,8 @@ using StardewLivingRPG.Systems;
 using StardewLivingRPG.UI;
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 
@@ -620,8 +622,12 @@ public sealed class ModEntry : Mod
         try
         {
             using var doc = JsonDocument.Parse(line);
-            if (!doc.RootElement.TryGetProperty("command", out var commandArray) || commandArray.ValueKind != JsonValueKind.Array)
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("command", out var commandArray) || commandArray.ValueKind != JsonValueKind.Array)
                 return;
+
+            var npcId = root.TryGetProperty("npc_id", out var npcIdEl) ? (npcIdEl.GetString() ?? "unknown") : "unknown";
 
             foreach (var cmd in commandArray.EnumerateArray())
             {
@@ -632,10 +638,31 @@ public sealed class ModEntry : Mod
                 if (!string.Equals(cmdName, "propose_quest", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                // For M2: map propose_quest into one safe available quest via existing template generator.
-                _rumorBoardService?.RefreshDailyRumors(_state);
-                _state.Telemetry.Daily.WorldMutations += 1;
-                Monitor.Log("Applied NPC command bridge: propose_quest -> refreshed safe rumor templates.", LogLevel.Info);
+                if (!cmd.TryGetProperty("arguments", out var argsEl))
+                    continue;
+
+                var argsJson = argsEl.ValueKind switch
+                {
+                    JsonValueKind.String => argsEl.GetString() ?? "{}",
+                    JsonValueKind.Object => argsEl.GetRawText(),
+                    _ => "{}"
+                };
+
+                using var argsDoc = JsonDocument.Parse(argsJson);
+                var argsRoot = argsDoc.RootElement;
+
+                var templateId = argsRoot.TryGetProperty("template_id", out var tEl) ? (tEl.GetString() ?? "gather_crop") : "gather_crop";
+                var target = argsRoot.TryGetProperty("target", out var tarEl) ? (tarEl.GetString() ?? "parsnip") : "parsnip";
+                var urgency = argsRoot.TryGetProperty("urgency", out var uEl) ? (uEl.GetString() ?? "low") : "low";
+
+                var intentKey = BuildIntentKey(npcId, cmdName, argsJson);
+                var createdId = _rumorBoardService?.CreateQuestFromNpcProposal(_state, npcId, templateId, target, urgency, intentKey);
+
+                if (!string.IsNullOrWhiteSpace(createdId))
+                    Monitor.Log($"Applied NPC command: propose_quest -> created {createdId}", LogLevel.Info);
+                else
+                    Monitor.Log("NPC propose_quest ignored (duplicate or invalid).", LogLevel.Debug);
+
                 return;
             }
         }
@@ -643,5 +670,12 @@ public sealed class ModEntry : Mod
         {
             Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
         }
+    }
+
+    private static string BuildIntentKey(string npcId, string commandName, string argsJson)
+    {
+        var raw = $"{npcId}|{commandName}|{argsJson}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
+        return Convert.ToHexString(hash);
     }
 }
