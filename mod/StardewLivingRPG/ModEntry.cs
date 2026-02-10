@@ -505,8 +505,8 @@ public sealed class ModEntry : Mod
             {
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
-                CharacterDescription = "Mayor focused on practical town stability and player cooperation.",
-                SystemPrompt = "You are Mayor Lewis. Be practical, cozy, and propose only safe, completable town actions.",
+                CharacterDescription = "Mayor Lewis of Pelican Town in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
+                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Strict canon mode: never invent town names, regions, NPCs, or lore. Use only provided canon NPC list and game_state_info facts. If facts are missing or uncertain, explicitly say you are unsure and ask for clarification. For quest asks, prefer propose_quest command with safe, completable parameters.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -765,7 +765,22 @@ public sealed class ModEntry : Mod
             .Select(kv => $"{kv.Key}:{kv.Value.PriceToday}g")
             .ToArray();
 
-        return $"Day {_state.Calendar.Day} {_state.Calendar.Season}. Economy sentiment {_state.Social.TownSentiment.Economy}. Top movers [{string.Join(", ", movers)}]. Available rumor quests {_state.Quests.Available.Count}.";
+        var canonNpcs = "Lewis, Robin, Pierre, Linus, Haley, Alex, Demetrius, Wizard";
+        var activeQuestIds = _state.Quests.Active.Take(3).Select(q => q.QuestId).ToArray();
+        var availableQuestIds = _state.Quests.Available.Take(3).Select(q => q.QuestId).ToArray();
+
+        return string.Join(" ",
+            "CANON_WORLD: Stardew Valley.",
+            "CANON_TOWN: Pelican Town.",
+            $"CANON_NPCS: [{canonNpcs}].",
+            "RULE: Never invent towns, regions, or citizens outside this canon list.",
+            "RULE: If unsure, say unsure and ask for clarification.",
+            $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
+            $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
+            $"STATE: TopMovers [{string.Join(", ", movers)}].",
+            $"STATE: AvailableRumorQuests {_state.Quests.Available.Count} ids=[{string.Join(",", availableQuestIds)}].",
+            $"STATE: ActiveRumorQuests {_state.Quests.Active.Count} ids=[{string.Join(",", activeQuestIds)}]."
+        );
     }
 
     private void TryApplyNpcCommandFromLine(string line)
