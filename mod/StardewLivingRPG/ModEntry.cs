@@ -20,6 +20,7 @@ public sealed class ModEntry : Mod
     private MarketBoardService? _marketBoardService;
     private SalesIngestionService? _salesIngestionService;
     private NewspaperService? _newspaperService;
+    private RumorBoardService? _rumorBoardService;
 
     public override void Entry(IModHelper helper)
     {
@@ -29,11 +30,14 @@ public sealed class ModEntry : Mod
         _marketBoardService = new MarketBoardService();
         _salesIngestionService = new SalesIngestionService();
         _newspaperService = new NewspaperService();
+        _rumorBoardService = new RumorBoardService();
 
         helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
         helper.ConsoleCommands.Add("slrpg_board", "Print text market board preview.", OnBoardCommand);
         helper.ConsoleCommands.Add("slrpg_open_board", "Open Market Board menu.", OnOpenBoardCommand);
         helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
+        helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
+        helper.ConsoleCommands.Add("slrpg_accept_quest", "Accept rumor quest: slrpg_accept_quest <questId>", OnAcceptQuestCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -78,6 +82,8 @@ public sealed class ModEntry : Mod
             _state.Newspaper.Issues.Add(issue);
         }
 
+        _rumorBoardService?.RefreshDailyRumors(_state);
+
         Monitor.Log($"Daily tick complete for day {_state.Calendar.Day} ({_state.Calendar.Season} Y{_state.Calendar.Year}).", LogLevel.Debug);
     }
 
@@ -93,6 +99,8 @@ public sealed class ModEntry : Mod
             OpenMarketBoard();
         else if (e.Button == _config.OpenNewspaperKey)
             OpenNewspaper();
+        else if (e.Button == _config.OpenRumorBoardKey)
+            OpenRumorBoard();
     }
 
     private void CollectShippingBinSales()
@@ -131,6 +139,11 @@ public sealed class ModEntry : Mod
     {
         var issue = _state.Newspaper.Issues.LastOrDefault();
         Game1.activeClickableMenu = new NewspaperMenu(issue);
+    }
+
+    private void OpenRumorBoard()
+    {
+        Game1.activeClickableMenu = new RumorBoardMenu(_state);
     }
 
     private void OnSellCommand(string name, string[] args)
@@ -176,5 +189,28 @@ public sealed class ModEntry : Mod
             return;
 
         OpenNewspaper();
+    }
+
+    private void OnOpenRumorsCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        OpenRumorBoard();
+    }
+
+    private void OnAcceptQuestCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady || _rumorBoardService is null || args.Length < 1)
+        {
+            Monitor.Log("Usage: slrpg_accept_quest <questId>", LogLevel.Info);
+            return;
+        }
+
+        var questId = args[0].Trim();
+        if (_rumorBoardService.AcceptQuest(_state, questId))
+            Monitor.Log($"Accepted quest: {questId}", LogLevel.Info);
+        else
+            Monitor.Log($"Quest not found: {questId}", LogLevel.Warn);
     }
 }

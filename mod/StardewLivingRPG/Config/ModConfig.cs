@@ -14,4 +14,7 @@ public sealed class ModConfig
 
     // Open daily newspaper menu.
     public SButton OpenNewspaperKey { get; set; } = SButton.J;
+
+    // Open rumor board menu.
+    public SButton OpenRumorBoardKey { get; set; } = SButton.L;
 }
