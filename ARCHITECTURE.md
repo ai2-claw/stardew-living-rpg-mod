@@ -62,6 +62,7 @@ Default experience should be warm, legible, and low-friction.
 
 ## Pillar 3: Diegetic Feedback (Daily Newspaper)
 - Daily paper reports market shifts + social/world consequences
+- Includes predictive signals ("Festival demand is rising next week") so planners can act early
 - Converts hidden simulation into clear player-readable world narrative
 
 ---
@@ -81,6 +82,9 @@ Each group has:
 
 Player choices shift influence gradually. This still gives systemic depth without breaking cozy tone.
 
+Design rule: interests are not strict zero-sum enemies. Prefer "bridge events" that can align multiple groups
+(e.g., a Forest Festival can satisfy Nature Keepers and Shopkeepers at the same time).
+
 ---
 
 ## 6) Economy System (v1)
@@ -92,18 +96,23 @@ Player choices shift influence gradually. This still gives systemic depth withou
 - `town_sentiment[crop]`
 
 ## Suggested formula
-`price_today = clamp(base_price * demand_factor * scarcity_factor * sentiment_factor, floor, ceiling)`
+`price_today = clamp(base_price * demand_factor * supply_pressure_factor * sentiment_factor, floor, ceiling)`
 
 Where:
 - `demand_factor` increases for in-season preferences, festivals, quests
-- `scarcity_factor` drops when rolling sell volume is high
+- `supply_pressure_factor` gently lowers price when rolling sell volume is high
 - `sentiment_factor` reflects newspaper/narrative trends
+
+Cozy-economy rule: use positive reinforcement where possible.
+- Oversupply should also create opportunities elsewhere ("scarcity bonus" on alternatives)
+- Avoid hard punishment loops for successful harvests
 
 ## Stability controls
 - daily change cap
 - EMA smoothing on demand
 - diminishing oversupply penalties
-- hard floors to prevent “dead crops”
+- generous hard floor (target >= 80% of base in Cozy Canon)
+- soft ceiling to avoid runaway spikes
 
 ---
 
@@ -157,12 +166,19 @@ Validation rules:
 - cooldown gates
 - context checks (season, location, quest state)
 - anti-loop idempotency keys
+- memory-lock fact table checks (NPC cannot re-issue already accepted/resolved quest intents)
 
 ---
 
 ## 10) V1 Scope (Jam-ready)
 
-- 6 key NPCs with persistent memory
+- 6 key NPCs with persistent memory, chosen to cover different systems:
+  - Pierre or Morris (economy pressure)
+  - Robin (world-state/build progression)
+  - Lewis (town policy/events)
+  - Linus or Wizard (nature/magic interests)
+  - Haley or Alex (social/gossip propagation)
+  - Demetrius (science/planning signal layer)
 - 3 town interests + influence model
 - Dynamic pricing for 10 core crops
 - Daily newspaper generation
@@ -198,4 +214,5 @@ Player sentiment checks:
 3. `NPC_COMMAND_SCHEMA.json`
 4. `NEWSPAPER_TEMPLATES.md`
 5. `BALANCE_GUIDELINES.md`
+6. `FACT_TABLE.md` (memory-lock + one-truth records for accepted/resolved intents)
 
