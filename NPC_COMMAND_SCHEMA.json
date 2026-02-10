@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/stardew-living-rpg-mod/npc-command-schema.json",
+  "title": "NPC Command Envelope",
+  "type": "object",
+  "required": ["intent_id", "npc_id", "command", "arguments"],
+  "properties": {
+    "intent_id": {
+      "type": "string",
+      "description": "Idempotency key for dedupe"
+    },
+    "npc_id": {
+      "type": "string"
+    },
+    "command": {
+      "type": "string",
+      "enum": [
+        "propose_quest",
+        "adjust_reputation",
+        "shift_interest_influence",
+        "apply_market_modifier",
+        "publish_rumor"
+      ]
+    },
+    "arguments": {
+      "type": "object"
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "command": { "const": "propose_quest" } } },
+      "then": {
+        "properties": {
+          "arguments": {
+            "type": "object",
+            "required": ["template_id", "target", "urgency"],
+            "properties": {
+              "template_id": {
+                "type": "string",
+                "enum": ["gather_crop", "deliver_item", "mine_resource", "social_visit"]
+              },
+              "target": { "type": "string" },
+              "urgency": { "type": "string", "enum": ["low", "medium", "high"] },
+              "reward_hint": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "command": { "const": "adjust_reputation" } } },
+      "then": {
+        "properties": {
+          "arguments": {
+            "type": "object",
+            "required": ["target", "delta"],
+            "properties": {
+              "target": { "type": "string" },
+              "delta": { "type": "integer", "minimum": -10, "maximum": 10 },
+              "reason": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "command": { "const": "shift_interest_influence" } } },
+      "then": {
+        "properties": {
+          "arguments": {
+            "type": "object",
+            "required": ["interest", "delta"],
+            "properties": {
+              "interest": {
+                "type": "string",
+                "enum": ["farmers_circle", "shopkeepers_guild", "adventurers_club", "nature_keepers"]
+              },
+              "delta": { "type": "integer", "minimum": -5, "maximum": 5 },
+              "reason": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "command": { "const": "apply_market_modifier" } } },
+      "then": {
+        "properties": {
+          "arguments": {
+            "type": "object",
+            "required": ["crop", "delta_pct", "duration_days"],
+            "properties": {
+              "crop": { "type": "string" },
+              "delta_pct": { "type": "number", "minimum": -0.15, "maximum": 0.15 },
+              "duration_days": { "type": "integer", "minimum": 1, "maximum": 7 },
+              "reason": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "command": { "const": "publish_rumor" } } },
+      "then": {
+        "properties": {
+          "arguments": {
+            "type": "object",
+            "required": ["topic", "confidence", "target_group"],
+            "properties": {
+              "topic": { "type": "string" },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+              "target_group": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}
