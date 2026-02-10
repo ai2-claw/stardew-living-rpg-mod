@@ -44,6 +44,37 @@ public sealed class RumorBoardService
         });
     }
 
+    public void ExpireOverdueQuests(SaveState state)
+    {
+        var overdue = state.Quests.Active
+            .Where(q => q.ExpiresDay > 0 && state.Calendar.Day > q.ExpiresDay)
+            .ToList();
+
+        foreach (var quest in overdue)
+        {
+            state.Quests.Active.Remove(quest);
+            quest.Status = "failed";
+            state.Quests.Failed.Add(quest);
+
+            state.Facts.Facts[$"quest:{quest.QuestId}:failed"] = new FactValue
+            {
+                Value = true,
+                SetDay = state.Calendar.Day,
+                Source = "system"
+            };
+
+            // Small non-punitive impact for missed commitments.
+            state.Social.TownSentiment.Community = Math.Clamp(state.Social.TownSentiment.Community - 1, -100, 100);
+            if (!string.IsNullOrWhiteSpace(quest.Issuer))
+            {
+                state.Social.NpcReputation.TryGetValue(quest.Issuer, out var rep);
+                state.Social.NpcReputation[quest.Issuer] = Math.Clamp(rep - 1, -100, 100);
+            }
+
+            state.Telemetry.Daily.WorldMutations += 1;
+        }
+    }
+
     public bool AcceptQuest(SaveState state, string questId)
     {
         var quest = state.Quests.Available.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));

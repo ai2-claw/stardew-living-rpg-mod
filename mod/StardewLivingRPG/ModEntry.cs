@@ -80,6 +80,7 @@ public sealed class ModEntry : Mod
         _economyService?.RunDailyPricing(_state);
         _dailyTickService.Run(_state);
 
+        _rumorBoardService?.ExpireOverdueQuests(_state);
         _rumorBoardService?.RefreshDailyRumors(_state);
 
         string? anchorNote = null;

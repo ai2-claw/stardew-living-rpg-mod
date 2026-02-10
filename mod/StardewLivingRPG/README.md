@@ -12,7 +12,7 @@ M0 + M1 scaffold includes:
 - shipping-bin ingestion at day end (real sold items)
 - text market board preview command + in-game board menu shell
 - daily newspaper issue generation from economy deltas + in-game newspaper menu
-- rumor board v1 with daily template quests + accept flow
+- rumor board v1 with daily template quests + accept/complete flow + automatic expiry/fail
 - anchor event A1 trigger (Emergency Town Hall) with one-time fact lock + follow-up quest
 
 ## Debug console commands
