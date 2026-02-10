@@ -1,3 +1,4 @@
+using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewValley;
 using StardewValley.Menus;
@@ -11,11 +12,11 @@ public sealed class NewspaperMenu : IClickableMenu
 
     public NewspaperMenu(NewspaperIssue? issue)
         : base(
-            xPositionOnScreen: Game1.uiViewport.Width / 2 - 420,
-            yPositionOnScreen: Game1.uiViewport.Height / 2 - 280,
-            width: 840,
-            height: 560,
-            showUpperRightCloseButton: true)
+            Game1.uiViewport.Width / 2 - 420,
+            Game1.uiViewport.Height / 2 - 280,
+            840,
+            560,
+            true)
     {
         _issue = issue;
     }
@@ -27,32 +28,32 @@ public sealed class NewspaperMenu : IClickableMenu
         var x = xPositionOnScreen + 36;
         var y = yPositionOnScreen + 24;
 
-        SpriteText.drawString(b, "Pelican Times", x, y, 999, width: width - 72);
+        b.DrawString(Game1.dialogueFont, "Pelican Times", new Vector2(x, y), Game1.textColor);
         y += 56;
 
         if (_issue is null)
         {
-            SpriteText.drawString(b, "No issue published yet. Check again tomorrow morning.", x, y, 999, width: width - 72);
+            b.DrawString(Game1.smallFont, "No issue published yet. Check again tomorrow morning.", new Vector2(x, y), Game1.textColor * 0.8f);
             drawMouse(b);
             return;
         }
 
-        SpriteText.drawString(b, $"Day {_issue.Day}: {_issue.Headline}", x, y, 999, width: width - 72);
+        b.DrawString(Game1.dialogueFont, $"Day {_issue.Day}: {_issue.Headline}", new Vector2(x, y), Game1.textColor);
         y += 52;
 
         foreach (var s in _issue.Sections)
         {
-            SpriteText.drawString(b, s, x, y, 999, width: width - 72);
+            b.DrawString(Game1.smallFont, s, new Vector2(x, y), Game1.textColor);
             y += 44;
         }
 
         y += 8;
-        SpriteText.drawString(b, "Tomorrow Outlook:", x, y, 999, width: width - 72);
+        b.DrawString(Game1.dialogueFont, "Tomorrow Outlook:", new Vector2(x, y), Game1.textColor);
         y += 40;
 
         foreach (var h in _issue.PredictiveHints)
         {
-            SpriteText.drawString(b, $"- {h}", x, y, 999, width: width - 72);
+            b.DrawString(Game1.smallFont, $"- {h}", new Vector2(x, y), Game1.textColor);
             y += 38;
         }
 
