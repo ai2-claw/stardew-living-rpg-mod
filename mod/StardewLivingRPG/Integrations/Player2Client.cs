@@ -93,6 +93,42 @@ public sealed class Player2Client
         return null;
     }
 
+    /// <summary>
+    /// Long-lived NDJSON stream reader for /npcs/responses.
+    /// Calls onLine for each non-empty line until cancelled or stream closes.
+    /// </summary>
+    public async Task StreamNpcResponsesAsync(string apiBaseUrl, string p2Key, Func<string, Task> onLine, CancellationToken ct)
+    {
+        var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/responses";
+        using var msg = new HttpRequestMessage(HttpMethod.Get, url);
+        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+        msg.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var res = await _http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct);
+        res.EnsureSuccessStatusCode();
+
+        await using var stream = await res.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream);
+
+        while (!reader.EndOfStream && !ct.IsCancellationRequested)
+        {
+            string? line;
+            try
+            {
+                line = await reader.ReadLineAsync().WaitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            await onLine(line);
+        }
+    }
+
     private sealed class LoginWebResponse
     {
         public string P2Key { get; set; } = "";

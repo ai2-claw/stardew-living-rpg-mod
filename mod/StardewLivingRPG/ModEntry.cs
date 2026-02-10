@@ -36,6 +36,9 @@ public sealed class ModEntry : Mod
     private DateTime _player2ReadStartedUtc;
     private CancellationTokenSource? _player2ReadCts;
 
+    private CancellationTokenSource? _player2StreamCts;
+    private int _player2StreamRunning;
+
     public override void Entry(IModHelper helper)
     {
         _config = helper.ReadConfig<ModConfig>();
@@ -64,6 +67,8 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_p2_chat", "Send chat to active Player2 NPC: slrpg_p2_chat <message>", OnPlayer2ChatCommand);
         helper.ConsoleCommands.Add("slrpg_p2_read_once", "Read one line from /npcs/responses stream.", OnPlayer2ReadOnceCommand);
         helper.ConsoleCommands.Add("slrpg_p2_read_reset", "Reset/cancel stuck Player2 read_once.", OnPlayer2ReadResetCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_stream_start", "Start persistent Player2 response stream listener.", OnPlayer2StreamStartCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_stream_stop", "Stop persistent Player2 response stream listener.", OnPlayer2StreamStopCommand);
 
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
@@ -545,6 +550,58 @@ public sealed class ModEntry : Mod
         _player2ReadStartedUtc = default;
         Interlocked.Exchange(ref _player2ReadInFlight, 0);
         Monitor.Log("Player2 read state reset.", LogLevel.Info);
+    }
+
+    private void OnPlayer2StreamStartCommand(string name, string[] args)
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+        {
+            Monitor.Log("Need login first (slrpg_p2_login).", LogLevel.Warn);
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _player2StreamRunning, 1) == 1)
+        {
+            Monitor.Log("Player2 stream listener already running.", LogLevel.Warn);
+            return;
+        }
+
+        _player2StreamCts?.Cancel();
+        _player2StreamCts = new CancellationTokenSource();
+        var ct = _player2StreamCts.Token;
+
+        Monitor.Log("Starting Player2 stream listener…", LogLevel.Info);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _player2Client.StreamNpcResponsesAsync(_config.Player2ApiBaseUrl, _player2Key!, async line =>
+                {
+                    _pendingPlayer2Lines.Enqueue(line);
+                    await Task.CompletedTask;
+                }, ct);
+
+                if (!ct.IsCancellationRequested)
+                    _pendingPlayer2Lines.Enqueue("__ERR__Player2 stream closed by server.");
+            }
+            catch (Exception ex)
+            {
+                _pendingPlayer2Lines.Enqueue("__ERR__Player2 stream failed: " + ex.Message);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _player2StreamRunning, 0);
+            }
+        });
+    }
+
+    private void OnPlayer2StreamStopCommand(string name, string[] args)
+    {
+        _player2StreamCts?.Cancel();
+        _player2StreamCts = null;
+        Interlocked.Exchange(ref _player2StreamRunning, 0);
+        Monitor.Log("Stopped Player2 stream listener.", LogLevel.Info);
     }
 
     private string BuildCompactGameStateInfo()

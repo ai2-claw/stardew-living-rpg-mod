@@ -31,6 +31,8 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_chat <message>`: send chat to active Player2 NPC
 - `slrpg_p2_read_once`: read one NPC stream line from `/npcs/responses` (non-blocking background read)
 - `slrpg_p2_read_reset`: cancel/reset stuck Player2 read
+- `slrpg_p2_stream_start`: start persistent NPC response listener
+- `slrpg_p2_stream_stop`: stop persistent NPC response listener
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).
@@ -43,6 +45,11 @@ M0 + M1 scaffold includes:
   - `Player2GameClientId: <your_game_client_id>`
 - Ensure Player2 desktop app is running and logged in.
 - Run `slrpg_p2_login`, then `slrpg_p2_spawn`.
+- Recommended runtime loop:
+  1) `slrpg_p2_stream_start`
+  2) `slrpg_p2_chat hello mayor`
+  3) watch incoming lines in SMAPI log
+  4) `slrpg_p2_stream_stop` when done
 
 ## Build notes
 Set `SMAPI_PATH` to your game install path containing:
