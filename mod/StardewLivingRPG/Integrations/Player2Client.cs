@@ -85,7 +85,7 @@ public sealed class Player2Client
         // Read first non-empty line
         while (!reader.EndOfStream && !ct.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync();
+            var line = await reader.ReadLineAsync().WaitAsync(ct);
             if (!string.IsNullOrWhiteSpace(line))
                 return line;
         }

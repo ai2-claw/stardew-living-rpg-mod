@@ -8,8 +8,10 @@ using StardewLivingRPG.Integrations;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Systems;
 using StardewLivingRPG.UI;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
+using System.Threading;
 
 namespace StardewLivingRPG;
 
@@ -29,6 +31,8 @@ public sealed class ModEntry : Mod
     private Player2Client? _player2Client;
     private string? _player2Key;
     private string? _activeNpcId;
+    private readonly ConcurrentQueue<string> _pendingPlayer2Lines = new();
+    private int _player2ReadInFlight;
 
     public override void Entry(IModHelper helper)
     {
@@ -62,6 +66,7 @@ public sealed class ModEntry : Mod
         helper.Events.GameLoop.Saving += OnSaving;
         helper.Events.GameLoop.DayEnding += OnDayEnding;
         helper.Events.GameLoop.DayStarted += OnDayStarted;
+        helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
 
         Monitor.Log("Stardew Living RPG loaded.", LogLevel.Info);
@@ -125,6 +130,30 @@ public sealed class ModEntry : Mod
             OpenNewspaper();
         else if (e.Button == _config.OpenRumorBoardKey)
             OpenRumorBoard();
+    }
+
+    private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        while (_pendingPlayer2Lines.TryDequeue(out var line))
+        {
+            if (line.StartsWith("__ERR__", StringComparison.Ordinal))
+            {
+                Monitor.Log($"Player2 read failed: {line[7..]}", LogLevel.Error);
+                continue;
+            }
+
+            if (line == "__EMPTY__")
+            {
+                Monitor.Log("No response line received (timeout/empty).", LogLevel.Warn);
+                continue;
+            }
+
+            Monitor.Log($"Player2 stream line: {line}", LogLevel.Info);
+            TryApplyNpcCommandFromLine(line);
+        }
     }
 
     private void CollectShippingBinSales()
@@ -466,27 +495,31 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        try
+        if (Interlocked.Exchange(ref _player2ReadInFlight, 1) == 1)
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
-            var line = _player2Client.ReadOneNpcResponseLineAsync(_config.Player2ApiBaseUrl, _player2Key!, cts.Token)
-                .GetAwaiter().GetResult();
+            Monitor.Log("Player2 read already in progress.", LogLevel.Warn);
+            return;
+        }
 
-            if (string.IsNullOrWhiteSpace(line))
+        Monitor.Log("Reading one Player2 stream line in background…", LogLevel.Info);
+
+        _ = Task.Run(async () =>
+        {
+            try
             {
-                Monitor.Log("No response line received (timeout/empty).", LogLevel.Warn);
-                return;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var line = await _player2Client.ReadOneNpcResponseLineAsync(_config.Player2ApiBaseUrl, _player2Key!, cts.Token);
+                _pendingPlayer2Lines.Enqueue(string.IsNullOrWhiteSpace(line) ? "__EMPTY__" : line);
             }
-
-            Monitor.Log($"Player2 stream line: {line}", LogLevel.Info);
-
-            // Minimal command bridge (single command type) for M2.
-            TryApplyNpcCommandFromLine(line);
-        }
-        catch (Exception ex)
-        {
-            Monitor.Log($"Player2 read failed: {ex.Message}", LogLevel.Error);
-        }
+            catch (Exception ex)
+            {
+                _pendingPlayer2Lines.Enqueue("__ERR__" + ex.Message);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _player2ReadInFlight, 0);
+            }
+        });
     }
 
     private string BuildCompactGameStateInfo()

@@ -29,7 +29,7 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_login`: local Player2 app auth using configured game client id
 - `slrpg_p2_spawn`: spawn one Player2 NPC session
 - `slrpg_p2_chat <message>`: send chat to active Player2 NPC
-- `slrpg_p2_read_once`: read one NPC stream line from `/npcs/responses`
+- `slrpg_p2_read_once`: read one NPC stream line from `/npcs/responses` (non-blocking background read)
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).
