@@ -40,6 +40,9 @@ public sealed class ModEntry : Mod
 
     private CancellationTokenSource? _player2StreamCts;
     private int _player2StreamRunning;
+    private bool _player2StreamDesired;
+    private int _player2StreamBackoffSec = 1;
+    private DateTime _player2NextReconnectUtc;
 
     public override void Entry(IModHelper helper)
     {
@@ -158,6 +161,15 @@ public sealed class ModEntry : Mod
             }
         }
 
+        if (_player2StreamDesired
+            && _player2Client is not null
+            && !string.IsNullOrWhiteSpace(_player2Key)
+            && Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 0
+            && DateTime.UtcNow >= _player2NextReconnectUtc)
+        {
+            StartPlayer2StreamListenerAttempt();
+        }
+
         while (_pendingPlayer2Lines.TryDequeue(out var line))
         {
             if (line.StartsWith("__ERR__", StringComparison.Ordinal))
@@ -173,6 +185,7 @@ public sealed class ModEntry : Mod
             }
 
             Monitor.Log($"Player2 stream line: {line}", LogLevel.Info);
+            _player2StreamBackoffSec = 1;
             TryApplyNpcCommandFromLine(line);
         }
     }
@@ -562,17 +575,41 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        if (Interlocked.Exchange(ref _player2StreamRunning, 1) == 1)
+        _player2StreamDesired = true;
+        _player2StreamBackoffSec = 1;
+        _player2NextReconnectUtc = DateTime.UtcNow;
+
+        if (Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1)
         {
             Monitor.Log("Player2 stream listener already running.", LogLevel.Warn);
             return;
         }
 
+        StartPlayer2StreamListenerAttempt();
+    }
+
+    private void OnPlayer2StreamStopCommand(string name, string[] args)
+    {
+        _player2StreamDesired = false;
+        _player2StreamCts?.Cancel();
+        _player2StreamCts = null;
+        Interlocked.Exchange(ref _player2StreamRunning, 0);
+        Monitor.Log("Stopped Player2 stream listener.", LogLevel.Info);
+    }
+
+    private void StartPlayer2StreamListenerAttempt()
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+            return;
+
+        if (Interlocked.Exchange(ref _player2StreamRunning, 1) == 1)
+            return;
+
         _player2StreamCts?.Cancel();
         _player2StreamCts = new CancellationTokenSource();
         var ct = _player2StreamCts.Token;
 
-        Monitor.Log("Starting Player2 stream listener…", LogLevel.Info);
+        Monitor.Log($"Starting Player2 stream listener… (backoff={_player2StreamBackoffSec}s)", LogLevel.Info);
 
         _ = Task.Run(async () =>
         {
@@ -589,21 +626,20 @@ public sealed class ModEntry : Mod
             }
             catch (Exception ex)
             {
-                _pendingPlayer2Lines.Enqueue("__ERR__Player2 stream failed: " + ex.Message);
+                if (!ct.IsCancellationRequested)
+                    _pendingPlayer2Lines.Enqueue("__ERR__Player2 stream failed: " + ex.Message);
             }
             finally
             {
                 Interlocked.Exchange(ref _player2StreamRunning, 0);
+
+                if (_player2StreamDesired)
+                {
+                    _player2NextReconnectUtc = DateTime.UtcNow.AddSeconds(_player2StreamBackoffSec);
+                    _player2StreamBackoffSec = Math.Min(_player2StreamBackoffSec * 2, 30);
+                }
             }
         });
-    }
-
-    private void OnPlayer2StreamStopCommand(string name, string[] args)
-    {
-        _player2StreamCts?.Cancel();
-        _player2StreamCts = null;
-        Interlocked.Exchange(ref _player2StreamRunning, 0);
-        Monitor.Log("Stopped Player2 stream listener.", LogLevel.Info);
     }
 
     private string BuildCompactGameStateInfo()
