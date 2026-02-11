@@ -60,6 +60,9 @@ public sealed class ModEntry : Mod
     private DateTime _player2LastChatSentUtc;
     private DateTime _player2LastStreamRecoveryUtc;
 
+    private string? _pendingNpcDialogueHookName;
+    private bool _npcDialogueHookArmed;
+
     public override void Entry(IModHelper helper)
     {
         _config = helper.ReadConfig<ModConfig>();
@@ -106,6 +109,7 @@ public sealed class ModEntry : Mod
         helper.Events.GameLoop.DayStarted += OnDayStarted;
         helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
         helper.Events.Display.RenderedHud += OnRenderedHud;
+        helper.Events.Display.MenuChanged += OnMenuChanged;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
 
         Monitor.Log("Stardew Living RPG loaded.", LogLevel.Info);
@@ -171,8 +175,7 @@ public sealed class ModEntry : Mod
         if (Game1.activeClickableMenu is not null)
             return;
 
-        if (TryHandleNpcWorkDialogueHook(e))
-            return;
+        TryHandleNpcWorkDialogueHook(e);
 
         if (e.Button == _config.OpenBoardKey)
             OpenMarketBoard();
@@ -216,26 +219,11 @@ public sealed class ModEntry : Mod
         if (nearbyRequester is null)
             return false;
 
-        var responses = new[]
-        {
-            new Response("yes", "Any new postings?"),
-            new Response("no", "Not now")
-        };
-
-        loc.createQuestionDialogue(
-            $"{nearbyRequester.displayName}, anything new on the board today?",
-            responses,
-            (_, answer) =>
-            {
-                if (!string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
-                    return;
-
-                OnUiAskMayorForWork(nearbyRequester.Name);
-                Game1.drawObjectDialogue($"{nearbyRequester.displayName}: Check the board in a moment — I may have something for you.");
-            },
-            nearbyRequester);
-
-        return true;
+        // Additive hook: don't block vanilla interaction.
+        // We arm a follow-up question shown after vanilla dialogue/menu closes.
+        _pendingNpcDialogueHookName = nearbyRequester.Name;
+        _npcDialogueHookArmed = true;
+        return false;
     }
 
     private bool IsRosterNpc(string name)
@@ -333,6 +321,53 @@ public sealed class ModEntry : Mod
                 _player2PendingResponseCount -= 1;
             TryApplyNpcCommandFromLine(line);
         }
+    }
+
+    private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        if (!_npcDialogueHookArmed)
+            return;
+
+        // Wait until dialogue/menu closes, then append our choice as a follow-up question.
+        if (e.NewMenu is not null)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_pendingNpcDialogueHookName))
+        {
+            _npcDialogueHookArmed = false;
+            return;
+        }
+
+        var requesterName = _pendingNpcDialogueHookName;
+        _pendingNpcDialogueHookName = null;
+        _npcDialogueHookArmed = false;
+
+        var loc = Game1.currentLocation;
+        var npc = loc?.characters?.FirstOrDefault(c => string.Equals(c?.Name, requesterName, StringComparison.OrdinalIgnoreCase));
+        if (npc is null)
+            return;
+
+        var responses = new[]
+        {
+            new Response("yes", "Any new postings?"),
+            new Response("no", "Not now")
+        };
+
+        loc!.createQuestionDialogue(
+            $"{npc.displayName}: Anything else you need from the board?",
+            responses,
+            (_, answer) =>
+            {
+                if (!string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                OnUiAskMayorForWork(npc.Name);
+                Game1.drawObjectDialogue($"{npc.displayName}: Have a look at the board in a moment — I may have pinned something fresh.");
+            },
+            npc);
     }
 
     private void OnRenderedHud(object? sender, RenderedHudEventArgs e)
