@@ -46,7 +46,8 @@ Player-facing Player2 UX:
 - auto-connect on save load (config: `AutoConnectPlayer2OnLoad`, default `true`)
 - HUD status badge in top-left: click `Town AI: Reconnect` to trigger login -> spawn -> stream pipeline
 - in-world "New Postings" action in Town Request Board triggers resolver-safe request generation via Player2
-- request routing now rotates across configured NPC roster (`Player2NpcRosterCsv`) when available
+- in NPC interaction range (roster NPCs), pressing action opens a dialogue hook with "Any new postings?"
+- request routing now rotates across configured NPC roster (`Player2NpcRosterCsv`) when available (or targets the NPC you asked directly)
 - generation guardrails: cooldown, max generated per day (`MaxUiGeneratedRequestsPerDay`), and max outstanding requests (`MaxOutstandingRequests`)
 
 NPC intent pipeline:

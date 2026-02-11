@@ -65,7 +65,7 @@ Exit criteria:
 Convert NPC conversation outcomes into discoverable in-world actions.
 
 ### Tasks
-- [ ] Add dialogue response option from key NPC(s): “Any work today?”
+- [x] Add dialogue response option from key NPC(s): “Any work today?”
 - [x] On in-world UI action, trigger request generation path (resolver-safe).
 - [x] Add in-character acknowledgment when request posted.
 - [x] Ensure NPC phrasing uses “Town Request” terminology.

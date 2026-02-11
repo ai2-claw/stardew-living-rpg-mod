@@ -168,6 +168,9 @@ public sealed class ModEntry : Mod
         if (Game1.activeClickableMenu is not null)
             return;
 
+        if (TryHandleNpcWorkDialogueHook(e))
+            return;
+
         if (e.Button == _config.OpenBoardKey)
             OpenMarketBoard();
         else if (e.Button == _config.OpenNewspaperKey)
@@ -182,6 +185,65 @@ public sealed class ModEntry : Mod
             if (GetPlayer2HudRect().Contains(point))
                 StartPlayer2AutoConnect("hud-button", force: true);
         }
+    }
+
+    private bool TryHandleNpcWorkDialogueHook(ButtonPressedEventArgs e)
+    {
+        if (!Context.IsWorldReady)
+            return false;
+
+        if (!e.Button.IsActionButton())
+            return false;
+
+        if (Game1.activeClickableMenu is not null || Game1.dialogueUp)
+            return false;
+
+        var loc = Game1.currentLocation;
+        if (loc is null)
+            return false;
+
+        var playerTile = Game1.player.Tile;
+        var nearbyRequester = loc.characters
+            .FirstOrDefault(npc =>
+                npc is not null
+                && !string.IsNullOrWhiteSpace(npc.Name)
+                && IsRosterNpc(npc.Name)
+                && Vector2.Distance(npc.Tile, playerTile) <= 2.25f);
+
+        if (nearbyRequester is null)
+            return false;
+
+        var responses = new[]
+        {
+            new Response("yes", "Any new postings?"),
+            new Response("no", "Not now")
+        };
+
+        loc.createQuestionDialogue(
+            $"{nearbyRequester.displayName}, anything new on the board today?",
+            responses,
+            (_, answer) =>
+            {
+                if (!string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                OnUiAskMayorForWork(nearbyRequester.Name);
+                Game1.drawObjectDialogue($"{nearbyRequester.displayName}: Check the board in a moment — I may have something for you.");
+            },
+            nearbyRequester);
+
+        return true;
+    }
+
+    private bool IsRosterNpc(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return false;
+
+        var roster = (_config.Player2NpcRosterCsv ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        return roster.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
     }
 
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)
@@ -1054,7 +1116,7 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private void OnUiAskMayorForWork()
+    private void OnUiAskMayorForWork(string? preferredRequester = null)
     {
         var cooldownSec = Math.Max(1, _config.WorkRequestCooldownSeconds);
         if (Interlocked.CompareExchange(ref _uiWorkRequestInFlight, 0, 0) == 1)
@@ -1091,7 +1153,7 @@ public sealed class ModEntry : Mod
 
         try
         {
-            var (requester, requesterNpcId) = GetNextRequester();
+            var (requester, requesterNpcId) = GetNextRequester(preferredRequester);
             var prompt = $"{requester}, do you have a practical town request for me today? Use propose_quest with a safe template and parameters.";
 
             var connected = !string.IsNullOrWhiteSpace(_player2Key)
@@ -1118,7 +1180,7 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private (string RequesterShortName, string? NpcId) GetNextRequester()
+    private (string RequesterShortName, string? NpcId) GetNextRequester(string? preferredRequester = null)
     {
         var roster = (_config.Player2NpcRosterCsv ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -1127,6 +1189,10 @@ public sealed class ModEntry : Mod
 
         if (roster.Count == 0)
             return ("Mayor Lewis", _activeNpcId);
+
+        if (!string.IsNullOrWhiteSpace(preferredRequester)
+            && _player2NpcIdsByShortName.TryGetValue(preferredRequester, out var preferredNpcId))
+            return (preferredRequester, preferredNpcId);
 
         for (var i = 0; i < roster.Count; i++)
         {
