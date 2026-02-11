@@ -808,13 +808,18 @@ public sealed class ModEntry : Mod
                 return;
             }
 
-            if (!result.AppliedOk || result.Proposal is null)
+            if (!result.AppliedOk)
                 return;
 
-            var p = result.Proposal;
-            Monitor.Log($"Applied NPC command: {result.Command} -> created {result.QuestId} (intent={result.IntentId})", LogLevel.Info);
-            Monitor.Log($"Quest mapping | requested: template={p.RequestedTemplate}, target={p.RequestedTarget}, urgency={p.RequestedUrgency} | applied: template={p.AppliedTemplate}, target={p.AppliedTarget}, urgency={p.AppliedUrgency}, count={p.Count}, reward={p.RewardGold}, expires+{p.ExpiresDelta}d | fallback={result.FallbackUsed}", LogLevel.Info);
-            _player2LastCommandApplied = $"{result.Command}:{result.QuestId}";
+            Monitor.Log($"Applied NPC command: {result.Command} -> outcome {result.OutcomeId} (intent={result.IntentId})", LogLevel.Info);
+
+            if (result.Proposal is not null)
+            {
+                var p = result.Proposal;
+                Monitor.Log($"Quest mapping | requested: template={p.RequestedTemplate}, target={p.RequestedTarget}, urgency={p.RequestedUrgency} | applied: template={p.AppliedTemplate}, target={p.AppliedTarget}, urgency={p.AppliedUrgency}, count={p.Count}, reward={p.RewardGold}, expires+{p.ExpiresDelta}d | fallback={result.FallbackUsed}", LogLevel.Info);
+            }
+
+            _player2LastCommandApplied = $"{result.Command}:{result.OutcomeId}";
             _player2LastCommandAppliedUtc = DateTime.UtcNow;
         }
         catch (Exception ex)

@@ -37,7 +37,8 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_health`: compact one-line health summary (login/npc/stream/joules/last line/last command)
 
 NPC intent pipeline:
-- validates intent envelopes against `NPC_COMMAND_SCHEMA.json` command constraints (including strict propose_quest args)
+- validates intent envelopes against `NPC_COMMAND_SCHEMA.json` command constraints
+- implemented deterministic handlers: `propose_quest`, `adjust_reputation`, `shift_interest_influence`, `apply_market_modifier`, `publish_rumor`
 - runs deterministic resolver path with explicit reject/duplicate/applied logs
 
 Config knobs:
