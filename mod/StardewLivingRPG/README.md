@@ -45,8 +45,8 @@ M0 + M1 scaffold includes:
 Player-facing Player2 UX:
 - auto-connect on save load (config: `AutoConnectPlayer2OnLoad`, default `true`)
 - HUD status badge in top-left: click `Town AI: Reconnect` to trigger login -> spawn -> stream pipeline
-- stream watchdog now escalates from listener restart to full NPC session refresh if repeated stalls persist
-- on watchdog escalation, the last player-triggered "New Postings" request is automatically re-queued after reconnect
+- stream watchdog now retries the last player-triggered "New Postings" request right after stream restarts
+- if repeated stalls persist, watchdog escalates to full NPC session refresh and re-queues the request again
 - in-world "New Postings" action in Town Request Board triggers resolver-safe request generation via Player2
 - in NPC interaction range (roster NPCs), pressing action keeps vanilla dialogue, then appends a follow-up choice "Any new postings?"
 - request routing now rotates across configured NPC roster (`Player2NpcRosterCsv`) when available (or targets the NPC you asked directly)

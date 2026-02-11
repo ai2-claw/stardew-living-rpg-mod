@@ -287,13 +287,22 @@ public sealed class ModEntry : Mod
             }
 
             _player2WatchdogRecoveries += 1;
-            _player2UiStatus = "No NPC response yet; recovering stream...";
+
+            // Re-queue the latest user-triggered work prompt immediately after stream restart.
+            if (string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest) && !string.IsNullOrWhiteSpace(_lastUiWorkPrompt))
+            {
+                _pendingUiMayorWorkRequest = _lastUiWorkPrompt;
+                _pendingUiRequesterShortName = _lastUiWorkRequesterShortName;
+            }
+
+            _player2UiStatus = "No NPC response yet; recovering stream and retrying request...";
             Monitor.Log($"Player2 response watchdog: no stream line after chat; restarting listener (attempt {_player2WatchdogRecoveries}).", LogLevel.Warn);
 
             _player2StreamDesired = true;
             _player2StreamCts?.Cancel();
             _player2StreamCts = null;
             Interlocked.Exchange(ref _player2StreamRunning, 0);
+            _player2PendingResponseCount = 0;
             _player2StreamBackoffSec = Math.Min(Math.Max(2, _player2StreamBackoffSec * 2), 30);
             _player2NextReconnectUtc = DateTime.UtcNow.AddSeconds(_player2StreamBackoffSec);
 
