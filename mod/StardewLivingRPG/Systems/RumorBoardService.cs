@@ -1,4 +1,5 @@
 using StardewLivingRPG.State;
+using StardewLivingRPG.Utils;
 using StardewValley;
 
 namespace StardewLivingRPG.Systems;
@@ -153,10 +154,11 @@ public sealed class RumorBoardService
             player.Money += reward;
 
         var consumedPart = progress.RequiresItems ? $", consumed {consumed} {quest.TargetItem}" : string.Empty;
+        var title = QuestTextHelper.BuildQuestTitle(quest);
         return new QuestCompletionResult
         {
             Success = true,
-            Message = $"Completed quest: {quest.QuestId} (+{reward}g{consumedPart})",
+            Message = $"Completed request: {title} (+{reward}g{consumedPart})",
             RewardGold = reward
         };
     }

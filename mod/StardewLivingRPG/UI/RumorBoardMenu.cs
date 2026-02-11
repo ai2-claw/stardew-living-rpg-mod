@@ -99,7 +99,7 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         if (_acceptButton.Contains(x, y) && _selectedQuest.Status.Equals("available", StringComparison.OrdinalIgnoreCase))
         {
-            var title = BuildQuestTitle(_selectedQuest);
+            var title = QuestTextHelper.BuildQuestTitle(_selectedQuest);
             var ok = _rumorBoardService.AcceptQuest(_state, _selectedQuest.QuestId);
             _statusMessage = ok ? $"Accepted Town Request: {title}" : "Could not accept request.";
             if (ok)
@@ -168,7 +168,7 @@ public sealed class RumorBoardMenu : IClickableMenu
                 var bg = _selectedQuest?.QuestId == quest.QuestId ? Color.CornflowerBlue * 0.35f : Color.Black * 0.22f;
                 b.Draw(Game1.staminaRect, rect, bg);
 
-                var title = BuildQuestTitle(quest);
+                var title = QuestTextHelper.BuildQuestTitle(quest);
                 var text = isActiveSection
                     ? $"{title} (day {quest.ExpiresDay})"
                     : $"{title}  +{quest.RewardGold}g";
@@ -201,7 +201,7 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         var lines = new List<string>
         {
-            $"Request: {BuildQuestTitle(q)} ({q.Status})",
+            $"Request: {QuestTextHelper.BuildQuestTitle(q)} ({q.Status})",
             $"From: {q.Issuer} | Reward: +{q.RewardGold}g | Expires day {q.ExpiresDay}",
             q.Summary,
             $"Reference: {q.QuestId}"
@@ -236,50 +236,4 @@ public sealed class RumorBoardMenu : IClickableMenu
         b.DrawString(Game1.smallFont, text, new Vector2(tx, ty), Color.White * (enabled ? 1f : 0.7f));
     }
 
-    private static string BuildQuestTitle(QuestEntry q)
-    {
-        var target = string.IsNullOrWhiteSpace(q.TargetItem)
-            ? "Supplies"
-            : q.TargetItem.Replace("_", " ").Trim();
-
-        target = string.Join(' ', target.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Select(w => char.ToUpperInvariant(w[0]) + w[1..].ToLowerInvariant()));
-
-        var titles = q.TemplateId.ToLowerInvariant() switch
-        {
-            "gather_crop" => new[]
-            {
-                $"Gather {target}",
-                $"Harvest Help: {target}",
-                $"Field Run: {target}"
-            },
-            "deliver_item" => new[]
-            {
-                $"Supply Drop: {target}",
-                $"Market Delivery: {target}",
-                $"Town Delivery: {target}"
-            },
-            "mine_resource" => new[]
-            {
-                $"Mine Run: {target}",
-                $"Prospector's Call: {target}",
-                $"Ore Request: {target}"
-            },
-            "social_visit" => new[]
-            {
-                $"Friendly Visit: {target}",
-                $"Check-In with {target}",
-                $"Neighborly Errand: {target}"
-            },
-            _ => new[]
-            {
-                $"Town Request: {target}",
-                $"Community Task: {target}",
-                $"Mayor's Request: {target}"
-            }
-        };
-
-        var idx = Math.Abs(q.QuestId.GetHashCode()) % titles.Length;
-        return titles[idx];
-    }
 }

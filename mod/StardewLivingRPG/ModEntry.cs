@@ -8,6 +8,7 @@ using StardewLivingRPG.Integrations;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Systems;
 using StardewLivingRPG.UI;
+using StardewLivingRPG.Utils;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Threading;
@@ -313,10 +314,14 @@ public sealed class ModEntry : Mod
         }
 
         var questId = args[0].Trim();
+        var quest = _state.Quests.Available.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
         if (_rumorBoardService.AcceptQuest(_state, questId))
-            Monitor.Log($"Accepted quest: {questId}", LogLevel.Info);
+        {
+            var title = quest is null ? questId : QuestTextHelper.BuildQuestTitle(quest);
+            Monitor.Log($"Accepted request: {title}", LogLevel.Info);
+        }
         else
-            Monitor.Log($"Quest not found: {questId}", LogLevel.Warn);
+            Monitor.Log($"Request not found: {questId}", LogLevel.Warn);
     }
 
     private void OnQuestProgressCommand(string name, string[] args)
@@ -335,13 +340,14 @@ public sealed class ModEntry : Mod
             return;
         }
 
+        var title = QuestTextHelper.BuildQuestTitle(progress.Quest);
         if (!progress.RequiresItems)
         {
-            Monitor.Log($"Quest {progress.QuestId}: no item hand-in required (template={progress.Quest.TemplateId}). Ready={progress.IsReadyToComplete}", LogLevel.Info);
+            Monitor.Log($"Request {title}: no item hand-in required (template={progress.Quest.TemplateId}). Ready={progress.IsReadyToComplete}", LogLevel.Info);
             return;
         }
 
-        Monitor.Log($"Quest {progress.QuestId}: {progress.HaveCount}/{progress.NeedCount} {progress.Quest.TargetItem} | ready={progress.IsReadyToComplete}", LogLevel.Info);
+        Monitor.Log($"Request {title}: {progress.HaveCount}/{progress.NeedCount} {progress.Quest.TargetItem} | ready={progress.IsReadyToComplete}", LogLevel.Info);
     }
 
     private void OnQuestProgressAllCommand(string name, string[] args)
@@ -364,10 +370,11 @@ public sealed class ModEntry : Mod
             if (!progress.Exists || progress.Quest is null)
                 continue;
 
+            var title = QuestTextHelper.BuildQuestTitle(progress.Quest);
             if (!progress.RequiresItems)
-                Monitor.Log($"Quest {progress.QuestId}: no item hand-in required | ready={progress.IsReadyToComplete}", LogLevel.Info);
+                Monitor.Log($"Request {title}: no item hand-in required | ready={progress.IsReadyToComplete}", LogLevel.Info);
             else
-                Monitor.Log($"Quest {progress.QuestId}: {progress.HaveCount}/{progress.NeedCount} {progress.Quest.TargetItem} | ready={progress.IsReadyToComplete}", LogLevel.Info);
+                Monitor.Log($"Request {title}: {progress.HaveCount}/{progress.NeedCount} {progress.Quest.TargetItem} | ready={progress.IsReadyToComplete}", LogLevel.Info);
         }
     }
 
