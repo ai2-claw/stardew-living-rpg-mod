@@ -124,26 +124,23 @@ public sealed class RumorBoardService
 
     public QuestCompletionResult CompleteQuestWithChecks(SaveState state, string questId, Farmer? player, bool consumeItems = true)
     {
-        var quest = state.Quests.Active.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
-        if (quest is null)
+        var progress = GetQuestProgress(state, questId, player);
+        if (!progress.Exists)
             return new QuestCompletionResult { Success = false, Message = $"Active quest not found: {questId}" };
 
-        if (RequiresItemDelivery(quest.TemplateId))
-        {
-            var needed = Math.Max(1, quest.TargetCount);
-            var have = CountMatchingItems(player, quest.TargetItem);
-            if (have < needed)
-            {
-                return new QuestCompletionResult
-                {
-                    Success = false,
-                    Message = $"Need {needed} {quest.TargetItem}, but only have {have}."
-                };
-            }
+        var quest = progress.Quest!;
 
-            if (consumeItems)
-                ConsumeMatchingItems(player, quest.TargetItem, needed);
+        if (progress.RequiresItems && progress.HaveCount < progress.NeedCount)
+        {
+            return new QuestCompletionResult
+            {
+                Success = false,
+                Message = $"Need {progress.NeedCount} {quest.TargetItem}, but only have {progress.HaveCount}."
+            };
         }
+
+        if (progress.RequiresItems && consumeItems)
+            ConsumeMatchingItems(player, quest.TargetItem, progress.NeedCount);
 
         CompleteQuestInternal(state, quest);
 
@@ -156,6 +153,28 @@ public sealed class RumorBoardService
             Success = true,
             Message = $"Completed quest: {quest.QuestId} (+{reward}g)",
             RewardGold = reward
+        };
+    }
+
+    public QuestProgressResult GetQuestProgress(SaveState state, string questId, Farmer? player)
+    {
+        var quest = state.Quests.Active.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
+        if (quest is null)
+            return QuestProgressResult.NotFound(questId);
+
+        var requiresItems = RequiresItemDelivery(quest.TemplateId);
+        var need = requiresItems ? Math.Max(1, quest.TargetCount) : 0;
+        var have = requiresItems ? CountMatchingItems(player, quest.TargetItem) : 0;
+
+        return new QuestProgressResult
+        {
+            Exists = true,
+            QuestId = quest.QuestId,
+            Quest = quest,
+            RequiresItems = requiresItems,
+            NeedCount = need,
+            HaveCount = have,
+            IsReadyToComplete = !requiresItems || have >= need
         };
     }
 
@@ -413,4 +432,21 @@ public sealed class QuestCompletionResult
     public bool Success { get; set; }
     public string Message { get; set; } = string.Empty;
     public int RewardGold { get; set; }
+}
+
+public sealed class QuestProgressResult
+{
+    public bool Exists { get; set; }
+    public string QuestId { get; set; } = string.Empty;
+    public QuestEntry? Quest { get; set; }
+    public bool RequiresItems { get; set; }
+    public int NeedCount { get; set; }
+    public int HaveCount { get; set; }
+    public bool IsReadyToComplete { get; set; }
+
+    public static QuestProgressResult NotFound(string questId) => new()
+    {
+        Exists = false,
+        QuestId = questId
+    };
 }

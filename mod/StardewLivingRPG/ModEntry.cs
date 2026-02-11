@@ -64,6 +64,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
         helper.ConsoleCommands.Add("slrpg_accept_quest", "Accept rumor quest: slrpg_accept_quest <questId>", OnAcceptQuestCommand);
+        helper.ConsoleCommands.Add("slrpg_quest_progress", "Show active quest progress: slrpg_quest_progress <questId>", OnQuestProgressCommand);
         helper.ConsoleCommands.Add("slrpg_complete_quest", "Complete active quest: slrpg_complete_quest <questId>", OnCompleteQuestCommand);
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
         helper.ConsoleCommands.Add("slrpg_debug_state", "Print compact state snapshot for QA.", OnDebugStateCommand);
@@ -306,6 +307,31 @@ public sealed class ModEntry : Mod
             Monitor.Log($"Accepted quest: {questId}", LogLevel.Info);
         else
             Monitor.Log($"Quest not found: {questId}", LogLevel.Warn);
+    }
+
+    private void OnQuestProgressCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady || _rumorBoardService is null || args.Length < 1)
+        {
+            Monitor.Log("Usage: slrpg_quest_progress <questId>", LogLevel.Info);
+            return;
+        }
+
+        var questId = args[0].Trim();
+        var progress = _rumorBoardService.GetQuestProgress(_state, questId, Game1.player);
+        if (!progress.Exists || progress.Quest is null)
+        {
+            Monitor.Log($"Active quest not found: {questId}", LogLevel.Warn);
+            return;
+        }
+
+        if (!progress.RequiresItems)
+        {
+            Monitor.Log($"Quest {progress.QuestId}: no item hand-in required (template={progress.Quest.TemplateId}). Ready={progress.IsReadyToComplete}", LogLevel.Info);
+            return;
+        }
+
+        Monitor.Log($"Quest {progress.QuestId}: {progress.HaveCount}/{progress.NeedCount} {progress.Quest.TargetItem} | ready={progress.IsReadyToComplete}", LogLevel.Info);
     }
 
     private void OnCompleteQuestCommand(string name, string[] args)
