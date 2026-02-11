@@ -56,6 +56,9 @@ public sealed class ModEntry : Mod
     private int _uiWorkRequestInFlight;
     private int _uiRequesterRoundRobinIndex;
     private readonly Dictionary<string, string> _player2NpcIdsByShortName = new(StringComparer.OrdinalIgnoreCase);
+    private int _player2PendingResponseCount;
+    private DateTime _player2LastChatSentUtc;
+    private DateTime _player2LastStreamRecoveryUtc;
 
     public override void Entry(IModHelper helper)
     {
@@ -278,6 +281,22 @@ public sealed class ModEntry : Mod
             StartPlayer2StreamListenerAttempt();
         }
 
+        if (_player2PendingResponseCount > 0
+            && _player2LastChatSentUtc != default
+            && DateTime.UtcNow - _player2LastChatSentUtc > TimeSpan.FromSeconds(25)
+            && DateTime.UtcNow - _player2LastStreamRecoveryUtc > TimeSpan.FromSeconds(15))
+        {
+            _player2LastStreamRecoveryUtc = DateTime.UtcNow;
+            _player2UiStatus = "No NPC response yet; recovering stream...";
+            Monitor.Log("Player2 response watchdog: no stream line after chat; restarting listener.", LogLevel.Warn);
+
+            _player2StreamDesired = true;
+            _player2StreamCts?.Cancel();
+            _player2StreamCts = null;
+            Interlocked.Exchange(ref _player2StreamRunning, 0);
+            _player2NextReconnectUtc = DateTime.UtcNow;
+        }
+
         if (!string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest)
             && !string.IsNullOrWhiteSpace(_player2Key)
             && !string.IsNullOrWhiteSpace(_activeNpcId))
@@ -310,6 +329,8 @@ public sealed class ModEntry : Mod
             Monitor.Log($"Player2 stream line: {line}", LogLevel.Info);
             _player2LastLineUtc = DateTime.UtcNow;
             _player2StreamBackoffSec = 1;
+            if (_player2PendingResponseCount > 0)
+                _player2PendingResponseCount -= 1;
             TryApplyNpcCommandFromLine(line);
         }
     }
@@ -1107,6 +1128,9 @@ public sealed class ModEntry : Mod
             _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, npcId, req, cts.Token)
                 .GetAwaiter().GetResult();
 
+            _player2PendingResponseCount += 1;
+            _player2LastChatSentUtc = DateTime.UtcNow;
+
             var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
             Monitor.Log($"Sent chat to Player2 NPC ({who}). Keep stream listener running to receive response lines.", LogLevel.Info);
         }
@@ -1324,7 +1348,7 @@ public sealed class ModEntry : Mod
         var joules = TryGetJoules(out var j);
         var joulesText = joules.HasValue && j is not null ? joules.Value.ToString() : "n/a";
 
-        Monitor.Log($"P2 health | login={loggedIn} npc={npc} stream={running}/{_player2StreamDesired} joules={joulesText} lastLineAgo={lineAgo} lastCmd={_player2LastCommandApplied} lastCmdAgo={cmdAgo}", LogLevel.Info);
+        Monitor.Log($"P2 health | login={loggedIn} npc={npc} stream={running}/{_player2StreamDesired} joules={joulesText} pending={_player2PendingResponseCount} lastLineAgo={lineAgo} lastCmd={_player2LastCommandApplied} lastCmdAgo={cmdAgo}", LogLevel.Info);
     }
 
     private int? TryGetJoules(out JoulesResponse? info)
