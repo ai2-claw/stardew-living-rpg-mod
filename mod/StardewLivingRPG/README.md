@@ -47,6 +47,7 @@ Player-facing Player2 UX:
 - HUD status badge in top-left: click `Town AI: Reconnect` to trigger login -> spawn -> stream pipeline
 - in-world "New Postings" action in Town Request Board triggers resolver-safe request generation via Player2
 - request routing now rotates across configured NPC roster (`Player2NpcRosterCsv`) when available
+- generation guardrails: cooldown, max generated per day (`MaxUiGeneratedRequestsPerDay`), and max outstanding requests (`MaxOutstandingRequests`)
 
 NPC intent pipeline:
 - validates intent envelopes against `NPC_COMMAND_SCHEMA.json` command constraints

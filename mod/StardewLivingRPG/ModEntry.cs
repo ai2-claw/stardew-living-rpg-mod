@@ -1067,7 +1067,23 @@ public sealed class ModEntry : Mod
         if (elapsed < TimeSpan.FromSeconds(cooldownSec))
         {
             var wait = Math.Max(1, cooldownSec - (int)elapsed.TotalSeconds);
-            _player2UiStatus = $"Please wait {wait}s before requesting work again.";
+            _player2UiStatus = $"Please wait {wait}s before checking new postings again.";
+            return;
+        }
+
+        var outstanding = _state.Quests.Available.Count + _state.Quests.Active.Count;
+        if (outstanding >= Math.Max(1, _config.MaxOutstandingRequests))
+        {
+            _player2UiStatus = "Board is full. Complete current requests before checking for more.";
+            return;
+        }
+
+        var generatedToday = _state.Quests.Available.Count(q => q.Source == "npc_intent" && q.QuestId.Contains($"_{_state.Calendar.Day}_", StringComparison.Ordinal))
+            + _state.Quests.Active.Count(q => q.Source == "npc_intent" && q.QuestId.Contains($"_{_state.Calendar.Day}_", StringComparison.Ordinal));
+
+        if (generatedToday >= Math.Max(1, _config.MaxUiGeneratedRequestsPerDay))
+        {
+            _player2UiStatus = "No new postings right now. Check back tomorrow.";
             return;
         }
 

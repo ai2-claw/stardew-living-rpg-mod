@@ -37,6 +37,8 @@ public sealed class ModConfig
 
     // In-world work request anti-spam
     public int WorkRequestCooldownSeconds { get; set; } = 5;
+    public int MaxUiGeneratedRequestsPerDay { get; set; } = 2;
+    public int MaxOutstandingRequests { get; set; } = 6;
 
     // Multi-NPC scaffolding (comma-separated short names; first is default requester)
     public string Player2NpcRosterCsv { get; set; } = "Lewis,Pierre,Robin";
