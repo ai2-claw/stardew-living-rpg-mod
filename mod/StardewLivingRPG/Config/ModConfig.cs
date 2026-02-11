@@ -34,4 +34,10 @@ public sealed class ModConfig
 
     // Player-facing auto-connect UX
     public bool AutoConnectPlayer2OnLoad { get; set; } = true;
+
+    // In-world work request anti-spam
+    public int WorkRequestCooldownSeconds { get; set; } = 5;
+
+    // Multi-NPC scaffolding (comma-separated short names; first is default requester)
+    public string Player2NpcRosterCsv { get; set; } = "Lewis,Pierre,Robin";
 }

@@ -51,6 +51,9 @@ public sealed class ModEntry : Mod
     private string _player2UiStatus = "Player2: idle";
     private DateTime _player2LastAutoConnectAttemptUtc;
     private string? _pendingUiMayorWorkRequest;
+    private DateTime _lastUiWorkRequestUtc;
+    private int _uiWorkRequestInFlight;
+    private readonly Dictionary<string, string> _player2NpcIdsByShortName = new(StringComparer.OrdinalIgnoreCase);
 
     public override void Entry(IModHelper helper)
     {
@@ -377,7 +380,7 @@ public sealed class ModEntry : Mod
         if (_rumorBoardService is null)
             return;
 
-        Game1.activeClickableMenu = new RequestJournalMenu(_state, _rumorBoardService, Monitor, OnUiAskMayorForWork);
+        Game1.activeClickableMenu = new RequestJournalMenu(_state, _rumorBoardService, Monitor);
     }
 
     private void OnSellCommand(string name, string[] args)
@@ -915,7 +918,10 @@ public sealed class ModEntry : Mod
                 .SpawnNpcAsync(_config.Player2ApiBaseUrl, _player2Key!, req, cts.Token)
                 .GetAwaiter().GetResult();
 
-            Monitor.Log($"Player2 NPC spawned: {_activeNpcId}", LogLevel.Info);
+            _player2NpcIdsByShortName[req.ShortName] = _activeNpcId;
+            Monitor.Log($"Player2 NPC spawned: {req.ShortName} -> {_activeNpcId}", LogLevel.Info);
+
+            SpawnAdditionalConfiguredNpcs();
         }
         catch (Exception ex)
         {
@@ -933,6 +939,69 @@ public sealed class ModEntry : Mod
 
         var message = args.Length == 0 ? "How is the town market today?" : string.Join(' ', args);
         SendPlayer2ChatInternal(message);
+    }
+
+    private void SpawnAdditionalConfiguredNpcs()
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+            return;
+
+        var roster = (_config.Player2NpcRosterCsv ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var shortName in roster)
+        {
+            if (string.IsNullOrWhiteSpace(shortName))
+                continue;
+
+            if (_player2NpcIdsByShortName.ContainsKey(shortName))
+                continue;
+
+            try
+            {
+                var req = new SpawnNpcRequest
+                {
+                    ShortName = shortName,
+                    Name = shortName,
+                    CharacterDescription = $"{shortName} in Pelican Town, practical and grounded.",
+                    SystemPrompt = "Stay in-character for Stardew Valley and use safe command schema when proposing town requests.",
+                    KeepGameState = true,
+                    Commands = new List<SpawnNpcCommand>
+                    {
+                        new()
+                        {
+                            Name = "propose_quest",
+                            Description = "Propose a safe town request quest",
+                            Parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    template_id = new { type = "string", @enum = new[] { "gather_crop", "deliver_item", "mine_resource", "social_visit" } },
+                                    target = new { type = "string" },
+                                    urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } }
+                                },
+                                required = new[] { "template_id", "target", "urgency" },
+                                additionalProperties = false
+                            }
+                        }
+                    }
+                };
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var npcId = _player2Client.SpawnNpcAsync(_config.Player2ApiBaseUrl, _player2Key!, req, cts.Token)
+                    .GetAwaiter().GetResult();
+
+                _player2NpcIdsByShortName[shortName] = npcId;
+                Monitor.Log($"Player2 NPC spawned (roster): {shortName} -> {npcId}", LogLevel.Info);
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"Player2 additional NPC spawn failed ({shortName}): {ex.Message}", LogLevel.Warn);
+            }
+        }
     }
 
     private void SendPlayer2ChatInternal(string message)
@@ -976,22 +1045,58 @@ public sealed class ModEntry : Mod
 
     private void OnUiAskMayorForWork()
     {
-        const string prompt = "Mayor Lewis, do you have a practical town request for me today? Use propose_quest with a safe template and parameters.";
-
-        var connected = !string.IsNullOrWhiteSpace(_player2Key)
-            && !string.IsNullOrWhiteSpace(_activeNpcId)
-            && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
-
-        if (!connected)
+        var cooldownSec = Math.Max(1, _config.WorkRequestCooldownSeconds);
+        if (Interlocked.CompareExchange(ref _uiWorkRequestInFlight, 0, 0) == 1)
         {
-            _pendingUiMayorWorkRequest = prompt;
-            _player2UiStatus = "Connecting Town AI to request work...";
-            StartPlayer2AutoConnect("ui-ask-work", force: true);
+            _player2UiStatus = "Work request already in progress...";
             return;
         }
 
-        SendPlayer2ChatInternal(prompt);
-        _player2UiStatus = "Asked Mayor Lewis for a new town request.";
+        var elapsed = DateTime.UtcNow - _lastUiWorkRequestUtc;
+        if (elapsed < TimeSpan.FromSeconds(cooldownSec))
+        {
+            var wait = Math.Max(1, cooldownSec - (int)elapsed.TotalSeconds);
+            _player2UiStatus = $"Please wait {wait}s before requesting work again.";
+            return;
+        }
+
+        Interlocked.Exchange(ref _uiWorkRequestInFlight, 1);
+
+        try
+        {
+            var requester = GetDefaultNpcRequesterName();
+            var prompt = $"{requester}, do you have a practical town request for me today? Use propose_quest with a safe template and parameters.";
+
+            var connected = !string.IsNullOrWhiteSpace(_player2Key)
+                && !string.IsNullOrWhiteSpace(_activeNpcId)
+                && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+
+            if (!connected)
+            {
+                _pendingUiMayorWorkRequest = prompt;
+                _player2UiStatus = "Connecting Town AI to request work...";
+                _lastUiWorkRequestUtc = DateTime.UtcNow;
+                StartPlayer2AutoConnect("ui-ask-work", force: true);
+                return;
+            }
+
+            SendPlayer2ChatInternal(prompt);
+            _lastUiWorkRequestUtc = DateTime.UtcNow;
+            _player2UiStatus = $"Asked {requester} for a new town request.";
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _uiWorkRequestInFlight, 0);
+        }
+    }
+
+    private string GetDefaultNpcRequesterName()
+    {
+        var first = (_config.Player2NpcRosterCsv ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+
+        return string.IsNullOrWhiteSpace(first) ? "Mayor Lewis" : first;
     }
 
     private void OnPlayer2ReadOnceCommand(string name, string[] args)

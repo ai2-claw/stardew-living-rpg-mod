@@ -14,18 +14,16 @@ public sealed class RequestJournalMenu : IClickableMenu
     private readonly SaveState _state;
     private readonly RumorBoardService _rumorBoardService;
     private readonly IMonitor _monitor;
-    private readonly Action _onAskMayorForWork;
 
     private readonly Rectangle _tabActive;
     private readonly Rectangle _tabCompleted;
     private readonly Rectangle _completeButton;
-    private readonly Rectangle _askWorkButton;
 
     private bool _showCompleted;
     private QuestEntry? _selectedQuest;
     private string _status = "Select a request.";
 
-    public RequestJournalMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork)
+    public RequestJournalMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor)
         : base(
             Game1.uiViewport.Width / 2 - 460,
             Game1.uiViewport.Height / 2 - 290,
@@ -36,12 +34,10 @@ public sealed class RequestJournalMenu : IClickableMenu
         _state = state;
         _rumorBoardService = rumorBoardService;
         _monitor = monitor;
-        _onAskMayorForWork = onAskMayorForWork;
 
         _tabActive = new Rectangle(xPositionOnScreen + 24, yPositionOnScreen + 20, 140, 36);
         _tabCompleted = new Rectangle(xPositionOnScreen + 172, yPositionOnScreen + 20, 170, 36);
         _completeButton = new Rectangle(xPositionOnScreen + width - 220, yPositionOnScreen + height - 64, 180, 40);
-        _askWorkButton = new Rectangle(xPositionOnScreen + width - 430, yPositionOnScreen + height - 64, 190, 40);
     }
 
     public override void receiveLeftClick(int x, int y, bool playSound = true)
@@ -72,14 +68,6 @@ public sealed class RequestJournalMenu : IClickableMenu
                 continue;
             _selectedQuest = q;
             Game1.playSound("smallSelect");
-            return;
-        }
-
-        if (_askWorkButton.Contains(x, y))
-        {
-            _onAskMayorForWork();
-            _status = "Asked Mayor Lewis for work. Check for a new Town Request.";
-            Game1.playSound("newArtifact");
             return;
         }
 
@@ -181,8 +169,6 @@ public sealed class RequestJournalMenu : IClickableMenu
         b.DrawString(Game1.smallFont, $"Reward +{q.RewardGold}g | Expires day {q.ExpiresDay} | From {q.Issuer}", new Vector2(panel.X + 12, panel.Y + 34), Game1.textColor);
         if (progress.RequiresItems)
             b.DrawString(Game1.smallFont, $"Progress: {progress.HaveCount}/{progress.NeedCount} {q.TargetItem}", new Vector2(panel.X + 12, panel.Y + 58), Game1.textColor);
-
-        DrawActionButton(b, _askWorkButton, "Ask Mayor for Work", enabled: true);
 
         if (!_showCompleted)
             DrawActionButton(b, _completeButton, "Complete Request", _selectedQuest.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
