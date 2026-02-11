@@ -60,6 +60,7 @@ public sealed class ModEntry : Mod
     private int _uiRequesterRoundRobinIndex;
     private readonly Dictionary<string, string> _player2NpcIdsByShortName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _player2NpcShortNameById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ConcurrentQueue<string>> _npcUiMessagesById = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
     private DateTime _player2LastChatSentUtc;
     private DateTime _player2LastStreamRecoveryUtc;
@@ -289,13 +290,20 @@ public sealed class ModEntry : Mod
                 if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
                 {
                     var npcName = npc.Name ?? npc.displayName;
-                    Game1.activeClickableMenu = new NpcChatInputMenu(npc.displayName, text =>
-                    {
-                        if (_player2NpcIdsByShortName.TryGetValue(npcName, out var npcId))
-                            SendPlayer2ChatInternal(text, npcId, npcName);
-                        else
-                            SendPlayer2ChatInternal(text);
-                    });
+                    var npcIdForChat = _player2NpcIdsByShortName.TryGetValue(npcName, out var knownNpcId)
+                        ? knownNpcId
+                        : _activeNpcId;
+
+                    Game1.activeClickableMenu = new NpcChatInputMenu(
+                        npc.displayName,
+                        text =>
+                        {
+                            if (!string.IsNullOrWhiteSpace(npcIdForChat))
+                                SendPlayer2ChatInternal(text, npcIdForChat, npcName);
+                            else
+                                SendPlayer2ChatInternal(text);
+                        },
+                        () => string.IsNullOrWhiteSpace(npcIdForChat) ? null : DequeueNpcUiMessage(npcIdForChat));
                 }
             },
             npc);
@@ -437,6 +445,7 @@ public sealed class ModEntry : Mod
                 _player2PendingResponseCount -= 1;
             _player2WatchdogRecoveries = 0;
             _player2WatchdogWindowStartUtc = default;
+            CaptureNpcUiMessage(line);
             TryApplyNpcCommandFromLine(line);
         }
     }
@@ -1521,6 +1530,39 @@ public sealed class ModEntry : Mod
         var joulesText = joules.HasValue && j is not null ? joules.Value.ToString() : "n/a";
 
         Monitor.Log($"P2 health | login={loggedIn} npc={npc} stream={running}/{_player2StreamDesired} joules={joulesText} pending={_player2PendingResponseCount} lastLineAgo={lineAgo} lastCmd={_player2LastCommandApplied} lastCmdAgo={cmdAgo}", LogLevel.Info);
+    }
+
+    private void CaptureNpcUiMessage(string line)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("npc_id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
+                return;
+            if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
+                return;
+
+            var npcId = idEl.GetString();
+            var msg = msgEl.GetString();
+            if (string.IsNullOrWhiteSpace(npcId) || string.IsNullOrWhiteSpace(msg))
+                return;
+
+            var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
+            q.Enqueue(msg);
+        }
+        catch
+        {
+            // ignore non-json or malformed lines for chat UI capture.
+        }
+    }
+
+    private string? DequeueNpcUiMessage(string npcId)
+    {
+        if (!_npcUiMessagesById.TryGetValue(npcId, out var q))
+            return null;
+
+        return q.TryDequeue(out var msg) ? msg : null;
     }
 
     private int? TryGetJoules(out JoulesResponse? info)

@@ -50,7 +50,8 @@ Player-facing Player2 UX:
 - in-world "New Postings" action in Town Request Board triggers resolver-safe request generation via Player2
 - in NPC interaction range (roster NPCs), normal action interaction keeps vanilla dialogue; after it closes, an additive postings follow-up prompt appears
 - policy: never replace original vanilla NPC dialogue; mod prompts must be additive follow-up only
-- Robin, Pierre, and Lewis have custom follow-up dialogue options: "Any new requests?", "Let's just talk.", "See you later."; selecting talk opens a chat input box
+- Robin, Pierre, and Lewis have custom follow-up dialogue options: "Any new requests?", "Let's just talk.", "See you later."
+- selecting talk opens a persistent in-world chat input box showing recent player/NPC lines instead of closing immediately
 - request routing now rotates across configured NPC roster (`Player2NpcRosterCsv`) when available (or targets the NPC you asked directly)
 - generation guardrails: cooldown, max manual checks per day (`MaxUiGeneratedRequestsPerDay`), and max outstanding requests (`MaxOutstandingRequests`)
 - automatic replay/retry after stream recovery does **not** consume the player's manual daily cap

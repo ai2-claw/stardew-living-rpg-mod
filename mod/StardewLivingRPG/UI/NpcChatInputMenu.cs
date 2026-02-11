@@ -10,11 +10,13 @@ public sealed class NpcChatInputMenu : IClickableMenu
 {
     private readonly string _npcName;
     private readonly Action<string> _onSend;
+    private readonly Func<string?>? _pollIncoming;
+    private readonly List<string> _lines = new();
     private readonly TextBox _input;
     private readonly Rectangle _sendButton;
     private readonly Rectangle _cancelButton;
 
-    public NpcChatInputMenu(string npcName, Action<string> onSend)
+    public NpcChatInputMenu(string npcName, Action<string> onSend, Func<string?>? pollIncoming = null)
         : base(
             Game1.uiViewport.Width / 2 - 360,
             Game1.uiViewport.Height / 2 - 140,
@@ -24,6 +26,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
     {
         _npcName = npcName;
         _onSend = onSend;
+        _pollIncoming = pollIncoming;
 
         _input = new TextBox(
             Game1.content.Load<Texture2D>("LooseSprites\\textBox"),
@@ -42,6 +45,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
         _sendButton = new Rectangle(xPositionOnScreen + width - 220, yPositionOnScreen + height - 54, 90, 34);
         _cancelButton = new Rectangle(xPositionOnScreen + width - 118, yPositionOnScreen + height - 54, 90, 34);
+
+        _lines.Add($"{_npcName}: I'm listening.");
     }
 
     public override void receiveLeftClick(int x, int y, bool playSound = true)
@@ -86,6 +91,22 @@ public sealed class NpcChatInputMenu : IClickableMenu
     {
         base.update(time);
         _input.Update();
+
+        if (_pollIncoming is null)
+            return;
+
+        var safety = 0;
+        while (safety < 4)
+        {
+            var next = _pollIncoming();
+            if (string.IsNullOrWhiteSpace(next))
+                break;
+
+            _lines.Add($"{_npcName}: {next}");
+            if (_lines.Count > 10)
+                _lines.RemoveAt(0);
+            safety++;
+        }
     }
 
     public override void draw(SpriteBatch b)
@@ -93,9 +114,17 @@ public sealed class NpcChatInputMenu : IClickableMenu
         Game1.drawDialogueBox(xPositionOnScreen, yPositionOnScreen, width, height, false, true);
 
         b.DrawString(Game1.dialogueFont, _npcName, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + 24), Game1.textColor);
-        b.DrawString(Game1.smallFont, "I was just thinking about my next project, but I can always make time for a friend.", new Vector2(xPositionOnScreen + 24, yPositionOnScreen + 66), Game1.textColor);
-        b.DrawString(Game1.smallFont, "What's on your mind?", new Vector2(xPositionOnScreen + 24, yPositionOnScreen + 88), Game1.textColor);
+        b.DrawString(Game1.smallFont, "Let's just talk. What's on your mind?", new Vector2(xPositionOnScreen + 24, yPositionOnScreen + 66), Game1.textColor);
 
+        var lineY = yPositionOnScreen + 88;
+        foreach (var line in _lines.TakeLast(4))
+        {
+            var wrapped = line.Length > 100 ? line[..100] + "..." : line;
+            b.DrawString(Game1.smallFont, wrapped, new Vector2(xPositionOnScreen + 24, lineY), Game1.textColor * 0.9f);
+            lineY += 20;
+        }
+
+        _input.Y = yPositionOnScreen + 172;
         _input.Draw(b);
 
         DrawButton(b, _sendButton, "Send", enabled: true);
@@ -113,9 +142,13 @@ public sealed class NpcChatInputMenu : IClickableMenu
             return;
         }
 
+        _lines.Add($"You: {text}");
+        if (_lines.Count > 10)
+            _lines.RemoveAt(0);
+
         _onSend(text);
+        _input.Text = string.Empty;
         Game1.playSound("smallSelect");
-        CloseMenu();
     }
 
     private static void DrawButton(SpriteBatch b, Rectangle rect, string text, bool enabled)
