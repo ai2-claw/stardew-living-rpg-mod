@@ -67,6 +67,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_complete_quest", "Complete active quest: slrpg_complete_quest <questId>", OnCompleteQuestCommand);
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
         helper.ConsoleCommands.Add("slrpg_debug_state", "Print compact state snapshot for QA.", OnDebugStateCommand);
+        helper.ConsoleCommands.Add("slrpg_intent_inject", "Inject raw NPC intent envelope JSON for resolver QA.", OnIntentInjectCommand);
         helper.ConsoleCommands.Add("slrpg_demo_bootstrap", "Seed reproducible vertical-slice scenario.", OnDemoBootstrapCommand);
 
         helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using configured game client id.", OnPlayer2LoginCommand);
@@ -387,6 +388,58 @@ public sealed class ModEntry : Mod
 
         Monitor.Log($"Quests | available: {_state.Quests.Available.Count}, active: {_state.Quests.Active.Count}, completed: {_state.Quests.Completed.Count}, failed: {_state.Quests.Failed.Count}", LogLevel.Info);
         Monitor.Log($"Telemetry | opens(board): {_state.Telemetry.Daily.MarketBoardOpens}, accepts: {_state.Telemetry.Daily.RumorBoardAccepts}, completes: {_state.Telemetry.Daily.RumorBoardCompletions}, anchors: {_state.Telemetry.Daily.AnchorEventsTriggered}, mutations: {_state.Telemetry.Daily.WorldMutations}", LogLevel.Info);
+    }
+
+    private void OnIntentInjectCommand(string name, string[] args)
+    {
+        if (_intentResolver is null)
+        {
+            Monitor.Log("Intent resolver unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        if (args.Length == 0)
+        {
+            Monitor.Log("Usage: slrpg_intent_inject {\"intent_id\":\"id123\",\"npc_id\":\"lewis\",\"command\":\"adjust_reputation\",\"arguments\":{\"target\":\"haley\",\"delta\":2}}", LogLevel.Info);
+            return;
+        }
+
+        var json = string.Join(' ', args);
+        try
+        {
+            var result = _intentResolver.ResolveFromStreamLine(_state, json);
+            if (!result.HasIntent)
+            {
+                Monitor.Log("Injected payload produced no intent.", LogLevel.Warn);
+                return;
+            }
+
+            if (result.IsRejected)
+            {
+                Monitor.Log($"Injected intent rejected: {result.Reason}", LogLevel.Warn);
+                return;
+            }
+
+            if (result.IsDuplicate)
+            {
+                Monitor.Log($"Injected intent duplicate ignored: {result.IntentId}", LogLevel.Info);
+                return;
+            }
+
+            Monitor.Log($"Injected intent applied: cmd={result.Command} outcome={result.OutcomeId} intent={result.IntentId}", LogLevel.Info);
+            if (result.Proposal is not null)
+            {
+                var p = result.Proposal;
+                Monitor.Log($"Injected quest mapping | requested={p.RequestedTemplate}/{p.RequestedTarget}/{p.RequestedUrgency} applied={p.AppliedTemplate}/{p.AppliedTarget}/{p.AppliedUrgency}", LogLevel.Info);
+            }
+
+            _player2LastCommandApplied = $"{result.Command}:{result.OutcomeId}";
+            _player2LastCommandAppliedUtc = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Intent injection failed: {ex.Message}", LogLevel.Error);
+        }
     }
 
     private void OnDemoBootstrapCommand(string name, string[] args)

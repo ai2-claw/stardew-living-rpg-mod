@@ -25,6 +25,7 @@ M0 + M1 scaffold includes:
 - `slrpg_complete_quest <questId>`: complete an active rumor quest
 - `slrpg_set_sentiment economy <value>`: set economy sentiment (testing anchor trigger)
 - `slrpg_debug_state`: print compact daily diagnostics snapshot
+- `slrpg_intent_inject <json>`: inject raw intent envelope for deterministic resolver QA
 - `slrpg_demo_bootstrap`: seed reproducible vertical-slice scenario
 - `slrpg_p2_login`: local Player2 app auth using configured game client id (auto-fallback to device auth)
 - `slrpg_p2_spawn`: spawn one Player2 NPC session
