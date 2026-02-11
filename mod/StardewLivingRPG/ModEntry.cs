@@ -391,17 +391,29 @@ public sealed class ModEntry : Mod
 
         if (!string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest)
             && !string.IsNullOrWhiteSpace(_player2Key)
-            && !string.IsNullOrWhiteSpace(_activeNpcId))
+            && !string.IsNullOrWhiteSpace(_activeNpcId)
+            && Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1)
         {
             var req = _pendingUiMayorWorkRequest!;
             var requester = _pendingUiRequesterShortName;
-            _pendingUiMayorWorkRequest = null;
-            _pendingUiRequesterShortName = null;
 
-            if (!string.IsNullOrWhiteSpace(requester) && _player2NpcIdsByShortName.TryGetValue(requester, out var pendingNpcId))
-                SendPlayer2ChatInternal(req, pendingNpcId, requester);
+            // If a specific requester was selected, wait until that NPC session exists
+            // so we don't accidentally send to fallback Lewis during reconnect.
+            if (!string.IsNullOrWhiteSpace(requester)
+                && !_player2NpcIdsByShortName.ContainsKey(requester))
+            {
+                // keep pending until roster spawn catches up
+            }
             else
-                SendPlayer2ChatInternal(req);
+            {
+                _pendingUiMayorWorkRequest = null;
+                _pendingUiRequesterShortName = null;
+
+                if (!string.IsNullOrWhiteSpace(requester) && _player2NpcIdsByShortName.TryGetValue(requester, out var pendingNpcId))
+                    SendPlayer2ChatInternal(req, pendingNpcId, requester);
+                else
+                    SendPlayer2ChatInternal(req);
+            }
         }
 
         while (_pendingPlayer2Lines.TryDequeue(out var line))
