@@ -1082,7 +1082,7 @@ public sealed class ModEntry : Mod
 
             SendPlayer2ChatInternal(prompt);
             _lastUiWorkRequestUtc = DateTime.UtcNow;
-            _player2UiStatus = $"Asked {requester} for a new town request.";
+            _player2UiStatus = $"Checked with {requester} for available town requests.";
         }
         finally
         {
