@@ -13,6 +13,8 @@ public sealed class SaveState
     public FactTableState Facts { get; set; } = new();
     public NewspaperState Newspaper { get; set; } = new();
     public TelemetryState Telemetry { get; set; } = new();
+    public NpcMemoryState NpcMemory { get; set; } = new();
+    public TownMemoryState TownMemory { get; set; } = new();
 
     public static SaveState CreateDefault() => new();
 

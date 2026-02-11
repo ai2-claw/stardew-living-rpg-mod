@@ -11,12 +11,14 @@ public sealed class NpcChatInputMenu : IClickableMenu
     private readonly string _npcName;
     private readonly Action<string> _onSend;
     private readonly Func<string?>? _pollIncoming;
+    private readonly Func<bool>? _isThinking;
     private readonly List<string> _lines = new();
+    private int _thinkFrame;
     private readonly TextBox _input;
     private readonly Rectangle _sendButton;
     private readonly Rectangle _cancelButton;
 
-    public NpcChatInputMenu(string npcName, Action<string> onSend, Func<string?>? pollIncoming = null)
+    public NpcChatInputMenu(string npcName, Action<string> onSend, Func<string?>? pollIncoming = null, Func<bool>? isThinking = null)
         : base(
             Game1.uiViewport.Width / 2 - 360,
             Game1.uiViewport.Height / 2 - 140,
@@ -27,6 +29,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         _npcName = npcName;
         _onSend = onSend;
         _pollIncoming = pollIncoming;
+        _isThinking = isThinking;
 
         _input = new TextBox(
             Game1.content.Load<Texture2D>("LooseSprites\\textBox"),
@@ -92,6 +95,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
         base.update(time);
         _input.Update();
 
+        _thinkFrame++;
+
         if (_pollIncoming is null)
             return;
 
@@ -122,6 +127,13 @@ public sealed class NpcChatInputMenu : IClickableMenu
             var wrapped = line.Length > 100 ? line[..100] + "..." : line;
             b.DrawString(Game1.smallFont, wrapped, new Vector2(xPositionOnScreen + 24, lineY), Game1.textColor * 0.9f);
             lineY += 20;
+        }
+
+        if (_isThinking is not null && _isThinking())
+        {
+            var dots = (_thinkFrame / 20) % 3 + 1;
+            var thinking = "Thinking" + new string('.', dots);
+            b.DrawString(Game1.smallFont, thinking, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + 152), Color.LightGoldenrodYellow);
         }
 
         _input.Y = yPositionOnScreen + 172;

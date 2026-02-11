@@ -52,6 +52,8 @@ Player-facing Player2 UX:
 - policy: never replace original vanilla NPC dialogue; mod prompts must be additive follow-up only
 - Robin, Pierre, and Lewis have custom follow-up dialogue options: "Any new requests?", "Let's just talk.", "See you later."
 - selecting talk opens a persistent in-world chat input box showing recent player/NPC lines instead of closing immediately
+- persistent NPC memory + town memory context are injected into chat payloads (bounded/capped for low latency)
+- chat UI now shows a lightweight "Thinking..." indicator while awaiting NPC response
 - request routing now rotates across configured NPC roster (`Player2NpcRosterCsv`) when available (or targets the NPC you asked directly)
 - generation guardrails: cooldown, max manual checks per day (`MaxUiGeneratedRequestsPerDay`), and max outstanding requests (`MaxOutstandingRequests`)
 - automatic replay/retry after stream recovery does **not** consume the player's manual daily cap

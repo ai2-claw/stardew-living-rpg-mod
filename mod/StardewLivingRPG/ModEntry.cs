@@ -29,6 +29,8 @@ public sealed class ModEntry : Mod
     private RumorBoardService? _rumorBoardService;
     private NpcIntentResolver? _intentResolver;
     private AnchorEventService? _anchorEventService;
+    private NpcMemoryService? _npcMemoryService;
+    private TownMemoryService? _townMemoryService;
 
     // Player2 M2 runtime session state
     private Player2Client? _player2Client;
@@ -61,6 +63,7 @@ public sealed class ModEntry : Mod
     private readonly Dictionary<string, string> _player2NpcIdsByShortName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _player2NpcShortNameById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<string>> _npcUiMessagesById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
     private DateTime _player2LastChatSentUtc;
     private DateTime _player2LastStreamRecoveryUtc;
@@ -84,6 +87,8 @@ public sealed class ModEntry : Mod
         _rumorBoardService = new RumorBoardService();
         _intentResolver = new NpcIntentResolver(_rumorBoardService, _config.StrictNpcTemplateValidation);
         _anchorEventService = new AnchorEventService();
+        _npcMemoryService = new NpcMemoryService();
+        _townMemoryService = new TownMemoryService();
         _player2Client = new Player2Client();
 
         helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
@@ -102,6 +107,9 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_intent_smoketest", "Run mini automated intent resolver smoke tests.", OnIntentSmokeTestCommand);
         helper.ConsoleCommands.Add("slrpg_anchor_smoketest", "Run deterministic anchor trigger/resolution smoke test.", OnAnchorSmokeTestCommand);
         helper.ConsoleCommands.Add("slrpg_demo_bootstrap", "Seed reproducible vertical-slice scenario.", OnDemoBootstrapCommand);
+        helper.ConsoleCommands.Add("slrpg_memory_debug", "Dump NPC memory summary: slrpg_memory_debug <npc>", OnMemoryDebugCommand);
+        helper.ConsoleCommands.Add("slrpg_town_memory_dump", "Dump town-memory event count.", OnTownMemoryDumpCommand);
+        helper.ConsoleCommands.Add("slrpg_town_memory_npc", "Dump town-memory knowledge for npc: slrpg_town_memory_npc <npc>", OnTownMemoryNpcCommand);
 
         helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using configured game client id.", OnPlayer2LoginCommand);
         helper.ConsoleCommands.Add("slrpg_p2_spawn", "Spawn one Player2 NPC session.", OnPlayer2SpawnNpcCommand);
@@ -303,7 +311,8 @@ public sealed class ModEntry : Mod
                             else
                                 SendPlayer2ChatInternal(text);
                         },
-                        () => string.IsNullOrWhiteSpace(npcIdForChat) ? null : DequeueNpcUiMessage(npcIdForChat));
+                        () => string.IsNullOrWhiteSpace(npcIdForChat) ? null : DequeueNpcUiMessage(npcIdForChat),
+                        () => !string.IsNullOrWhiteSpace(npcIdForChat) && IsNpcThinking(npcIdForChat));
                 }
             },
             npc);
@@ -315,6 +324,8 @@ public sealed class ModEntry : Mod
     {
         if (!Context.IsWorldReady)
             return;
+
+        TryCaptureTownIncidents();
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
         {
@@ -448,6 +459,38 @@ public sealed class ModEntry : Mod
             CaptureNpcUiMessage(line);
             TryApplyNpcCommandFromLine(line);
         }
+    }
+
+    private void TryCaptureTownIncidents()
+    {
+        if (_townMemoryService is null || Game1.player is null || Game1.currentLocation is null)
+            return;
+
+        if (Game1.player.health > 0)
+            return;
+
+        var loc = Game1.currentLocation.Name ?? "unknown";
+        var isMineLike = loc.Contains("Mine", StringComparison.OrdinalIgnoreCase)
+            || loc.Contains("Cave", StringComparison.OrdinalIgnoreCase)
+            || loc.Contains("Skull", StringComparison.OrdinalIgnoreCase);
+
+        if (!isMineLike)
+            return;
+
+        var key = $"town_incident:faint:{_state.Calendar.Day}";
+        if (_state.Facts.Facts.ContainsKey(key))
+            return;
+
+        _state.Facts.Facts[key] = new FactValue { Value = true, SetDay = _state.Calendar.Day, Source = "system" };
+        _townMemoryService.RecordEvent(
+            _state,
+            "incident",
+            "Player fainted in the caves recently.",
+            loc,
+            _state.Calendar.Day,
+            severity: 3,
+            visibility: "local",
+            "mines", "health", "rescue");
     }
 
     private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
@@ -784,7 +827,13 @@ public sealed class ModEntry : Mod
         var questId = args[0].Trim();
         var result = _rumorBoardService.CompleteQuestWithChecks(_state, questId, Game1.player, consumeItems: true);
         if (result.Success)
+        {
+            var completed = _state.Quests.Completed.LastOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
+            if (completed is not null && _npcMemoryService is not null && !string.IsNullOrWhiteSpace(completed.Issuer))
+                _npcMemoryService.WriteFact(_state, completed.Issuer, "quest", $"Player completed request '{QuestTextHelper.BuildQuestTitle(completed)}'.", _state.Calendar.Day, 3);
+
             Monitor.Log(result.Message, LogLevel.Info);
+        }
         else
             Monitor.Log(result.Message, LogLevel.Warn);
     }
@@ -1052,6 +1101,29 @@ public sealed class ModEntry : Mod
         Monitor.Log("Advance one day (sleep) then run slrpg_debug_state, slrpg_open_board, slrpg_open_news, slrpg_open_rumors.", LogLevel.Info);
     }
 
+    private void OnMemoryDebugCommand(string name, string[] args)
+    {
+        if (_npcMemoryService is null)
+            return;
+
+        var npc = args.Length > 0 ? args[0].Trim() : "Robin";
+        Monitor.Log(_npcMemoryService.DumpNpcMemory(_state, npc), LogLevel.Info);
+    }
+
+    private void OnTownMemoryDumpCommand(string name, string[] args)
+    {
+        Monitor.Log($"Town memory events: {_state.TownMemory.Events.Count}", LogLevel.Info);
+    }
+
+    private void OnTownMemoryNpcCommand(string name, string[] args)
+    {
+        if (_townMemoryService is null)
+            return;
+
+        var npc = args.Length > 0 ? args[0].Trim() : "Robin";
+        Monitor.Log(_townMemoryService.DumpNpcTownMemory(_state, npc), LogLevel.Info);
+    }
+
     private void OnPlayer2LoginCommand(string name, string[] args)
     {
         if (_player2Client is null)
@@ -1292,11 +1364,16 @@ public sealed class ModEntry : Mod
                     Monitor.Log($"Player2 joules preflight | balance={joulesInfo.Joules} tier={joulesInfo.PatronTier}", LogLevel.Trace);
             }
 
+            var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
+
+            if (_npcMemoryService is not null)
+                _npcMemoryService.WriteTurn(_state, who, message, string.Empty, _state.Calendar.Day);
+
             var req = new NpcChatRequest
             {
                 SenderName = Game1.player?.Name ?? "Player",
                 SenderMessage = message,
-                GameStateInfo = BuildCompactGameStateInfo()
+                GameStateInfo = BuildCompactGameStateInfo(who, message)
             };
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -1305,8 +1382,8 @@ public sealed class ModEntry : Mod
 
             _player2PendingResponseCount += 1;
             _player2LastChatSentUtc = DateTime.UtcNow;
+            _npcUiPendingById.AddOrUpdate(npcId, 1, (_, v) => v + 1);
 
-            var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
             Monitor.Log($"Sent chat to Player2 NPC ({who}) id={npcId}. Keep stream listener running to receive response lines.", LogLevel.Info);
         }
         catch (Exception ex)
@@ -1550,6 +1627,14 @@ public sealed class ModEntry : Mod
 
             var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
             q.Enqueue(msg);
+
+            _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+
+            if (_npcMemoryService is not null)
+            {
+                var npcName = GetNpcShortNameById(npcId);
+                _npcMemoryService.WriteTurn(_state, npcName, string.Empty, msg, _state.Calendar.Day);
+            }
         }
         catch
         {
@@ -1563,6 +1648,11 @@ public sealed class ModEntry : Mod
             return null;
 
         return q.TryDequeue(out var msg) ? msg : null;
+    }
+
+    private bool IsNpcThinking(string npcId)
+    {
+        return _npcUiPendingById.TryGetValue(npcId, out var c) && c > 0;
     }
 
     private int? TryGetJoules(out JoulesResponse? info)
@@ -1629,7 +1719,7 @@ public sealed class ModEntry : Mod
         });
     }
 
-    private string BuildCompactGameStateInfo()
+    private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null)
     {
         var movers = _state.Economy.Crops
             .OrderByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
@@ -1665,6 +1755,16 @@ public sealed class ModEntry : Mod
             ? "none"
             : recommendation.Key;
 
+        var npcMemory = string.Empty;
+        var townMemory = string.Empty;
+        if (!string.IsNullOrWhiteSpace(npcName))
+        {
+            if (_npcMemoryService is not null)
+                npcMemory = _npcMemoryService.BuildMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
+            if (_townMemoryService is not null)
+                townMemory = _townMemoryService.BuildTownMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
+        }
+
         return string.Join(" ",
             "CANON_WORLD: Stardew Valley.",
             "CANON_TOWN: Pelican Town.",
@@ -1681,7 +1781,9 @@ public sealed class ModEntry : Mod
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
             $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}.",
             $"STATE: AvailableTownRequests {_state.Quests.Available.Count} ids=[{string.Join(",", availableQuestIds)}].",
-            $"STATE: ActiveTownRequests {_state.Quests.Active.Count} ids=[{string.Join(",", activeQuestIds)}]."
+            $"STATE: ActiveTownRequests {_state.Quests.Active.Count} ids=[{string.Join(",", activeQuestIds)}].",
+            npcMemory,
+            townMemory
         );
     }
 
