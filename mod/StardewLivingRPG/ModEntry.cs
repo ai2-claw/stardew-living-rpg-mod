@@ -357,7 +357,7 @@ public sealed class ModEntry : Mod
         };
 
         loc!.createQuestionDialogue(
-            $"{npc.displayName}: Anything else you need from the board?",
+            $"{npc.displayName}: Looking for a town request today?",
             responses,
             (_, answer) =>
             {
@@ -365,7 +365,7 @@ public sealed class ModEntry : Mod
                     return;
 
                 OnUiAskMayorForWork(npc.Name);
-                Game1.drawObjectDialogue($"{npc.displayName}: Have a look at the board in a moment — I may have pinned something fresh.");
+                Game1.drawObjectDialogue($"{npc.displayName}: I'll pin a fresh posting on the board for you.");
             },
             npc);
     }
