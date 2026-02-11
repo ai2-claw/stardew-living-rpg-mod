@@ -21,9 +21,6 @@ public sealed class ModConfig
     // Open request journal menu.
     public SButton OpenRequestJournalKey { get; set; } = SButton.O;
 
-    // Open additive NPC postings follow-up prompt (without overriding vanilla action dialogue).
-    public SButton OpenNpcPostingsPromptKey { get; set; } = SButton.P;
-
     // Player2 integration (M2)
     public bool EnablePlayer2 { get; set; } = false;
     public string Player2GameClientId { get; set; } = "";
