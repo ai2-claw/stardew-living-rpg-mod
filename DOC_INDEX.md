@@ -20,6 +20,9 @@ Start here for project documentation and implementation flow.
 - [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) — milestones and coding sequence
 - [VERTICAL_SLICE_CHECKLIST.md](./VERTICAL_SLICE_CHECKLIST.md) — testable slice acceptance criteria
 - [M2_INTENT_INJECTION_MATRIX.md](./M2_INTENT_INJECTION_MATRIX.md) — copy/paste resolver QA matrix for all NPC schema commands
+- [NEXT_STEPS_TASKS.md](./NEXT_STEPS_TASKS.md) — execution tracker for current polish tasks
+- [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) — pre-release verification checklist
+- [CHANGELOG.md](./CHANGELOG.md) — release notes and change history
 
 ## Mod code
 - [mod/StardewLivingRPG/](./mod/StardewLivingRPG/) — SMAPI mod scaffold + services
