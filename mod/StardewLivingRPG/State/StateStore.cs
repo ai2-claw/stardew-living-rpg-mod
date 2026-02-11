@@ -20,7 +20,10 @@ public static class StateStore
             {
                 state = helper.Data.ReadSaveData<SaveState>(LegacyDataKey);
                 if (state is not null)
+                {
+                    monitor.Log("Loaded save state from legacy key; writing future saves to the new valid key format.", LogLevel.Info);
                     return state;
+                }
             }
             catch
             {
