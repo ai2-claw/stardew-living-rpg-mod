@@ -251,7 +251,7 @@ public sealed class ModEntry : Mod
         return roster.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
     }
 
-    private bool TryCreateRosterTalkDialogue(StardewValley.Locations.GameLocation loc, NPC npc)
+    private bool TryCreateRosterTalkDialogue(GameLocation loc, NPC npc)
     {
         var name = npc.Name ?? string.Empty;
         if (!(string.Equals(name, "Robin", StringComparison.OrdinalIgnoreCase)

@@ -56,7 +56,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
         if (_cancelButton.Contains(x, y))
         {
-            exitThisMenuNoSound();
+            CloseMenu();
             Game1.playSound("bigDeSelect");
             return;
         }
@@ -74,7 +74,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
         if (key == Keys.Escape)
         {
-            exitThisMenuNoSound();
+            CloseMenu();
             Game1.playSound("bigDeSelect");
             return;
         }
@@ -115,7 +115,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
         _onSend(text);
         Game1.playSound("smallSelect");
-        exitThisMenuNoSound();
+        CloseMenu();
     }
 
     private static void DrawButton(SpriteBatch b, Rectangle rect, string text, bool enabled)
@@ -126,7 +126,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         b.DrawString(Game1.smallFont, text, new Vector2(rect.X + (rect.Width - size.X) / 2f, rect.Y + (rect.Height - size.Y) / 2f), Color.White * (enabled ? 1f : 0.7f));
     }
 
-    public override void exitThisMenuNoSound()
+    private void CloseMenu()
     {
         if (Game1.keyboardDispatcher.Subscriber == _input)
             Game1.keyboardDispatcher.Subscriber = null;
