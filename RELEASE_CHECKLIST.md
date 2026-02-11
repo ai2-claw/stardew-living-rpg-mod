@@ -43,6 +43,7 @@ Pre-release checklist for Stardew Living RPG Mod.
 - [ ] `README.md` command list/config list current.
 - [ ] `DOC_INDEX.md` links current docs.
 - [ ] `CHANGELOG.md` updated for release.
+- [ ] `node scripts/check-dialogue-policy.mjs` passes.
 - [ ] Tag/version chosen and release notes prepared.
 
 ## 8) Final signoff

@@ -25,6 +25,7 @@ Start here for project documentation and implementation flow.
 - [NEXT_STEPS_TASKS.md](./NEXT_STEPS_TASKS.md) — execution tracker for current polish tasks
 - [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) — pre-release verification checklist
 - [CHANGELOG.md](./CHANGELOG.md) — release notes and change history
+- [scripts/check-dialogue-policy.mjs](./scripts/check-dialogue-policy.mjs) — guardrail check for additive-only NPC dialogue policy
 
 ## Mod code
 - [mod/StardewLivingRPG/](./mod/StardewLivingRPG/) — SMAPI mod scaffold + services

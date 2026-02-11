@@ -71,6 +71,7 @@ Convert NPC conversation outcomes into discoverable in-world actions.
 - [x] Ensure NPC phrasing uses “Town Request” terminology.
 - [x] Prevent duplicate posting spam via existing idempotency/facts.
 - [x] Preserve vanilla dialogue: injected lines must be additive follow-up, never replacement.
+- [x] Never replace original vanilla NPC dialogue.
 
 Exit criteria:
 - player can get and follow work loop via NPC conversation + board/journal
