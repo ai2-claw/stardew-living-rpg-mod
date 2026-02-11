@@ -36,6 +36,10 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_status`: show login/NPC/stream state + joules balance
 - `slrpg_p2_health`: compact one-line health summary (login/npc/stream/joules/last line/last command)
 
+NPC intent pipeline:
+- validates intent envelopes against `NPC_COMMAND_SCHEMA.json` command constraints (including strict propose_quest args)
+- runs deterministic resolver path with explicit reject/duplicate/applied logs
+
 Config knobs:
 - `Player2DeviceAuthBaseUrl` (default `https://api.player2.game/v1`)
 - `Player2DeviceAuthTimeoutSeconds` (default `120`)

@@ -10,9 +10,6 @@ using StardewLivingRPG.Systems;
 using StardewLivingRPG.UI;
 using System.Collections.Concurrent;
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using System.Threading;
 
 namespace StardewLivingRPG;
@@ -27,6 +24,7 @@ public sealed class ModEntry : Mod
     private SalesIngestionService? _salesIngestionService;
     private NewspaperService? _newspaperService;
     private RumorBoardService? _rumorBoardService;
+    private NpcIntentResolver? _intentResolver;
     private AnchorEventService? _anchorEventService;
 
     // Player2 M2 runtime session state
@@ -56,6 +54,7 @@ public sealed class ModEntry : Mod
         _salesIngestionService = new SalesIngestionService();
         _newspaperService = new NewspaperService();
         _rumorBoardService = new RumorBoardService();
+        _intentResolver = new NpcIntentResolver(_rumorBoardService);
         _anchorEventService = new AnchorEventService();
         _player2Client = new Player2Client();
 
@@ -790,78 +789,37 @@ public sealed class ModEntry : Mod
     {
         try
         {
-            using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
-
-            if (!root.TryGetProperty("command", out var commandArray) || commandArray.ValueKind != JsonValueKind.Array)
+            if (_intentResolver is null)
                 return;
 
-            var npcId = root.TryGetProperty("npc_id", out var npcIdEl) ? (npcIdEl.GetString() ?? "unknown") : "unknown";
+            var result = _intentResolver.ResolveFromStreamLine(_state, line);
+            if (!result.HasIntent)
+                return;
 
-            foreach (var cmd in commandArray.EnumerateArray())
+            if (result.IsRejected)
             {
-                if (!cmd.TryGetProperty("name", out var nameEl))
-                    continue;
-
-                var cmdName = nameEl.GetString() ?? string.Empty;
-                if (!string.Equals(cmdName, "propose_quest", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                if (!cmd.TryGetProperty("arguments", out var argsEl))
-                    continue;
-
-                var argsJson = argsEl.ValueKind switch
-                {
-                    JsonValueKind.String => argsEl.GetString() ?? "{}",
-                    JsonValueKind.Object => argsEl.GetRawText(),
-                    _ => "{}"
-                };
-
-                using var argsDoc = JsonDocument.Parse(argsJson);
-                var argsRoot = argsDoc.RootElement;
-
-                var templateId = argsRoot.TryGetProperty("template_id", out var tEl) ? (tEl.GetString() ?? "gather_crop") : "gather_crop";
-                var target = argsRoot.TryGetProperty("target", out var tarEl) ? (tarEl.GetString() ?? "parsnip") : "parsnip";
-                var urgency = argsRoot.TryGetProperty("urgency", out var uEl) ? (uEl.GetString() ?? "low") : "low";
-
-                var intentKey = BuildIntentKey(npcId, cmdName, argsJson);
-                var result = _rumorBoardService?.CreateQuestFromNpcProposal(_state, npcId, templateId, target, urgency, intentKey);
-
-                if (result is null)
-                {
-                    Monitor.Log("NPC propose_quest ignored (service unavailable).", LogLevel.Debug);
-                    return;
-                }
-
-                if (result.IsDuplicate || string.IsNullOrWhiteSpace(result.CreatedQuestId))
-                {
-                    Monitor.Log("NPC propose_quest ignored (duplicate).", LogLevel.Debug);
-                    return;
-                }
-
-                var fallbackUsed =
-                    !string.Equals(result.RequestedTemplate, result.AppliedTemplate, StringComparison.OrdinalIgnoreCase) ||
-                    !string.Equals((result.RequestedTarget ?? string.Empty).Trim(), result.AppliedTarget, StringComparison.OrdinalIgnoreCase) ||
-                    !string.Equals(result.RequestedUrgency, result.AppliedUrgency, StringComparison.OrdinalIgnoreCase);
-
-                Monitor.Log($"Applied NPC command: propose_quest -> created {result.CreatedQuestId}", LogLevel.Info);
-                Monitor.Log($"Quest mapping | requested: template={result.RequestedTemplate}, target={result.RequestedTarget}, urgency={result.RequestedUrgency} | applied: template={result.AppliedTemplate}, target={result.AppliedTarget}, urgency={result.AppliedUrgency}, count={result.Count}, reward={result.RewardGold}, expires+{result.ExpiresDelta}d | fallback={fallbackUsed}", LogLevel.Info);
-                _player2LastCommandApplied = $"propose_quest:{result.CreatedQuestId}";
-                _player2LastCommandAppliedUtc = DateTime.UtcNow;
-
+                Monitor.Log($"NPC intent rejected: {result.Reason}", LogLevel.Warn);
                 return;
             }
+
+            if (result.IsDuplicate)
+            {
+                Monitor.Log($"NPC intent duplicate ignored: {result.IntentId}", LogLevel.Debug);
+                return;
+            }
+
+            if (!result.AppliedOk || result.Proposal is null)
+                return;
+
+            var p = result.Proposal;
+            Monitor.Log($"Applied NPC command: {result.Command} -> created {result.QuestId} (intent={result.IntentId})", LogLevel.Info);
+            Monitor.Log($"Quest mapping | requested: template={p.RequestedTemplate}, target={p.RequestedTarget}, urgency={p.RequestedUrgency} | applied: template={p.AppliedTemplate}, target={p.AppliedTarget}, urgency={p.AppliedUrgency}, count={p.Count}, reward={p.RewardGold}, expires+{p.ExpiresDelta}d | fallback={result.FallbackUsed}", LogLevel.Info);
+            _player2LastCommandApplied = $"{result.Command}:{result.QuestId}";
+            _player2LastCommandAppliedUtc = DateTime.UtcNow;
         }
         catch (Exception ex)
         {
             Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
         }
-    }
-
-    private static string BuildIntentKey(string npcId, string commandName, string argsJson)
-    {
-        var raw = $"{npcId}|{commandName}|{argsJson}";
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
-        return Convert.ToHexString(hash);
     }
 }
