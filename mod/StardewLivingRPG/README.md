@@ -45,7 +45,7 @@ M0 + M1 scaffold includes:
 Player-facing Player2 UX:
 - auto-connect on save load (config: `AutoConnectPlayer2OnLoad`, default `true`)
 - HUD status badge in top-left: click `Town AI: Reconnect` to trigger login -> spawn -> stream pipeline
-- in-world "Check for Requests" action in Town Request Board triggers resolver-safe request generation via Player2
+- in-world "New Postings" action in Town Request Board triggers resolver-safe request generation via Player2
 
 NPC intent pipeline:
 - validates intent envelopes against `NPC_COMMAND_SCHEMA.json` command constraints

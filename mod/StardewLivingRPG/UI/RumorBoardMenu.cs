@@ -101,7 +101,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         if (_askWorkButton.Contains(x, y))
         {
             _onAskMayorForWork();
-            _statusMessage = "Checking town channels for new requests...";
+            _statusMessage = "Looking over the board for new postings...";
             Game1.playSound("newArtifact");
             return;
         }
@@ -235,7 +235,7 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         DrawButton(b, _acceptButton, "Accept", enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
         DrawButton(b, _completeButton, "Complete", enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
-        DrawButton(b, _askWorkButton, "Check for Requests", enabled: true);
+        DrawButton(b, _askWorkButton, "New Postings", enabled: true);
     }
 
     private static void DrawButton(SpriteBatch b, Rectangle rect, string text, bool enabled)

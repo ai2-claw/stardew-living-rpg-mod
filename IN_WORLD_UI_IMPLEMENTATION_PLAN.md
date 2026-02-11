@@ -86,6 +86,7 @@ Link Market Board/Newspaper context with request opportunities.
 - [ ] Add newspaper callout linking to relevant request type.
 - [ ] Surface anchor-related request urgency in UI.
 - [ ] Ensure copied terms are cohesive (Town Requests, not dev jargon).
+- [ ] Enforce wording style: short diegetic labels, no modern digital UI metaphors for physical board interactions.
 
 Exit criteria:
 - economy/news/request systems feel like one coherent loop
