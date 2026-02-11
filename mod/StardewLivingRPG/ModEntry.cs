@@ -58,6 +58,7 @@ public sealed class ModEntry : Mod
     private int _uiWorkRequestInFlight;
     private int _uiRequesterRoundRobinIndex;
     private readonly Dictionary<string, string> _player2NpcIdsByShortName = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _player2NpcShortNameById = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
     private DateTime _player2LastChatSentUtc;
     private DateTime _player2LastStreamRecoveryUtc;
@@ -325,6 +326,7 @@ public sealed class ModEntry : Mod
 
                 _activeNpcId = null;
                 _player2NpcIdsByShortName.Clear();
+                _player2NpcShortNameById.Clear();
                 _player2PendingResponseCount = 0;
                 _pendingUiMayorWorkRequest = replayPrompt;
                 _pendingUiRequesterShortName = replayRequester;
@@ -1097,6 +1099,7 @@ public sealed class ModEntry : Mod
                 .GetAwaiter().GetResult();
 
             _player2NpcIdsByShortName[req.ShortName] = _activeNpcId;
+            _player2NpcShortNameById[_activeNpcId] = req.ShortName;
             Monitor.Log($"Player2 NPC spawned: {req.ShortName} -> {_activeNpcId}", LogLevel.Info);
 
             SpawnAdditionalConfiguredNpcs();
@@ -1173,6 +1176,7 @@ public sealed class ModEntry : Mod
                     .GetAwaiter().GetResult();
 
                 _player2NpcIdsByShortName[shortName] = npcId;
+                _player2NpcShortNameById[npcId] = shortName;
                 Monitor.Log($"Player2 NPC spawned (roster): {shortName} -> {npcId}", LogLevel.Info);
             }
             catch (Exception ex)
@@ -1571,6 +1575,18 @@ public sealed class ModEntry : Mod
             if (_intentResolver is null)
                 return;
 
+            string? sourceNpcId = null;
+            try
+            {
+                using var lineDoc = JsonDocument.Parse(line);
+                if (lineDoc.RootElement.TryGetProperty("npc_id", out var npcEl) && npcEl.ValueKind == JsonValueKind.String)
+                    sourceNpcId = npcEl.GetString();
+            }
+            catch
+            {
+                // ignore npc_id extraction failure; resolver still handles command parsing.
+            }
+
             var result = _intentResolver.ResolveFromStreamLine(_state, line);
             if (!result.HasIntent)
                 return;
@@ -1602,6 +1618,14 @@ public sealed class ModEntry : Mod
             {
                 var p = result.Proposal;
                 Monitor.Log($"Quest mapping | requested: template={p.RequestedTemplate}, target={p.RequestedTarget}, urgency={p.RequestedUrgency} | applied: template={p.AppliedTemplate}, target={p.AppliedTarget}, urgency={p.AppliedUrgency}, count={p.Count}, reward={p.RewardGold}, expires+{p.ExpiresDelta}d | fallback={result.FallbackUsed}", LogLevel.Info);
+
+                if (!string.IsNullOrWhiteSpace(sourceNpcId)
+                    && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var issuerShortName))
+                {
+                    var q = _state.Quests.Available.FirstOrDefault(x => x.QuestId.Equals(result.OutcomeId, StringComparison.OrdinalIgnoreCase));
+                    if (q is not null)
+                        q.Issuer = issuerShortName.ToLowerInvariant();
+                }
             }
 
             _player2LastCommandApplied = $"{result.Command}:{result.OutcomeId}";
