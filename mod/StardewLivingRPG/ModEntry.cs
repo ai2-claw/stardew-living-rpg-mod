@@ -46,6 +46,10 @@ public sealed class ModEntry : Mod
     private int _player2StreamBackoffSec = 1;
     private DateTime _player2NextReconnectUtc;
 
+    private int _player2ConnectInFlight;
+    private string _player2UiStatus = "Player2: idle";
+    private DateTime _player2LastAutoConnectAttemptUtc;
+
     public override void Entry(IModHelper helper)
     {
         _config = helper.ReadConfig<ModConfig>();
@@ -91,6 +95,7 @@ public sealed class ModEntry : Mod
         helper.Events.GameLoop.DayEnding += OnDayEnding;
         helper.Events.GameLoop.DayStarted += OnDayStarted;
         helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
+        helper.Events.Display.RenderedHud += OnRenderedHud;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
 
         Monitor.Log("Stardew Living RPG loaded.", LogLevel.Info);
@@ -102,6 +107,9 @@ public sealed class ModEntry : Mod
         _state.ApplyConfig(_config);
         _economyService?.EnsureInitialized(_state.Economy);
         Monitor.Log($"State loaded (version={_state.Version}, mode={_state.Config.Mode}).", LogLevel.Info);
+
+        if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
+            StartPlayer2AutoConnect("save-loaded", force: false);
     }
 
     private void OnSaving(object? sender, SavingEventArgs e)
@@ -161,12 +169,25 @@ public sealed class ModEntry : Mod
             OpenRumorBoard();
         else if (e.Button == _config.OpenRequestJournalKey)
             OpenRequestJournal();
+        else if (e.Button == SButton.MouseLeft)
+        {
+            var point = new Point(Game1.getMouseX(), Game1.getMouseY());
+            if (GetPlayer2HudRect().Contains(point))
+                StartPlayer2AutoConnect("hud-button", force: true);
+        }
     }
 
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)
     {
         if (!Context.IsWorldReady)
             return;
+
+        if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
+        {
+            var shouldAttempt = string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(_activeNpcId) || !_player2StreamDesired;
+            if (shouldAttempt && DateTime.UtcNow - _player2LastAutoConnectAttemptUtc > TimeSpan.FromSeconds(20))
+                StartPlayer2AutoConnect("auto-retry", force: false);
+        }
 
         if (_player2ReadInFlight == 1 && _player2ReadStartedUtc != default)
         {
@@ -207,6 +228,91 @@ public sealed class ModEntry : Mod
             _player2StreamBackoffSec = 1;
             TryApplyNpcCommandFromLine(line);
         }
+    }
+
+    private void OnRenderedHud(object? sender, RenderedHudEventArgs e)
+    {
+        if (!Context.IsWorldReady || Game1.eventUp || Game1.activeClickableMenu is not null)
+            return;
+
+        var rect = GetPlayer2HudRect();
+        var connected = !string.IsNullOrWhiteSpace(_player2Key)
+            && !string.IsNullOrWhiteSpace(_activeNpcId)
+            && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+
+        var bg = connected ? Color.DarkGreen * 0.75f : Color.DarkRed * 0.75f;
+        e.SpriteBatch.Draw(Game1.staminaRect, rect, bg);
+
+        var label = connected ? "Town AI: Connected" : "Town AI: Reconnect";
+        var size = Game1.smallFont.MeasureString(label);
+        e.SpriteBatch.DrawString(Game1.smallFont, label, new Vector2(rect.X + (rect.Width - size.X) / 2f, rect.Y + 6), Color.White);
+
+        if (!string.IsNullOrWhiteSpace(_player2UiStatus))
+        {
+            var status = _player2UiStatus.Length > 52 ? _player2UiStatus[..52] + "..." : _player2UiStatus;
+            e.SpriteBatch.DrawString(Game1.smallFont, status, new Vector2(rect.X, rect.Bottom + 4), Game1.textColor * 0.85f);
+        }
+    }
+
+    private Rectangle GetPlayer2HudRect()
+    {
+        return new Rectangle(16, 16, 220, 30);
+    }
+
+    private void StartPlayer2AutoConnect(string reason, bool force)
+    {
+        if (!_config.EnablePlayer2 || _player2Client is null)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_config.Player2GameClientId))
+        {
+            _player2UiStatus = "Player2 disabled: missing game client id.";
+            return;
+        }
+
+        if (!force)
+        {
+            var alreadyConnected = !string.IsNullOrWhiteSpace(_player2Key)
+                && !string.IsNullOrWhiteSpace(_activeNpcId)
+                && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+            if (alreadyConnected)
+                return;
+        }
+
+        if (Interlocked.Exchange(ref _player2ConnectInFlight, 1) == 1)
+            return;
+
+        _player2LastAutoConnectAttemptUtc = DateTime.UtcNow;
+        _player2UiStatus = $"Player2 connecting ({reason})...";
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_player2Key))
+                    OnPlayer2LoginCommand("slrpg_p2_login", Array.Empty<string>());
+
+                if (!string.IsNullOrWhiteSpace(_player2Key) && string.IsNullOrWhiteSpace(_activeNpcId))
+                    OnPlayer2SpawnNpcCommand("slrpg_p2_spawn", Array.Empty<string>());
+
+                if (!string.IsNullOrWhiteSpace(_player2Key) && !_player2StreamDesired)
+                    OnPlayer2StreamStartCommand("slrpg_p2_stream_start", Array.Empty<string>());
+
+                var ok = !string.IsNullOrWhiteSpace(_player2Key)
+                    && !string.IsNullOrWhiteSpace(_activeNpcId)
+                    && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+
+                _player2UiStatus = ok ? "Player2 connected." : "Player2 partially connected. Click reconnect.";
+            }
+            catch (Exception ex)
+            {
+                _player2UiStatus = "Player2 connect failed: " + ex.Message;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _player2ConnectInFlight, 0);
+            }
+        });
     }
 
     private void CollectShippingBinSales()

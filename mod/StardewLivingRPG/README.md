@@ -42,6 +42,10 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_status`: show login/NPC/stream state + joules balance
 - `slrpg_p2_health`: compact one-line health summary (login/npc/stream/joules/last line/last command)
 
+Player-facing Player2 UX:
+- auto-connect on save load (config: `AutoConnectPlayer2OnLoad`, default `true`)
+- HUD status badge in top-left: click `Town AI: Reconnect` to trigger login -> spawn -> stream pipeline
+
 NPC intent pipeline:
 - validates intent envelopes against `NPC_COMMAND_SCHEMA.json` command constraints
 - implemented deterministic handlers: `propose_quest`, `adjust_reputation`, `shift_interest_influence`, `apply_market_modifier`, `publish_rumor`

@@ -31,4 +31,7 @@ public sealed class ModConfig
     public bool Player2BlockChatWhenLowJoules { get; set; } = true;
     public int Player2MinJoulesToChat { get; set; } = 5;
     public bool StrictNpcTemplateValidation { get; set; } = false; // when true, disable legacy quest_* template repair
+
+    // Player-facing auto-connect UX
+    public bool AutoConnectPlayer2OnLoad { get; set; } = true;
 }
