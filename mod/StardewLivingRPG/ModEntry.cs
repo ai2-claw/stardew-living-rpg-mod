@@ -52,6 +52,8 @@ public sealed class ModEntry : Mod
     private DateTime _player2LastAutoConnectAttemptUtc;
     private string? _pendingUiMayorWorkRequest;
     private string? _pendingUiRequesterShortName;
+    private string? _lastUiWorkPrompt;
+    private string? _lastUiWorkRequesterShortName;
     private DateTime _lastUiWorkRequestUtc;
     private int _uiWorkRequestInFlight;
     private int _uiRequesterRoundRobinIndex;
@@ -298,13 +300,16 @@ public sealed class ModEntry : Mod
             if (_player2WatchdogRecoveries >= 6)
             {
                 Monitor.Log("Player2 watchdog escalation: forcing session refresh (respawn + reconnect).", LogLevel.Error);
-                _player2UiStatus = "Town AI stalled. Refreshing NPC sessions...";
+                _player2UiStatus = "Town AI stalled. Refreshing NPC sessions and retrying your request...";
+
+                var replayPrompt = _pendingUiMayorWorkRequest ?? _lastUiWorkPrompt;
+                var replayRequester = _pendingUiRequesterShortName ?? _lastUiWorkRequesterShortName;
 
                 _activeNpcId = null;
                 _player2NpcIdsByShortName.Clear();
                 _player2PendingResponseCount = 0;
-                _pendingUiMayorWorkRequest = null;
-                _pendingUiRequesterShortName = null;
+                _pendingUiMayorWorkRequest = replayPrompt;
+                _pendingUiRequesterShortName = replayRequester;
                 _player2WatchdogRecoveries = 0;
                 _player2WatchdogWindowStartUtc = DateTime.UtcNow;
 
@@ -1243,6 +1248,8 @@ public sealed class ModEntry : Mod
         {
             var (requester, requesterNpcId) = GetNextRequester(preferredRequester);
             var prompt = $"{requester}, do you have a practical town request for me today? Use propose_quest with a safe template and parameters.";
+            _lastUiWorkPrompt = prompt;
+            _lastUiWorkRequesterShortName = requester;
 
             var connected = !string.IsNullOrWhiteSpace(_player2Key)
                 && !string.IsNullOrWhiteSpace(_activeNpcId)
