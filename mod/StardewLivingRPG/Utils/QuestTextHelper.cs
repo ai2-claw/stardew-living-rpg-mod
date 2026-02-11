@@ -51,6 +51,14 @@ public static class QuestTextHelper
         if (string.IsNullOrWhiteSpace(value))
             return "Supplies";
 
+        return PrettyName(value);
+    }
+
+    public static string PrettyName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
         var normalized = value.Replace("_", " ").Trim();
         var words = normalized
             .Split(' ', StringSplitOptions.RemoveEmptyEntries)

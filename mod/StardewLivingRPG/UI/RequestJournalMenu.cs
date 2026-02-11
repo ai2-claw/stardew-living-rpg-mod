@@ -166,7 +166,7 @@ public sealed class RequestJournalMenu : IClickableMenu
         var progress = _rumorBoardService.GetQuestProgress(_state, q.QuestId, Game1.player);
 
         b.DrawString(Game1.smallFont, title, new Vector2(panel.X + 12, panel.Y + 10), Game1.textColor);
-        b.DrawString(Game1.smallFont, $"Reward +{q.RewardGold}g | Expires day {q.ExpiresDay} | From {q.Issuer}", new Vector2(panel.X + 12, panel.Y + 34), Game1.textColor);
+        b.DrawString(Game1.smallFont, $"Reward +{q.RewardGold}g | Expires day {q.ExpiresDay} | From {QuestTextHelper.PrettyName(q.Issuer)}", new Vector2(panel.X + 12, panel.Y + 34), Game1.textColor);
         if (progress.RequiresItems)
             b.DrawString(Game1.smallFont, $"Progress: {progress.HaveCount}/{progress.NeedCount} {q.TargetItem}", new Vector2(panel.X + 12, panel.Y + 58), Game1.textColor);
 

@@ -237,7 +237,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         var lines = new List<string>
         {
             $"Request: {QuestTextHelper.BuildQuestTitle(q)} ({q.Status})",
-            $"From: {q.Issuer} | Reward: +{q.RewardGold}g | Expires day {q.ExpiresDay}",
+            $"From: {QuestTextHelper.PrettyName(q.Issuer)} | Reward: +{q.RewardGold}g | Expires day {q.ExpiresDay}",
             q.Summary,
             $"Reference: {q.QuestId}"
         };
