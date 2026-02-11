@@ -14,16 +14,18 @@ public sealed class RequestJournalMenu : IClickableMenu
     private readonly SaveState _state;
     private readonly RumorBoardService _rumorBoardService;
     private readonly IMonitor _monitor;
+    private readonly Action _onAskMayorForWork;
 
     private readonly Rectangle _tabActive;
     private readonly Rectangle _tabCompleted;
     private readonly Rectangle _completeButton;
+    private readonly Rectangle _askWorkButton;
 
     private bool _showCompleted;
     private QuestEntry? _selectedQuest;
     private string _status = "Select a request.";
 
-    public RequestJournalMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor)
+    public RequestJournalMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork)
         : base(
             Game1.uiViewport.Width / 2 - 460,
             Game1.uiViewport.Height / 2 - 290,
@@ -34,10 +36,12 @@ public sealed class RequestJournalMenu : IClickableMenu
         _state = state;
         _rumorBoardService = rumorBoardService;
         _monitor = monitor;
+        _onAskMayorForWork = onAskMayorForWork;
 
         _tabActive = new Rectangle(xPositionOnScreen + 24, yPositionOnScreen + 20, 140, 36);
         _tabCompleted = new Rectangle(xPositionOnScreen + 172, yPositionOnScreen + 20, 170, 36);
         _completeButton = new Rectangle(xPositionOnScreen + width - 220, yPositionOnScreen + height - 64, 180, 40);
+        _askWorkButton = new Rectangle(xPositionOnScreen + width - 430, yPositionOnScreen + height - 64, 190, 40);
     }
 
     public override void receiveLeftClick(int x, int y, bool playSound = true)
@@ -68,6 +72,14 @@ public sealed class RequestJournalMenu : IClickableMenu
                 continue;
             _selectedQuest = q;
             Game1.playSound("smallSelect");
+            return;
+        }
+
+        if (_askWorkButton.Contains(x, y))
+        {
+            _onAskMayorForWork();
+            _status = "Asked Mayor Lewis for work. Check for a new Town Request.";
+            Game1.playSound("newArtifact");
             return;
         }
 
@@ -170,17 +182,18 @@ public sealed class RequestJournalMenu : IClickableMenu
         if (progress.RequiresItems)
             b.DrawString(Game1.smallFont, $"Progress: {progress.HaveCount}/{progress.NeedCount} {q.TargetItem}", new Vector2(panel.X + 12, panel.Y + 58), Game1.textColor);
 
+        DrawActionButton(b, _askWorkButton, "Ask Mayor for Work", enabled: true);
+
         if (!_showCompleted)
-            DrawCompleteButton(b, _selectedQuest.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
+            DrawActionButton(b, _completeButton, "Complete Request", _selectedQuest.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
     }
 
-    private void DrawCompleteButton(SpriteBatch b, bool enabled)
+    private static void DrawActionButton(SpriteBatch b, Rectangle rect, string text, bool enabled)
     {
         var bg = enabled ? Color.DarkOliveGreen * 0.7f : Color.DimGray * 0.45f;
-        b.Draw(Game1.staminaRect, _completeButton, bg);
-        var t = "Complete Request";
-        var size = Game1.smallFont.MeasureString(t);
-        b.DrawString(Game1.smallFont, t, new Vector2(_completeButton.X + (_completeButton.Width - size.X) / 2f, _completeButton.Y + (_completeButton.Height - size.Y) / 2f), Color.White * (enabled ? 1f : 0.7f));
+        b.Draw(Game1.staminaRect, rect, bg);
+        var size = Game1.smallFont.MeasureString(text);
+        b.DrawString(Game1.smallFont, text, new Vector2(rect.X + (rect.Width - size.X) / 2f, rect.Y + (rect.Height - size.Y) / 2f), Color.White * (enabled ? 1f : 0.7f));
     }
 
     private static void DrawTab(SpriteBatch b, Rectangle rect, string text, bool active)

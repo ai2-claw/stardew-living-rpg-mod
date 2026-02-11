@@ -66,10 +66,10 @@ Convert NPC conversation outcomes into discoverable in-world actions.
 
 ### Tasks
 - [ ] Add dialogue response option from key NPC(s): “Any work today?”
-- [ ] On option select, trigger request generation path (resolver-safe).
-- [ ] Add in-character acknowledgment when request posted.
-- [ ] Ensure NPC phrasing uses “Town Request” terminology.
-- [ ] Prevent duplicate posting spam via existing idempotency/facts.
+- [x] On in-world UI action, trigger request generation path (resolver-safe).
+- [x] Add in-character acknowledgment when request posted.
+- [x] Ensure NPC phrasing uses “Town Request” terminology.
+- [x] Prevent duplicate posting spam via existing idempotency/facts.
 
 Exit criteria:
 - player can get and follow work loop via NPC conversation + board/journal

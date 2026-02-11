@@ -14,6 +14,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private readonly SaveState _state;
     private readonly RumorBoardService _rumorBoardService;
     private readonly IMonitor _monitor;
+    private readonly Action _onAskMayorForWork;
 
     private readonly List<(QuestEntry Quest, Rectangle Rect)> _availableRows = new();
     private readonly List<(QuestEntry Quest, Rectangle Rect)> _activeRows = new();
@@ -23,8 +24,9 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     private Rectangle _acceptButton;
     private Rectangle _completeButton;
+    private Rectangle _askWorkButton;
 
-    public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor)
+    public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork)
         : base(
             Game1.uiViewport.Width / 2 - 480,
             Game1.uiViewport.Height / 2 - 300,
@@ -35,6 +37,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         _state = state;
         _rumorBoardService = rumorBoardService;
         _monitor = monitor;
+        _onAskMayorForWork = onAskMayorForWork;
         BuildLayout();
     }
 
@@ -68,6 +71,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         var detailY = yPositionOnScreen + height - 188;
         _acceptButton = new Rectangle(xPositionOnScreen + 36, detailY + 128, 160, 40);
         _completeButton = new Rectangle(xPositionOnScreen + 212, detailY + 128, 190, 40);
+        _askWorkButton = new Rectangle(xPositionOnScreen + width - 250, detailY + 128, 210, 40);
     }
 
     public override void receiveLeftClick(int x, int y, bool playSound = true)
@@ -91,6 +95,14 @@ public sealed class RumorBoardMenu : IClickableMenu
 
             _selectedQuest = quest;
             Game1.playSound("smallSelect");
+            return;
+        }
+
+        if (_askWorkButton.Contains(x, y))
+        {
+            _onAskMayorForWork();
+            _statusMessage = "Asked Mayor Lewis for work. Watch for a new Town Request.";
+            Game1.playSound("newArtifact");
             return;
         }
 
@@ -223,6 +235,7 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         DrawButton(b, _acceptButton, "Accept", enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
         DrawButton(b, _completeButton, "Complete", enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
+        DrawButton(b, _askWorkButton, "Ask Mayor for Work", enabled: true);
     }
 
     private static void DrawButton(SpriteBatch b, Rectangle rect, string text, bool enabled)

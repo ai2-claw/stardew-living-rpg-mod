@@ -50,6 +50,7 @@ public sealed class ModEntry : Mod
     private int _player2ConnectInFlight;
     private string _player2UiStatus = "Player2: idle";
     private DateTime _player2LastAutoConnectAttemptUtc;
+    private string? _pendingUiMayorWorkRequest;
 
     public override void Entry(IModHelper helper)
     {
@@ -210,6 +211,15 @@ public sealed class ModEntry : Mod
             StartPlayer2StreamListenerAttempt();
         }
 
+        if (!string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest)
+            && !string.IsNullOrWhiteSpace(_player2Key)
+            && !string.IsNullOrWhiteSpace(_activeNpcId))
+        {
+            var req = _pendingUiMayorWorkRequest!;
+            _pendingUiMayorWorkRequest = null;
+            SendPlayer2ChatInternal(req);
+        }
+
         while (_pendingPlayer2Lines.TryDequeue(out var line))
         {
             if (line.StartsWith("__ERR__", StringComparison.Ordinal))
@@ -359,7 +369,7 @@ public sealed class ModEntry : Mod
         if (_rumorBoardService is null)
             return;
 
-        Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor);
+        Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor, OnUiAskMayorForWork);
     }
 
     private void OpenRequestJournal()
@@ -367,7 +377,7 @@ public sealed class ModEntry : Mod
         if (_rumorBoardService is null)
             return;
 
-        Game1.activeClickableMenu = new RequestJournalMenu(_state, _rumorBoardService, Monitor);
+        Game1.activeClickableMenu = new RequestJournalMenu(_state, _rumorBoardService, Monitor, OnUiAskMayorForWork);
     }
 
     private void OnSellCommand(string name, string[] args)
@@ -922,6 +932,14 @@ public sealed class ModEntry : Mod
         }
 
         var message = args.Length == 0 ? "How is the town market today?" : string.Join(' ', args);
+        SendPlayer2ChatInternal(message);
+    }
+
+    private void SendPlayer2ChatInternal(string message)
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(_activeNpcId))
+            return;
+
         try
         {
             if (_config.Player2BlockChatWhenLowJoules)
@@ -954,6 +972,26 @@ public sealed class ModEntry : Mod
         {
             Monitor.Log($"Player2 chat failed: {ex.Message}", LogLevel.Error);
         }
+    }
+
+    private void OnUiAskMayorForWork()
+    {
+        const string prompt = "Mayor Lewis, do you have a practical town request for me today? Use propose_quest with a safe template and parameters.";
+
+        var connected = !string.IsNullOrWhiteSpace(_player2Key)
+            && !string.IsNullOrWhiteSpace(_activeNpcId)
+            && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+
+        if (!connected)
+        {
+            _pendingUiMayorWorkRequest = prompt;
+            _player2UiStatus = "Connecting Town AI to request work...";
+            StartPlayer2AutoConnect("ui-ask-work", force: true);
+            return;
+        }
+
+        SendPlayer2ChatInternal(prompt);
+        _player2UiStatus = "Asked Mayor Lewis for a new town request.";
     }
 
     private void OnPlayer2ReadOnceCommand(string name, string[] args)
