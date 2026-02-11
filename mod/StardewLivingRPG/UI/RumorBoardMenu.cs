@@ -21,6 +21,8 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     private QuestEntry? _selectedQuest;
     private string _statusMessage = "Select a Town Request to view details.";
+    private int _lastAvailableCount;
+    private int _lastActiveCount;
 
     private Rectangle _acceptButton;
     private Rectangle _completeButton;
@@ -38,6 +40,8 @@ public sealed class RumorBoardMenu : IClickableMenu
         _rumorBoardService = rumorBoardService;
         _monitor = monitor;
         _onAskMayorForWork = onAskMayorForWork;
+        _lastAvailableCount = _state.Quests.Available.Count;
+        _lastActiveCount = _state.Quests.Active.Count;
         BuildLayout();
     }
 
@@ -102,6 +106,8 @@ public sealed class RumorBoardMenu : IClickableMenu
         {
             _onAskMayorForWork();
             _statusMessage = "Looking over the board for new postings...";
+            _lastAvailableCount = _state.Quests.Available.Count;
+            _lastActiveCount = _state.Quests.Active.Count;
             Game1.playSound("newArtifact");
             return;
         }
@@ -150,6 +156,13 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     public override void draw(SpriteBatch b)
     {
+        if (_lastAvailableCount != _state.Quests.Available.Count || _lastActiveCount != _state.Quests.Active.Count)
+        {
+            _lastAvailableCount = _state.Quests.Available.Count;
+            _lastActiveCount = _state.Quests.Active.Count;
+            BuildLayout();
+        }
+
         Game1.drawDialogueBox(xPositionOnScreen, yPositionOnScreen, width, height, false, true);
 
         var titleX = xPositionOnScreen + 24;
@@ -161,7 +174,8 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         DrawDetailPanel(b);
 
-        b.DrawString(Game1.smallFont, _statusMessage, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + height - 22), Game1.textColor * 0.75f);
+        b.Draw(Game1.staminaRect, new Rectangle(xPositionOnScreen + 20, yPositionOnScreen + height - 44, width - 40, 20), Color.Black * 0.25f);
+        b.DrawString(Game1.smallFont, _statusMessage, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + height - 42), Game1.textColor * 0.9f);
 
         drawMouse(b);
     }
