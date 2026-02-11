@@ -1,4 +1,5 @@
 using StardewLivingRPG.State;
+using StardewValley;
 
 namespace StardewLivingRPG.Systems;
 
@@ -117,20 +118,45 @@ public sealed class RumorBoardService
         if (quest is null)
             return false;
 
-        state.Quests.Active.Remove(quest);
-        quest.Status = "completed";
-        state.Quests.Completed.Add(quest);
-
-        state.Facts.Facts[$"quest:{quest.QuestId}:completed"] = new FactValue
-        {
-            Value = true,
-            SetDay = state.Calendar.Day,
-            Source = "system"
-        };
-
-        ApplyRewards(state, quest);
-        state.Telemetry.Daily.RumorBoardCompletions += 1;
+        CompleteQuestInternal(state, quest);
         return true;
+    }
+
+    public QuestCompletionResult CompleteQuestWithChecks(SaveState state, string questId, Farmer? player, bool consumeItems = true)
+    {
+        var quest = state.Quests.Active.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
+        if (quest is null)
+            return new QuestCompletionResult { Success = false, Message = $"Active quest not found: {questId}" };
+
+        if (RequiresItemDelivery(quest.TemplateId))
+        {
+            var needed = Math.Max(1, quest.TargetCount);
+            var have = CountMatchingItems(player, quest.TargetItem);
+            if (have < needed)
+            {
+                return new QuestCompletionResult
+                {
+                    Success = false,
+                    Message = $"Need {needed} {quest.TargetItem}, but only have {have}."
+                };
+            }
+
+            if (consumeItems)
+                ConsumeMatchingItems(player, quest.TargetItem, needed);
+        }
+
+        CompleteQuestInternal(state, quest);
+
+        var reward = Math.Max(0, quest.RewardGold);
+        if (player is not null && reward > 0)
+            player.Money += reward;
+
+        return new QuestCompletionResult
+        {
+            Success = true,
+            Message = $"Completed quest: {quest.QuestId} (+{reward}g)",
+            RewardGold = reward
+        };
     }
 
     public QuestProposalResult CreateQuestFromNpcProposal(
@@ -203,6 +229,86 @@ public sealed class RumorBoardService
             RewardGold = rewardGold,
             ExpiresDelta = expiresDelta
         };
+    }
+
+    private static void CompleteQuestInternal(SaveState state, QuestEntry quest)
+    {
+        state.Quests.Active.Remove(quest);
+        quest.Status = "completed";
+        state.Quests.Completed.Add(quest);
+
+        state.Facts.Facts[$"quest:{quest.QuestId}:completed"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "system"
+        };
+
+        ApplyRewards(state, quest);
+        state.Telemetry.Daily.RumorBoardCompletions += 1;
+    }
+
+    private static bool RequiresItemDelivery(string templateId)
+    {
+        return string.Equals(templateId, "gather_crop", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(templateId, "deliver_item", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(templateId, "mine_resource", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int CountMatchingItems(Farmer? player, string target)
+    {
+        if (player?.Items is null)
+            return 0;
+
+        var total = 0;
+        var normalizedTarget = NormalizeItemKey(target);
+        foreach (var item in player.Items)
+        {
+            if (item is null)
+                continue;
+
+            var itemName = NormalizeItemKey(item.DisplayName);
+            if (!string.Equals(itemName, normalizedTarget, StringComparison.Ordinal))
+                continue;
+
+            total += Math.Max(1, item.Stack);
+        }
+
+        return total;
+    }
+
+    private static void ConsumeMatchingItems(Farmer? player, string target, int needed)
+    {
+        if (player?.Items is null || needed <= 0)
+            return;
+
+        var normalizedTarget = NormalizeItemKey(target);
+
+        for (var i = 0; i < player.Items.Count && needed > 0; i++)
+        {
+            var item = player.Items[i];
+            if (item is null)
+                continue;
+
+            var itemName = NormalizeItemKey(item.DisplayName);
+            if (!string.Equals(itemName, normalizedTarget, StringComparison.Ordinal))
+                continue;
+
+            var take = Math.Min(needed, Math.Max(1, item.Stack));
+            item.Stack -= take;
+            needed -= take;
+
+            if (item.Stack <= 0)
+                player.Items[i] = null;
+        }
+    }
+
+    private static string NormalizeItemKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return value.Trim().ToLowerInvariant().Replace(" ", "_");
     }
 
     private static string NormalizeTemplate(string templateId)
@@ -288,7 +394,7 @@ public sealed class RumorBoardService
     private static void ApplyRewards(SaveState state, QuestEntry quest)
     {
         // Minimal reward model for now: gold -> positive economy sentiment proxy + issuer rep.
-        // (Actual wallet integration comes later.)
+        // (Wallet gold reward is paid to player in CompleteQuestWithChecks.)
         var sentimentBoost = Math.Clamp(quest.RewardGold / 250, 1, 5);
         state.Social.TownSentiment.Economy = Math.Clamp(state.Social.TownSentiment.Economy + sentimentBoost, -100, 100);
 
@@ -300,4 +406,11 @@ public sealed class RumorBoardService
 
         state.Telemetry.Daily.WorldMutations += 1;
     }
+}
+
+public sealed class QuestCompletionResult
+{
+    public bool Success { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public int RewardGold { get; set; }
 }

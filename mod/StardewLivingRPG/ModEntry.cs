@@ -317,10 +317,11 @@ public sealed class ModEntry : Mod
         }
 
         var questId = args[0].Trim();
-        if (_rumorBoardService.CompleteQuest(_state, questId))
-            Monitor.Log($"Completed quest: {questId}", LogLevel.Info);
+        var result = _rumorBoardService.CompleteQuestWithChecks(_state, questId, Game1.player, consumeItems: true);
+        if (result.Success)
+            Monitor.Log(result.Message, LogLevel.Info);
         else
-            Monitor.Log($"Active quest not found: {questId}", LogLevel.Warn);
+            Monitor.Log(result.Message, LogLevel.Warn);
     }
 
     private void OnSetSentimentCommand(string name, string[] args)
