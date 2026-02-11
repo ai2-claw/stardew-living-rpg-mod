@@ -9,6 +9,7 @@ Start here for project documentation and implementation flow.
 
 ## Design docs
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — audience-first product direction, pillars, scope
+- [IN_WORLD_UI_ARCHITECTURE.md](./IN_WORLD_UI_ARCHITECTURE.md) — in-world UI/interactions target architecture
 - [DATA_MODEL.md](./DATA_MODEL.md) — authoritative save state schemas
 - [EVENT_RESOLUTION.md](./EVENT_RESOLUTION.md) — deterministic resolver pipeline
 - [NPC_COMMAND_SCHEMA.json](./NPC_COMMAND_SCHEMA.json) — strict NPC intent contract
@@ -18,6 +19,7 @@ Start here for project documentation and implementation flow.
 
 ## Delivery docs
 - [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) — milestones and coding sequence
+- [IN_WORLD_UI_IMPLEMENTATION_PLAN.md](./IN_WORLD_UI_IMPLEMENTATION_PLAN.md) — phased execution plan for in-world interaction transition
 - [VERTICAL_SLICE_CHECKLIST.md](./VERTICAL_SLICE_CHECKLIST.md) — testable slice acceptance criteria
 - [M2_INTENT_INJECTION_MATRIX.md](./M2_INTENT_INJECTION_MATRIX.md) — copy/paste resolver QA matrix for all NPC schema commands
 - [NEXT_STEPS_TASKS.md](./NEXT_STEPS_TASKS.md) — execution tracker for current polish tasks
