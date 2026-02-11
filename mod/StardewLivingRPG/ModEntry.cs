@@ -64,6 +64,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_open_board", "Open Market Board menu.", OnOpenBoardCommand);
         helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
+        helper.ConsoleCommands.Add("slrpg_open_journal", "Open request journal menu.", OnOpenJournalCommand);
         helper.ConsoleCommands.Add("slrpg_accept_quest", "Accept rumor quest: slrpg_accept_quest <questId>", OnAcceptQuestCommand);
         helper.ConsoleCommands.Add("slrpg_quest_progress", "Show active quest progress: slrpg_quest_progress <questId>", OnQuestProgressCommand);
         helper.ConsoleCommands.Add("slrpg_quest_progress_all", "Show progress for all active quests.", OnQuestProgressAllCommand);
@@ -158,6 +159,8 @@ public sealed class ModEntry : Mod
             OpenNewspaper();
         else if (e.Button == _config.OpenRumorBoardKey)
             OpenRumorBoard();
+        else if (e.Button == _config.OpenRequestJournalKey)
+            OpenRequestJournal();
     }
 
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)
@@ -252,6 +255,14 @@ public sealed class ModEntry : Mod
         Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor);
     }
 
+    private void OpenRequestJournal()
+    {
+        if (_rumorBoardService is null)
+            return;
+
+        Game1.activeClickableMenu = new RequestJournalMenu(_state, _rumorBoardService, Monitor);
+    }
+
     private void OnSellCommand(string name, string[] args)
     {
         if (_salesIngestionService is null || args.Length < 2)
@@ -303,6 +314,14 @@ public sealed class ModEntry : Mod
             return;
 
         OpenRumorBoard();
+    }
+
+    private void OnOpenJournalCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        OpenRequestJournal();
     }
 
     private void OnAcceptQuestCommand(string name, string[] args)

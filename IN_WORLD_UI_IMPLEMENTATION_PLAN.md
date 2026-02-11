@@ -48,11 +48,11 @@ Exit criteria:
 Add dedicated active request tracker for immersion and convenience.
 
 ### Tasks
-- [ ] Create `RequestJournalMenu` with active/completed tabs.
-- [ ] Show progress bars or textual `have/need`.
-- [ ] Add expiry highlighting (e.g., <=1 day warning color).
-- [ ] Add quick-complete action when eligible.
-- [ ] Add keybind/open path in config.
+- [x] Create `RequestJournalMenu` with active/completed tabs.
+- [x] Show progress bars or textual `have/need`.
+- [x] Add expiry highlighting (e.g., <=1 day warning color).
+- [x] Add quick-complete action when eligible.
+- [x] Add keybind/open path in config.
 
 Exit criteria:
 - player can review and complete active requests from journal alone
