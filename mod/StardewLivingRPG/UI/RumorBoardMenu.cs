@@ -15,6 +15,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private readonly RumorBoardService _rumorBoardService;
     private readonly IMonitor _monitor;
     private readonly Action _onAskMayorForWork;
+    private readonly Func<string>? _getExternalStatus;
 
     private readonly List<(QuestEntry Quest, Rectangle Rect)> _availableRows = new();
     private readonly List<(QuestEntry Quest, Rectangle Rect)> _activeRows = new();
@@ -28,7 +29,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private Rectangle _completeButton;
     private Rectangle _askWorkButton;
 
-    public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork)
+    public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork, Func<string>? getExternalStatus = null)
         : base(
             Game1.uiViewport.Width / 2 - 480,
             Game1.uiViewport.Height / 2 - 300,
@@ -40,6 +41,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         _rumorBoardService = rumorBoardService;
         _monitor = monitor;
         _onAskMayorForWork = onAskMayorForWork;
+        _getExternalStatus = getExternalStatus;
         _lastAvailableCount = _state.Quests.Available.Count;
         _lastActiveCount = _state.Quests.Active.Count;
         BuildLayout();
@@ -174,8 +176,14 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         DrawDetailPanel(b);
 
-        b.Draw(Game1.staminaRect, new Rectangle(xPositionOnScreen + 20, yPositionOnScreen + height - 44, width - 40, 20), Color.Black * 0.25f);
-        b.DrawString(Game1.smallFont, _statusMessage, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + height - 42), Game1.textColor * 0.9f);
+        var external = _getExternalStatus?.Invoke() ?? string.Empty;
+        var showExternal = !string.IsNullOrWhiteSpace(external) && !string.Equals(external, _statusMessage, StringComparison.OrdinalIgnoreCase);
+
+        var statusBarHeight = showExternal ? 40 : 20;
+        b.Draw(Game1.staminaRect, new Rectangle(xPositionOnScreen + 20, yPositionOnScreen + height - (24 + statusBarHeight), width - 40, statusBarHeight), Color.Black * 0.25f);
+        b.DrawString(Game1.smallFont, _statusMessage, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + height - (22 + statusBarHeight)), Game1.textColor * 0.9f);
+        if (showExternal)
+            b.DrawString(Game1.smallFont, external, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + height - 24), Game1.textColor * 0.8f);
 
         drawMouse(b);
     }

@@ -380,7 +380,7 @@ public sealed class ModEntry : Mod
         if (_rumorBoardService is null)
             return;
 
-        Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor, OnUiAskMayorForWork);
+        Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor, OnUiAskMayorForWork, () => _player2UiStatus);
     }
 
     private void OpenRequestJournal()
