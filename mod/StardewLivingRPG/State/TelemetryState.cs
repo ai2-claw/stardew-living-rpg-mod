@@ -12,4 +12,9 @@ public sealed class DailyTelemetry
     public int RumorBoardCompletions { get; set; }
     public int AnchorEventsTriggered { get; set; }
     public int WorldMutations { get; set; }
+
+    public int NpcIntentsApplied { get; set; }
+    public int NpcIntentsRejected { get; set; }
+    public int NpcIntentsDuplicate { get; set; }
+    public Dictionary<string, int> NpcCommandAppliedByType { get; set; } = new();
 }

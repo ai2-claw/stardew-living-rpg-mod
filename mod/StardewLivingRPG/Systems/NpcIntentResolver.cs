@@ -30,10 +30,12 @@ public sealed class NpcIntentResolver
     };
 
     private readonly RumorBoardService _rumorBoardService;
+    private readonly bool _strictTemplateValidation;
 
-    public NpcIntentResolver(RumorBoardService rumorBoardService)
+    public NpcIntentResolver(RumorBoardService rumorBoardService, bool strictTemplateValidation = false)
     {
         _rumorBoardService = rumorBoardService;
+        _strictTemplateValidation = strictTemplateValidation;
     }
 
     public NpcIntentResolveResult ResolveFromStreamLine(SaveState state, string line)
@@ -74,18 +76,18 @@ public sealed class NpcIntentResolver
     {
         var command = envelope.TryGetProperty("command", out var cEl) ? (cEl.GetString() ?? string.Empty) : string.Empty;
         if (!AllowedCommands.Contains(command))
-            return NpcIntentResolveResult.Rejected($"unknown command '{command}'");
+            return NpcIntentResolveResult.Rejected($"unknown command '{command}'", "E_COMMAND_UNKNOWN");
 
         var npcId = envelope.TryGetProperty("npc_id", out var nEl) ? (nEl.GetString() ?? "unknown") : "unknown";
         var intentId = envelope.TryGetProperty("intent_id", out var iEl) ? (iEl.GetString() ?? string.Empty) : string.Empty;
         if (string.IsNullOrWhiteSpace(intentId))
-            return NpcIntentResolveResult.Rejected("missing intent_id");
+            return NpcIntentResolveResult.Rejected("missing intent_id", "E_INTENT_ID_MISSING");
 
         if (state.Facts.ProcessedIntents.ContainsKey(intentId))
             return NpcIntentResolveResult.Duplicate(intentId);
 
         if (!envelope.TryGetProperty("arguments", out var args) || args.ValueKind != JsonValueKind.Object)
-            return NpcIntentResolveResult.Rejected("missing arguments object");
+            return NpcIntentResolveResult.Rejected("missing arguments object", "E_ARGUMENTS_MISSING");
 
         return command.ToLowerInvariant() switch
         {
@@ -111,16 +113,16 @@ public sealed class NpcIntentResolver
         var target = tarEl.GetString() ?? string.Empty;
         var urgency = uEl.GetString() ?? string.Empty;
 
-        var templateId = TryRepairTemplateId(rawTemplateId, out var repairedTemplate)
+        var templateId = (!_strictTemplateValidation && TryRepairTemplateId(rawTemplateId, out var repairedTemplate))
             ? repairedTemplate
             : rawTemplateId;
 
         if (!AllowedTemplates.Contains(templateId))
-            return NpcIntentResolveResult.Rejected($"invalid template_id '{rawTemplateId}'");
+            return NpcIntentResolveResult.Rejected($"invalid template_id '{rawTemplateId}'", "E_TEMPLATE_INVALID");
         if (!AllowedUrgency.Contains(urgency))
-            return NpcIntentResolveResult.Rejected($"invalid urgency '{urgency}'");
+            return NpcIntentResolveResult.Rejected($"invalid urgency '{urgency}'", "E_URGENCY_INVALID");
         if (HasUnexpectedArgs(args, "template_id", "target", "urgency", "reward_hint"))
-            return NpcIntentResolveResult.Rejected("propose_quest contains unexpected argument fields");
+            return NpcIntentResolveResult.Rejected("propose_quest contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
 
         var result = _rumorBoardService.CreateQuestFromNpcProposal(state, npcId, templateId, target, urgency, intentId);
         if (result.IsDuplicate || string.IsNullOrWhiteSpace(result.CreatedQuestId))
@@ -142,7 +144,7 @@ public sealed class NpcIntentResolver
         if (!args.TryGetProperty("delta", out var dEl) || dEl.ValueKind != JsonValueKind.Number || !dEl.TryGetInt32(out var delta))
             return NpcIntentResolveResult.Rejected("adjust_reputation missing integer delta");
         if (delta < -10 || delta > 10)
-            return NpcIntentResolveResult.Rejected("adjust_reputation delta out of range (-10..10)");
+            return NpcIntentResolveResult.Rejected("adjust_reputation delta out of range (-10..10)", "E_DELTA_RANGE");
         if (HasUnexpectedArgs(args, "target", "delta", "reason"))
             return NpcIntentResolveResult.Rejected("adjust_reputation contains unexpected argument fields");
 
@@ -175,7 +177,7 @@ public sealed class NpcIntentResolver
 
         var interest = (iEl.GetString() ?? "").Trim().ToLowerInvariant();
         if (!AllowedInterests.Contains(interest))
-            return NpcIntentResolveResult.Rejected($"invalid interest '{interest}'");
+            return NpcIntentResolveResult.Rejected($"invalid interest '{interest}'", "E_INTEREST_INVALID");
 
         if (!state.Social.Interests.TryGetValue(interest, out var interestState))
         {
@@ -206,7 +208,7 @@ public sealed class NpcIntentResolver
         if (!args.TryGetProperty("duration_days", out var durEl) || durEl.ValueKind != JsonValueKind.Number || !durEl.TryGetInt32(out var durationDays))
             return NpcIntentResolveResult.Rejected("apply_market_modifier missing integer duration_days");
         if (deltaPct < -0.15f || deltaPct > 0.15f)
-            return NpcIntentResolveResult.Rejected("apply_market_modifier delta_pct out of range (-0.15..0.15)");
+            return NpcIntentResolveResult.Rejected("apply_market_modifier delta_pct out of range (-0.15..0.15)", "E_DELTA_PCT_RANGE");
         if (durationDays < 1 || durationDays > 7)
             return NpcIntentResolveResult.Rejected("apply_market_modifier duration_days out of range (1..7)");
         if (HasUnexpectedArgs(args, "crop", "delta_pct", "duration_days", "reason"))
@@ -244,7 +246,7 @@ public sealed class NpcIntentResolver
         if (!args.TryGetProperty("target_group", out var gEl) || gEl.ValueKind != JsonValueKind.String)
             return NpcIntentResolveResult.Rejected("publish_rumor missing target_group");
         if (confidence < 0f || confidence > 1f)
-            return NpcIntentResolveResult.Rejected("publish_rumor confidence out of range (0..1)");
+            return NpcIntentResolveResult.Rejected("publish_rumor confidence out of range (0..1)", "E_CONFIDENCE_RANGE");
         if (HasUnexpectedArgs(args, "topic", "confidence", "target_group"))
             return NpcIntentResolveResult.Rejected("publish_rumor contains unexpected argument fields");
 
@@ -379,10 +381,11 @@ public sealed class NpcIntentResolveResult
     public string OutcomeId { get; set; } = string.Empty;
     public bool FallbackUsed { get; set; }
     public string Reason { get; set; } = string.Empty;
+    public string ReasonCode { get; set; } = string.Empty;
     public QuestProposalResult? Proposal { get; set; }
 
     public static NpcIntentResolveResult None => new() { HasIntent = false };
-    public static NpcIntentResolveResult Rejected(string reason) => new() { HasIntent = true, IsRejected = true, Reason = reason };
+    public static NpcIntentResolveResult Rejected(string reason, string code = "E_REJECT") => new() { HasIntent = true, IsRejected = true, Reason = reason, ReasonCode = code };
     public static NpcIntentResolveResult Duplicate(string intentId) => new() { HasIntent = true, IsDuplicate = true, IntentId = intentId };
 
     public static NpcIntentResolveResult Applied(string intentId, string command, string outcomeId, bool fallbackUsed, QuestProposalResult? proposal)

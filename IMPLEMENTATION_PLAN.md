@@ -59,6 +59,14 @@ mod/
 
 ## 3) Milestones
 
+Progress snapshot (2026-02-11):
+- M0 ✅ complete
+- M1 ✅ complete
+- M2 ✅ complete (auth, stream, schema-constrained resolver, command handlers)
+- M3 ✅ complete (template quests + completion checks + rewards)
+- M4 ✅ implemented and hardened (A1 trigger, lock/cooldown, visible follow-up effects)
+- M5 🟡 in progress (QA harness/docs polish ongoing)
+
 ## M0: Bootstrapping (0.5-1 day)
 - Create SMAPI mod skeleton
 - Load/save typed state

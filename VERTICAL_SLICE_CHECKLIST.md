@@ -35,3 +35,11 @@ Deliver one complete loop proving this is a **gameplay system**, not chatbot wra
 - screenshot: Newspaper issue
 - screenshot: Rumor quest accepted/completed
 - log excerpt: resolver applied intent + idempotency key
+
+## QA Commands (current)
+- `slrpg_intent_smoketest`
+- `slrpg_anchor_smoketest`
+- `slrpg_intent_inject <json>`
+- `slrpg_quest_progress <questId>`
+- `slrpg_quest_progress_all`
+- `slrpg_debug_state`

@@ -54,7 +54,7 @@ public sealed class ModEntry : Mod
         _salesIngestionService = new SalesIngestionService();
         _newspaperService = new NewspaperService();
         _rumorBoardService = new RumorBoardService();
-        _intentResolver = new NpcIntentResolver(_rumorBoardService);
+        _intentResolver = new NpcIntentResolver(_rumorBoardService, _config.StrictNpcTemplateValidation);
         _anchorEventService = new AnchorEventService();
         _player2Client = new Player2Client();
 
@@ -65,11 +65,13 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
         helper.ConsoleCommands.Add("slrpg_accept_quest", "Accept rumor quest: slrpg_accept_quest <questId>", OnAcceptQuestCommand);
         helper.ConsoleCommands.Add("slrpg_quest_progress", "Show active quest progress: slrpg_quest_progress <questId>", OnQuestProgressCommand);
+        helper.ConsoleCommands.Add("slrpg_quest_progress_all", "Show progress for all active quests.", OnQuestProgressAllCommand);
         helper.ConsoleCommands.Add("slrpg_complete_quest", "Complete active quest: slrpg_complete_quest <questId>", OnCompleteQuestCommand);
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
         helper.ConsoleCommands.Add("slrpg_debug_state", "Print compact state snapshot for QA.", OnDebugStateCommand);
         helper.ConsoleCommands.Add("slrpg_intent_inject", "Inject raw NPC intent envelope JSON for resolver QA.", OnIntentInjectCommand);
         helper.ConsoleCommands.Add("slrpg_intent_smoketest", "Run mini automated intent resolver smoke tests.", OnIntentSmokeTestCommand);
+        helper.ConsoleCommands.Add("slrpg_anchor_smoketest", "Run deterministic anchor trigger/resolution smoke test.", OnAnchorSmokeTestCommand);
         helper.ConsoleCommands.Add("slrpg_demo_bootstrap", "Seed reproducible vertical-slice scenario.", OnDemoBootstrapCommand);
 
         helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using configured game client id.", OnPlayer2LoginCommand);
@@ -124,8 +126,13 @@ public sealed class ModEntry : Mod
         _rumorBoardService?.RefreshDailyRumors(_state);
 
         string? anchorNote = null;
-        if (_anchorEventService is not null && _anchorEventService.TryTriggerEmergencyTownHall(_state, out var note))
-            anchorNote = note;
+        if (_anchorEventService is not null)
+        {
+            if (_anchorEventService.TryTriggerEmergencyTownHall(_state, out var note))
+                anchorNote = note;
+
+            _anchorEventService.TryResolveEmergencyTownHall(_state);
+        }
 
         if (_newspaperService is not null)
         {
@@ -334,6 +341,33 @@ public sealed class ModEntry : Mod
         Monitor.Log($"Quest {progress.QuestId}: {progress.HaveCount}/{progress.NeedCount} {progress.Quest.TargetItem} | ready={progress.IsReadyToComplete}", LogLevel.Info);
     }
 
+    private void OnQuestProgressAllCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady || _rumorBoardService is null)
+        {
+            Monitor.Log("World not ready.", LogLevel.Warn);
+            return;
+        }
+
+        if (_state.Quests.Active.Count == 0)
+        {
+            Monitor.Log("No active quests.", LogLevel.Info);
+            return;
+        }
+
+        foreach (var q in _state.Quests.Active)
+        {
+            var progress = _rumorBoardService.GetQuestProgress(_state, q.QuestId, Game1.player);
+            if (!progress.Exists || progress.Quest is null)
+                continue;
+
+            if (!progress.RequiresItems)
+                Monitor.Log($"Quest {progress.QuestId}: no item hand-in required | ready={progress.IsReadyToComplete}", LogLevel.Info);
+            else
+                Monitor.Log($"Quest {progress.QuestId}: {progress.HaveCount}/{progress.NeedCount} {progress.Quest.TargetItem} | ready={progress.IsReadyToComplete}", LogLevel.Info);
+        }
+    }
+
     private void OnCompleteQuestCommand(string name, string[] args)
     {
         if (!Context.IsWorldReady || _rumorBoardService is null || args.Length < 1)
@@ -416,6 +450,7 @@ public sealed class ModEntry : Mod
 
         Monitor.Log($"Quests | available: {_state.Quests.Available.Count}, active: {_state.Quests.Active.Count}, completed: {_state.Quests.Completed.Count}, failed: {_state.Quests.Failed.Count}", LogLevel.Info);
         Monitor.Log($"Telemetry | opens(board): {_state.Telemetry.Daily.MarketBoardOpens}, accepts: {_state.Telemetry.Daily.RumorBoardAccepts}, completes: {_state.Telemetry.Daily.RumorBoardCompletions}, anchors: {_state.Telemetry.Daily.AnchorEventsTriggered}, mutations: {_state.Telemetry.Daily.WorldMutations}", LogLevel.Info);
+        Monitor.Log($"Telemetry NPC intents | applied: {_state.Telemetry.Daily.NpcIntentsApplied}, rejected: {_state.Telemetry.Daily.NpcIntentsRejected}, duplicate: {_state.Telemetry.Daily.NpcIntentsDuplicate}", LogLevel.Info);
     }
 
     private void OnIntentInjectCommand(string name, string[] args)
@@ -501,6 +536,16 @@ public sealed class ModEntry : Mod
                 "applied"
             ),
             (
+                "apply_market_modifier valid",
+                "{\"intent_id\":\"smoke_mkt_001\",\"npc_id\":\"lewis\",\"command\":\"apply_market_modifier\",\"arguments\":{\"crop\":\"blueberry\",\"delta_pct\":-0.08,\"duration_days\":3}}",
+                "applied"
+            ),
+            (
+                "publish_rumor valid",
+                "{\"intent_id\":\"smoke_rmr_001\",\"npc_id\":\"lewis\",\"command\":\"publish_rumor\",\"arguments\":{\"topic\":\"Blueberry surplus\",\"confidence\":0.7,\"target_group\":\"shopkeepers_guild\"}}",
+                "applied"
+            ),
+            (
                 "unknown command",
                 "{\"intent_id\":\"smoke_unk_001\",\"npc_id\":\"lewis\",\"command\":\"launch_rocket\",\"arguments\":{}}",
                 "rejected"
@@ -538,6 +583,44 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log($"Intent smoketest complete: pass={pass} fail={fail} total={tests.Length}", fail == 0 ? LogLevel.Info : LogLevel.Warn);
+    }
+
+    private void OnAnchorSmokeTestCommand(string name, string[] args)
+    {
+        if (_anchorEventService is null)
+        {
+            Monitor.Log("Anchor service unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        var prevDay = _state.Calendar.Day;
+        var prevEco = _state.Social.TownSentiment.Economy;
+
+        _state.Calendar.Day = Math.Max(7, _state.Calendar.Day);
+        _state.Social.TownSentiment.Economy = -35;
+
+        var first = _anchorEventService.TryTriggerEmergencyTownHall(_state, out var note1);
+        var second = _anchorEventService.TryTriggerEmergencyTownHall(_state, out var note2);
+
+        // Force resolution path check.
+        if (_state.Quests.Available.FirstOrDefault(q => q.Source == "anchor_event") is { } anchorQuest)
+        {
+            anchorQuest.Status = "completed";
+            _state.Quests.Available.Remove(anchorQuest);
+            _state.Quests.Completed.Add(anchorQuest);
+        }
+
+        _anchorEventService.TryResolveEmergencyTownHall(_state);
+        var resolved = _state.Facts.Facts.ContainsKey("anchor:town_hall_crisis:status:resolved");
+
+        Monitor.Log($"Anchor smoketest | firstTrigger={first} secondTrigger={second} resolved={resolved}", LogLevel.Info);
+        if (first)
+            Monitor.Log($"Anchor note: {note1}", LogLevel.Info);
+        if (!string.IsNullOrWhiteSpace(note2))
+            Monitor.Log($"Anchor second-note: {note2}", LogLevel.Debug);
+
+        _state.Calendar.Day = prevDay;
+        _state.Social.TownSentiment.Economy = prevEco;
     }
 
     private void OnDemoBootstrapCommand(string name, string[] args)
@@ -975,18 +1058,24 @@ public sealed class ModEntry : Mod
 
             if (result.IsRejected)
             {
-                Monitor.Log($"NPC intent rejected: {result.Reason}", LogLevel.Warn);
+                _state.Telemetry.Daily.NpcIntentsRejected += 1;
+                Monitor.Log($"NPC intent rejected [{result.ReasonCode}]: {result.Reason}", LogLevel.Warn);
                 return;
             }
 
             if (result.IsDuplicate)
             {
+                _state.Telemetry.Daily.NpcIntentsDuplicate += 1;
                 Monitor.Log($"NPC intent duplicate ignored: {result.IntentId}", LogLevel.Debug);
                 return;
             }
 
             if (!result.AppliedOk)
                 return;
+
+            _state.Telemetry.Daily.NpcIntentsApplied += 1;
+            _state.Telemetry.Daily.NpcCommandAppliedByType.TryGetValue(result.Command, out var cmdCount);
+            _state.Telemetry.Daily.NpcCommandAppliedByType[result.Command] = cmdCount + 1;
 
             Monitor.Log($"Applied NPC command: {result.Command} -> outcome {result.OutcomeId} (intent={result.IntentId})", LogLevel.Info);
 

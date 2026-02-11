@@ -27,4 +27,5 @@ public sealed class ModConfig
     public int Player2DeviceAuthTimeoutSeconds { get; set; } = 120;
     public bool Player2BlockChatWhenLowJoules { get; set; } = true;
     public int Player2MinJoulesToChat { get; set; } = 5;
+    public bool StrictNpcTemplateValidation { get; set; } = false; // when true, disable legacy quest_* template repair
 }

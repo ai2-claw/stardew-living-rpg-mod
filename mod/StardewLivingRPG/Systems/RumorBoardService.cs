@@ -139,8 +139,12 @@ public sealed class RumorBoardService
             };
         }
 
+        var consumed = 0;
         if (progress.RequiresItems && consumeItems)
+        {
+            consumed = progress.NeedCount;
             ConsumeMatchingItems(player, quest.TargetItem, progress.NeedCount);
+        }
 
         CompleteQuestInternal(state, quest);
 
@@ -148,10 +152,11 @@ public sealed class RumorBoardService
         if (player is not null && reward > 0)
             player.Money += reward;
 
+        var consumedPart = progress.RequiresItems ? $", consumed {consumed} {quest.TargetItem}" : string.Empty;
         return new QuestCompletionResult
         {
             Success = true,
-            Message = $"Completed quest: {quest.QuestId} (+{reward}g)",
+            Message = $"Completed quest: {quest.QuestId} (+{reward}g{consumedPart})",
             RewardGold = reward
         };
     }
