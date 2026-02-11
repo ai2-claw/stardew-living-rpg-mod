@@ -20,6 +20,7 @@ Start here for project documentation and implementation flow.
 ## Delivery docs
 - [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) — milestones and coding sequence
 - [IN_WORLD_UI_IMPLEMENTATION_PLAN.md](./IN_WORLD_UI_IMPLEMENTATION_PLAN.md) — phased execution plan for in-world interaction transition
+- [NPC_MEMORY_IMPLEMENTATION_PLAN.md](./NPC_MEMORY_IMPLEMENTATION_PLAN.md) — fast persistent NPC memory plan + thinking indicator UX
 - [VERTICAL_SLICE_CHECKLIST.md](./VERTICAL_SLICE_CHECKLIST.md) — testable slice acceptance criteria
 - [M2_INTENT_INJECTION_MATRIX.md](./M2_INTENT_INJECTION_MATRIX.md) — copy/paste resolver QA matrix for all NPC schema commands
 - [NEXT_STEPS_TASKS.md](./NEXT_STEPS_TASKS.md) — execution tracker for current polish tasks
