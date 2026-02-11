@@ -51,8 +51,10 @@ public sealed class ModEntry : Mod
     private string _player2UiStatus = "Player2: idle";
     private DateTime _player2LastAutoConnectAttemptUtc;
     private string? _pendingUiMayorWorkRequest;
+    private string? _pendingUiRequesterShortName;
     private DateTime _lastUiWorkRequestUtc;
     private int _uiWorkRequestInFlight;
+    private int _uiRequesterRoundRobinIndex;
     private readonly Dictionary<string, string> _player2NpcIdsByShortName = new(StringComparer.OrdinalIgnoreCase);
 
     public override void Entry(IModHelper helper)
@@ -219,8 +221,14 @@ public sealed class ModEntry : Mod
             && !string.IsNullOrWhiteSpace(_activeNpcId))
         {
             var req = _pendingUiMayorWorkRequest!;
+            var requester = _pendingUiRequesterShortName;
             _pendingUiMayorWorkRequest = null;
-            SendPlayer2ChatInternal(req);
+            _pendingUiRequesterShortName = null;
+
+            if (!string.IsNullOrWhiteSpace(requester) && _player2NpcIdsByShortName.TryGetValue(requester, out var pendingNpcId))
+                SendPlayer2ChatInternal(req, pendingNpcId, requester);
+            else
+                SendPlayer2ChatInternal(req);
         }
 
         while (_pendingPlayer2Lines.TryDequeue(out var line))
@@ -1004,10 +1012,12 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private void SendPlayer2ChatInternal(string message)
+    private void SendPlayer2ChatInternal(string message, string? targetNpcId = null, string? requesterShortName = null)
     {
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(_activeNpcId))
             return;
+
+        var npcId = string.IsNullOrWhiteSpace(targetNpcId) ? _activeNpcId! : targetNpcId;
 
         try
         {
@@ -1032,10 +1042,11 @@ public sealed class ModEntry : Mod
             };
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, _activeNpcId!, req, cts.Token)
+            _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, npcId, req, cts.Token)
                 .GetAwaiter().GetResult();
 
-            Monitor.Log("Sent chat to Player2 NPC. Keep stream listener running to receive response lines.", LogLevel.Info);
+            var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
+            Monitor.Log($"Sent chat to Player2 NPC ({who}). Keep stream listener running to receive response lines.", LogLevel.Info);
         }
         catch (Exception ex)
         {
@@ -1064,7 +1075,7 @@ public sealed class ModEntry : Mod
 
         try
         {
-            var requester = GetDefaultNpcRequesterName();
+            var (requester, requesterNpcId) = GetNextRequester();
             var prompt = $"{requester}, do you have a practical town request for me today? Use propose_quest with a safe template and parameters.";
 
             var connected = !string.IsNullOrWhiteSpace(_player2Key)
@@ -1074,13 +1085,14 @@ public sealed class ModEntry : Mod
             if (!connected)
             {
                 _pendingUiMayorWorkRequest = prompt;
+                _pendingUiRequesterShortName = requester;
                 _player2UiStatus = "Connecting Town AI to request work...";
                 _lastUiWorkRequestUtc = DateTime.UtcNow;
                 StartPlayer2AutoConnect("ui-ask-work", force: true);
                 return;
             }
 
-            SendPlayer2ChatInternal(prompt);
+            SendPlayer2ChatInternal(prompt, requesterNpcId, requester);
             _lastUiWorkRequestUtc = DateTime.UtcNow;
             _player2UiStatus = $"Checked with {requester} for new board postings.";
         }
@@ -1090,13 +1102,40 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private string GetDefaultNpcRequesterName()
+    private (string RequesterShortName, string? NpcId) GetNextRequester()
     {
-        var first = (_config.Player2NpcRosterCsv ?? string.Empty)
+        var roster = (_config.Player2NpcRosterCsv ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .FirstOrDefault();
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
-        return string.IsNullOrWhiteSpace(first) ? "Mayor Lewis" : first;
+        if (roster.Count == 0)
+            return ("Mayor Lewis", _activeNpcId);
+
+        for (var i = 0; i < roster.Count; i++)
+        {
+            var idx = (_uiRequesterRoundRobinIndex + i) % roster.Count;
+            var candidate = roster[idx];
+            if (!_player2NpcIdsByShortName.TryGetValue(candidate, out var npcId))
+                continue;
+
+            _uiRequesterRoundRobinIndex = (idx + 1) % roster.Count;
+            return (candidate, npcId);
+        }
+
+        // fallback to first configured name + active NPC id
+        return (roster[0], _activeNpcId);
+    }
+
+    private string GetNpcShortNameById(string npcId)
+    {
+        foreach (var kv in _player2NpcIdsByShortName)
+        {
+            if (string.Equals(kv.Value, npcId, StringComparison.OrdinalIgnoreCase))
+                return kv.Key;
+        }
+
+        return "NPC";
     }
 
     private void OnPlayer2ReadOnceCommand(string name, string[] args)
