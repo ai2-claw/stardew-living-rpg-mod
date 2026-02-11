@@ -68,6 +68,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
         helper.ConsoleCommands.Add("slrpg_debug_state", "Print compact state snapshot for QA.", OnDebugStateCommand);
         helper.ConsoleCommands.Add("slrpg_intent_inject", "Inject raw NPC intent envelope JSON for resolver QA.", OnIntentInjectCommand);
+        helper.ConsoleCommands.Add("slrpg_intent_smoketest", "Run mini automated intent resolver smoke tests.", OnIntentSmokeTestCommand);
         helper.ConsoleCommands.Add("slrpg_demo_bootstrap", "Seed reproducible vertical-slice scenario.", OnDemoBootstrapCommand);
 
         helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using configured game client id.", OnPlayer2LoginCommand);
@@ -440,6 +441,76 @@ public sealed class ModEntry : Mod
         {
             Monitor.Log($"Intent injection failed: {ex.Message}", LogLevel.Error);
         }
+    }
+
+    private void OnIntentSmokeTestCommand(string name, string[] args)
+    {
+        if (_intentResolver is null)
+        {
+            Monitor.Log("Intent resolver unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        var tests = new (string Name, string Json, string Expected)[]
+        {
+            (
+                "propose_quest valid",
+                "{\"intent_id\":\"smoke_pq_001\",\"npc_id\":\"lewis\",\"command\":\"propose_quest\",\"arguments\":{\"template_id\":\"gather_crop\",\"target\":\"blueberry\",\"urgency\":\"high\"}}",
+                "applied"
+            ),
+            (
+                "propose_quest duplicate",
+                "{\"intent_id\":\"smoke_pq_001\",\"npc_id\":\"lewis\",\"command\":\"propose_quest\",\"arguments\":{\"template_id\":\"gather_crop\",\"target\":\"blueberry\",\"urgency\":\"high\"}}",
+                "duplicate"
+            ),
+            (
+                "adjust_reputation invalid delta",
+                "{\"intent_id\":\"smoke_rep_001\",\"npc_id\":\"lewis\",\"command\":\"adjust_reputation\",\"arguments\":{\"target\":\"haley\",\"delta\":99}}",
+                "rejected"
+            ),
+            (
+                "shift_interest_influence valid",
+                "{\"intent_id\":\"smoke_int_001\",\"npc_id\":\"lewis\",\"command\":\"shift_interest_influence\",\"arguments\":{\"interest\":\"farmers_circle\",\"delta\":2}}",
+                "applied"
+            ),
+            (
+                "unknown command",
+                "{\"intent_id\":\"smoke_unk_001\",\"npc_id\":\"lewis\",\"command\":\"launch_rocket\",\"arguments\":{}}",
+                "rejected"
+            )
+        };
+
+        var pass = 0;
+        var fail = 0;
+
+        Monitor.Log("Running slrpg_intent_smoketest...", LogLevel.Info);
+
+        foreach (var t in tests)
+        {
+            try
+            {
+                var r = _intentResolver.ResolveFromStreamLine(_state, t.Json);
+                var actual = r.AppliedOk ? "applied" : r.IsDuplicate ? "duplicate" : r.IsRejected ? "rejected" : "none";
+
+                if (string.Equals(actual, t.Expected, StringComparison.OrdinalIgnoreCase))
+                {
+                    pass++;
+                    Monitor.Log($"[PASS] {t.Name} -> {actual}", LogLevel.Info);
+                }
+                else
+                {
+                    fail++;
+                    Monitor.Log($"[FAIL] {t.Name} -> expected {t.Expected}, got {actual}", LogLevel.Warn);
+                }
+            }
+            catch (Exception ex)
+            {
+                fail++;
+                Monitor.Log($"[FAIL] {t.Name} threw: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        Monitor.Log($"Intent smoketest complete: pass={pass} fail={fail} total={tests.Length}", fail == 0 ? LogLevel.Info : LogLevel.Warn);
     }
 
     private void OnDemoBootstrapCommand(string name, string[] args)
