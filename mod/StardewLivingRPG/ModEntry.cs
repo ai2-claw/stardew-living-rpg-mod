@@ -262,9 +262,9 @@ public sealed class ModEntry : Mod
 
         var prompt = name.ToLowerInvariant() switch
         {
-            "robin" => "I was just thinking about my next project, but I can always make time for a friend. What's on your mind?",
-            "pierre" => "Always balancing ledgers and shipments... but for you, I've got a moment. What do you need?",
-            _ => "I've got town matters on my desk, but I can spare a minute. What can I do for you?"
+            "robin" => "Before you head out, want me to check the board for fresh postings?",
+            "pierre" => "Before you go, should I look for fresh board postings for you?",
+            _ => "Before you head off, do you want me to check for fresh board postings?"
         };
 
         var responses = new[]

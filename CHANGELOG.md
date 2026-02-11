@@ -34,6 +34,7 @@
 ### Changed
 - NPC quest language shifted toward "town requests".
 - Board action label refined to "New Postings" with non-digital in-world status phrasing.
+- NPC follow-up prompts adjusted to explicitly additive board checks; no vanilla dialogue replacement.
 - `propose_quest` command parameter guidance now enforces strict template/urgency enums.
 - Legacy `quest_*` template IDs can be repaired (unless strict mode enabled).
 - Resolver now emits structured reject reason codes (`E_*`).

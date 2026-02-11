@@ -135,14 +135,15 @@ Rule:
 ## 5) UX and Immersion Requirements
 
 1. Replace player-facing term “rumor quest” with “Town Request” across menus/dialogue.
-2. Use short, natural board-era labels (e.g., "New Postings") and avoid modern/digital phrasing (e.g., "channels", "feed", "sync").
-3. Display clear requirement lines:
+2. **Never replace original vanilla NPC dialogue lines.** Mod dialogue must be additive follow-up only.
+3. Use short, natural board-era labels (e.g., "New Postings") and avoid modern/digital phrasing (e.g., "channels", "feed", "sync").
+4. Display clear requirement lines:
    - target item
    - required count
    - player count
-4. Display payout and consequences before confirmation.
-5. Keep interactions fast (minimal clicks).
-6. Avoid wall-of-text responses in NPC lines.
+5. Display payout and consequences before confirmation.
+6. Keep interactions fast (minimal clicks).
+7. Avoid wall-of-text responses in NPC lines.
 
 ---
 
