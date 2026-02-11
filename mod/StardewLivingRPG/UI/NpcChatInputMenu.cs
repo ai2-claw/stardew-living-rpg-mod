@@ -3,6 +3,8 @@ using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using StardewValley;
 using StardewValley.Menus;
+using StardewLivingRPG.Utils;
+using System.Text.RegularExpressions;
 
 namespace StardewLivingRPG.UI;
 
@@ -12,18 +14,27 @@ public sealed class NpcChatInputMenu : IClickableMenu
     private readonly Action<string> _onSend;
     private readonly Func<string?>? _pollIncoming;
     private readonly Func<bool>? _isThinking;
-    private readonly List<string> _lines = new();
+
+    private string? _lastNpcMessage;
+    private string? _lastPlayerMessage;
+
     private int _thinkFrame;
     private readonly TextBox _input;
-    private readonly Rectangle _sendButton;
-    private readonly Rectangle _cancelButton;
+
+    private readonly ClickableTextureComponent _sendButton;
+    private readonly ClickableTextureComponent _closeButton;
+
+    // Layout constants
+    private const int Padding = 48;
+    private const int TextTopMargin = 110;
+    private const int InputHeight = 48;
 
     public NpcChatInputMenu(string npcName, Action<string> onSend, Func<string?>? pollIncoming = null, Func<bool>? isThinking = null)
         : base(
-            Game1.uiViewport.Width / 2 - 360,
-            Game1.uiViewport.Height / 2 - 140,
-            720,
-            280,
+            Game1.uiViewport.Width / 2 - 400,
+            Game1.uiViewport.Height / 2 - 200,
+            800,
+            400,
             true)
     {
         _npcName = npcName;
@@ -31,38 +42,52 @@ public sealed class NpcChatInputMenu : IClickableMenu
         _pollIncoming = pollIncoming;
         _isThinking = isThinking;
 
+        int bottomAreaY = yPositionOnScreen + height - InputHeight - 32;
+
         _input = new TextBox(
             Game1.content.Load<Texture2D>("LooseSprites\\textBox"),
             null,
             Game1.smallFont,
             Game1.textColor)
         {
-            X = xPositionOnScreen + 26,
-            Y = yPositionOnScreen + 112,
-            Width = width - 52,
-            Height = 44,
+            X = xPositionOnScreen + Padding,
+            Y = bottomAreaY,
+            Width = width - (Padding * 2) - 100, // Reduced width slightly to give button more room
+            Height = InputHeight,
             Selected = true
         };
 
         Game1.keyboardDispatcher.Subscriber = _input;
 
-        _sendButton = new Rectangle(xPositionOnScreen + width - 220, yPositionOnScreen + height - 54, 90, 34);
-        _cancelButton = new Rectangle(xPositionOnScreen + width - 118, yPositionOnScreen + height - 54, 90, 34);
+        // --- FIX 1: CLOSE BUTTON POSITION ---
+        // Moved to (Width - 20, Y - 20) to hang off the top-right corner properly
+        _closeButton = new ClickableTextureComponent(
+            new Rectangle(xPositionOnScreen + width - 60, yPositionOnScreen + 80, 48, 48),
+            Game1.mouseCursors,
+            new Rectangle(337, 494, 12, 12),
+            4f);
 
-        _lines.Add($"{_npcName}: I'm listening.");
+        // --- FIX 2: BLANK SEND BUTTON ---
+        // Switched source rect to (294, 428, 21, 11). 
+        // This is a generic blank button texture used in the co-op menus.
+        _sendButton = new ClickableTextureComponent(
+            new Rectangle(xPositionOnScreen + width - 140, bottomAreaY - 1, 84, 44), // Adjusted size/pos
+            Game1.mouseCursors,
+            new Rectangle(294, 428, 21, 11), 
+            4f); // Scale 4x to make it chunky
     }
 
     public override void receiveLeftClick(int x, int y, bool playSound = true)
     {
         base.receiveLeftClick(x, y, playSound);
 
-        if (_sendButton.Contains(x, y))
+        if (_sendButton.containsPoint(x, y))
         {
             Submit();
             return;
         }
 
-        if (_cancelButton.Contains(x, y))
+        if (_closeButton.containsPoint(x, y))
         {
             CloseMenu();
             Game1.playSound("bigDeSelect");
@@ -70,6 +95,13 @@ public sealed class NpcChatInputMenu : IClickableMenu
         }
 
         _input.SelectMe();
+    }
+
+    public override void performHoverAction(int x, int y)
+    {
+        base.performHoverAction(x, y);
+        _sendButton.tryHover(x, y);
+        _closeButton.tryHover(x, y);
     }
 
     public override void receiveKeyPress(Keys key)
@@ -86,31 +118,22 @@ public sealed class NpcChatInputMenu : IClickableMenu
             Game1.playSound("bigDeSelect");
             return;
         }
-
-        // Text input is handled through keyboard dispatcher subscriber.
     }
 
     public override void update(GameTime time)
     {
         base.update(time);
         _input.Update();
-
         _thinkFrame++;
 
-        if (_pollIncoming is null)
-            return;
-
-        var safety = 0;
-        while (safety < 4)
+        if (_pollIncoming is not null)
         {
             var next = _pollIncoming();
-            if (string.IsNullOrWhiteSpace(next))
-                break;
-
-            _lines.Add($"{_npcName}: {next}");
-            if (_lines.Count > 10)
-                _lines.RemoveAt(0);
-            safety++;
+            if (!string.IsNullOrWhiteSpace(next))
+            {
+                var clean = Regex.Replace(next, @"^(\<[^>]+>|[^:]+:)\s*", "").Trim();
+                _lastNpcMessage = clean;
+            }
         }
     }
 
@@ -118,31 +141,68 @@ public sealed class NpcChatInputMenu : IClickableMenu
     {
         Game1.drawDialogueBox(xPositionOnScreen, yPositionOnScreen, width, height, false, true);
 
-        b.DrawString(Game1.dialogueFont, _npcName, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + 24), Game1.textColor);
-        b.DrawString(Game1.smallFont, "Let's just talk. What's on your mind?", new Vector2(xPositionOnScreen + 24, yPositionOnScreen + 66), Game1.textColor);
+        var x = xPositionOnScreen + Padding;
+        var y = (float)(yPositionOnScreen + TextTopMargin);
+        var messageAreaBottom = _input.Y - 20;
+        var maxWidth = width - (Padding * 2);
 
-        var lineY = yPositionOnScreen + 88;
-        foreach (var line in _lines.TakeLast(4))
+        // --- DRAW PLAYER MESSAGE ---
+        if (_lastPlayerMessage is not null)
         {
-            var wrapped = line.Length > 100 ? line[..100] + "..." : line;
-            b.DrawString(Game1.smallFont, wrapped, new Vector2(xPositionOnScreen + 24, lineY), Game1.textColor * 0.9f);
-            lineY += 20;
+            DrawMessageLines(b, _lastPlayerMessage!, true, x, ref y, maxWidth, messageAreaBottom);
+            y += 16; 
         }
 
-        if (_isThinking is not null && _isThinking())
+        // --- FIX 3: HORIZONTAL SEPARATOR ---
+        // Only draw if we have both a player message AND an NPC message (or thinking)
+        if (_lastPlayerMessage is not null && (_lastNpcMessage is not null || _isThinking?.Invoke() == true))
         {
-            var dots = (_thinkFrame / 20) % 3 + 1;
-            var thinking = "Thinking" + new string('.', dots);
-            b.DrawString(Game1.smallFont, thinking, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + 152), Color.LightGoldenrodYellow);
+            // Draw a subtle dark line
+            b.Draw(Game1.staminaRect, 
+                new Rectangle((int)x, (int)y - 8, (int)maxWidth, 2), 
+                Game1.textColor * 0.2f);
+            
+            y += 8; // Extra spacing after line
         }
 
-        _input.Y = yPositionOnScreen + 172;
+        // --- DRAW NPC MESSAGE ---
+        if (_lastNpcMessage is not null)
+        {
+            DrawMessageLines(b, _lastNpcMessage!, false, x, ref y, maxWidth, messageAreaBottom);
+            y += 12;
+        }
+
+        // --- DRAW THINKING ---
+        if (_lastNpcMessage == null && _isThinking is not null && _isThinking() && y + Game1.smallFont.LineSpacing <= messageAreaBottom)
+        {
+            var dots = (_thinkFrame / 20) % 4;
+            var thinkingText = string.Concat("Thinking", new string('.', dots));
+            b.DrawString(Game1.smallFont, thinkingText, new Vector2(x, y), Game1.textColor * 0.7f);
+        }
+
         _input.Draw(b);
 
-        DrawButton(b, _sendButton, "Send", enabled: true);
-        DrawButton(b, _cancelButton, "Cancel", enabled: true);
+        _closeButton.draw(b);
+        _sendButton.draw(b);
 
         drawMouse(b);
+    }
+
+    private void DrawMessageLines(SpriteBatch b, string message, bool isPlayer, float x, ref float y, float maxWidth, float maxY)
+    {
+        var wrapped = TextWrapHelper.WrapText(Game1.smallFont, message, maxWidth);
+        
+        // Player text is slightly dimmer to differentiate
+        Color color = isPlayer ? Game1.textColor * 0.75f : Game1.textColor;
+
+        foreach (var line in wrapped)
+        {
+            if (y + Game1.smallFont.LineSpacing > maxY)
+                break;
+
+            b.DrawString(Game1.smallFont, line, new Vector2(x, y), color);
+            y += Game1.smallFont.LineSpacing;
+        }
     }
 
     private void Submit()
@@ -154,21 +214,12 @@ public sealed class NpcChatInputMenu : IClickableMenu
             return;
         }
 
-        _lines.Add($"You: {text}");
-        if (_lines.Count > 10)
-            _lines.RemoveAt(0);
+        _lastPlayerMessage = text;
+        _lastNpcMessage = null;
 
         _onSend(text);
         _input.Text = string.Empty;
         Game1.playSound("smallSelect");
-    }
-
-    private static void DrawButton(SpriteBatch b, Rectangle rect, string text, bool enabled)
-    {
-        var bg = enabled ? Color.DarkSlateBlue * 0.7f : Color.DimGray * 0.45f;
-        b.Draw(Game1.staminaRect, rect, bg);
-        var size = Game1.smallFont.MeasureString(text);
-        b.DrawString(Game1.smallFont, text, new Vector2(rect.X + (rect.Width - size.X) / 2f, rect.Y + (rect.Height - size.Y) / 2f), Color.White * (enabled ? 1f : 0.7f));
     }
 
     private void CloseMenu()
