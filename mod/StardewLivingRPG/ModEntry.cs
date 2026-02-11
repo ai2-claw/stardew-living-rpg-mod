@@ -213,7 +213,7 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return false;
 
-        if (!e.Button.IsActionButton())
+        if (e.Button != _config.OpenNpcPostingsPromptKey)
             return false;
 
         if (Game1.activeClickableMenu is not null || Game1.dialogueUp)
