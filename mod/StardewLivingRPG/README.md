@@ -49,7 +49,7 @@ Player-facing Player2 UX:
 - if repeated stalls persist, watchdog escalates to full NPC session refresh and re-queues the request again
 - in-world "New Postings" action in Town Request Board triggers resolver-safe request generation via Player2
 - in NPC interaction range (roster NPCs), pressing action keeps vanilla dialogue, then appends a follow-up postings hook
-- Robin has a custom follow-up dialogue with options: "Any new requests?", "Let's just talk.", "See you later."; selecting talk opens a chat input box
+- Robin, Pierre, and Lewis have custom follow-up dialogue options: "Any new requests?", "Let's just talk.", "See you later."; selecting talk opens a chat input box
 - request routing now rotates across configured NPC roster (`Player2NpcRosterCsv`) when available (or targets the NPC you asked directly)
 - generation guardrails: cooldown, max manual checks per day (`MaxUiGeneratedRequestsPerDay`), and max outstanding requests (`MaxOutstandingRequests`)
 - automatic replay/retry after stream recovery does **not** consume the player's manual daily cap
