@@ -59,6 +59,8 @@ public sealed class ModEntry : Mod
     private int _player2PendingResponseCount;
     private DateTime _player2LastChatSentUtc;
     private DateTime _player2LastStreamRecoveryUtc;
+    private int _player2WatchdogRecoveries;
+    private DateTime _player2WatchdogWindowStartUtc;
 
     private string? _pendingNpcDialogueHookName;
     private bool _npcDialogueHookArmed;
@@ -275,14 +277,39 @@ public sealed class ModEntry : Mod
             && DateTime.UtcNow - _player2LastStreamRecoveryUtc > TimeSpan.FromSeconds(15))
         {
             _player2LastStreamRecoveryUtc = DateTime.UtcNow;
+
+            if (_player2WatchdogWindowStartUtc == default || DateTime.UtcNow - _player2WatchdogWindowStartUtc > TimeSpan.FromMinutes(3))
+            {
+                _player2WatchdogWindowStartUtc = DateTime.UtcNow;
+                _player2WatchdogRecoveries = 0;
+            }
+
+            _player2WatchdogRecoveries += 1;
             _player2UiStatus = "No NPC response yet; recovering stream...";
-            Monitor.Log("Player2 response watchdog: no stream line after chat; restarting listener.", LogLevel.Warn);
+            Monitor.Log($"Player2 response watchdog: no stream line after chat; restarting listener (attempt {_player2WatchdogRecoveries}).", LogLevel.Warn);
 
             _player2StreamDesired = true;
             _player2StreamCts?.Cancel();
             _player2StreamCts = null;
             Interlocked.Exchange(ref _player2StreamRunning, 0);
-            _player2NextReconnectUtc = DateTime.UtcNow;
+            _player2StreamBackoffSec = Math.Min(Math.Max(2, _player2StreamBackoffSec * 2), 30);
+            _player2NextReconnectUtc = DateTime.UtcNow.AddSeconds(_player2StreamBackoffSec);
+
+            if (_player2WatchdogRecoveries >= 6)
+            {
+                Monitor.Log("Player2 watchdog escalation: forcing session refresh (respawn + reconnect).", LogLevel.Error);
+                _player2UiStatus = "Town AI stalled. Refreshing NPC sessions...";
+
+                _activeNpcId = null;
+                _player2NpcIdsByShortName.Clear();
+                _player2PendingResponseCount = 0;
+                _pendingUiMayorWorkRequest = null;
+                _pendingUiRequesterShortName = null;
+                _player2WatchdogRecoveries = 0;
+                _player2WatchdogWindowStartUtc = DateTime.UtcNow;
+
+                StartPlayer2AutoConnect("watchdog-escalation", force: true);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest)
@@ -319,6 +346,8 @@ public sealed class ModEntry : Mod
             _player2StreamBackoffSec = 1;
             if (_player2PendingResponseCount > 0)
                 _player2PendingResponseCount -= 1;
+            _player2WatchdogRecoveries = 0;
+            _player2WatchdogWindowStartUtc = default;
             TryApplyNpcCommandFromLine(line);
         }
     }
