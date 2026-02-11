@@ -245,7 +245,10 @@ public sealed class ModEntry : Mod
 
     private void OpenRumorBoard()
     {
-        Game1.activeClickableMenu = new RumorBoardMenu(_state);
+        if (_rumorBoardService is null)
+            return;
+
+        Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor);
     }
 
     private void OnSellCommand(string name, string[] args)

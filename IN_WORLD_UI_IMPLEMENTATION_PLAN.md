@@ -25,12 +25,12 @@ Exit criteria:
 Upgrade `RumorBoardMenu` to support direct accept/complete interactions.
 
 ### Tasks
-- [ ] Add selectable list rows for available + active requests.
-- [ ] Add detail panel (issuer, target, need/have, reward, expires).
-- [ ] Add **Accept** button for available requests.
-- [ ] Add **Complete** button for active requests.
-- [ ] Route actions through controller/service (no direct state writes).
-- [ ] Add user feedback banners/toasts for success/failure.
+- [x] Add selectable list rows for available + active requests.
+- [x] Add detail panel (issuer, target, need/have, reward, expires).
+- [x] Add **Accept** button for available requests.
+- [x] Add **Complete** button for active requests.
+- [x] Route actions through controller/service (no direct state writes).
+- [x] Add user feedback banners/toasts for success/failure.
 
 ### Technical Notes
 - Reuse `GetQuestProgress` and `CompleteQuestWithChecks`.
