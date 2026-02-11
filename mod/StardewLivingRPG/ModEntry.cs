@@ -404,6 +404,44 @@ public sealed class ModEntry : Mod
         if (npc is null)
             return;
 
+        if (string.Equals(npc.Name, "Robin", StringComparison.OrdinalIgnoreCase))
+        {
+            var responses = new[]
+            {
+                new Response("requests", "Any new requests?"),
+                new Response("talk", "Let's just talk."),
+                new Response("later", "See you later.")
+            };
+
+            loc!.createQuestionDialogue(
+                $"{npc.displayName}: I was just thinking about my next project, but I can always make time for a friend. What's on your mind?",
+                responses,
+                (_, answer) =>
+                {
+                    if (string.Equals(answer, "requests", StringComparison.OrdinalIgnoreCase))
+                    {
+                        OnUiAskMayorForWork(npc.Name);
+                        Game1.drawObjectDialogue($"{npc.displayName}: I'll pin a fresh posting on the board for you.");
+                        return;
+                    }
+
+                    if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Game1.activeClickableMenu = new NpcChatInputMenu(npc.displayName, text =>
+                        {
+                            if (_player2NpcIdsByShortName.TryGetValue(npc.Name, out var npcId))
+                                SendPlayer2ChatInternal(text, npcId, npc.Name);
+                            else
+                                SendPlayer2ChatInternal(text);
+                        });
+                        return;
+                    }
+                },
+                npc);
+
+            return;
+        }
+
         var responses = new[]
         {
             new Response("yes", "Any new postings?"),
