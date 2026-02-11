@@ -1209,12 +1209,20 @@ public sealed class ModEntry : Mod
 
             try
             {
+                var identityPrompt = shortName.ToLowerInvariant() switch
+                {
+                    "robin" => "You are Robin, the carpenter of Pelican Town in Stardew Valley. Never claim to be Lewis or any other NPC.",
+                    "pierre" => "You are Pierre, the shopkeeper of Pelican Town in Stardew Valley. Never claim to be Lewis or any other NPC.",
+                    "lewis" => "You are Mayor Lewis of Pelican Town in Stardew Valley.",
+                    _ => $"You are {shortName} of Pelican Town in Stardew Valley. Never claim to be another NPC."
+                };
+
                 var req = new SpawnNpcRequest
                 {
                     ShortName = shortName,
                     Name = shortName,
                     CharacterDescription = $"{shortName} in Pelican Town, practical and grounded.",
-                    SystemPrompt = "Stay in-character for Stardew Valley and use safe command schema when proposing town requests.",
+                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. Use safe command schema when proposing town requests.",
                     KeepGameState = true,
                     Commands = new List<SpawnNpcCommand>
                     {
@@ -1290,7 +1298,7 @@ public sealed class ModEntry : Mod
             _player2LastChatSentUtc = DateTime.UtcNow;
 
             var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
-            Monitor.Log($"Sent chat to Player2 NPC ({who}). Keep stream listener running to receive response lines.", LogLevel.Info);
+            Monitor.Log($"Sent chat to Player2 NPC ({who}) id={npcId}. Keep stream listener running to receive response lines.", LogLevel.Info);
         }
         catch (Exception ex)
         {
