@@ -205,6 +205,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         if (_selectedQuest is null)
         {
             b.DrawString(Game1.smallFont, "Select a request to view details and actions.", new Vector2(panel.X + 12, panel.Y + 12), Game1.textColor * 0.8f);
+            DrawButton(b, _askWorkButton, "New Postings", enabled: true);
             return;
         }
 
