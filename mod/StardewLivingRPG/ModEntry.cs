@@ -64,6 +64,9 @@ public sealed class ModEntry : Mod
     private int _player2WatchdogRecoveries;
     private DateTime _player2WatchdogWindowStartUtc;
 
+    private int _uiManualRequestCountToday;
+    private int _uiManualRequestCountDay = -1;
+
     private string? _pendingNpcDialogueHookName;
     private bool _npcDialogueHookArmed;
 
@@ -144,6 +147,12 @@ public sealed class ModEntry : Mod
     {
         if (_dailyTickService is null)
             return;
+
+        if (_uiManualRequestCountDay != _state.Calendar.Day)
+        {
+            _uiManualRequestCountDay = _state.Calendar.Day;
+            _uiManualRequestCountToday = 0;
+        }
 
         var sold = _salesIngestionService?.DrainPendingSales() ?? new Dictionary<string, int>();
         _economyService?.IngestSales(_state.Economy, sold);
@@ -1242,16 +1251,20 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        var generatedToday = _state.Quests.Available.Count(q => q.Source == "npc_intent" && q.QuestId.Contains($"_{_state.Calendar.Day}_", StringComparison.Ordinal))
-            + _state.Quests.Active.Count(q => q.Source == "npc_intent" && q.QuestId.Contains($"_{_state.Calendar.Day}_", StringComparison.Ordinal));
+        if (_uiManualRequestCountDay != _state.Calendar.Day)
+        {
+            _uiManualRequestCountDay = _state.Calendar.Day;
+            _uiManualRequestCountToday = 0;
+        }
 
-        if (generatedToday >= Math.Max(1, _config.MaxUiGeneratedRequestsPerDay))
+        if (_uiManualRequestCountToday >= Math.Max(1, _config.MaxUiGeneratedRequestsPerDay))
         {
             _player2UiStatus = "No new postings right now. Check back tomorrow.";
             return;
         }
 
         Interlocked.Exchange(ref _uiWorkRequestInFlight, 1);
+        _uiManualRequestCountToday += 1;
 
         try
         {

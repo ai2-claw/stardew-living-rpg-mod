@@ -50,7 +50,8 @@ Player-facing Player2 UX:
 - in-world "New Postings" action in Town Request Board triggers resolver-safe request generation via Player2
 - in NPC interaction range (roster NPCs), pressing action keeps vanilla dialogue, then appends a follow-up choice "Any new postings?"
 - request routing now rotates across configured NPC roster (`Player2NpcRosterCsv`) when available (or targets the NPC you asked directly)
-- generation guardrails: cooldown, max generated per day (`MaxUiGeneratedRequestsPerDay`), and max outstanding requests (`MaxOutstandingRequests`)
+- generation guardrails: cooldown, max manual checks per day (`MaxUiGeneratedRequestsPerDay`), and max outstanding requests (`MaxOutstandingRequests`)
+- automatic replay/retry after stream recovery does **not** consume the player's manual daily cap
 
 NPC intent pipeline:
 - validates intent envelopes against `NPC_COMMAND_SCHEMA.json` command constraints
