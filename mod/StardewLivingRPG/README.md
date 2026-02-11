@@ -43,6 +43,10 @@ NPC intent pipeline:
 - implemented deterministic handlers: `propose_quest`, `adjust_reputation`, `shift_interest_influence`, `apply_market_modifier`, `publish_rumor`
 - runs deterministic resolver path with explicit reject/duplicate/applied logs
 
+NPC grounding polish:
+- chat context now includes explicit `MARKET_SIGNALS` (top movers, oversupply, scarcity, recommended alternative crop)
+- Lewis prompt requires market answers to reference at least one live signal
+
 Config knobs:
 - `Player2DeviceAuthBaseUrl` (default `https://api.player2.game/v1`)
 - `Player2DeviceAuthTimeoutSeconds` (default `120`)

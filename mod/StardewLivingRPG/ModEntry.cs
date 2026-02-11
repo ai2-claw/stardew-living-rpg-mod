@@ -629,7 +629,7 @@ public sealed class ModEntry : Mod
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
                 CharacterDescription = "Mayor Lewis of Pelican Town in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. For quest asks, prefer propose_quest command with safe, completable parameters.",
+                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, prefer propose_quest command with safe, completable parameters.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -884,13 +884,37 @@ public sealed class ModEntry : Mod
     {
         var movers = _state.Economy.Crops
             .OrderByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
-            .Take(2)
-            .Select(kv => $"{kv.Key}:{kv.Value.PriceToday}g")
+            .Take(3)
+            .Select(kv => $"{kv.Key}:{kv.Value.PriceYesterday}g->{kv.Value.PriceToday}g")
             .ToArray();
+
+        var oversupply = _state.Economy.Crops
+            .OrderByDescending(kv => kv.Value.SupplyPressureFactor)
+            .FirstOrDefault();
+
+        var scarcity = _state.Economy.Crops
+            .OrderByDescending(kv => kv.Value.ScarcityBonus)
+            .FirstOrDefault();
+
+        var recommendation = _state.Economy.Crops
+            .OrderByDescending(kv => kv.Value.ScarcityBonus - kv.Value.SupplyPressureFactor)
+            .FirstOrDefault();
 
         var canonNpcs = "Lewis, Robin, Pierre, Linus, Haley, Alex, Demetrius, Wizard";
         var activeQuestIds = _state.Quests.Active.Take(3).Select(q => q.QuestId).ToArray();
         var availableQuestIds = _state.Quests.Available.Take(3).Select(q => q.QuestId).ToArray();
+
+        var oversupplyText = oversupply.Key is null
+            ? "none"
+            : $"{oversupply.Key} pressure={oversupply.Value.SupplyPressureFactor:F2}";
+
+        var scarcityText = scarcity.Key is null
+            ? "none"
+            : $"{scarcity.Key} scarcity={scarcity.Value.ScarcityBonus:F2}";
+
+        var recText = recommendation.Key is null
+            ? "none"
+            : recommendation.Key;
 
         return string.Join(" ",
             "CANON_WORLD: Stardew Valley.",
@@ -901,9 +925,10 @@ public sealed class ModEntry : Mod
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
+            "MARKET_RULE: For market questions, mention at least one live signal from MARKET_SIGNALS.",
             $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
-            $"STATE: TopMovers [{string.Join(", ", movers)}].",
+            $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}.",
             $"STATE: AvailableRumorQuests {_state.Quests.Available.Count} ids=[{string.Join(",", availableQuestIds)}].",
             $"STATE: ActiveRumorQuests {_state.Quests.Active.Count} ids=[{string.Join(",", activeQuestIds)}]."
         );
