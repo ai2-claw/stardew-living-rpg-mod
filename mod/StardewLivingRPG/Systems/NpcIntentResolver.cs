@@ -107,12 +107,16 @@ public sealed class NpcIntentResolver
         if (!args.TryGetProperty("urgency", out var uEl) || uEl.ValueKind != JsonValueKind.String)
             return NpcIntentResolveResult.Rejected("propose_quest missing urgency");
 
-        var templateId = tEl.GetString() ?? string.Empty;
+        var rawTemplateId = tEl.GetString() ?? string.Empty;
         var target = tarEl.GetString() ?? string.Empty;
         var urgency = uEl.GetString() ?? string.Empty;
 
+        var templateId = TryRepairTemplateId(rawTemplateId, out var repairedTemplate)
+            ? repairedTemplate
+            : rawTemplateId;
+
         if (!AllowedTemplates.Contains(templateId))
-            return NpcIntentResolveResult.Rejected($"invalid template_id '{templateId}'");
+            return NpcIntentResolveResult.Rejected($"invalid template_id '{rawTemplateId}'");
         if (!AllowedUrgency.Contains(urgency))
             return NpcIntentResolveResult.Rejected($"invalid urgency '{urgency}'");
         if (HasUnexpectedArgs(args, "template_id", "target", "urgency", "reward_hint"))
@@ -125,7 +129,8 @@ public sealed class NpcIntentResolver
         var fallbackUsed =
             !string.Equals(result.RequestedTemplate, result.AppliedTemplate, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals((result.RequestedTarget ?? string.Empty).Trim(), result.AppliedTarget, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(result.RequestedUrgency, result.AppliedUrgency, StringComparison.OrdinalIgnoreCase);
+            !string.Equals(result.RequestedUrgency, result.AppliedUrgency, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(rawTemplateId, templateId, StringComparison.OrdinalIgnoreCase);
 
         return NpcIntentResolveResult.Applied(intentId, "propose_quest", result.CreatedQuestId!, fallbackUsed, result);
     }
@@ -281,6 +286,47 @@ public sealed class NpcIntentResolver
         {
             if (set.Contains(p.Name))
                 continue;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryRepairTemplateId(string rawTemplateId, out string repaired)
+    {
+        repaired = rawTemplateId;
+        var t = (rawTemplateId ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (AllowedTemplates.Contains(t))
+        {
+            repaired = t;
+            return true;
+        }
+
+        if (!t.StartsWith("quest_", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (t.Contains("gather", StringComparison.OrdinalIgnoreCase))
+        {
+            repaired = "gather_crop";
+            return true;
+        }
+
+        if (t.Contains("deliver", StringComparison.OrdinalIgnoreCase))
+        {
+            repaired = "deliver_item";
+            return true;
+        }
+
+        if (t.Contains("mine", StringComparison.OrdinalIgnoreCase))
+        {
+            repaired = "mine_resource";
+            return true;
+        }
+
+        if (t.Contains("social", StringComparison.OrdinalIgnoreCase) || t.Contains("visit", StringComparison.OrdinalIgnoreCase))
+        {
+            repaired = "social_visit";
             return true;
         }
 

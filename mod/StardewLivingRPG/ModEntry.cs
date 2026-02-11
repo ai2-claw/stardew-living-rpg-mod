@@ -629,24 +629,25 @@ public sealed class ModEntry : Mod
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
                 CharacterDescription = "Mayor Lewis of Pelican Town in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, prefer propose_quest command with safe, completable parameters.",
+                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
                     new()
                     {
                         Name = "propose_quest",
-                        Description = "Propose a safe rumor-board quest",
+                        Description = "Propose a safe town request quest",
                         Parameters = new
                         {
                             type = "object",
                             properties = new
                             {
-                                template_id = new { type = "string" },
-                                target = new { type = "string" },
-                                urgency = new { type = "string" }
+                                template_id = new { type = "string", @enum = new[] { "gather_crop", "deliver_item", "mine_resource", "social_visit" } },
+                                target = new { type = "string", description = "gather/deliver=item_or_crop, mine=resource, social_visit=npc_name" },
+                                urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } }
                             },
-                            required = new[] { "template_id", "target", "urgency" }
+                            required = new[] { "template_id", "target", "urgency" },
+                            additionalProperties = false
                         },
                         NeverRespondWithMessage = false
                     }
@@ -929,8 +930,8 @@ public sealed class ModEntry : Mod
             $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
             $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}.",
-            $"STATE: AvailableRumorQuests {_state.Quests.Available.Count} ids=[{string.Join(",", availableQuestIds)}].",
-            $"STATE: ActiveRumorQuests {_state.Quests.Active.Count} ids=[{string.Join(",", activeQuestIds)}]."
+            $"STATE: AvailableTownRequests {_state.Quests.Available.Count} ids=[{string.Join(",", availableQuestIds)}].",
+            $"STATE: ActiveTownRequests {_state.Quests.Active.Count} ids=[{string.Join(",", activeQuestIds)}]."
         );
     }
 

@@ -46,6 +46,7 @@ NPC intent pipeline:
 NPC grounding polish:
 - chat context now includes explicit `MARKET_SIGNALS` (top movers, oversupply, scarcity, recommended alternative crop)
 - Lewis prompt requires market answers to reference at least one live signal
+- quest wording shifted toward "town requests" and command prompt now enforces strict template enums
 
 Config knobs:
 - `Player2DeviceAuthBaseUrl` (default `https://api.player2.game/v1`)
