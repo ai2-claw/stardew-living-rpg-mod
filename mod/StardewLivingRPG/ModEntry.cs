@@ -12,6 +12,7 @@ using StardewLivingRPG.UI;
 using StardewLivingRPG.Utils;
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text.Json;
 using System.Threading;
 
 namespace StardewLivingRPG;
@@ -287,10 +288,11 @@ public sealed class ModEntry : Mod
 
                 if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
                 {
+                    var npcName = npc.Name ?? npc.displayName;
                     Game1.activeClickableMenu = new NpcChatInputMenu(npc.displayName, text =>
                     {
-                        if (_player2NpcIdsByShortName.TryGetValue(npc.Name, out var npcId))
-                            SendPlayer2ChatInternal(text, npcId, npc.Name);
+                        if (_player2NpcIdsByShortName.TryGetValue(npcName, out var npcId))
+                            SendPlayer2ChatInternal(text, npcId, npcName);
                         else
                             SendPlayer2ChatInternal(text);
                     });

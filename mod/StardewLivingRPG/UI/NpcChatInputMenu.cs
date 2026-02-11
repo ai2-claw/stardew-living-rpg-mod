@@ -79,7 +79,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
             return;
         }
 
-        _input.ReceiveKeyPress(key);
+        // Text input is handled through keyboard dispatcher subscriber.
     }
 
     public override void update(GameTime time)
