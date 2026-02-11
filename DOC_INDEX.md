@@ -19,6 +19,7 @@ Start here for project documentation and implementation flow.
 ## Delivery docs
 - [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) — milestones and coding sequence
 - [VERTICAL_SLICE_CHECKLIST.md](./VERTICAL_SLICE_CHECKLIST.md) — testable slice acceptance criteria
+- [M2_INTENT_INJECTION_MATRIX.md](./M2_INTENT_INJECTION_MATRIX.md) — copy/paste resolver QA matrix for all NPC schema commands
 
 ## Mod code
 - [mod/StardewLivingRPG/](./mod/StardewLivingRPG/) — SMAPI mod scaffold + services
