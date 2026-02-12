@@ -86,10 +86,132 @@ public sealed class NewspaperMenu : IClickableMenu
         DrawContent(b, paperRect, contentY);
 
         // 5. Draw Close Button (Standard upper right)
-        // --- ADDED: Explicit draw call for the button ---
         _closeButton.draw(b);
-
         base.drawMouse(b);
+    }
+
+    private int DrawArticles(SpriteBatch b, Rectangle paperRect, int startY)
+    {
+        if (_issue?.Articles == null || _issue.Articles.Count == 0)
+            return startY;
+
+        var y = startY;
+        y += 10;
+
+        // Horizontal separator line (match Market Outlook separator style)
+        b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, y, paperRect.Width - 40, 1), Color.Black * 0.3f);
+        y += 15;
+
+        // Section header (smaller)
+        b.DrawString(Game1.smallFont, "Community News", new Vector2(paperRect.X + 30, y), new Color(50, 30, 20));
+        y += 50; // Extra spacing for portrait (portrait is 40px tall, category badge is ~14px)
+
+        // Two-column layout
+        var columnGap = 30;
+        var sideMargin = 30;
+        var columnWidth = (paperRect.Width - sideMargin * 2 - columnGap) / 2;
+        var leftColumnX = paperRect.X + sideMargin;
+        var rightColumnX = leftColumnX + columnWidth + columnGap;
+
+        var leftColumnY = y;
+        var rightColumnY = y;
+
+        for (int i = 0; i < _issue.Articles.Count; i++)
+        {
+            var article = _issue.Articles[i];
+            var isLeftColumn = i % 2 == 0;
+            var columnX = isLeftColumn ? leftColumnX : rightColumnX;
+            var columnY = isLeftColumn ? ref leftColumnY : ref rightColumnY;
+
+            DrawArticle(b, article, columnX, ref columnY, columnWidth);
+            columnY += 12; // Spacing after article
+        }
+
+        // Return the height of the taller column
+        return Math.Max(leftColumnY, rightColumnY);
+    }
+
+    private void DrawArticle(SpriteBatch b, NewspaperArticle article, int x, ref int y, int maxWidth)
+    {
+        var startY = y;
+
+        // Category badge (smaller)
+        var categoryColor = article.Category.ToLowerInvariant() switch
+        {
+            "community" => new Color(60, 140, 60),
+            "market" => new Color(180, 120, 40),
+            "social" => new Color(100, 80, 180),
+            "nature" => new Color(40, 140, 80),
+            _ => new Color(80, 80, 80)
+        };
+
+        string categoryText;
+        if (article.Category.Equals("community", StringComparison.OrdinalIgnoreCase))
+            categoryText = "Community";
+        else if (article.Category.Equals("market", StringComparison.OrdinalIgnoreCase))
+            categoryText = "Market";
+        else if (article.Category.Equals("social", StringComparison.OrdinalIgnoreCase))
+            categoryText = "Social";
+        else if (article.Category.Equals("nature", StringComparison.OrdinalIgnoreCase))
+            categoryText = "Nature";
+        else
+            categoryText = "News";
+
+        // Portrait and header row
+        var portraitSize = 40;
+        var portraitX = x;
+        var portraitY = y + 12;
+
+        // Load and draw NPC portrait if available
+        if (!string.IsNullOrEmpty(article.SourceNpc) && article.SourceNpc != "Debug")
+        {
+            try
+            {
+                var npc = Game1.getCharacterFromName(article.SourceNpc);
+                if (npc?.Portrait != null)
+                {
+                    // NPC portraits are typically 64x64 per frame, draw the default neutral one (frame 0)
+                    var sourceRect = new Rectangle(0, 0, 64, 64);
+                    b.Draw(npc.Portrait, new Rectangle(portraitX, portraitY, portraitSize, portraitSize), sourceRect, Color.White * 0.9f);
+                }
+            }
+            catch
+            {
+                // Silently fallback if portrait can't be loaded
+            }
+        }
+
+        // Draw category and name to the right of portrait
+        var textX = x + portraitSize + 8;
+        var textMaxWidth = maxWidth - portraitSize - 8;
+
+        b.DrawString(Game1.smallFont, $"[{categoryText}]", new Vector2(textX, y), categoryColor * 0.8f);
+        y += 20;
+
+        // NPC name
+        if (!string.IsNullOrEmpty(article.SourceNpc))
+        {
+            var displayName = article.SourceNpc == "Debug" ? "Anonymous" : article.SourceNpc;
+            b.DrawString(Game1.smallFont, displayName, new Vector2(textX, y), new Color(40, 20, 10));
+        }
+        y += 32; // Spacing after portrait row
+
+        // Title
+        var wrappedTitle = TextWrapHelper.WrapText(Game1.smallFont, article.Title, maxWidth);
+        foreach (var line in wrappedTitle)
+        {
+            b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(40, 20, 10));
+            y += 24;
+        }
+        y += 4; // Spacing between title and content
+
+        // Content
+        var wrappedContent = TextWrapHelper.WrapText(Game1.smallFont, article.Content, maxWidth);
+        foreach (var line in wrappedContent)
+        {
+            b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(60, 50, 40));
+            y += 22;
+        }
     }
 
     private void DrawMasthead(SpriteBatch b, Rectangle paperRect)
@@ -152,11 +274,11 @@ public sealed class NewspaperMenu : IClickableMenu
         // --- MAIN BODY SECTIONS ---
         if (_issue.Sections != null)
         {
-            foreach (var section in _issue.Sections) 
+            foreach (var section in _issue.Sections)
             {
                 // Use TextWrapHelper for Body Text
                 var wrappedBody = TextWrapHelper.WrapText(Game1.smallFont, section, maxWidth);
-                
+
                 foreach (var line in wrappedBody)
                 {
                     b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(60, 50, 40));
@@ -168,22 +290,22 @@ public sealed class NewspaperMenu : IClickableMenu
 
         // --- SEPARATOR ---
         y += 10;
-        b.Draw(Game1.staminaRect, new Rectangle(x + 40, y, maxWidth - 80, 1), Color.Black * 0.3f);
+        b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, y, paperRect.Width - 40, 1), Color.Black * 0.3f);
         y += 20;
 
         // --- FORECAST / OUTLOOK ---
         if (_issue.PredictiveHints != null && _issue.PredictiveHints.Any())
         {
-            b.DrawString(Game1.smallFont, "Market Outlook:", new Vector2(x, y), new Color(50, 30, 20)); 
+            b.DrawString(Game1.smallFont, "Market Outlook:", new Vector2(x, y), new Color(50, 30, 20));
             y += 30;
 
             foreach (var hint in _issue.PredictiveHints)
             {
                 var bulletText = $"- {hint}";
-                
+
                 // Use TextWrapHelper for Hints
                 var wrappedHint = TextWrapHelper.WrapText(Game1.smallFont, bulletText, maxWidth);
-                
+
                 foreach (var line in wrappedHint)
                 {
                     b.DrawString(Game1.smallFont, line, new Vector2(x + 10, y), new Color(70, 60, 50));
@@ -192,6 +314,9 @@ public sealed class NewspaperMenu : IClickableMenu
                 y += 4;
             }
         }
+
+        // --- AI-GENERATED ARTICLES SECTION ---
+        y = DrawArticles(b, paperRect, y);
     }
 
     private void DrawError(SpriteBatch b, Rectangle paperRect)
