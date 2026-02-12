@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using StardewLivingRPG.State;
 
 namespace StardewLivingRPG.Integrations;
 
@@ -140,6 +141,23 @@ public sealed class Player2Client
 
         var data = JsonSerializer.Deserialize<JoulesResponse>(body, _jsonOptions);
         return data ?? new JoulesResponse();
+    }
+
+    public async Task<List<NewspaperArticle>> GenerateArticlesAsync(string apiBaseUrl, string p2Key, GenerateArticlesRequest request, CancellationToken ct)
+    {
+        var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/spawn";
+        using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(request, _jsonOptions), Encoding.UTF8, "application/json")
+        };
+        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
+        using var res = await _http.SendAsync(msg, ct);
+        var body = await res.Content.ReadAsStringAsync(ct);
+        res.EnsureSuccessStatusCode();
+
+        var data = JsonSerializer.Deserialize<GenerateArticlesResponse>(body, _jsonOptions);
+        return data?.Articles ?? new List<NewspaperArticle>();
     }
 
     /// <summary>
@@ -357,3 +375,64 @@ public sealed class JoulesResponse
     [JsonPropertyName("user_id")]
     public string UserId { get; set; } = string.Empty;
 }
+
+public sealed class GenerateArticlesRequest
+{
+    [JsonPropertyName("short_name")]
+    public string ShortName { get; set; } = "Editor";
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "Newspaper Editor";
+
+    [JsonPropertyName("character_description")]
+    public string CharacterDescription { get; set; } = "You are the newspaper editor for the Pelican Times. Generate seasonal filler articles based on game progress.";
+
+    [JsonPropertyName("system_prompt")]
+    public string SystemPrompt { get; set; } = "You are the newspaper editor. Generate 1-2 short newspaper articles (title + 2-3 sentences) based on the current game state.";
+
+    [JsonPropertyName("commands")]
+    public List<SpawnNpcCommand> Commands { get; set; } = new();
+
+    [JsonPropertyName("keep_game_state")]
+    public bool KeepGameState { get; set; } = false;
+
+    [JsonPropertyName("context")]
+    public ArticleGenerationContext? Context { get; set; }
+}
+
+public sealed class ArticleGenerationContext
+{
+    [JsonPropertyName("season")]
+    public string Season { get; set; } = "spring";
+
+    [JsonPropertyName("day")]
+    public int Day { get; set; }
+
+    [JsonPropertyName("year")]
+    public int Year { get; set; } = 1;
+
+    [JsonPropertyName("existing_articles")]
+    public List<string> ExistingArticles { get; set; } = new();
+
+    [JsonPropertyName("count")]
+    public int Count { get; set; } = 1;
+}
+
+public sealed class GenerateArticlesResponse
+{
+    [JsonPropertyName("articles")]
+    public List<NewspaperArticle> Articles { get; set; } = new();
+}
+
+public sealed class GeneratedArticle
+{
+    [JsonPropertyName("title")]
+    public string Title { get; set; } = string.Empty;
+
+    [JsonPropertyName("content")]
+    public string Content { get; set; } = string.Empty;
+
+    [JsonPropertyName("category")]
+    public string Category { get; set; } = "community";
+}
+

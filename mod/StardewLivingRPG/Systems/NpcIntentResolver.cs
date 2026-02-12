@@ -253,22 +253,26 @@ public sealed class NpcIntentResolver
 
         var topic = tEl.GetString() ?? "town news";
         var group = gEl.GetString() ?? "town";
-        var confidencePct = Math.Clamp((int)Math.Round(confidence * 100f), 0, 100);
 
-        state.Newspaper.Issues.Add(new NewspaperIssue
+        // Check daily rumor limit (1 per day)
+        var todayRumorCount = state.Newspaper.Articles.Count(a =>
+            a.Day == state.Calendar.Day &&
+            a.Category.Equals("social", StringComparison.OrdinalIgnoreCase));
+        if (todayRumorCount >= 1)
+            return NpcIntentResolveResult.Rejected("rumor limit reached for today (1)", "E_RUMOR_LIMIT");
+
+        // Create article instead of full issue
+        var article = new NewspaperArticle
         {
+            Title = $"Rumor: {topic}",
+            Content = $"Word on the street among {group}: {topic}.",
+            Category = "social",
+            SourceNpc = npcId,
             Day = state.Calendar.Day,
-            Headline = $"Rumor Mill: {topic}",
-            Sections = new List<string>
-            {
-                $"A rumor is circulating among {group}.",
-                $"Estimated confidence: {confidencePct}%"
-            },
-            PredictiveHints = new List<string>
-            {
-                "Watch tomorrow's board for spillover effects."
-            }
-        });
+            ExpirationDay = state.Calendar.Day + 3
+        };
+
+        state.Newspaper.Articles.Add(article);
 
         MarkIntentProcessed(state, intentId, npcId, "publish_rumor");
         state.Facts.Facts[$"rumor:published:{intentId}"] = new FactValue
@@ -308,6 +312,13 @@ public sealed class NpcIntentResolver
         var title = tEl.GetString() ?? string.Empty;
         var content = cEl.GetString() ?? string.Empty;
 
+        // Check daily NPC article limit (2 per day, separate from rumors)
+        var todayNpcArticleCount = state.Newspaper.Articles.Count(a =>
+            a.Day == state.Calendar.Day &&
+            !a.Category.Equals("social", StringComparison.OrdinalIgnoreCase));
+        if (todayNpcArticleCount >= 2)
+            return NpcIntentResolveResult.Rejected("NPC article limit reached for today (2)", "E_ARTICLE_LIMIT");
+
         // Create article
         var article = new NewspaperArticle
         {
@@ -319,12 +330,8 @@ public sealed class NpcIntentResolver
             ExpirationDay = state.Calendar.Day + 14 // 2 weeks
         };
 
-        // Add to newspaper (respecting daily limit)
-        var todayArticles = state.Newspaper.Issues.LastOrDefault()?.Articles ?? new List<NewspaperArticle>();
-        if (todayArticles.Count >= 3)
-            return NpcIntentResolveResult.Rejected("article limit reached for today (3)", "E_ARTICLE_LIMIT");
-
-        state.Newspaper.Issues.LastOrDefault()?.Articles.Add(article);
+        // Add to Articles collection (not Issues)
+        state.Newspaper.Articles.Add(article);
 
         MarkIntentProcessed(state, intentId, npcId, "publish_article");
 
