@@ -1,6 +1,7 @@
 using StardewLivingRPG.Config;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Integrations;
+using StardewModdingAPI;
 
 namespace StardewLivingRPG.Systems;
 
@@ -8,15 +9,19 @@ public sealed class NewspaperService
 {
     private const int MinDailyArticles = 2;
     private const int MaxDailyArticles = 5;
-    private readonly Player2Client? _player2;
+    private Player2Client? _player2;
+    private readonly IMonitor _monitor;
 
-    public NewspaperService(Player2Client? player2 = null)
+    public NewspaperService(IMonitor monitor, Player2Client? player2 = null)
     {
+        _monitor = monitor;
         _player2 = player2;
     }
 
     public async Task<NewspaperIssue> BuildIssueAsync(SaveState state, string? anchorNote = null)
     {
+        _monitor.Log($"BuildIssueAsync: Starting, _player2 is {(_player2 != null ? "NOT null" : "null")}", LogLevel.Trace);
+
         // Start with empty issue
         var issue = new NewspaperIssue
         {
@@ -98,22 +103,41 @@ public sealed class NewspaperService
     /// Synchronous wrapper for async headline generation. Use BuildIssueAsync for Player2 integration.
     /// Requires SetCredentials to be called before use.
     /// </summary>
-    public NewspaperIssue BuildIssue(SaveState state, ModConfig config, Player2Client player2)
+    public NewspaperIssue BuildIssue(SaveState state, ModConfig config, Player2Client? player2, string? _player2Key)
     {
+        _monitor.Log($"BuildIssue (sync): Player2 client is {(player2 != null ? "NOT null" : "null")}, _player2Key is {(string.IsNullOrEmpty(_player2Key) ? "null/empty" : "provided")}", LogLevel.Trace);
+        _monitor.Log($"BuildIssue (sync): ApiBaseUrl='{config.Player2ApiBaseUrl}'", LogLevel.Trace);
+
         // Set Player2 credentials for headline generation
-        if (!string.IsNullOrEmpty(config.Player2ApiBaseUrl) && !string.IsNullOrEmpty(config.Player2GameClientId))
-            player2.SetCredentials(config.Player2ApiBaseUrl, config.Player2GameClientId);
+        if (!string.IsNullOrEmpty(config.Player2ApiBaseUrl) && !string.IsNullOrEmpty(_player2Key))
+        {
+            player2?.SetCredentials(config.Player2ApiBaseUrl, _player2Key);
+            _monitor.Log($"BuildIssue (sync): SetCredentials called with baseUrl={config.Player2ApiBaseUrl}", LogLevel.Trace);
+        }
+        else
+        {
+            if (string.IsNullOrEmpty(config.Player2ApiBaseUrl))
+                _monitor.Log("BuildIssue (sync): ApiBaseUrl missing - cannot set Player2 credentials", LogLevel.Debug);
+            else
+                _monitor.Log("BuildIssue (sync): _player2Key missing - cannot set Player2 credentials", LogLevel.Debug);
+        }
+
+        // CRITICAL: Store the parameter to field so SelectHeadlineAsync can use it
+        _player2 = player2;
+        _monitor.Log($"BuildIssue (sync): Stored player2 to _player2 field, _player2 is now {(_player2 != null ? "NOT null" : "null")}", LogLevel.Trace);
 
         // Run synchronously, blocking on async headline generation
         try
         {
             var task = BuildIssueAsync(state, null);
             task.Wait();
+            _monitor.Log($"BuildIssue (sync): Complete, headline='{task.Result.Headline}'", LogLevel.Debug);
             return task.Result;
         }
-        catch
+        catch (Exception ex)
         {
             // Fallback if Player2 fails
+            _monitor.Log($"BuildIssue (sync): Exception during headline gen: {ex.Message}", LogLevel.Error);
             return new NewspaperIssue
             {
                 Day = state.Calendar.Day,
@@ -224,7 +248,10 @@ public sealed class NewspaperService
     private async Task<string> SelectHeadlineAsync(List<NewspaperArticle> articles, SaveState state)
     {
         if (articles.Count == 0)
+        {
+            _monitor.Log("SelectHeadlineAsync: No articles, using fallback", LogLevel.Trace);
             return "Quiet Day at Pelican Town";
+        }
 
         // Priority 1: High-severity incidents
         var highSeverityArticle = articles
@@ -235,13 +262,20 @@ public sealed class NewspaperService
 
         if (highSeverityArticle is not null)
         {
-            if (_player2 != null)
+            _monitor.Log($"SelectHeadlineAsync: High-severity article found: {highSeverityArticle.Title}", LogLevel.Trace);
+            if (_player2 == null)
+            {
+                _monitor.Log("SelectHeadlineAsync: Player2 is null, using fallback headline", LogLevel.Debug);
                 return FallbackHeadline(highSeverityArticle.Title);
-            return await _player2.GenerateSensationalHeadlineAsync(
+            }
+            _monitor.Log($"SelectHeadlineAsync: Calling Player2.GenerateSensationalHeadlineAsync for: {highSeverityArticle.Title}", LogLevel.Trace);
+            var headline = await _player2.GenerateSensationalHeadlineAsync(
                     highSeverityArticle.Title,
                     highSeverityArticle.Category,
                     highSeverityArticle.Content,
                     default);
+            _monitor.Log($"SelectHeadlineAsync: Got headline: {headline}", LogLevel.Debug);
+            return headline;
         }
 
         // Priority 2: Market/nature articles
@@ -251,45 +285,38 @@ public sealed class NewspaperService
 
         if (marketOrNatureArticle is not null)
         {
+            _monitor.Log($"SelectHeadlineAsync: Market/nature article found: {marketOrNatureArticle.Title}", LogLevel.Trace);
             if (_player2 == null)
+            {
+                _monitor.Log("SelectHeadlineAsync: Player2 is null, using fallback for market/nature", LogLevel.Debug);
                 return FallbackHeadline(marketOrNatureArticle.Title);
-            return await _player2.GenerateSensationalHeadlineAsync(
+            }
+            _monitor.Log($"SelectHeadlineAsync: Calling Player2.GenerateSensationalHeadlineAsync for: {marketOrNatureArticle.Title}", LogLevel.Trace);
+            var headline = await _player2.GenerateSensationalHeadlineAsync(
                     marketOrNatureArticle.Title,
                     marketOrNatureArticle.Category,
                     marketOrNatureArticle.Content,
                     default);
+            _monitor.Log($"SelectHeadlineAsync: Got headline: {headline}", LogLevel.Debug);
+            return headline;
         }
 
         // Priority 3: Any article
+        _monitor.Log($"SelectHeadlineAsync: Using first article as fallback: {articles[0].Title}", LogLevel.Trace);
         {
             if (_player2 == null)
+            {
+                _monitor.Log("SelectHeadlineAsync: Player2 is null, using fallback for any article", LogLevel.Debug);
                 return FallbackHeadline(articles[0].Title);
-            return await _player2.GenerateSensationalHeadlineAsync(
+            }
+            _monitor.Log($"SelectHeadlineAsync: Calling Player2.GenerateSensationalHeadlineAsync for: {articles[0].Title}", LogLevel.Trace);
+            var headline = await _player2.GenerateSensationalHeadlineAsync(
                     articles[0].Title,
                     articles[0].Category,
                     articles[0].Content,
                     default);
-        }
-    }
-
-    private async Task<string> GenerateSensationalHeadlineAsync(NewspaperArticle article)
-    {
-        if (_player2 == null)
-            return FallbackHeadline(article.Title);
-
-        try
-        {
-            return await _player2.GenerateSensationalHeadlineAsync(
-                "", // apiBaseUrl - will use default from config
-                "", // p2Key - will use default from config
-                article.Title,
-                article.Category,
-                article.Content,
-                default);
-        }
-        catch
-        {
-            return FallbackHeadline(article.Title);
+            _monitor.Log($"SelectHeadlineAsync: Got headline: {headline}", LogLevel.Debug);
+            return headline;
         }
     }
 

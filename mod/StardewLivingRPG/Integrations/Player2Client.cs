@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -15,6 +16,8 @@ public sealed class Player2Client
     };
     private string? _apiBaseUrl;
     private string? _p2Key;
+    private string? _headlineEditorNpcId;
+    private readonly SemaphoreSlim _headlineEditorNpcLock = new(1, 1);
 
     public Player2Client(HttpClient? httpClient = null)
     {
@@ -153,41 +156,7 @@ public sealed class Player2Client
 
     public async Task<string> GenerateSensationalHeadlineAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
     {
-        var npcId = "editor";
-        var prompt = $"You are a tabloid newspaper editor. Convert this article into a sensational 30-char headline.\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline, max 30 characters. Make it exciting and exaggerated like a small-town tabloid.";
-
-        var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
-        using var msg = new HttpRequestMessage(HttpMethod.Post, url)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
-            {
-                SenderName = "System",
-                SenderMessage = prompt,
-                GameStateInfo = $"Article: {articleTitle}"
-            }, _jsonOptions), Encoding.UTF8, "application/json")
-        };
-        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
-
-        try
-        {
-            using var res = await _http.SendAsync(msg, ct);
-            var body = await res.Content.ReadAsStringAsync(ct);
-            res.EnsureSuccessStatusCode();
-
-            // Parse headline from response - extract just the headline text
-            if (string.IsNullOrWhiteSpace(body))
-                return FallbackHeadline(articleTitle);
-
-            var headline = body.Trim().Trim('"').Trim('\'');
-            if (headline.Length > 30)
-                headline = headline.Substring(0, 27) + "...";
-
-            return headline;
-        }
-        catch
-        {
-            return FallbackHeadline(articleTitle);
-        }
+        return await GenerateSensationalHeadlineCoreAsync(apiBaseUrl, p2Key, articleTitle, articleCategory, articleContent, ct);
     }
 
     /// <summary>
@@ -198,41 +167,280 @@ public sealed class Player2Client
         if (string.IsNullOrEmpty(_apiBaseUrl) || string.IsNullOrEmpty(_p2Key))
             return FallbackHeadline(articleTitle);
 
-        var npcId = "editor";
-        var prompt = $"You are a tabloid newspaper editor. Convert this article into a sensational 30-char headline.\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline, max 30 characters. Make it exciting and exaggerated like a small-town tabloid.";
+        return await GenerateSensationalHeadlineCoreAsync(_apiBaseUrl, _p2Key, articleTitle, articleCategory, articleContent, ct);
+    }
 
-        var url = $"{_apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
-        using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+    private async Task<string> GenerateSensationalHeadlineCoreAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
+    {
+        var fallback = FallbackHeadline(articleTitle);
+        if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(p2Key))
+            return fallback;
+
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
+            try
             {
-                SenderName = "System",
-                SenderMessage = prompt,
-                GameStateInfo = $"Article: {articleTitle}"
-            }, _jsonOptions), Encoding.UTF8, "application/json")
-        };
-        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _p2Key);
+                var npcId = await EnsureHeadlineEditorNpcIdAsync(apiBaseUrl, p2Key, ct);
+                var previousHistoryMessage = await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
 
+                var prompt = BuildHeadlinePrompt(articleTitle, articleCategory, articleContent);
+                var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
+                using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
+                    {
+                        SenderName = "Pelican Times Desk",
+                        SenderMessage = prompt,
+                        GameStateInfo = $"headline_request:{articleTitle}"
+                    }, _jsonOptions), Encoding.UTF8, "application/json")
+                };
+                msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
+                using var res = await _http.SendAsync(msg, ct);
+                var body = await res.Content.ReadAsStringAsync(ct);
+                res.EnsureSuccessStatusCode();
+
+                var immediateHeadline = SanitizeHeadline(TryExtractLatestMessage(body), articleTitle);
+                if (!string.IsNullOrWhiteSpace(immediateHeadline))
+                    return immediateHeadline;
+
+                var fromHistory = await WaitForFreshHeadlineFromHistoryAsync(apiBaseUrl, p2Key, npcId, previousHistoryMessage, ct);
+                var historyHeadline = SanitizeHeadline(fromHistory, articleTitle);
+                if (!string.IsNullOrWhiteSpace(historyHeadline))
+                    return historyHeadline;
+            }
+            catch (HttpRequestException ex) when (attempt == 0 && IsNpcMissing(ex))
+            {
+                _headlineEditorNpcId = null;
+                continue;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Player2Client] GenerateSensationalHeadlineAsync EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+                break;
+            }
+        }
+
+        return fallback;
+    }
+
+    private async Task<string> EnsureHeadlineEditorNpcIdAsync(string apiBaseUrl, string p2Key, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(_headlineEditorNpcId))
+            return _headlineEditorNpcId;
+
+        await _headlineEditorNpcLock.WaitAsync(ct);
         try
         {
+            if (!string.IsNullOrWhiteSpace(_headlineEditorNpcId))
+                return _headlineEditorNpcId;
+
+            var req = new SpawnNpcRequest
+            {
+                ShortName = "Editor",
+                Name = "Pelican Times Editor",
+                CharacterDescription = "Town newspaper editor writing short, dramatic headlines.",
+                SystemPrompt = "Write one sensational newspaper headline per request. Reply with headline text only. Max 30 characters.",
+                KeepGameState = true,
+                Commands = new List<SpawnNpcCommand>()
+            };
+
+            _headlineEditorNpcId = await SpawnNpcAsync(apiBaseUrl, p2Key, req, ct);
+            return _headlineEditorNpcId;
+        }
+        finally
+        {
+            _headlineEditorNpcLock.Release();
+        }
+    }
+
+    private async Task<string?> WaitForFreshHeadlineFromHistoryAsync(string apiBaseUrl, string p2Key, string npcId, string? previousHistoryMessage, CancellationToken ct)
+    {
+        const int maxAttempts = 20;
+        for (var i = 0; i < maxAttempts; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var latest = await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
+            if (!string.IsNullOrWhiteSpace(latest)
+                && !string.Equals(latest, previousHistoryMessage, StringComparison.Ordinal))
+            {
+                return latest;
+            }
+
+            if (i < maxAttempts - 1)
+                await Task.Delay(300, ct);
+        }
+
+        return null;
+    }
+
+    private async Task<string?> TryGetLatestNpcMessageFromHistoryAsync(string apiBaseUrl, string p2Key, string npcId, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/history";
+            using var msg = new HttpRequestMessage(HttpMethod.Get, url);
+            msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
             using var res = await _http.SendAsync(msg, ct);
+            if (!res.IsSuccessStatusCode)
+                return null;
+
             var body = await res.Content.ReadAsStringAsync(ct);
-            res.EnsureSuccessStatusCode();
-
-            // Parse headline from response - extract just the headline text
-            if (string.IsNullOrWhiteSpace(body))
-                return FallbackHeadline(articleTitle);
-
-            var headline = body.Trim().Trim('"').Trim('\'');
-            if (headline.Length > 30)
-                headline = headline.Substring(0, 27) + "...";
-
-            return headline;
+            return TryExtractLatestMessage(body);
         }
         catch
         {
-            return FallbackHeadline(articleTitle);
+            return null;
         }
+    }
+
+    private static string BuildHeadlinePrompt(string articleTitle, string articleCategory, string articleContent)
+    {
+        return $"You are a tabloid newspaper editor. Convert this article into a sensational 30-char headline.\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline, max 30 characters. Make it exciting and exaggerated like a small-town tabloid.";
+    }
+
+    private static bool IsNpcMissing(HttpRequestException ex)
+    {
+        return ex.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone;
+    }
+
+    private static string? SanitizeHeadline(string? rawHeadline, string articleTitle)
+    {
+        if (string.IsNullOrWhiteSpace(rawHeadline))
+            return null;
+
+        var headline = rawHeadline
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim()
+            .Trim('"')
+            .Trim('\'')
+            .Trim();
+
+        if (headline.StartsWith("headline:", StringComparison.OrdinalIgnoreCase))
+            headline = headline["headline:".Length..].Trim();
+
+        // Common Player2 format: "<Editor> Headline text"
+        if (headline.StartsWith("<", StringComparison.Ordinal))
+        {
+            var closing = headline.IndexOf('>');
+            if (closing > 0 && closing + 1 < headline.Length)
+                headline = headline[(closing + 1)..].Trim();
+        }
+
+        if (LooksLikePromptEcho(headline, articleTitle))
+            return null;
+
+        // Guard against metadata tokens being mistaken as headlines.
+        if (!headline.Any(char.IsLetter))
+            return null;
+
+        if (headline.Length > 30)
+            headline = headline.Substring(0, 27) + "...";
+
+        return string.IsNullOrWhiteSpace(headline) ? null : headline;
+    }
+
+    private static bool LooksLikePromptEcho(string text, string articleTitle)
+    {
+        if (text.Contains("Convert this article into", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Respond with ONLY the headline", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (text.Contains("Title:", StringComparison.OrdinalIgnoreCase)
+            && text.Contains(articleTitle, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string? TryExtractLatestMessage(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            return null;
+
+        var trimmed = payload.Trim();
+        var looksLikeJsonObjectOrArray = trimmed.StartsWith("{", StringComparison.Ordinal) || trimmed.StartsWith("[", StringComparison.Ordinal);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            var candidates = new List<string>();
+            CollectMessageCandidates(doc.RootElement, candidates);
+
+            for (var i = candidates.Count - 1; i >= 0; i--)
+            {
+                var candidate = candidates[i]?.Trim();
+                if (!string.IsNullOrWhiteSpace(candidate))
+                    return candidate;
+            }
+        }
+        catch
+        {
+            // Fall back to plain text handling.
+        }
+
+        return looksLikeJsonObjectOrArray ? null : trimmed.Trim('"').Trim('\'');
+    }
+
+    private static void CollectMessageCandidates(JsonElement element, List<string> candidates)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.String:
+            {
+                var value = element.GetString();
+                if (!string.IsNullOrWhiteSpace(value))
+                    candidates.Add(value);
+                break;
+            }
+            case JsonValueKind.Object:
+            {
+                foreach (var prop in element.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.String && IsMessageCandidateProperty(prop.Name))
+                    {
+                        var value = prop.Value.GetString();
+                        if (!string.IsNullOrWhiteSpace(value))
+                            candidates.Add(value);
+                    }
+
+                    if (prop.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                        CollectMessageCandidates(prop.Value, candidates);
+                }
+                break;
+            }
+            case JsonValueKind.Array:
+            {
+                foreach (var item in element.EnumerateArray())
+                    CollectMessageCandidates(item, candidates);
+                break;
+            }
+        }
+    }
+
+    private static bool IsMessageCandidateProperty(string propertyName)
+    {
+        var normalized = propertyName
+            .Replace("_", string.Empty, StringComparison.Ordinal)
+            .Replace("-", string.Empty, StringComparison.Ordinal)
+            .ToLowerInvariant();
+
+        return normalized is "message"
+            or "headline"
+            or "content"
+            or "text"
+            or "response"
+            or "sendermessage"
+            or "assistantmessage"
+            or "npcmessage"
+            or "outputtext";
     }
 
     private static string FallbackHeadline(string title)

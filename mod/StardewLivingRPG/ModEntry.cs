@@ -34,6 +34,7 @@ public sealed class ModEntry : Mod
 
     // Player2 M2 runtime session state
     private Player2Client? _player2Client;
+    private Player2Client? _authenticatedPlayer2Client;  // NEW: Store authenticated client separately
     private string? _player2Key;
     private string? _activeNpcId;
     private readonly ConcurrentQueue<string> _pendingPlayer2Lines = new();
@@ -72,6 +73,7 @@ public sealed class ModEntry : Mod
 
     private int _uiManualRequestCountToday;
     private int _uiManualRequestCountDay = -1;
+    private int _pendingNewspaperRefreshDay = -1;
 
     private string? _pendingNpcDialogueHookName;
     private bool _npcDialogueHookArmed;
@@ -83,7 +85,7 @@ public sealed class ModEntry : Mod
         _economyService = new EconomyService();
         _marketBoardService = new MarketBoardService();
         _salesIngestionService = new SalesIngestionService();
-        _newspaperService = new NewspaperService(_player2Client);
+        _newspaperService = new NewspaperService(Monitor, _player2Client);
         _rumorBoardService = new RumorBoardService();
         _intentResolver = new NpcIntentResolver(_rumorBoardService, _config.StrictNpcTemplateValidation);
         _anchorEventService = new AnchorEventService();
@@ -159,6 +161,15 @@ public sealed class ModEntry : Mod
         if (_dailyTickService is null)
             return;
 
+        // Give auto-connect a brief head start so day-start newspaper can use Player2 when available.
+        if (_config.EnablePlayer2
+            && _config.AutoConnectPlayer2OnLoad
+            && string.IsNullOrWhiteSpace(_player2Key))
+        {
+            StartPlayer2AutoConnect("day-start-news", force: false);
+            TryWaitForPlayer2LoginKey(TimeSpan.FromMilliseconds(1500));
+        }
+
         if (_uiManualRequestCountDay != _state.Calendar.Day)
         {
             _uiManualRequestCountDay = _state.Calendar.Day;
@@ -184,8 +195,25 @@ public sealed class ModEntry : Mod
 
         if (_newspaperService is not null)
         {
-            var issue = _newspaperService.BuildIssue(_state, _config, _player2Client);
-            _state.Newspaper.Issues.Add(issue);
+            var clientForService = _authenticatedPlayer2Client ?? _player2Client;
+            var issue = _newspaperService.BuildIssue(_state, _config, clientForService, _player2Key);
+
+            var existingIndex = _state.Newspaper.Issues.FindIndex(i => i.Day == issue.Day);
+            if (existingIndex >= 0)
+                _state.Newspaper.Issues[existingIndex] = issue;
+            else
+                _state.Newspaper.Issues.Add(issue);
+
+            // If day-start happened before login completes, regenerate this issue once Player2 is ready.
+            if (_config.EnablePlayer2 && string.IsNullOrWhiteSpace(_player2Key))
+            {
+                _pendingNewspaperRefreshDay = issue.Day;
+                Monitor.Log($"Queued newspaper refresh for day {issue.Day} until Player2 login completes.", LogLevel.Debug);
+            }
+            else
+            {
+                _pendingNewspaperRefreshDay = -1;
+            }
         }
 
         Monitor.Log($"Daily tick complete for day {_state.Calendar.Day} ({_state.Calendar.Season} Y{_state.Calendar.Year}).", LogLevel.Debug);
@@ -651,6 +679,49 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private void TryWaitForPlayer2LoginKey(TimeSpan maxWait)
+    {
+        if (!string.IsNullOrWhiteSpace(_player2Key))
+            return;
+
+        var deadlineUtc = DateTime.UtcNow + maxWait;
+        while (string.IsNullOrWhiteSpace(_player2Key)
+            && Interlocked.CompareExchange(ref _player2ConnectInFlight, 0, 0) == 1
+            && DateTime.UtcNow < deadlineUtc)
+        {
+            Thread.Sleep(50);
+        }
+    }
+
+    private void TryRefreshPendingNewspaperIssue(string source)
+    {
+        if (_pendingNewspaperRefreshDay < 0)
+            return;
+
+        if (_newspaperService is null || string.IsNullOrWhiteSpace(_player2Key))
+            return;
+
+        if (_pendingNewspaperRefreshDay != _state.Calendar.Day)
+        {
+            _pendingNewspaperRefreshDay = -1;
+            return;
+        }
+
+        var issueIndex = _state.Newspaper.Issues.FindIndex(i => i.Day == _pendingNewspaperRefreshDay);
+        if (issueIndex < 0)
+        {
+            _pendingNewspaperRefreshDay = -1;
+            return;
+        }
+
+        var clientForService = _authenticatedPlayer2Client ?? _player2Client;
+        var refreshedIssue = _newspaperService.BuildIssue(_state, _config, clientForService, _player2Key);
+        _state.Newspaper.Issues[issueIndex] = refreshedIssue;
+        _pendingNewspaperRefreshDay = -1;
+
+        Monitor.Log($"Newspaper refreshed after {source}: day={refreshedIssue.Day}, headline='{refreshedIssue.Headline}'", LogLevel.Debug);
+    }
+
     private void OpenMarketBoard()
     {
         if (_marketBoardService is null)
@@ -662,6 +733,9 @@ public sealed class ModEntry : Mod
 
     private void OpenNewspaper()
     {
+        if (!string.IsNullOrWhiteSpace(_player2Key))
+            TryRefreshPendingNewspaperIssue("open-newspaper");
+
         var issue = _state.Newspaper.Issues.LastOrDefault();
         Game1.activeClickableMenu = new NewspaperMenu(issue);
     }
@@ -1151,7 +1225,17 @@ public sealed class ModEntry : Mod
             _player2Key = _player2Client
                 .LoginViaLocalAppAsync(_config.Player2LocalAuthBaseUrl, _config.Player2GameClientId, cts.Token)
                 .GetAwaiter().GetResult();
+
+            // CRITICAL: SetCredentials on Player2Client and store authenticated client
+            _player2Client.SetCredentials(_config.Player2LocalAuthBaseUrl, _player2Key);
+            _authenticatedPlayer2Client = _player2Client;
             Monitor.Log("Player2 login successful (local app).", LogLevel.Info);
+
+            // Recreate NewspaperService with authenticated client (prefer authenticated, fallback to unauthenticated)
+            var clientForService = _authenticatedPlayer2Client ?? _player2Client;
+            _newspaperService = new NewspaperService(Monitor, clientForService);
+            Monitor.Log("NewspaperService recreated after Player2 local app login", LogLevel.Info);
+            TryRefreshPendingNewspaperIssue("Player2 local app login");
             return;
         }
         catch (Exception ex)
@@ -1186,7 +1270,23 @@ public sealed class ModEntry : Mod
                 if (poll.IsAuthorized && !string.IsNullOrWhiteSpace(poll.P2Key))
                 {
                     _player2Key = poll.P2Key;
+
+                    // CRITICAL: SetCredentials on Player2Client and store authenticated client
+                    _player2Client.SetCredentials(_config.Player2DeviceAuthBaseUrl, _player2Key);
+                    _authenticatedPlayer2Client = _player2Client;
                     Monitor.Log("Player2 login successful (device flow).", LogLevel.Info);
+
+                    // Recreate NewspaperService ONLY if authenticated client is available
+                    if (_authenticatedPlayer2Client != null)
+                    {
+                        _newspaperService = new NewspaperService(Monitor, _authenticatedPlayer2Client);
+                        Monitor.Log("NewspaperService recreated after Player2 device login", LogLevel.Info);
+                        TryRefreshPendingNewspaperIssue("Player2 device login");
+                    }
+                    else
+                    {
+                        Monitor.Log("Skipping NewspaperService recreation - authenticated client not available yet", LogLevel.Warn);
+                    }
                     return;
                 }
 
