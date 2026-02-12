@@ -6,26 +6,13 @@ public sealed class NewspaperService
 {
     public NewspaperIssue BuildIssue(SaveState state, string? anchorNote = null)
     {
-        var deltas = state.Economy.Crops
-            .Select(kv => new
-            {
-                Crop = kv.Key,
-                Today = kv.Value.PriceToday,
-                Yesterday = kv.Value.PriceYesterday,
-                DeltaPct = kv.Value.PriceYesterday == 0 ? 0f : (kv.Value.PriceToday - kv.Value.PriceYesterday) / (float)kv.Value.PriceYesterday
-            })
-            .OrderByDescending(x => Math.Abs(x.DeltaPct))
-            .ToList();
-
-        var topDown = deltas.Where(d => d.DeltaPct < 0).OrderBy(d => d.DeltaPct).FirstOrDefault();
-        var topUp = deltas.Where(d => d.DeltaPct > 0).OrderByDescending(d => d.DeltaPct).FirstOrDefault();
-
         var issue = new NewspaperIssue
         {
             Day = state.Calendar.Day,
-            Headline = BuildHeadline(topDown, topUp),
+            Headline = BuildHeadline(GetTopDown(state), GetTopUp(state)),
             Sections = new List<string>(),
-            PredictiveHints = new List<string>()
+            PredictiveHints = new List<string>(),
+            Articles = state.Newspaper.Articles.ToList() // Include AI-generated articles
         };
 
         if (topDown is not null)

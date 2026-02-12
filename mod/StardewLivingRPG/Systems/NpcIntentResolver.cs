@@ -11,7 +11,8 @@ public sealed class NpcIntentResolver
         "adjust_reputation",
         "shift_interest_influence",
         "apply_market_modifier",
-        "publish_rumor"
+        "publish_rumor",
+        "publish_article"
     };
 
     private static readonly HashSet<string> AllowedTemplates = new(StringComparer.OrdinalIgnoreCase)
@@ -279,6 +280,55 @@ public sealed class NpcIntentResolver
 
         state.Telemetry.Daily.WorldMutations += 1;
         return NpcIntentResolveResult.Applied(intentId, "publish_rumor", topic, fallbackUsed: false, proposal: null);
+    }
+
+    private static NpcIntentResolveResult ResolvePublishArticle(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (!args.TryGetProperty("title", out var tEl) || tEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("publish_article missing title");
+        if (!args.TryGetProperty("content", out var cEl) || cEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("publish_article missing content");
+        if (!args.TryGetProperty("category", out var catEl) || catEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("publish_article missing category");
+
+        var category = catEl.GetString() ?? "community";
+
+        // Validate category
+        var allowedCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "community", "market", "social", "nature"
+        };
+
+        if (!allowedCategories.Contains(category))
+            return NpcIntentResolveResult.Rejected($"invalid category '{category}'", "E_CATEGORY_INVALID");
+
+        if (HasUnexpectedArgs(args, "title", "content", "category"))
+            return NpcIntentResolveResult.Rejected("publish_article contains unexpected argument fields");
+
+        var title = tEl.GetString() ?? string.Empty;
+        var content = cEl.GetString() ?? string.Empty;
+
+        // Create article
+        var article = new NewspaperArticle
+        {
+            Title = title,
+            Content = content,
+            Category = category,
+            SourceNpc = npcId,
+            Day = state.Calendar.Day,
+            ExpirationDay = state.Calendar.Day + 14 // 2 weeks
+        };
+
+        // Add to newspaper (respecting daily limit)
+        var todayArticles = state.Newspaper.Issues.LastOrDefault()?.Articles ?? new List<NewspaperArticle>();
+        if (todayArticles.Count >= 3)
+            return NpcIntentResolveResult.Rejected("article limit reached for today (3)", "E_ARTICLE_LIMIT");
+
+        state.Newspaper.Issues.LastOrDefault()?.Articles.Add(article);
+
+        MarkIntentProcessed(state, intentId, npcId, "publish_article");
+
+        return NpcIntentResolveResult.Applied(intentId, "publish_article", title, fallbackUsed: false, proposal: null);
     }
 
     private static bool HasUnexpectedArgs(JsonElement args, params string[] allowedKeys)
