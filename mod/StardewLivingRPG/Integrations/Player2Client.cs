@@ -9,6 +9,7 @@ namespace StardewLivingRPG.Integrations;
 
 public sealed class Player2Client
 {
+    private const int MaxGeneratedArticleCharacters = 130;
     private readonly HttpClient _http;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -452,21 +453,289 @@ public sealed class Player2Client
         return $"{prefix} {truncated}!";
     }
 
+    public async Task<List<NewspaperArticle>> GenerateArticlesAsync(GenerateArticlesRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_apiBaseUrl) || string.IsNullOrWhiteSpace(_p2Key))
+            return new List<NewspaperArticle>();
+
+        return await GenerateArticlesAsync(_apiBaseUrl, _p2Key, request, ct);
+    }
+
     public async Task<List<NewspaperArticle>> GenerateArticlesAsync(string apiBaseUrl, string p2Key, GenerateArticlesRequest request, CancellationToken ct)
     {
-        var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/spawn";
-        using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+        if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(p2Key))
+            return new List<NewspaperArticle>();
+
+        var requestedCount = Math.Clamp(request.Context?.Count ?? 1, 1, 2);
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            Content = new StringContent(JsonSerializer.Serialize(request, _jsonOptions), Encoding.UTF8, "application/json")
-        };
-        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+            try
+            {
+                var npcId = await EnsureHeadlineEditorNpcIdAsync(apiBaseUrl, p2Key, ct);
+                var previousHistoryMessage = await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
 
-        using var res = await _http.SendAsync(msg, ct);
-        var body = await res.Content.ReadAsStringAsync(ct);
-        res.EnsureSuccessStatusCode();
+                var prompt = BuildArticleGenerationPrompt(request, requestedCount);
+                var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
+                using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
+                    {
+                        SenderName = "Pelican Times Desk",
+                        SenderMessage = prompt,
+                        GameStateInfo = BuildArticleGenerationStateInfo(request.Context)
+                    }, _jsonOptions), Encoding.UTF8, "application/json")
+                };
+                msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
 
-        var data = JsonSerializer.Deserialize<GenerateArticlesResponse>(body, _jsonOptions);
-        return data?.Articles ?? new List<NewspaperArticle>();
+                using var res = await _http.SendAsync(msg, ct);
+                var body = await res.Content.ReadAsStringAsync(ct);
+                res.EnsureSuccessStatusCode();
+
+                // Some Player2 deployments send immediate message payloads.
+                var immediate = ParseGeneratedArticlesPayload(body, requestedCount);
+                if (immediate.Count > 0)
+                    return immediate;
+
+                var immediateMessage = TryExtractLatestMessage(body);
+                var immediateFromMessage = ParseGeneratedArticlesPayload(immediateMessage, requestedCount);
+                if (immediateFromMessage.Count > 0)
+                    return immediateFromMessage;
+
+                // Fallback to history polling (same pattern used for headline generation).
+                var fromHistory = await WaitForFreshHeadlineFromHistoryAsync(apiBaseUrl, p2Key, npcId, previousHistoryMessage, ct);
+                var historyArticles = ParseGeneratedArticlesPayload(fromHistory, requestedCount);
+                if (historyArticles.Count > 0)
+                    return historyArticles;
+            }
+            catch (HttpRequestException ex) when (attempt == 0 && IsNpcMissing(ex))
+            {
+                _headlineEditorNpcId = null;
+                continue;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Player2Client] GenerateArticlesAsync EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+                break;
+            }
+        }
+
+        return new List<NewspaperArticle>();
+    }
+
+    private static string BuildArticleGenerationPrompt(GenerateArticlesRequest request, int count)
+    {
+        var season = request.Context?.Season ?? "spring";
+        var day = request.Context?.Day ?? 1;
+        var year = request.Context?.Year ?? 1;
+        var existing = request.Context?.ExistingArticles ?? new List<string>();
+        var existingList = existing.Count == 0 ? "(none)" : string.Join(", ", existing.Take(20));
+
+        return
+            $"You are the Pelican Times editor in Stardew Valley. " +
+            $"Generate {count} fresh short newspaper stories for season {season}, day {day}, year {year}. " +
+            $"Avoid repeating these recent titles: {existingList}. " +
+            "Stories should feel like town progression for this point in the year. " +
+            "Each story must fit within 130 characters total (title + content). " +
+            "Return STRICT JSON only with this schema: " +
+            "{\"articles\":[{\"title\":\"...\",\"content\":\"...\",\"category\":\"community|market|social|nature\"}]}. " +
+            "No markdown, no prose outside JSON.";
+    }
+
+    private static string BuildArticleGenerationStateInfo(ArticleGenerationContext? context)
+    {
+        if (context is null)
+            return "article_generation";
+
+        return $"article_generation: season={context.Season}, day={context.Day}, year={context.Year}";
+    }
+
+    private List<NewspaperArticle> ParseGeneratedArticlesPayload(string? payload, int maxCount)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            return new List<NewspaperArticle>();
+
+        var candidates = BuildJsonCandidates(payload);
+        foreach (var candidate in candidates)
+        {
+            if (!TryParseGeneratedArticlesJson(candidate, maxCount, out var articles))
+                continue;
+
+            if (articles.Count > 0)
+                return articles;
+        }
+
+        return new List<NewspaperArticle>();
+    }
+
+    private static List<string> BuildJsonCandidates(string payload)
+    {
+        var raw = payload.Trim();
+        var candidates = new List<string> { raw };
+
+        if (raw.StartsWith("<", StringComparison.Ordinal))
+        {
+            var close = raw.IndexOf('>');
+            if (close > 0 && close + 1 < raw.Length)
+                candidates.Add(raw[(close + 1)..].Trim());
+        }
+
+        // Handle fenced blocks: ```json ... ```
+        var fenceStart = raw.IndexOf("```", StringComparison.Ordinal);
+        if (fenceStart >= 0)
+        {
+            var contentStart = raw.IndexOf('\n', fenceStart);
+            if (contentStart > fenceStart)
+            {
+                var fenceEnd = raw.IndexOf("```", contentStart, StringComparison.Ordinal);
+                if (fenceEnd > contentStart)
+                    candidates.Add(raw[(contentStart + 1)..fenceEnd].Trim());
+            }
+        }
+
+        // Handle mixed text with embedded JSON object/array.
+        var objStart = raw.IndexOf('{');
+        var objEnd = raw.LastIndexOf('}');
+        if (objStart >= 0 && objEnd > objStart)
+            candidates.Add(raw[objStart..(objEnd + 1)]);
+
+        var arrStart = raw.IndexOf('[');
+        var arrEnd = raw.LastIndexOf(']');
+        if (arrStart >= 0 && arrEnd > arrStart)
+            candidates.Add(raw[arrStart..(arrEnd + 1)]);
+
+        return candidates
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private bool TryParseGeneratedArticlesJson(string json, int maxCount, out List<NewspaperArticle> articles)
+    {
+        articles = new List<NewspaperArticle>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            JsonElement articleArray;
+            if (root.ValueKind == JsonValueKind.Object
+                && TryGetPropertyCaseInsensitive(root, "articles", out var articlesProp)
+                && articlesProp.ValueKind == JsonValueKind.Array)
+            {
+                articleArray = articlesProp;
+            }
+            else if (root.ValueKind == JsonValueKind.Array)
+            {
+                articleArray = root;
+            }
+            else
+            {
+                return false;
+            }
+
+            var seenTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in articleArray.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                if (!TryGetStringProperty(item, "title", out var title) || string.IsNullOrWhiteSpace(title))
+                    continue;
+
+                if (!TryGetStringProperty(item, "content", out var content) || string.IsNullOrWhiteSpace(content))
+                    continue;
+
+                if (!TryClampGeneratedArticle(title, content, out var clampedTitle, out var clampedContent))
+                    continue;
+
+                if (!seenTitles.Add(clampedTitle))
+                    continue;
+
+                var category = TryGetStringProperty(item, "category", out var categoryValue)
+                    ? NormalizeArticleCategory(categoryValue)
+                    : "community";
+
+                articles.Add(new NewspaperArticle
+                {
+                    Title = clampedTitle,
+                    Content = clampedContent,
+                    Category = category
+                });
+
+                if (articles.Count >= maxCount)
+                    break;
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryClampGeneratedArticle(string title, string content, out string clampedTitle, out string clampedContent)
+    {
+        clampedTitle = (title ?? string.Empty).Trim();
+        clampedContent = (content ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(clampedTitle) || string.IsNullOrWhiteSpace(clampedContent))
+            return false;
+
+        // Reserve at least one character for content while enforcing title+content <= 130.
+        var maxTitleLength = Math.Max(1, MaxGeneratedArticleCharacters - 1);
+        if (clampedTitle.Length > maxTitleLength)
+            clampedTitle = clampedTitle[..maxTitleLength].Trim();
+
+        if (string.IsNullOrWhiteSpace(clampedTitle))
+            return false;
+
+        var maxContentLength = MaxGeneratedArticleCharacters - clampedTitle.Length;
+        if (maxContentLength <= 0)
+            return false;
+
+        if (clampedContent.Length > maxContentLength)
+            clampedContent = clampedContent[..maxContentLength].Trim();
+
+        return !string.IsNullOrWhiteSpace(clampedContent);
+    }
+
+    private static bool TryGetStringProperty(JsonElement obj, string propertyName, out string value)
+    {
+        value = string.Empty;
+        if (!TryGetPropertyCaseInsensitive(obj, propertyName, out var prop))
+            return false;
+
+        if (prop.ValueKind != JsonValueKind.String)
+            return false;
+
+        value = prop.GetString() ?? string.Empty;
+        return true;
+    }
+
+    private static bool TryGetPropertyCaseInsensitive(JsonElement obj, string propertyName, out JsonElement value)
+    {
+        foreach (var prop in obj.EnumerateObject())
+        {
+            if (prop.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = prop.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static string NormalizeArticleCategory(string? category)
+    {
+        if (string.Equals(category, "market", StringComparison.OrdinalIgnoreCase))
+            return "market";
+        if (string.Equals(category, "social", StringComparison.OrdinalIgnoreCase))
+            return "social";
+        if (string.Equals(category, "nature", StringComparison.OrdinalIgnoreCase))
+            return "nature";
+        return "community";
     }
 
     /// <summary>
