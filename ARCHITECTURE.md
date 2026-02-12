@@ -196,8 +196,13 @@ Validation rules:
 
 ### V1.1 Hard-Asset Additions (anti-"AI wrapper" layer)
 1. **Pierre's Market Board** (in-world object + custom UI)
-   - shows `price_today`, trend arrows, and short-term demand outlook
-   - designed as a daily planning ritual (like weather/luck checks)
+   - Paper-styled menu matching "The Pelican Times" aesthetic
+   - Displays 8 crops in 2×4 grid with vanilla crop sprites
+   - Each crop shows: name, price (color-coded green/red), trend arrows (↑↑↑ to ↓↓↓)
+   - 7-day price history bar chart (green/red bars showing movement)
+   - Demand/Supply factors and scarcity bonus displayed
+   - Designed as a daily planning ritual (like weather/luck checks)
+   - All data dynamic: prices update daily based on season, supply pressure, sentiment
 2. **Heirloom Crops / Regional Specialties** (3-5 items)
    - unlocked by high influence in specific Town Interests
    - hand-authored sprites + hard-coded economy hooks

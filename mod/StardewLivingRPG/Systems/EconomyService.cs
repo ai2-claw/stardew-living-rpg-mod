@@ -62,6 +62,11 @@ public sealed class EconomyService
 
         foreach (var (crop, entry) in state.Economy.Crops)
         {
+            // Track price history before updating
+            entry.PriceHistory7D.Add(entry.PriceToday);
+            if (entry.PriceHistory7D.Count > 7)
+                entry.PriceHistory7D.RemoveAt(0);
+
             entry.PriceYesterday = entry.PriceToday;
 
             // Gentle pressure in cozy mode: saturating penalty, never a hard crash.

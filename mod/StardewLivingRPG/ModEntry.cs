@@ -656,7 +656,7 @@ public sealed class ModEntry : Mod
         if (_marketBoardService is null)
             return;
 
-        Game1.activeClickableMenu = new MarketBoardMenu(_state, _marketBoardService);
+        Game1.activeClickableMenu = new MarketBoardMenu(_state);
         _state.Telemetry.Daily.MarketBoardOpens += 1;
     }
 
@@ -706,9 +706,13 @@ public sealed class ModEntry : Mod
         if (_marketBoardService is null)
             return;
 
-        Monitor.Log("=== Pierre's Market Board (text preview) ===", LogLevel.Info);
-        foreach (var line in _marketBoardService.BuildTopRows(_state))
-            Monitor.Log(line, LogLevel.Info);
+        Monitor.Log($"=== Pierre's Market Board — Day {_state.Calendar.Day} ({_state.Calendar.Season}) ===", LogLevel.Info);
+
+        foreach (var (crop, entry) in _state.Economy.Crops.OrderByDescending(kv => kv.Value.TrendEma).Take(8))
+        {
+            var arrow = entry.PriceToday > entry.PriceYesterday ? "↑" : entry.PriceToday < entry.PriceYesterday ? "↓" : "→";
+            Monitor.Log($"{crop,-12} {entry.PriceToday,4}g {arrow} (demand {entry.DemandFactor:F2}, supply {entry.SupplyPressureFactor:F2}, scarcity+ {entry.ScarcityBonus:P0})", LogLevel.Info);
+        }
     }
 
     private void OnOpenBoardCommand(string name, string[] args)

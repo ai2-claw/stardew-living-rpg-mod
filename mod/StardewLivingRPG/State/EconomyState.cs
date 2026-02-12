@@ -18,6 +18,7 @@ public sealed class CropEconomyEntry
     public float ScarcityBonus { get; set; } = 0.0f;
     public float TrendEma { get; set; } = 0.0f;
     public List<string> Flags { get; set; } = new();
+    public List<int> PriceHistory7D { get; set; } = new();
 }
 
 public sealed class MarketEventEntry

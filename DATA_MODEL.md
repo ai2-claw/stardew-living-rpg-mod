@@ -48,6 +48,7 @@ Design goals:
       "base_price": 50,
       "price_today": 52,
       "price_yesterday": 50,
+      "price_history_7d": [48, 49, 50, 50, 51, 50, 52],
       "rolling_sell_volume_7d": 320,
       "demand_factor": 1.04,
       "supply_pressure_factor": 0.96,
