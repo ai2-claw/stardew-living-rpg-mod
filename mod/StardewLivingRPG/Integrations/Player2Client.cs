@@ -9,7 +9,7 @@ namespace StardewLivingRPG.Integrations;
 
 public sealed class Player2Client
 {
-    private const int MaxGeneratedArticleCharacters = 130;
+    private const int MaxGeneratedArticleCharacters = 80;
     private readonly HttpClient _http;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -535,7 +535,7 @@ public sealed class Player2Client
             $"Generate {count} fresh short newspaper stories for season {season}, day {day}, year {year}. " +
             $"Avoid repeating these recent titles: {existingList}. " +
             "Stories should feel like town progression for this point in the year. " +
-            "Each story must fit within 130 characters total (title + content). " +
+            "Each story must fit within 80 characters total (title + content). " +
             "Return STRICT JSON only with this schema: " +
             "{\"articles\":[{\"title\":\"...\",\"content\":\"...\",\"category\":\"community|market|social|nature\"}]}. " +
             "No markdown, no prose outside JSON.";
@@ -681,7 +681,7 @@ public sealed class Player2Client
         if (string.IsNullOrWhiteSpace(clampedTitle) || string.IsNullOrWhiteSpace(clampedContent))
             return false;
 
-        // Reserve at least one character for content while enforcing title+content <= 130.
+        // Reserve at least one character for content while enforcing title+content <= 80.
         var maxTitleLength = Math.Max(1, MaxGeneratedArticleCharacters - 1);
         if (clampedTitle.Length > maxTitleLength)
             clampedTitle = clampedTitle[..maxTitleLength].Trim();

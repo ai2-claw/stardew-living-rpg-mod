@@ -40,8 +40,20 @@ public sealed class NewspaperService
                 issue.Articles.Add(article);
         }
 
-        // 2. Fill remaining slots with seasonal filler articles
+        // 2. Try Player2-generated daily stories to reduce repeated static fillers.
         var fillerCount = Math.Max(0, MinDailyArticles - issue.Articles.Count);
+        if (fillerCount > 0 && _player2 is not null)
+        {
+            var dynamicStories = await GenerateDynamicStoryArticlesAsync(state, issue.Articles, fillerCount);
+            foreach (var article in dynamicStories)
+            {
+                if (issue.Articles.Count < MaxDailyArticles)
+                    issue.Articles.Add(article);
+            }
+        }
+
+        // 3. Fallback to hardcoded seasonal filler only for any remaining slots.
+        fillerCount = Math.Max(0, MinDailyArticles - issue.Articles.Count);
         var fillerArticles = GenerateFillerArticles(state, count: fillerCount);
         foreach (var article in fillerArticles)
         {
@@ -49,7 +61,7 @@ public sealed class NewspaperService
                 issue.Articles.Add(article);
         }
 
-        // 3. Add NPC-generated articles for today
+        // 4. Add NPC-generated articles for today
         var todayNpcArticles = state.Newspaper.Articles
             .Where(a => a.Day == state.Calendar.Day && a.ExpirationDay >= state.Calendar.Day)
             .ToList();
@@ -59,10 +71,10 @@ public sealed class NewspaperService
                 issue.Articles.Add(article);
         }
 
-        // 4. Select headline from most important article
+        // 5. Select headline from most important article
         issue.Headline = await SelectHeadlineAsync(issue.Articles, state);
 
-        // 5. Add market sections
+        // 6. Add market sections
         var topDown = GetTopDown(state);
         var topUp = GetTopUp(state);
 
@@ -75,7 +87,7 @@ public sealed class NewspaperService
         if (!string.IsNullOrWhiteSpace(anchorNote))
             issue.Sections.Add(anchorNote);
 
-        // 6. Predictive hints for planner players
+        // 7. Predictive hints for planner players
         var scarcityCandidate = state.Economy.Crops
             .Where(kv => kv.Value.ScarcityBonus > 0.0f)
             .OrderByDescending(kv => kv.Value.ScarcityBonus)
@@ -203,6 +215,100 @@ public sealed class NewspaperService
         }
 
         return articles;
+    }
+
+    private async Task<List<NewspaperArticle>> GenerateDynamicStoryArticlesAsync(SaveState state, List<NewspaperArticle> currentIssueArticles, int count)
+    {
+        if (_player2 is null || count <= 0)
+            return new List<NewspaperArticle>();
+
+        var recentTitles = state.Newspaper.Issues
+            .OrderByDescending(i => i.Day)
+            .Take(14)
+            .SelectMany(i => i.Articles)
+            .Select(a => a.Title)
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var a in currentIssueArticles)
+        {
+            if (!string.IsNullOrWhiteSpace(a.Title))
+                recentTitles.Add(a.Title);
+        }
+
+        var request = new GenerateArticlesRequest
+        {
+            ShortName = "Editor",
+            Name = "Pelican Times Editor",
+            CharacterDescription = "Generate day-appropriate newspaper stories that reflect current town progression.",
+            SystemPrompt = "Generate concise in-world newspaper stories for Pelican Town. Stay season/day/year grounded.",
+            KeepGameState = true,
+            Context = new ArticleGenerationContext
+            {
+                Season = state.Calendar.Season,
+                Day = state.Calendar.Day,
+                Year = state.Calendar.Year,
+                ExistingArticles = recentTitles
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(20)
+                    .ToList(),
+                Count = Math.Clamp(count, 1, 2)
+            }
+        };
+
+        List<NewspaperArticle> generated;
+        try
+        {
+            generated = await _player2.GenerateArticlesAsync(request, default);
+        }
+        catch (Exception ex)
+        {
+            _monitor.Log($"GenerateDynamicStoryArticlesAsync: Player2 generation failed: {ex.Message}", LogLevel.Trace);
+            return new List<NewspaperArticle>();
+        }
+
+        if (generated.Count == 0)
+            return new List<NewspaperArticle>();
+
+        var seen = new HashSet<string>(recentTitles, StringComparer.OrdinalIgnoreCase);
+        var result = new List<NewspaperArticle>();
+        foreach (var article in generated)
+        {
+            var title = (article.Title ?? string.Empty).Trim();
+            var content = (article.Content ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
+                continue;
+
+            if (!seen.Add(title))
+                continue;
+
+            result.Add(new NewspaperArticle
+            {
+                Title = title,
+                Content = content,
+                Category = NormalizeCategory(article.Category),
+                SourceNpc = "Pelican Times Editor",
+                Day = state.Calendar.Day,
+                ExpirationDay = state.Calendar.Day + 2
+            });
+
+            if (result.Count >= count)
+                break;
+        }
+
+        return result;
+    }
+
+    private static string NormalizeCategory(string? category)
+    {
+        if (string.Equals(category, "market", StringComparison.OrdinalIgnoreCase))
+            return "market";
+        if (string.Equals(category, "social", StringComparison.OrdinalIgnoreCase))
+            return "social";
+        if (string.Equals(category, "nature", StringComparison.OrdinalIgnoreCase))
+            return "nature";
+        return "community";
     }
 
     /// <summary>

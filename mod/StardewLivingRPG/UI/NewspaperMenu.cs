@@ -167,8 +167,13 @@ public sealed class NewspaperMenu : IClickableMenu
         {
             try
             {
-                // "The Pelican Times" uses Lewis's portrait as editor representation
-                var npcName = article.SourceNpc == "The Pelican Times" ? "Lewis" : article.SourceNpc;
+                // Placeholder portrait mappings for non-vanilla bylines.
+                var npcName = article.SourceNpc switch
+                {
+                    "The Pelican Times" => "Lewis",
+                    "Pelican Times Editor" => "Elliott",
+                    _ => article.SourceNpc
+                };
                 var npc = Game1.getCharacterFromName(npcName);
                 if (npc?.Portrait != null)
                 {
@@ -193,7 +198,12 @@ public sealed class NewspaperMenu : IClickableMenu
         // NPC name
         if (!string.IsNullOrEmpty(article.SourceNpc))
         {
-            var displayName = article.SourceNpc == "Debug" ? "Anonymous" : article.SourceNpc;
+            var displayName = article.SourceNpc switch
+            {
+                "Debug" => "Anonymous",
+                "Pelican Times Editor" => "Editor",
+                _ => article.SourceNpc
+            };
             b.DrawString(Game1.smallFont, displayName, new Vector2(textX, y), new Color(40, 20, 10));
         }
         y += 30; // Spacing after portrait row
