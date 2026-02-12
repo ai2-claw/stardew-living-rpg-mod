@@ -167,7 +167,9 @@ public sealed class NewspaperMenu : IClickableMenu
         {
             try
             {
-                var npc = Game1.getCharacterFromName(article.SourceNpc);
+                // "The Pelican Times" uses Lewis's portrait as editor representation
+                var npcName = article.SourceNpc == "The Pelican Times" ? "Lewis" : article.SourceNpc;
+                var npc = Game1.getCharacterFromName(npcName);
                 if (npc?.Portrait != null)
                 {
                     // NPC portraits are typically 64x64 per frame, draw the default neutral one (frame 0)

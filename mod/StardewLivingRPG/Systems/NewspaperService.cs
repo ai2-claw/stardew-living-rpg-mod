@@ -36,7 +36,7 @@ public sealed class NewspaperService
                 issue.Articles.Add(article);
         }
 
-        // 3. Add NPC-generated articles for today (already in state.Newspaper.Articles)
+        // 3. Add NPC-generated articles for today
         var todayNpcArticles = state.Newspaper.Articles
             .Where(a => a.Day == state.Calendar.Day && a.ExpirationDay >= state.Calendar.Day)
             .ToList();
@@ -108,7 +108,7 @@ public sealed class NewspaperService
                 "fainting" => new NewspaperArticle
                 {
                     Title = "Rescue at Mines",
-                    Content = $"A local farmer was found unconscious in the mines and was brought to safety by a rescue operation. The incident occurred on day {ev.Day}.",
+                    Content = $"A local farmer was found unconscious in mines and was brought to safety by a rescue operation. The incident occurred on day {ev.Day}.",
                     Category = "community",
                     SourceNpc = "Town Report",
                     Day = state.Calendar.Day,
@@ -187,15 +187,15 @@ public sealed class NewspaperService
         if (articles.Count == 0)
             return "Quiet Day at Pelican Town";
 
-        // Priority 1: High-severity incidents (severity 4-5)
+        // Priority 1: High-severity incidents
         var highSeverityArticle = articles
-            .Where(a => a.SourceNpc == "Town Report")
-            .FirstOrDefault(a => a.Content.Contains("incident", StringComparison.OrdinalIgnoreCase)
+            .FirstOrDefault(a => a.SourceNpc == "Town Report" &&
+                (a.Content.Contains("incident", StringComparison.OrdinalIgnoreCase)
                 || a.Content.Contains("Rescue", StringComparison.OrdinalIgnoreCase)
-                || a.Content.Contains("Storm", StringComparison.OrdinalIgnoreCase));
+                || a.Content.Contains("Storm", StringComparison.OrdinalIgnoreCase)));
 
         if (highSeverityArticle is not null)
-            return GenerateSensationalHeadline(highSeverityArticle);
+            return highSeverityArticle.Title;
 
         // Priority 2: Market/nature articles
         var marketOrNatureArticle = articles
@@ -203,182 +203,106 @@ public sealed class NewspaperService
                 || a.Category.Equals("nature", StringComparison.OrdinalIgnoreCase));
 
         if (marketOrNatureArticle is not null)
-            return GenerateSensationalHeadline(marketOrNatureArticle);
+            return marketOrNatureArticle.Title;
 
         // Priority 3: Any article
-        return GenerateSensationalHeadline(articles[0]);
+        return articles[0].Title;
     }
 
-    /// <summary>
-    /// Generate tabloid-style sensational headline from article.
-    /// Different from article title - exaggerated and exciting.
-    /// </summary>
-    private static string GenerateSensationalHeadline(NewspaperArticle article)
+    private static string Cap(string value) => string.IsNullOrEmpty(value) ? value : char.ToUpper(value[0]) + value.Substring(1);
+
+    private static CropTrendEntry? GetTopDown(SaveState state)
     {
-        if (article.Content.Contains("faint", StringComparison.OrdinalIgnoreCase)
-            || article.Content.Contains("unconscious", StringComparison.OrdinalIgnoreCase))
-        {
-            var prefixes = new[] { "DRAMA IN THE DEPTHS", "MINE RESCUE", "DARING OPERATION" };
-            var suffixes = new[] { "FARMER COLLAPSES IN MINE SHAFT!", "FARMER PULLED FROM DARKNESS!", "HEROIC RESCUE AT MINES!" };
-            return $"{GetRandom(prefixes)}: {GetRandom(suffixes)}";
-        }
+        if (state.Economy.Crops.Count == 0)
+            return null;
 
-        if (article.Content.Contains("rescue", StringComparison.OrdinalIgnoreCase))
-        {
-            var prefixes = new[] { "DARING RESCUE", "HEROIC EFFORT", "TOWN RALLIES" };
-            var suffixes = new[] { "LOCAL FARMER PULLED FROM DARKNESS!", "COMMUNITY SAVES THE DAY!", "BRAVE RESIDENTS RISK IT ALL!" };
-            return $"{GetRandom(prefixes)}: {GetRandom(suffixes)}";
-        }
-
-        if (article.Content.Contains("storm", StringComparison.OrdinalIgnoreCase))
-        {
-            var prefixes = new[] { "NATURE'S FURY", "STORM CHAOS", "WEATHER ALERT" };
-            var suffixes = new[] { "TOWN BATTERED BY HIGH WINDS!", "DAMAGE REPORTED ACROSS PELICAN TOWN!", "RESIDENTS SEEK SHELTER!" };
-            return $"{GetRandom(prefixes)}: {GetRandom(suffixes)}";
-        }
-
-        if (article.Category.Equals("market", StringComparison.OrdinalIgnoreCase)
-            || article.Content.Contains("price", StringComparison.OrdinalIgnoreCase)
-            || article.Content.Contains("stock", StringComparison.OrdinalIgnoreCase))
-        {
-            var prefixes = new[] { "MARKET SHOCK", "PRICES SEND TRADERS INTO FRENZY", "ECONOMIC DRAMA" };
-            var suffixes = new[] { "PRICES SPIKE ACROSS THE BOARD!", "TRADERS SCRAMBLE FOR GOODS!", "MARKET VOLATILITY STUNS TOWN!" };
-            return $"{GetRandom(prefixes)}: {GetRandom(suffixes)}";
-        }
-
-        if (article.Category.Equals("nature", StringComparison.OrdinalIgnoreCase)
-            || article.Content.Contains("salmon", StringComparison.OrdinalIgnoreCase)
-            || article.Content.Contains("fish", StringComparison.OrdinalIgnoreCase))
-        {
-            var prefixes = new[] { "SILVER RUSH", "NATURE'S BOUNTY", "RIVER TEEMING" };
-            var suffixes = new[] { "RIVERS TEEMING WITH MIGRATING SALMON!", "FISHERMEN REEL IN RECORD CATCH!", "ANNUAL SALMON RUN BEGINS!" };
-            return $"{GetRandom(prefixes)}: {GetRandom(suffixes)}";
-        }
-
-        if (article.Content.Contains("festival", StringComparison.OrdinalIgnoreCase))
-        {
-            var prefixes = new[] { "FAVORITE FESTIVAL RETURNS", "TOWN PREPARES", "EXCITEMENT BUILDS" };
-            var suffixes = new[] { "VENDORS PREPARE FOR INFLUX!", "RESIDENTS GEAR UP FOR CELEBRATION!", "SPECIAL EVENT DRAWS CROWDS!" };
-            return $"{GetRandom(prefixes)}: {GetRandom(suffixes)}";
-        }
-
-        // Generic fallback
-        var genericPrefixes = new[] { "SHOCKING", "ALARMING", "BREAKING", "DEVELOPING" };
-        return $"{GetRandom(genericPrefixes)}: {article.Title.ToUpperInvariant()}!";
+        return state.Economy.Crops
+            .Where(kv => kv.Value.PriceToday < kv.Value.PriceYesterday)
+            .OrderByDescending(kv => (kv.Value.PriceYesterday - kv.Value.PriceToday) / kv.Value.PriceYesterday)
+            .Select(kv => new CropTrendEntry
+            {
+                Crop = kv.Key,
+                Today = kv.Value.PriceToday,
+                DeltaPct = (kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday
+            })
+            .FirstOrDefault();
     }
 
-    /// <summary>
-    /// Get 32 seasonal article templates (8 per season).
-    /// </summary>
+    private static CropTrendEntry? GetTopUp(SaveState state)
+    {
+        if (state.Economy.Crops.Count == 0)
+            return null;
+
+        return state.Economy.Crops
+            .Where(kv => kv.Value.PriceToday > kv.Value.PriceYesterday)
+            .OrderByDescending(kv => (kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday)
+            .Select(kv => new CropTrendEntry
+            {
+                Crop = kv.Key,
+                Today = kv.Value.PriceToday,
+                DeltaPct = (kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday
+            })
+            .FirstOrDefault();
+    }
+
     private static List<ArticleTemplate> GetSeasonalTemplates()
     {
-        return new()
+        return new List<ArticleTemplate>
         {
-            // Spring (8 articles)
-            new ArticleTemplate("Pierre's Stock Alert", "Pierre announces limited stock of parsnip and potato seeds due to high demand. Farmers encouraged to buy early.", "market"),
-            new ArticleTemplate("Spring Planting Rush", "Local farmers are seen busily preparing their fields for the spring planting season. Cauliflower and potatoes are popular choices.", "nature"),
-            new ArticleTemplate("Community Cleanup", "Lewis announces a community cleanup day for this Saturday. Residents are asked to gather at the town square.", "community"),
-            new ArticleTemplate("New Seed Arrivals", "Pierre has received a shipment of rare strawberry seeds. Limited quantities available.", "market"),
-            new ArticleTemplate("Flower Blooms Early", "An unusual warm spell has caused flowers around town to bloom earlier than expected this year.", "nature"),
-            new ArticleTemplate("Youth Fishing Contest", "The annual youth fishing contest will be held at the beach this Sunday. All are welcome to attend.", "community"),
-            new ArticleTemplate("Crop Quality Concerns", "Agricultural experts warn about soil quality this spring. Fertilizer recommended for optimal yields.", "market"),
-            new ArticleTemplate("Spring Festival Preview", "Organisers are putting final touches on the upcoming Egg Festival. Vendors are preparing for crowds.", "community"),
+            // Spring (8 templates)
+            new() { Title = "Spring Awakening", Content = "As flowers bloom across the valley, farmers prepare their soil for the season's first planting.", Category = "nature", Season = "spring" },
+            new() { Title = "Seed Shortage Reported", Content = "Local suppliers report higher demand for parsnip and cauliflower seeds this week.", Category = "market", Season = "spring" },
+            new() { Title = "Community Garden Cleanup", Content = "Residents gathered at the community center to prepare gardens for spring planting.", Category = "community", Season = "spring" },
+            new() { Title = "Rain Brings Hope", Content = "Recent rainfall has farmers optimistic about soil moisture levels for early crops.", Category = "nature", Season = "spring" },
+            new() { Title = "Pierre's Spring Sale", Content = "Pierre's General Store announces seasonal discounts on starting seeds.", Category = "market", Season = "spring" },
+            new() { Title = "Fishing Tournament Prep", Content = "Anglers across the valley prepare for the upcoming spring fishing tournament.", Category = "community", Season = "spring" },
+            new() { Title = "Foraging Season Opens", Content = "Wild spring onions and other forageables spotted near the southern beach.", Category = "nature", Season = "spring" },
+            new() { Title = "New Farm Faces", Content = "Several new farmers have arrived in Pelican Town this season.", Category = "community", Season = "spring" },
 
-            // Summer (8 articles)
-            new ArticleTemplate("Salmon Run Begins", "The annual salmon run has started in the rivers. Fishermen report excellent catches.", "nature"),
-            new ArticleTemplate("Heat Wave Alert", "Temperatures are rising. Residents are advised to stay hydrated and avoid strenuous activities.", "nature"),
-            new ArticleTemplate("Beach Volleyball", "The summer beach volleyball tournament is open for registration. Teams of two can sign up at the beach.", "community"),
-            new ArticleTemplate("Blueberry Boom", "Local blueberry patches are producing exceptional yields this year. Prices may drop.", "market"),
-            new ArticleTemplate("Ice Cream Social", "Gus and the Saloon are hosting an ice cream social this weekend. Free samples for children.", "community"),
-            new ArticleTemplate("Corn Concerns", "Corn crops are showing signs of stress due to the heat. Farmers are monitoring closely.", "nature"),
-            new ArticleTemplate("Lucky Mineral", "A lucky prospector found a prismatic shard in the mines. Scientists are intrigued.", "community"),
-            new ArticleTemplate("Summer Tourism", "Tourists from the city are visiting Pelican Town in record numbers. Local businesses see increased sales.", "market"),
+            // Summer (8 templates)
+            new() { Title = "Heat Wave Continues", Content = "Unseasonably warm temperatures have crops requiring extra irrigation this week.", Category = "nature", Season = "summer" },
+            new() { Title = "Blueberry Bonanza", Content = "Blueberry farms report exceptional yields as summer heat ripens berries early.", Category = "market", Season = "summer" },
+            new() { Title = "Beach Festival Planning", Content = "The mayor's office confirms plans for the annual summer beach festival.", Category = "community", Season = "summer" },
+            new() { Title = "Corn Prices Rising", Content = "Demand for corn remains strong as summer festivals approach.", Category = "market", Season = "summer" },
+            new() { Title = "Thunderstorm Warning", Content = "Weather service predicts heavy storms for the valley later this week.", Category = "nature", Season = "summer" },
+            new() { Title = "Luau Crowd Record", Content = "This year's luau drew record attendance to the beach.", Category = "community", Season = "summer" },
+            new() { Title = "Melon Harvest Early", Content = "Warm weather has accelerated melon ripening across valley farms.", Category = "nature", Season = "summer" },
+            new() { Title = "Ice Cream Stand Returns", Content = "The traveling cart has resumed selling ice cream in the town square.", Category = "community", Season = "summer" },
 
-            // Fall (8 articles)
-            new ArticleTemplate("Harvest Festival Prep", "Stardew Valley's annual Harvest Festival is approaching. Farmers are selecting their best crops for competition.", "community"),
-            new ArticleTemplate("Pumpkin Patch Report", "Pumpkin patches are producing excellent specimens this year. Carving enthusiasts delighted.", "nature"),
-            new ArticleTemplate("Cranberry Season", "The cranberry bog is ready for harvest. Residents are preparing for the annual cranberry contest.", "nature"),
-            new ArticleTemplate("Spirits' Eve", "The annual Spirits' Eve festival will feature unusual activities this year. Mayor Lewis remains tight-lipped.", "community"),
-            new ArticleTemplate("Falling Prices", "Crop prices are trending downward as harvest floods the market. Buyers have excellent bargaining power.", "market"),
-            new ArticleTemplate("Foliage Season", "The valley's leaves are turning spectacular colors. It's an ideal time for hiking.", "nature"),
-            new ArticleTemplate("Soup Kitchen", "The community kitchen is seeking volunteers for the upcoming fall feast. All contributions welcome.", "community"),
-            new ArticleTemplate("Winter Prep", "Residents are stocking up on firewood and preserves. The coming winter is predicted to be harsh.", "market"),
+            // Fall (8 templates)
+            new() { Title = "Leaves Turning", Content = "Spectacular autumn colors draw visitors to the valley this week.", Category = "nature", Season = "fall" },
+            new() { Title = "Pumpkin Prices Surge", Content = "Farmers report strong demand for pumpkins as fall festivals approach.", Category = "market", Season = "fall" },
+            new() { Title = "Stardew Valley Fair Prep", Content = "Exhibitors prepare their best produce and livestock for the fair.", Category = "community", Season = "fall" },
+            new() { Title = "Cranberry Season Opens", Content = "Cranberry bog owners begin their annual harvest.", Category = "nature", Season = "fall" },
+            new() { Title = "Yam Prices Stabilize", Content = "After weeks of volatility, yam prices have settled at moderate levels.", Category = "market", Season = "fall" },
+            new() { Title = "Spirit's Eve Plans", Content = "Town residents prepare for the annual Spirit's Eve celebration.", Category = "community", Season = "fall" },
+            new() { Title = "Harvest Moon Bright", Content = "Farmers work late under the bright harvest moon.", Category = "nature", Season = "fall" },
+            new() { Title = "Gift Exchange Season", Content = "Local shops report increased sales as residents prepare gifts.", Category = "community", Season = "fall" },
 
-            // Winter (8 articles)
-            new ArticleTemplate("Feast of Winter Star", "Planning for the Feast of the Winter Star is underway. The potluck dish signup is open.", "community"),
-            new ArticleTemplate("Ice Fishing", "Ice fishing shacks are set up on the lake. Early reports show slow catches.", "nature"),
-            new ArticleTemplate("Coal Shortage", "Coal prices are rising as residents heat their homes. Miners are working to meet demand.", "market"),
-            new ArticleTemplate("Snow Sculptures", "The annual ice sculpture contest will feature a mystery prize this year.", "community"),
-            new ArticleTemplate("Winter Foraging", "Foraging options are limited in winter. Residents rely on preserved foods and winter roots.", "nature"),
-            new ArticleTemplate("Gift Exchange", "The community gift exchange is accepting donations. Please wrap gifts and label with intended recipient.", "community"),
-            new ArticleTemplate("Market Slowdown", "Winter has slowed trading. Pierre reports minimal sales except for staples and wheat.", "market"),
-            new ArticleTemplate("Stardew Valley Inn", "The inn is offering warm drinks and lodging for travelers caught in the snow.", "community")
+            // Winter (8 templates)
+            new() { Title = "First Snow Falls", Content = "A blanket of white covers Pelican Town as winter officially begins.", Category = "nature", Season = "winter" },
+            new() { Title = "Winter Seeds Available", Content = "Pierre announces availability of winter seeds and powder for growing indoors.", Category = "market", Season = "winter" },
+            new() { Title = "Feast of the Winter Star", Content = "Planning begins for the annual winter feast celebration.", Category = "community", Season = "winter" },
+            new() { Title = "Fishing slows in Ice", Content = "Icy conditions make fishing difficult across valley waterways.", Category = "nature", Season = "winter" },
+            new() { Title = "Coal Demand High", Content = "Heating needs drive coal prices up this winter season.", Category = "market", Season = "winter" },
+            new() { Title = "Night Market Vendors", Content = "Merchants prepare for the annual winter night market.", Category = "community", Season = "winter" },
+            new() { Title = "Farm Maintenance", Content = "Farmers use the quiet season to repair fences and equipment.", Category = "nature", Season = "winter" },
+            new() { Title = "Soup Kitchen Volunteers", Content = "Community members volunteer at the soup kitchen for needy residents.", Category = "community", Season = "winter" }
         };
     }
+}
 
-    private static string GetRandom(string[] options)
-    {
-        // Deterministic random based on current time (changes each call, keeps variety)
-        var index = DateTime.Now.Millisecond % options.Length;
-        return options[index];
-    }
+public sealed class ArticleTemplate
+{
+    public string Title { get; set; } = "";
+    public string Content { get; set; } = "";
+    public string Category { get; set; } = "community";
+    public string Season { get; set; } = "spring";
+}
 
-    private static string Cap(string s)
-        => string.IsNullOrWhiteSpace(s) ? s : char.ToUpperInvariant(s[0]) + s[1..];
-
-    private static CropPriceChange? GetTopDown(SaveState state)
-    {
-        if (state.Economy.Crops is null) return null;
-        return state.Economy.Crops
-            .Where(kv => kv.Value.PriceYesterday > 0)
-            .Select(kv => new CropPriceChange
-            {
-                Crop = kv.Key,
-                Today = kv.Value.PriceToday,
-                Yesterday = kv.Value.PriceYesterday,
-                DeltaPct = (double)(kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday
-            })
-            .Where(x => x.DeltaPct < 0)
-            .OrderByDescending(x => Math.Abs(x.DeltaPct))
-            .FirstOrDefault();
-    }
-
-    private static CropPriceChange? GetTopUp(SaveState state)
-    {
-        if (state.Economy.Crops is null) return null;
-        return state.Economy.Crops
-            .Where(kv => kv.Value.PriceYesterday > 0)
-            .Select(kv => new CropPriceChange
-            {
-                Crop = kv.Key,
-                Today = kv.Value.PriceToday,
-                Yesterday = kv.Value.PriceYesterday,
-                DeltaPct = (double)(kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday
-            })
-            .Where(x => x.DeltaPct > 0)
-            .OrderByDescending(x => x.DeltaPct)
-            .FirstOrDefault();
-    }
-
-    private class ArticleTemplate
-    {
-        public string Title { get; }
-        public string Content { get; }
-        public string Category { get; }
-
-        public ArticleTemplate(string title, string content, string category)
-        {
-            Title = title;
-            Content = content;
-            Category = category;
-        }
-    }
-
-    private class CropPriceChange
-    {
-        public string Crop { get; set; } = string.Empty;
-        public int Today { get; set; }
-        public int Yesterday { get; set; }
-        public double DeltaPct { get; set; }
-    }
+public sealed class CropTrendEntry
+{
+    public string Crop { get; set; } = "";
+    public int Today { get; set; }
+    public float DeltaPct { get; set; }
 }
