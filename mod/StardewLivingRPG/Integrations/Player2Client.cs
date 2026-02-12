@@ -143,6 +143,54 @@ public sealed class Player2Client
         return data ?? new JoulesResponse();
     }
 
+    public async Task<string> GenerateSensationalHeadlineAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
+    {
+        var npcId = "editor";
+        var prompt = $"You are a tabloid newspaper editor. Convert this article into a sensational 30-char headline.\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline, max 30 characters. Make it exciting and exaggerated like a small-town tabloid.";
+
+        var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
+        using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
+            {
+                SenderName = "System",
+                SenderMessage = prompt,
+                GameStateInfo = $"Article: {articleTitle}"
+            }, _jsonOptions), Encoding.UTF8, "application/json")
+        };
+        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
+        try
+        {
+            using var res = await _http.SendAsync(msg, ct);
+            var body = await res.Content.ReadAsStringAsync(ct);
+            res.EnsureSuccessStatusCode();
+
+            // Parse headline from response - extract just the headline text
+            if (string.IsNullOrWhiteSpace(body))
+                return FallbackHeadline(articleTitle);
+
+            var headline = body.Trim().Trim('"').Trim('\'');
+            if (headline.Length > 30)
+                headline = headline.Substring(0, 27) + "...";
+
+            return headline;
+        }
+        catch
+        {
+            return FallbackHeadline(articleTitle);
+        }
+    }
+
+    private static string FallbackHeadline(string title)
+    {
+        var prefixes = new[] { "BREAKING:", "SHOCKING:", "URGENT:", "ALERT:" };
+        var hash = Math.Abs(title.GetHashCode());
+        var prefix = prefixes[hash % prefixes.Length];
+        var truncated = title.Length > 22 ? title.Substring(0, 22) : title;
+        return $"{prefix} {truncated}!";
+    }
+
     public async Task<List<NewspaperArticle>> GenerateArticlesAsync(string apiBaseUrl, string p2Key, GenerateArticlesRequest request, CancellationToken ct)
     {
         var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/spawn";

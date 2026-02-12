@@ -160,7 +160,7 @@ public sealed class NewspaperMenu : IClickableMenu
         // Portrait and header row
         var portraitSize = 40;
         var portraitX = x;
-        var portraitY = y + 12;
+        var portraitY = y + 4;
 
         // Load and draw NPC portrait if available
         if (!string.IsNullOrEmpty(article.SourceNpc) && article.SourceNpc != "Debug")
@@ -188,7 +188,7 @@ public sealed class NewspaperMenu : IClickableMenu
         var textMaxWidth = maxWidth - portraitSize - 8;
 
         b.DrawString(Game1.smallFont, $"[{categoryText}]", new Vector2(textX, y), categoryColor * 0.8f);
-        y += 20;
+        y += 28;
 
         // NPC name
         if (!string.IsNullOrEmpty(article.SourceNpc))
@@ -196,16 +196,16 @@ public sealed class NewspaperMenu : IClickableMenu
             var displayName = article.SourceNpc == "Debug" ? "Anonymous" : article.SourceNpc;
             b.DrawString(Game1.smallFont, displayName, new Vector2(textX, y), new Color(40, 20, 10));
         }
-        y += 32; // Spacing after portrait row
+        y += 30; // Spacing after portrait row
 
         // Title
         var wrappedTitle = TextWrapHelper.WrapText(Game1.smallFont, article.Title, maxWidth);
         foreach (var line in wrappedTitle)
         {
             b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(40, 20, 10));
-            y += 24;
+            y += 26;
         }
-        y += 4; // Spacing between title and content
+        y += 8; // Spacing between title and content
 
         // Content
         var wrappedContent = TextWrapHelper.WrapText(Game1.smallFont, article.Content, maxWidth);

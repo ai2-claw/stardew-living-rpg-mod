@@ -1,4 +1,5 @@
 using StardewLivingRPG.State;
+using StardewLivingRPG.Integrations;
 
 namespace StardewLivingRPG.Systems;
 
@@ -6,8 +7,14 @@ public sealed class NewspaperService
 {
     private const int MinDailyArticles = 2;
     private const int MaxDailyArticles = 5;
+    private readonly Player2Client? _player2;
 
-    public NewspaperIssue BuildIssue(SaveState state, string? anchorNote = null)
+    public NewspaperService(Player2Client? player2 = null)
+    {
+        _player2 = player2;
+    }
+
+    public async Task<NewspaperIssue> BuildIssueAsync(SaveState state, string? anchorNote = null)
     {
         // Start with empty issue
         var issue = new NewspaperIssue
@@ -47,7 +54,7 @@ public sealed class NewspaperService
         }
 
         // 4. Select headline from most important article
-        issue.Headline = SelectHeadline(issue.Articles, state);
+        issue.Headline = await SelectHeadlineAsync(issue.Articles, state);
 
         // 5. Add market sections
         var topDown = GetTopDown(state);
@@ -84,6 +91,32 @@ public sealed class NewspaperService
         issue.PredictiveHints.Add(seasonHint);
 
         return issue;
+    }
+
+    /// <summary>
+    /// Synchronous wrapper for async headline generation. Use BuildIssueAsync for Player2 integration.
+    /// </summary>
+    public NewspaperIssue BuildIssue(SaveState state, string? anchorNote = null)
+    {
+        // Run synchronously, blocking on async headline generation
+        try
+        {
+            var task = BuildIssueAsync(state, anchorNote);
+            task.Wait();
+            return task.Result;
+        }
+        catch
+        {
+            // Fallback if Player2 fails
+            return new NewspaperIssue
+            {
+                Day = state.Calendar.Day,
+                Headline = "Quiet Day at Pelican Town",
+                Sections = new List<string>(),
+                PredictiveHints = new List<string>(),
+                Articles = new List<NewspaperArticle>()
+            };
+        }
     }
 
     /// <summary>
@@ -169,7 +202,7 @@ public sealed class NewspaperService
                 Title = template.Title,
                 Content = template.Content,
                 Category = template.Category,
-                SourceNpc = "The Pelican Times",
+                SourceNpc = "Lewis", // Attributed to mayor for filler content
                 Day = state.Calendar.Day,
                 ExpirationDay = state.Calendar.Day + 2
             });
@@ -182,7 +215,7 @@ public sealed class NewspaperService
     /// Select the most important article as the headline.
     /// Priority: high-severity incidents > market/nature > any > fallback.
     /// </summary>
-    private static string SelectHeadline(List<NewspaperArticle> articles, SaveState state)
+    private async Task<string> SelectHeadlineAsync(List<NewspaperArticle> articles, SaveState state)
     {
         if (articles.Count == 0)
             return "Quiet Day at Pelican Town";
@@ -195,7 +228,7 @@ public sealed class NewspaperService
                 || a.Content.Contains("Storm", StringComparison.OrdinalIgnoreCase)));
 
         if (highSeverityArticle is not null)
-            return highSeverityArticle.Title;
+            return await GenerateSensationalHeadlineAsync(highSeverityArticle);
 
         // Priority 2: Market/nature articles
         var marketOrNatureArticle = articles
@@ -203,10 +236,49 @@ public sealed class NewspaperService
                 || a.Category.Equals("nature", StringComparison.OrdinalIgnoreCase));
 
         if (marketOrNatureArticle is not null)
-            return marketOrNatureArticle.Title;
+            return await GenerateSensationalHeadlineAsync(marketOrNatureArticle);
 
         // Priority 3: Any article
-        return articles[0].Title;
+        var headline = await GenerateSensationalHeadlineAsync(articles[0]);
+        return headline;
+    }
+
+    private async Task<string> GenerateSensationalHeadlineAsync(NewspaperArticle article)
+    {
+        if (_player2 == null)
+            return FallbackHeadline(article.Title);
+
+        try
+        {
+            return await _player2.GenerateSensationalHeadlineAsync(
+                "", // apiBaseUrl - will use default from config
+                "", // p2Key - will use default from config
+                article.Title,
+                article.Category,
+                article.Content,
+                default);
+        }
+        catch
+        {
+            return FallbackHeadline(article.Title);
+        }
+    }
+
+    private static string FallbackHeadline(string title)
+    {
+        var prefixes = new[] { "BREAKING:", "SHOCKING:", "URGENT:", "ALERT:" };
+        var hash = Math.Abs(title.GetHashCode());
+        var prefix = prefixes[hash % prefixes.Length];
+        var truncated = title.Length > 22 ? title.Substring(0, 22) : title;
+        return $"{prefix} {truncated}!";
+    }
+
+    private static string TruncateHeadline(string headline)
+    {
+        if (headline.Length <= 30)
+            return headline;
+
+        return headline.Substring(0, 27) + "...";
     }
 
     private static string Cap(string value) => string.IsNullOrEmpty(value) ? value : char.ToUpper(value[0]) + value.Substring(1);
