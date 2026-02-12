@@ -13,11 +13,19 @@ public sealed class Player2Client
     {
         PropertyNameCaseInsensitive = true
     };
+    private string? _apiBaseUrl;
+    private string? _p2Key;
 
     public Player2Client(HttpClient? httpClient = null)
     {
         _http = httpClient ?? new HttpClient();
         _http.Timeout = TimeSpan.FromSeconds(20);
+    }
+
+    public void SetCredentials(string apiBaseUrl, string p2Key)
+    {
+        _apiBaseUrl = apiBaseUrl;
+        _p2Key = p2Key;
     }
 
     public async Task<string> LoginViaLocalAppAsync(string localAuthBaseUrl, string gameClientId, CancellationToken ct)
@@ -159,6 +167,51 @@ public sealed class Player2Client
             }, _jsonOptions), Encoding.UTF8, "application/json")
         };
         msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
+        try
+        {
+            using var res = await _http.SendAsync(msg, ct);
+            var body = await res.Content.ReadAsStringAsync(ct);
+            res.EnsureSuccessStatusCode();
+
+            // Parse headline from response - extract just the headline text
+            if (string.IsNullOrWhiteSpace(body))
+                return FallbackHeadline(articleTitle);
+
+            var headline = body.Trim().Trim('"').Trim('\'');
+            if (headline.Length > 30)
+                headline = headline.Substring(0, 27) + "...";
+
+            return headline;
+        }
+        catch
+        {
+            return FallbackHeadline(articleTitle);
+        }
+    }
+
+    /// <summary>
+    /// Generate sensational headline using stored credentials (SetCredentials must be called first).
+    /// </summary>
+    public async Task<string> GenerateSensationalHeadlineAsync(string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(_apiBaseUrl) || string.IsNullOrEmpty(_p2Key))
+            return FallbackHeadline(articleTitle);
+
+        var npcId = "editor";
+        var prompt = $"You are a tabloid newspaper editor. Convert this article into a sensational 30-char headline.\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline, max 30 characters. Make it exciting and exaggerated like a small-town tabloid.";
+
+        var url = $"{_apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
+        using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
+            {
+                SenderName = "System",
+                SenderMessage = prompt,
+                GameStateInfo = $"Article: {articleTitle}"
+            }, _jsonOptions), Encoding.UTF8, "application/json")
+        };
+        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _p2Key);
 
         try
         {

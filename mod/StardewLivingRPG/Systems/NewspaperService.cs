@@ -1,3 +1,4 @@
+using StardewLivingRPG.Config;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Integrations;
 
@@ -95,13 +96,18 @@ public sealed class NewspaperService
 
     /// <summary>
     /// Synchronous wrapper for async headline generation. Use BuildIssueAsync for Player2 integration.
+    /// Requires SetCredentials to be called before use.
     /// </summary>
-    public NewspaperIssue BuildIssue(SaveState state, string? anchorNote = null)
+    public NewspaperIssue BuildIssue(SaveState state, ModConfig config, Player2Client player2)
     {
+        // Set Player2 credentials for headline generation
+        if (!string.IsNullOrEmpty(config.Player2ApiBaseUrl) && !string.IsNullOrEmpty(config.Player2GameClientId))
+            player2.SetCredentials(config.Player2ApiBaseUrl, config.Player2GameClientId);
+
         // Run synchronously, blocking on async headline generation
         try
         {
-            var task = BuildIssueAsync(state, anchorNote);
+            var task = BuildIssueAsync(state, null);
             task.Wait();
             return task.Result;
         }
@@ -228,7 +234,15 @@ public sealed class NewspaperService
                 || a.Content.Contains("Storm", StringComparison.OrdinalIgnoreCase)));
 
         if (highSeverityArticle is not null)
-            return await GenerateSensationalHeadlineAsync(highSeverityArticle);
+        {
+            if (_player2 != null)
+                return FallbackHeadline(highSeverityArticle.Title);
+            return await _player2.GenerateSensationalHeadlineAsync(
+                    highSeverityArticle.Title,
+                    highSeverityArticle.Category,
+                    highSeverityArticle.Content,
+                    default);
+        }
 
         // Priority 2: Market/nature articles
         var marketOrNatureArticle = articles
@@ -236,11 +250,26 @@ public sealed class NewspaperService
                 || a.Category.Equals("nature", StringComparison.OrdinalIgnoreCase));
 
         if (marketOrNatureArticle is not null)
-            return await GenerateSensationalHeadlineAsync(marketOrNatureArticle);
+        {
+            if (_player2 == null)
+                return FallbackHeadline(marketOrNatureArticle.Title);
+            return await _player2.GenerateSensationalHeadlineAsync(
+                    marketOrNatureArticle.Title,
+                    marketOrNatureArticle.Category,
+                    marketOrNatureArticle.Content,
+                    default);
+        }
 
         // Priority 3: Any article
-        var headline = await GenerateSensationalHeadlineAsync(articles[0]);
-        return headline;
+        {
+            if (_player2 == null)
+                return FallbackHeadline(articles[0].Title);
+            return await _player2.GenerateSensationalHeadlineAsync(
+                    articles[0].Title,
+                    articles[0].Category,
+                    articles[0].Content,
+                    default);
+        }
     }
 
     private async Task<string> GenerateSensationalHeadlineAsync(NewspaperArticle article)

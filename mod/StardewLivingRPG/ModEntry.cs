@@ -83,7 +83,7 @@ public sealed class ModEntry : Mod
         _economyService = new EconomyService();
         _marketBoardService = new MarketBoardService();
         _salesIngestionService = new SalesIngestionService();
-        _newspaperService = new NewspaperService();
+        _newspaperService = new NewspaperService(_player2Client);
         _rumorBoardService = new RumorBoardService();
         _intentResolver = new NpcIntentResolver(_rumorBoardService, _config.StrictNpcTemplateValidation);
         _anchorEventService = new AnchorEventService();
@@ -184,7 +184,7 @@ public sealed class ModEntry : Mod
 
         if (_newspaperService is not null)
         {
-            var issue = _newspaperService.BuildIssue(_state, anchorNote);
+            var issue = _newspaperService.BuildIssue(_state, _config, _player2Client);
             _state.Newspaper.Issues.Add(issue);
         }
 
