@@ -3,6 +3,7 @@ namespace StardewLivingRPG.State;
 public sealed class NewspaperState
 {
     public List<NewspaperIssue> Issues { get; set; } = new();
+    public List<NewspaperArticle> Articles { get; set; } = new();
 }
 
 public sealed class NewspaperIssue

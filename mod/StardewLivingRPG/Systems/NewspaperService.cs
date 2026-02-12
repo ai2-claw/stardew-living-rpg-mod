@@ -6,13 +6,16 @@ public sealed class NewspaperService
 {
     public NewspaperIssue BuildIssue(SaveState state, string? anchorNote = null)
     {
+        var topDown = GetTopDown(state);
+        var topUp = GetTopUp(state);
+
         var issue = new NewspaperIssue
         {
             Day = state.Calendar.Day,
-            Headline = BuildHeadline(GetTopDown(state), GetTopUp(state)),
+            Headline = BuildHeadline(topDown, topUp),
             Sections = new List<string>(),
             PredictiveHints = new List<string>(),
-            Articles = state.Newspaper.Articles.ToList() // Include AI-generated articles
+            Articles = state.Newspaper.Articles.Where(a => a.Day == state.Calendar.Day && a.ExpirationDay >= state.Calendar.Day).ToList()
         };
 
         if (topDown is not null)
@@ -63,4 +66,46 @@ public sealed class NewspaperService
 
     private static string Cap(string s)
         => string.IsNullOrWhiteSpace(s) ? s : char.ToUpperInvariant(s[0]) + s[1..];
+
+    private static CropPriceChange? GetTopDown(SaveState state)
+    {
+        if (state.Economy.Crops is null) return null;
+        return state.Economy.Crops
+            .Where(kv => kv.Value.PriceYesterday > 0)
+            .Select(kv => new CropPriceChange
+            {
+                Crop = kv.Key,
+                Today = kv.Value.PriceToday,
+                Yesterday = kv.Value.PriceYesterday,
+                DeltaPct = (double)(kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday
+            })
+            .Where(x => x.DeltaPct < 0)
+            .OrderByDescending(x => Math.Abs(x.DeltaPct))
+            .FirstOrDefault();
+    }
+
+    private static CropPriceChange? GetTopUp(SaveState state)
+    {
+        if (state.Economy.Crops is null) return null;
+        return state.Economy.Crops
+            .Where(kv => kv.Value.PriceYesterday > 0)
+            .Select(kv => new CropPriceChange
+            {
+                Crop = kv.Key,
+                Today = kv.Value.PriceToday,
+                Yesterday = kv.Value.PriceYesterday,
+                DeltaPct = (double)(kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday
+            })
+            .Where(x => x.DeltaPct > 0)
+            .OrderByDescending(x => x.DeltaPct)
+            .FirstOrDefault();
+    }
+
+    private class CropPriceChange
+    {
+        public string Crop { get; set; } = string.Empty;
+        public int Today { get; set; }
+        public int Yesterday { get; set; }
+        public double DeltaPct { get; set; }
+    }
 }
