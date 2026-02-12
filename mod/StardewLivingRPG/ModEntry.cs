@@ -74,6 +74,8 @@ public sealed class ModEntry : Mod
     private int _uiManualRequestCountToday;
     private int _uiManualRequestCountDay = -1;
     private int _pendingNewspaperRefreshDay = -1;
+    private int _newspaperBuildInFlight;
+    private readonly ConcurrentQueue<NewspaperIssue> _completedNewspaperIssues = new();
 
     private string? _pendingNpcDialogueHookName;
     private bool _npcDialogueHookArmed;
@@ -167,7 +169,6 @@ public sealed class ModEntry : Mod
             && string.IsNullOrWhiteSpace(_player2Key))
         {
             StartPlayer2AutoConnect("day-start-news", force: false);
-            TryWaitForPlayer2LoginKey(TimeSpan.FromMilliseconds(1500));
         }
 
         if (_uiManualRequestCountDay != _state.Calendar.Day)
@@ -195,23 +196,19 @@ public sealed class ModEntry : Mod
 
         if (_newspaperService is not null)
         {
-            var clientForService = _authenticatedPlayer2Client ?? _player2Client;
-            var issue = _newspaperService.BuildIssue(_state, _config, clientForService, _player2Key);
-
-            var existingIndex = _state.Newspaper.Issues.FindIndex(i => i.Day == issue.Day);
-            if (existingIndex >= 0)
-                _state.Newspaper.Issues[existingIndex] = issue;
-            else
-                _state.Newspaper.Issues.Add(issue);
-
-            // If day-start happened before login completes, regenerate this issue once Player2 is ready.
-            if (_config.EnablePlayer2 && string.IsNullOrWhiteSpace(_player2Key))
+            if (_config.EnablePlayer2)
             {
-                _pendingNewspaperRefreshDay = issue.Day;
-                Monitor.Log($"Queued newspaper refresh for day {issue.Day} until Player2 login completes.", LogLevel.Debug);
+                _pendingNewspaperRefreshDay = _state.Calendar.Day;
+                if (!IsPlayer2ReadyForNewspaper())
+                {
+                    Monitor.Log($"Deferred newspaper build for day {_state.Calendar.Day} until Player2 roster + stream are ready.", LogLevel.Debug);
+                }
+
+                TryRefreshPendingNewspaperIssue("day-start");
             }
             else
             {
+                BuildAndStoreNewspaperIssue();
                 _pendingNewspaperRefreshDay = -1;
             }
         }
@@ -361,6 +358,9 @@ public sealed class ModEntry : Mod
             if (shouldAttempt && DateTime.UtcNow - _player2LastAutoConnectAttemptUtc > TimeSpan.FromSeconds(20))
                 StartPlayer2AutoConnect("auto-retry", force: false);
         }
+
+        TryApplyCompletedNewspaperIssues();
+        TryRefreshPendingNewspaperIssue("update-tick");
 
         if (_player2ReadInFlight == 1 && _player2ReadStartedUtc != default)
         {
@@ -679,26 +679,12 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private void TryWaitForPlayer2LoginKey(TimeSpan maxWait)
-    {
-        if (!string.IsNullOrWhiteSpace(_player2Key))
-            return;
-
-        var deadlineUtc = DateTime.UtcNow + maxWait;
-        while (string.IsNullOrWhiteSpace(_player2Key)
-            && Interlocked.CompareExchange(ref _player2ConnectInFlight, 0, 0) == 1
-            && DateTime.UtcNow < deadlineUtc)
-        {
-            Thread.Sleep(50);
-        }
-    }
-
     private void TryRefreshPendingNewspaperIssue(string source)
     {
         if (_pendingNewspaperRefreshDay < 0)
             return;
 
-        if (_newspaperService is null || string.IsNullOrWhiteSpace(_player2Key))
+        if (_newspaperService is null)
             return;
 
         if (_pendingNewspaperRefreshDay != _state.Calendar.Day)
@@ -707,19 +693,10 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        var issueIndex = _state.Newspaper.Issues.FindIndex(i => i.Day == _pendingNewspaperRefreshDay);
-        if (issueIndex < 0)
-        {
-            _pendingNewspaperRefreshDay = -1;
+        if (_config.EnablePlayer2 && !IsPlayer2ReadyForNewspaper())
             return;
-        }
 
-        var clientForService = _authenticatedPlayer2Client ?? _player2Client;
-        var refreshedIssue = _newspaperService.BuildIssue(_state, _config, clientForService, _player2Key);
-        _state.Newspaper.Issues[issueIndex] = refreshedIssue;
-        _pendingNewspaperRefreshDay = -1;
-
-        Monitor.Log($"Newspaper refreshed after {source}: day={refreshedIssue.Day}, headline='{refreshedIssue.Headline}'", LogLevel.Debug);
+        TryStartPendingNewspaperBuild(source);
     }
 
     private void OpenMarketBoard()
@@ -733,8 +710,8 @@ public sealed class ModEntry : Mod
 
     private void OpenNewspaper()
     {
-        if (!string.IsNullOrWhiteSpace(_player2Key))
-            TryRefreshPendingNewspaperIssue("open-newspaper");
+        TryApplyCompletedNewspaperIssues();
+        TryRefreshPendingNewspaperIssue("open-newspaper");
 
         var issue = _state.Newspaper.Issues.LastOrDefault();
         Game1.activeClickableMenu = new NewspaperMenu(issue);
@@ -1235,7 +1212,6 @@ public sealed class ModEntry : Mod
             var clientForService = _authenticatedPlayer2Client ?? _player2Client;
             _newspaperService = new NewspaperService(Monitor, clientForService);
             Monitor.Log("NewspaperService recreated after Player2 local app login", LogLevel.Info);
-            TryRefreshPendingNewspaperIssue("Player2 local app login");
             return;
         }
         catch (Exception ex)
@@ -1281,7 +1257,6 @@ public sealed class ModEntry : Mod
                     {
                         _newspaperService = new NewspaperService(Monitor, _authenticatedPlayer2Client);
                         Monitor.Log("NewspaperService recreated after Player2 device login", LogLevel.Info);
-                        TryRefreshPendingNewspaperIssue("Player2 device login");
                     }
                     else
                     {
@@ -1671,6 +1646,137 @@ public sealed class ModEntry : Mod
         }
 
         StartPlayer2StreamListenerAttempt();
+    }
+
+    private void TryStartPendingNewspaperBuild(string source)
+    {
+        if (_newspaperService is null)
+            return;
+
+        if (Interlocked.CompareExchange(ref _newspaperBuildInFlight, 1, 0) == 1)
+            return;
+
+        var targetDay = _pendingNewspaperRefreshDay;
+        if (targetDay < 0 || targetDay != _state.Calendar.Day)
+        {
+            Interlocked.Exchange(ref _newspaperBuildInFlight, 0);
+            return;
+        }
+
+        SaveState snapshot;
+        try
+        {
+            snapshot = CloneSaveState(_state);
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Failed to clone state for newspaper build after {source}: {ex.Message}", LogLevel.Warn);
+            Interlocked.Exchange(ref _newspaperBuildInFlight, 0);
+            return;
+        }
+
+        var service = _newspaperService;
+        var clientForService = _authenticatedPlayer2Client ?? _player2Client;
+        var player2Key = _player2Key;
+        var apiBaseUrl = _config.Player2ApiBaseUrl;
+
+        if (!string.IsNullOrWhiteSpace(apiBaseUrl) && !string.IsNullOrWhiteSpace(player2Key))
+            clientForService?.SetCredentials(apiBaseUrl, player2Key);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var issue = await service.BuildIssueAsync(snapshot, null);
+                _completedNewspaperIssues.Enqueue(issue);
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"Newspaper build failed after {source}: {ex.Message}", LogLevel.Warn);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _newspaperBuildInFlight, 0);
+            }
+        });
+    }
+
+    private void TryApplyCompletedNewspaperIssues()
+    {
+        while (_completedNewspaperIssues.TryDequeue(out var issue))
+        {
+            if (issue.Day != _state.Calendar.Day)
+                continue;
+
+            var existingIndex = _state.Newspaper.Issues.FindIndex(i => i.Day == issue.Day);
+            if (existingIndex >= 0)
+                _state.Newspaper.Issues[existingIndex] = issue;
+            else
+                _state.Newspaper.Issues.Add(issue);
+
+            _pendingNewspaperRefreshDay = -1;
+            Monitor.Log($"Newspaper build completed: day={issue.Day}, headline='{issue.Headline}'", LogLevel.Debug);
+        }
+    }
+
+    private static SaveState CloneSaveState(SaveState state)
+    {
+        var json = JsonSerializer.Serialize(state);
+        return JsonSerializer.Deserialize<SaveState>(json) ?? SaveState.CreateDefault();
+    }
+
+    private NewspaperIssue BuildAndStoreNewspaperIssue()
+    {
+        if (_newspaperService is null)
+            throw new InvalidOperationException("NewspaperService is not available.");
+
+        var clientForService = _authenticatedPlayer2Client ?? _player2Client;
+        var issue = _newspaperService.BuildIssue(_state, _config, clientForService, _player2Key);
+
+        var existingIndex = _state.Newspaper.Issues.FindIndex(i => i.Day == issue.Day);
+        if (existingIndex >= 0)
+            _state.Newspaper.Issues[existingIndex] = issue;
+        else
+            _state.Newspaper.Issues.Add(issue);
+
+        return issue;
+    }
+
+    private bool IsPlayer2ReadyForNewspaper()
+    {
+        if (!_config.EnablePlayer2)
+            return true;
+
+        if (string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(_activeNpcId))
+            return false;
+
+        var streamRunning = Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1;
+        if (!streamRunning)
+            return false;
+
+        return IsPlayer2RosterReady();
+    }
+
+    private bool IsPlayer2RosterReady()
+    {
+        if (string.IsNullOrWhiteSpace(_activeNpcId))
+            return false;
+
+        var roster = (_config.Player2NpcRosterCsv ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (roster.Count == 0)
+            return true;
+
+        foreach (var shortName in roster)
+        {
+            if (!_player2NpcIdsByShortName.ContainsKey(shortName))
+                return false;
+        }
+
+        return true;
     }
 
     private void OnPlayer2StreamStopCommand(string name, string[] args)
