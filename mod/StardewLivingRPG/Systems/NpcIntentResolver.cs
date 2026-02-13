@@ -97,6 +97,7 @@ public sealed class NpcIntentResolver
             "shift_interest_influence" => ResolveShiftInterestInfluence(state, npcId, intentId, args),
             "apply_market_modifier" => ResolveApplyMarketModifier(state, npcId, intentId, args),
             "publish_rumor" => ResolvePublishRumor(state, npcId, intentId, args),
+            "publish_article" => ResolvePublishArticle(state, npcId, intentId, args),
             _ => NpcIntentResolveResult.Rejected($"unhandled command '{command}'")
         };
     }

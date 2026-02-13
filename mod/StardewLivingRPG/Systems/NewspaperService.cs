@@ -207,6 +207,15 @@ public sealed class NewspaperService
                     Day = state.Calendar.Day,
                     ExpirationDay = state.Calendar.Day + 3
                 },
+                "incident" => new NewspaperArticle
+                {
+                    Title = "Rescue at Mines",
+                    Content = $"{ev.Summary}. Town responders assisted with recovery and safety checks.",
+                    Category = "community",
+                    SourceNpc = "Town Report",
+                    Day = state.Calendar.Day,
+                    ExpirationDay = state.Calendar.Day + 3
+                },
                 _ => null
             };
 

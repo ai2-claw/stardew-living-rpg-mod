@@ -512,7 +512,7 @@ public sealed class ModEntry : Mod
         _state.Facts.Facts[key] = new FactValue { Value = true, SetDay = _state.Calendar.Day, Source = "system" };
         _townMemoryService.RecordEvent(
             _state,
-            "incident",
+            "fainting",
             "Player fainted in the caves recently.",
             loc,
             _state.Calendar.Day,
@@ -2059,10 +2059,60 @@ public sealed class ModEntry : Mod
 
             _player2LastCommandApplied = $"{result.Command}:{result.OutcomeId}";
             _player2LastCommandAppliedUtc = DateTime.UtcNow;
+
+            if (result.Command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase)
+                || result.Command.Equals("publish_article", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowNewspaperCommandNotification(result.Command, result.OutcomeId, sourceNpcId);
+                _pendingNewspaperRefreshDay = _state.Calendar.Day;
+                TryRefreshPendingNewspaperIssue($"npc-command:{result.Command}");
+            }
         }
         catch (Exception ex)
         {
             Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
         }
+    }
+
+    private void ShowNewspaperCommandNotification(string command, string outcomeId, string? sourceNpcId)
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        var sourceName = "Town";
+        if (!string.IsNullOrWhiteSpace(sourceNpcId)
+            && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
+            && !string.IsNullOrWhiteSpace(shortName))
+        {
+            sourceName = shortName;
+        }
+
+        string message;
+        if (command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase))
+        {
+            message = $"{sourceName} spread a rumor. Check today's newspaper.";
+        }
+        else if (command.Equals("publish_article", StringComparison.OrdinalIgnoreCase))
+        {
+            message = $"{sourceName} filed a story: {TrimForHud(outcomeId, 28)}";
+        }
+        else
+        {
+            return;
+        }
+
+        Game1.addHUDMessage(new HUDMessage(message));
+    }
+
+    private static string TrimForHud(string text, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return "New article";
+
+        var value = text.Trim();
+        if (value.Length <= maxLength)
+            return value;
+
+        return value[..Math.Max(1, maxLength - 3)] + "...";
     }
 }
