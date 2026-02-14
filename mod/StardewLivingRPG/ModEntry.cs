@@ -70,6 +70,7 @@ public sealed class ModEntry : Mod
     private readonly Dictionary<string, string> _player2NpcIdsByShortName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _player2NpcShortNameById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<string>> _npcUiMessagesById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ConcurrentQueue<bool>> _npcResponseRoutingById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
     private DateTime _player2LastChatSentUtc;
@@ -478,9 +479,9 @@ public sealed class ModEntry : Mod
                 _pendingUiRequesterShortName = null;
 
                 if (!string.IsNullOrWhiteSpace(requester) && _player2NpcIdsByShortName.TryGetValue(requester, out var pendingNpcId))
-                    SendPlayer2ChatInternal(req, pendingNpcId, requester);
+                    SendPlayer2ChatInternal(req, pendingNpcId, requester, contextTag: "player_request_board", captureForPlayerChat: false);
                 else
-                    SendPlayer2ChatInternal(req);
+                    SendPlayer2ChatInternal(req, contextTag: "player_request_board", captureForPlayerChat: false);
             }
         }
 
@@ -555,7 +556,13 @@ public sealed class ModEntry : Mod
                 "If it is gossip-level information, use publish_rumor with topic, optional title/content, confidence, and target_group (title+content must be <= 100 characters total when provided). " +
                 "Do not force a command when nothing notable happened.";
 
-            SendPlayer2ChatInternal(prompt, speakerNpcId, speakerShortName);
+            SendPlayer2ChatInternal(
+                prompt,
+                speakerNpcId,
+                speakerShortName,
+                senderNameOverride: listenerShortName,
+                contextTag: "npc_to_npc_ambient",
+                captureForPlayerChat: false);
             _ambientNpcConversationsToday += 1;
             Monitor.Log($"Ambient NPC conversation triggered: {speakerShortName} -> {listenerShortName}.", LogLevel.Trace);
         }
@@ -1746,7 +1753,13 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private void SendPlayer2ChatInternal(string message, string? targetNpcId = null, string? requesterShortName = null)
+    private void SendPlayer2ChatInternal(
+        string message,
+        string? targetNpcId = null,
+        string? requesterShortName = null,
+        string? senderNameOverride = null,
+        string? contextTag = null,
+        bool captureForPlayerChat = true)
     {
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(_activeNpcId))
             return;
@@ -1769,15 +1782,17 @@ public sealed class ModEntry : Mod
             }
 
             var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
+            var isPlayerInitiated = string.IsNullOrWhiteSpace(senderNameOverride);
+            var senderName = isPlayerInitiated ? (Game1.player?.Name ?? "Player") : senderNameOverride!.Trim();
 
-            if (_npcMemoryService is not null)
+            if (_npcMemoryService is not null && captureForPlayerChat && isPlayerInitiated)
                 _npcMemoryService.WriteTurn(_state, who, message, string.Empty, _state.Calendar.Day);
 
             var req = new NpcChatRequest
             {
-                SenderName = Game1.player?.Name ?? "Player",
+                SenderName = string.IsNullOrWhiteSpace(senderName) ? "Player" : senderName,
                 SenderMessage = message,
-                GameStateInfo = BuildCompactGameStateInfo(who, message)
+                GameStateInfo = BuildCompactGameStateInfo(who, message, contextTag)
             };
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -1786,7 +1801,11 @@ public sealed class ModEntry : Mod
 
             _player2PendingResponseCount += 1;
             _player2LastChatSentUtc = DateTime.UtcNow;
-            _npcUiPendingById.AddOrUpdate(npcId, 1, (_, v) => v + 1);
+            var routeToPlayerChat = captureForPlayerChat && isPlayerInitiated;
+            var routing = _npcResponseRoutingById.GetOrAdd(npcId, _ => new ConcurrentQueue<bool>());
+            routing.Enqueue(routeToPlayerChat);
+            if (routeToPlayerChat)
+                _npcUiPendingById.AddOrUpdate(npcId, 1, (_, v) => v + 1);
 
             Monitor.Log($"Sent chat to Player2 NPC ({who}) id={npcId}. Keep stream listener running to receive response lines.", LogLevel.Info);
         }
@@ -1856,7 +1875,7 @@ public sealed class ModEntry : Mod
                 return;
             }
 
-            SendPlayer2ChatInternal(prompt, requesterNpcId, requester);
+            SendPlayer2ChatInternal(prompt, requesterNpcId, requester, contextTag: "player_request_board", captureForPlayerChat: false);
             _lastUiWorkRequestUtc = DateTime.UtcNow;
             _player2UiStatus = $"Checked with {requester} for new board postings.";
         }
@@ -2160,12 +2179,18 @@ public sealed class ModEntry : Mod
             if (string.IsNullOrWhiteSpace(npcId) || string.IsNullOrWhiteSpace(msg))
                 return;
 
-            var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
-            q.Enqueue(msg);
+            var routeToPlayerChat = true;
+            if (_npcResponseRoutingById.TryGetValue(npcId, out var routingQueue) && routingQueue.TryDequeue(out var routed))
+                routeToPlayerChat = routed;
 
-            _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+            if (routeToPlayerChat)
+            {
+                var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
+                q.Enqueue(msg);
+                _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+            }
 
-            if (_npcMemoryService is not null)
+            if (_npcMemoryService is not null && routeToPlayerChat)
             {
                 var npcName = GetNpcShortNameById(npcId);
                 _npcMemoryService.WriteTurn(_state, npcName, string.Empty, msg, _state.Calendar.Day);
@@ -2254,7 +2279,7 @@ public sealed class ModEntry : Mod
         });
     }
 
-    private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null)
+    private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null, string? contextTag = null)
     {
         var movers = _state.Economy.Crops
             .OrderByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
@@ -2304,6 +2329,7 @@ public sealed class ModEntry : Mod
             "CANON_WORLD: Stardew Valley.",
             "CANON_TOWN: Pelican Town.",
             $"CANON_NPCS: [{canonNpcs}].",
+            $"CONTEXT: {(string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag)}.",
             "RULE: Never invent towns, regions, or citizens outside this canon list.",
             "STYLE: Reply strictly in-character as Mayor Lewis, concise, natural, no assistant-speak.",
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
