@@ -1,254 +1,269 @@
-# Stardew Valley Living RPG Mod (Working Title)
+# Stardew Living RPG Architecture (Product + Implementation)
 
-Related docs: [DOC_INDEX](./DOC_INDEX.md) · [DATA_MODEL](./DATA_MODEL.md) · [EVENT_RESOLUTION](./EVENT_RESOLUTION.md) · [IMPLEMENTATION_PLAN](./IMPLEMENTATION_PLAN.md)
+Related docs: [DOC_INDEX](./DOC_INDEX.md) | [DATA_MODEL](./DATA_MODEL.md) | [EVENT_RESOLUTION](./EVENT_RESOLUTION.md) | [IN_WORLD_UI_ARCHITECTURE](./IN_WORLD_UI_ARCHITECTURE.md)
 
-## 1) Product Direction: Build for Stardew’s Core Audience First
+This document keeps two lenses in one place:
+- Product direction: the intended player experience and design guardrails.
+- Current implementation: what the code in `mod/StardewLivingRPG/...` does today.
 
-This mod should feel like **Stardew, but alive** — not a different genre pasted on top.
+If these diverge:
+1. For debugging and QA, trust the current implementation sections.
+2. For planning and scope decisions, trust the product direction sections.
 
-### What the majority of Stardew players typically value
-1. Cozy progression (farm growth, routine, low-pressure loops)
-2. Relationships and heart-event storytelling
-3. Seasonal rhythm and planning
-4. Light strategy/optimization (profit planning without punishing complexity)
-5. Town identity and atmosphere
+## 1) Product Direction: "Stardew, but alive"
 
-### Design principle
-Use dynamic systems to create **meaningful but gentle consequences**.  
-Default experience should be warm, legible, and low-friction.
+The mod should feel like Stardew Valley with living consequences, not a different genre on top.
 
----
+Design rule:
+- Systems should create meaningful but gentle consequences.
+- Default UX should stay warm, legible, and low-friction.
 
-## 2) Target Player Segments and Feature Mapping
+## 2) Audience Segments and Design Fit
 
-| Segment | What they want | Must-have mod features | What to avoid by default |
-|---|---|---|---|
-| Cozy Socials (largest) | Character moments, emotional continuity | NPC memory, relationship callbacks, town gossip/newspaper | Harsh penalties, constant conflict |
-| Planner Farmers | Better planning inputs | Dynamic crop pricing, trend hints, seasonal demand signals | Wild volatile markets |
-| Story Seekers | Emergent stories | Branching events, persistent consequences, evolving NPC arcs | Purely cosmetic dialogue |
-| Chaos/Hardcore (smaller) | High-stakes simulation | Optional “High Drama” mode with stronger world shifts | Forcing this mode on everyone |
+| Segment | What they want | Primary systems |
+|---|---|---|
+| Cozy Socials | Character continuity and town flavor | NPC memory, town memory, newspaper stories |
+| Planner Farmers | Better planning signals | Dynamic crop pricing, market board, outlook hints |
+| Story Seekers | Emergent, persistent outcomes | Quest branching, anchor events, rumor propagation |
+| Chaos/Hardcore | Higher volatility and stronger shifts | Optional higher-intensity mode settings |
 
----
+### Town Interests Model (High Level)
 
-## 3) Experience Modes (Audience Safety Valve)
-
-### A) Cozy Canon (Default)
-- Price movement cap: small daily range (e.g., +/- 5–10%)
-- Town “interests” (soft blocs), not hard political factions
-- Relationship and quest consequences are meaningful but reversible
-- Newspaper tone: community updates + opportunities
-
-### B) Story Depth (Optional)
-- Stronger branching outcomes
-- Heavier reputation effects
-- Multi-day NPC plans and conflicts
-
-### C) Living Chaos (Optional)
-- High volatility economy
-- Strong alliance/betrayal arcs
-- Large world-state shifts
-
----
-
-## 4) Core Gameplay Pillars
-
-## Pillar 1: Living NPCs
-- NPCs remember player actions, gifts, promises, slights
-- NPC responses can propose world actions via command schema
-- Personality persists across days/seasons
-
-## Pillar 2: Dynamic World Economy
-- Market responds to aggregate sell volume, seasonality, and events
-- Overproducing one crop lowers near-term price (with floors/caps)
-- Scarcity, festivals, weather can raise demand
-
-## Pillar 3: Diegetic Feedback (Daily Newspaper)
-- Daily paper reports market shifts + social/world consequences
-- Includes predictive signals ("Festival demand is rising next week") so planners can act early
-- Converts hidden simulation into clear player-readable world narrative
-
-## Pillar 4: Hard Assets (Non-AI Anchors)
-- Custom UI surfaces and world objects that expose simulation state directly
-- Hand-authored rewards (items/crops) that make progression tangible
-- Scripted "anchor" events that provide cinematic payoff at key thresholds
-- Template-driven quest board so objectives are always completable
-
----
-
-## 5) “Town Interests” Model (Stardew-friendly alternative to factions)
-
-Replace militant “factions” with softer community groups:
-- Farmers’ Circle
-- Shopkeepers’ Guild
-- Adventurers’ Club
+Community groups are modeled as soft interests, not hard faction warfare:
+- Farmers' Circle
+- Shopkeepers' Guild
+- Adventurers' Club
 - Nature Keepers
 
-Each group has:
-- trust with player
-- current priorities
-- influence score
+Design rule:
+- Interests should usually be bridgeable, with opportunities for multi-group wins.
 
-Player choices shift influence gradually. This still gives systemic depth without breaking cozy tone.
+## 3) Experience Modes
 
-Design rule: interests are not strict zero-sum enemies. Prefer "bridge events" that can align multiple groups
-(e.g., a Forest Festival can satisfy Nature Keepers and Shopkeepers at the same time).
+Configured in `config.json` via `Mode`.
 
----
+1. `cozy_canon` (default)
+- Soft economy movement and forgiving floors
+- Reversible social consequences
+- Community-forward tone
 
-## 6) Economy System (v1)
+2. `story_depth`
+- Heavier social and quest consequences
+- Stronger branch persistence
 
-## State tracked daily
-- `sell_volume[crop]` (rolling 7-day)
-- `demand[crop]` (seasonal + event modifier)
-- `price[crop]`
-- `town_sentiment[crop]`
+3. `living_chaos`
+- Highest volatility and world shifts
+- For opt-in play, not baseline
 
-## Suggested formula
-`price_today = clamp(base_price * demand_factor * supply_pressure_factor * sentiment_factor, floor, ceiling)`
+## 4) Core Pillars and Current Status
 
-Where:
-- `demand_factor` increases for in-season preferences, festivals, quests
-- `supply_pressure_factor` gently lowers price when rolling sell volume is high
-- `sentiment_factor` reflects newspaper/narrative trends
+| Pillar | High-level goal | Current implementation status |
+|---|---|---|
+| Living NPCs | NPCs remember and react over time | Implemented via `NpcMemoryService`, `TownMemoryService`, Player2 chat stream + intent resolver |
+| Dynamic Economy | Prices react to supply/demand/events while staying cozy-safe | Implemented in `EconomyService` with caps/floors, smoothing, scarcity behavior, daily transitions |
+| Diegetic Feedback | Player can read simulation outcomes in-world | Implemented via `NewspaperMenu`, `MarketBoardMenu`, `RumorBoardMenu`, `RequestJournalMenu` |
+| Hard Assets | Game-like anchors beyond freeform AI text | Implemented in custom board/journal/news UIs and anchor event service; deterministic templates remain core safety net |
 
-Cozy-economy rule: use positive reinforcement where possible.
-- Oversupply should also create opportunities elsewhere ("scarcity bonus" on alternatives)
-- Avoid hard punishment loops for successful harvests
+## 5) World Impact Loop
 
-## Stability controls
-- daily change cap
-- EMA smoothing on demand
-- diminishing oversupply penalties
-- generous hard floor (target >= 80% of base in Cozy Canon)
-- soft ceiling to avoid runaway spikes
+1. Player acts (dialogue, gifts, shipping, quest decisions).
+2. NPCs and systems propose outcomes (Player2 or deterministic systems).
+3. `NpcIntentResolver` validates and bounds all NPC-origin world mutations.
+4. Persistent state mutates (`SaveState` and substates).
+5. Results surface through NPC behavior, newspaper, market board, and request board.
 
----
+Ship gate:
+- If player-visible world state does not change, the feature is incomplete.
 
-## 7) World Impact Loop (What judges will care about)
+## 6) Current Runtime Topology
 
-1. Player acts (dialogue/trade/gift/quest choice)
-2. NPC interprets and proposes intents
-3. Mod rules validate and resolve outcome
-4. Persistent world state mutates (prices, trust, opportunities)
-5. Effects surfaced via NPC behavior + newspaper + quest graph
+`mod/StardewLivingRPG/ModEntry.cs` is the composition root and event router.
 
-If world state does not mutate, feature does not ship.
+At entry/load, `ModEntry` wires and owns:
+- `DailyTickService`
+- `EconomyService`
+- `MarketBoardService`
+- `SalesIngestionService`
+- `NewspaperService`
+- `RumorBoardService`
+- `NpcIntentResolver`
+- `AnchorEventService`
+- `NpcMemoryService`
+- `TownMemoryService`
+- `Player2Client`
 
----
+`ModEntry` also owns:
+- SMAPI lifecycle hooks (`SaveLoaded`, `DayStarted`, `DayEnding`, `UpdateTicked`, etc.)
+- Player2 auth/spawn/chat/stream orchestration
+- async newspaper build queue and main-thread apply
+- HUD notifications for NPC publish actions
+- debug and operational console commands
 
-## 8) Player2 API Integration Plan (from provided OpenAPI)
+## 7) Current Event Lifecycle
 
-Base URL: `https://api.player2.game/v1`
+### Save load (`OnSaveLoaded`)
+1. Load persisted state.
+2. Initialize economy defaults/config.
+3. Optionally auto-connect Player2 (`EnablePlayer2` + `AutoConnectPlayer2OnLoad`).
 
-## Authentication
-- Preferred desktop fast-path: `POST http://localhost:4315/v1/login/web/{game_client_id}` -> `p2Key`
-- Fallbacks: Device flow (`/login/device/new`, `/login/device/token`) or Auth Code PKCE
-- Header: `Authorization: Bearer <p2Key>`
+### Day ending (`OnDayEnding`)
+1. Scan shipping bin.
+2. Normalize crop keys.
+3. Queue sales deltas into `SalesIngestionService`.
 
-## NPC pipeline
-- Spawn NPC: `POST /npcs/spawn`
-- Send player message: `POST /npcs/{npc_id}/chat`
-- Receive stream: `GET /npcs/responses` (SSE or NDJSON)
-- Fetch history: `GET /npcs/{npc_id}/history`
-- Cleanup: `POST /npcs/{npc_id}/kill`
+### Day start (`OnDayStarted`)
+1. Optionally retry Player2 auto-connect.
+2. Reset per-day counters (including ambient conversation scheduler).
+3. Apply queued sales and run daily economy update.
+4. Run daily tick scaffold (`DailyTickService`).
+5. Expire/refresh deterministic rumor board quests.
+6. Trigger and resolve anchor events.
+7. Build newspaper:
+- Player2 disabled: synchronous build.
+- Player2 enabled: defer until roster/stream ready, then async build.
 
-## Budget/ops
-- Joules monitoring: `GET /joules`
-- Handle stream errors: `insufficient_credits`, `service_unavailable`, `rate_limited`
+### Update tick (`OnUpdateTicked`)
+1. Capture town incidents into memory.
+2. Retry Player2 connection/stream as needed.
+3. Run ambient NPC-to-NPC conversation trigger (randomized).
+4. Apply completed async newspaper issues.
+5. Retry pending newspaper build when readiness gates pass.
+6. Replay queued UI asks once target NPC/session are ready.
+7. Consume incoming Player2 lines:
+- show UI-visible text
+- parse intents
+- resolve via `NpcIntentResolver`
 
----
+## 8) Player2 Integration (Current)
 
-## 9) NPC Command Contract (world-safe)
+Authentication:
+- Local desktop fast path first.
+- Device flow fallback.
+- `NewspaperService` is recreated after auth to ensure authenticated story generation.
 
-NPCs can propose actions, but game logic remains authoritative.
+NPC session flow:
+1. Spawn NPC sessions (`/npcs/spawn`) for primary and roster NPCs.
+2. Spawn payload command schema includes:
+- `propose_quest`
+- `publish_article`
+- `publish_rumor`
+3. Send chat via `/npcs/{npc_id}/chat`.
+4. Read responses from long-lived stream (`/npcs/responses`).
+5. Watchdog reconnects/rebuilds sessions if stream stalls.
 
-Example command set:
-- `propose_quest({type, target, urgency, reward_hint})`
-- `adjust_reputation({target, delta, reason})`
-- `shift_interest_influence({interest, delta, reason})`
-- `apply_market_modifier({crop, delta_pct, duration_days, reason})`
-- `publish_rumor({topic, confidence, target_group})`
+## 9) Intent Contract and Safety
 
-Validation rules:
-- bounded deltas
-- cooldown gates
-- context checks (season, location, quest state)
-- anti-loop idempotency keys
-- memory-lock fact table checks (NPC cannot re-issue already accepted/resolved quest intents)
+Resolved centrally by `NpcIntentResolver`.
 
----
+Supported commands:
+- `propose_quest`
+- `adjust_reputation`
+- `shift_interest_influence`
+- `apply_market_modifier`
+- `publish_rumor`
+- `publish_article`
 
-## 10) V1 Scope (Jam-ready)
+Safety controls:
+- strict argument validation and normalization
+- bounded deltas/ranges
+- idempotency tracking through processed intent facts
+- daily publish caps:
+- rumors: max 1 social rumor/day
+- non-social NPC articles: max 2/day
 
-- 6 key NPCs with persistent memory, chosen to cover different systems:
-  - Pierre or Morris (economy pressure)
-  - Robin (world-state/build progression)
-  - Lewis (town policy/events)
-  - Linus or Wizard (nature/magic interests)
-  - Haley or Alex (social/gossip propagation)
-  - Demetrius (science/planning signal layer)
-- 3 town interests + influence model
-- Dynamic pricing for 10 core crops
-- Daily newspaper generation
-- 12 branching event templates
-- 5 validated command types wired to world state
-- Cozy Canon mode complete; Story Depth mode partial
+## 10) Economy + Market Board (Current)
 
-### V1.1 Hard-Asset Additions (anti-"AI wrapper" layer)
-1. **Pierre's Market Board** (in-world object + custom UI)
-   - Paper-styled menu matching "The Pelican Times" aesthetic
-   - Displays 8 crops in 2×4 grid with vanilla crop sprites
-   - Each crop shows: name, price (color-coded green/red), trend arrows (↑↑↑ to ↓↓↓)
-   - 7-day price history bar chart (green/red bars showing movement)
-   - Demand/Supply factors and scarcity bonus displayed
-   - Designed as a daily planning ritual (like weather/luck checks)
-   - All data dynamic: prices update daily based on season, supply pressure, sentiment
-2. **Heirloom Crops / Regional Specialties** (3-5 items)
-   - unlocked by high influence in specific Town Interests
-   - hand-authored sprites + hard-coded economy hooks
-3. **Anchor Events** (hybrid milestones)
-   - 1-2 hard-scripted scenes per key NPC, triggered by simulation thresholds
-   - example: low town sentiment triggers emergency town hall event
-4. **Rumor Mill Quest Board (Community Board 2.0)**
-   - AI proposes context; objectives/rewards are selected from safe quest templates
-   - guarantees completable, testable quests
+Economy behavior is implemented in `EconomyService`:
+- base prices and seasonal demand multipliers
+- supply pressure from rolling sell volume
+- scarcity bonus opportunities
+- smoothing/caps/floors to preserve cozy readability
 
-Success criteria:
-- noticeable world change by Day 7 of a normal run
-- repeated runs produce meaningfully different outcomes
-- no severe economy runaway under normal play
+Player-facing market surfacing:
+- `MarketBoardMenu` shows daily prices, trend arrows, and mini history visualization.
+- `MarketBoardService` is currently thin; UI reads state directly for most rendering.
 
----
+## 11) Newspaper + Rumor Publishing (Current)
 
-## 11) Telemetry & Evaluation
+`NewspaperService` issue build order:
+1. Event-driven stories from town memory.
+2. Player2 editor stories when authenticated and slots are open.
+3. Deterministic seasonal filler for remaining slots.
+4. NPC-published items from current-day state.
+5. Headline selection/sensationalization.
+6. Market section and outlook hints.
 
-Track:
-- number of meaningful world mutations/day
-- quest branch divergence rate
-- market volatility vs comfort target
-- repeat-session retention signals
-- hard-asset engagement:
-  - Market Board opens/day
-  - Rumor Mill quest acceptance/completion rates
-  - Heirloom unlock rate
-  - Anchor event trigger/completion counts
+When `publish_article` or `publish_rumor` resolves in `ModEntry`:
+1. HUD toast notification is shown.
+2. If today's issue is present, existing visible article slot content is replaced (not appended) and headline is updated.
+3. If no issue exists yet, a pending build is scheduled.
 
-Player sentiment checks:
-- “Did this still feel like Stardew?”
-- “Did my choices visibly change the world?”
-- “Did the systems feel game-like, not chatbot-like?”
+This replacement behavior is intentional to preserve newspaper layout constraints.
 
----
+## 12) Ambient NPC Conversations (Current)
 
-## 12) Next Docs to Add
+Ambient publishing is not tied to a fixed daily clock.
 
-1. `DATA_MODEL.md` (state schemas)
-2. `EVENT_RESOLUTION.md` (deterministic resolver pseudocode)
-3. `NPC_COMMAND_SCHEMA.json`
-4. `NEWSPAPER_TEMPLATES.md`
-5. `BALANCE_GUIDELINES.md`
-6. `FACT_TABLE.md` (memory-lock + one-truth records for accepted/resolved intents)
-7. `MARKET_BOARD_UI_SPEC.md` (screen states, chart glyphs, morning ritual flow)
-8. `ANCHOR_EVENTS.md` (thresholds -> scripted cutscenes)
-9. `QUEST_TEMPLATE_LIBRARY.md` (safe objective/reward templates mapped from AI context)
+Implemented behavior:
+- randomized first trigger window
+- randomized interval between attempts
+- capped attempts per day
+- requires Player2 readiness (auth + roster + stream + active session)
+- skips while a user-initiated request is actively in flight
 
+Implementation entry points in `ModEntry.cs`:
+- `ResetAmbientNpcConversationScheduleForDay`
+- `TryTriggerAmbientNpcConversation`
+- `TryPickAmbientNpcConversationPair`
+
+## 13) Code Map: Files and Ownership
+
+### `mod/StardewLivingRPG/ModEntry.cs`
+
+| File | Responsibility |
+|---|---|
+| `mod/StardewLivingRPG/ModEntry.cs` | Composition root, SMAPI event wiring, Player2 lifecycle, UI openings, command handlers, stream/watchdog, ambient conversation scheduling, intent application, HUD notifications, async newspaper orchestration |
+
+### `mod/StardewLivingRPG/Systems`
+
+| File | Responsibility |
+|---|---|
+| `mod/StardewLivingRPG/Systems/DailyTickService.cs` | Daily simulation scaffold and day advancement helpers |
+| `mod/StardewLivingRPG/Systems/EconomyService.cs` | Price model, demand/supply pressure, smoothing, floors/caps, trend/state updates |
+| `mod/StardewLivingRPG/Systems/MarketBoardService.cs` | Lightweight board service surface used by market UI flow |
+| `mod/StardewLivingRPG/Systems/NewspaperService.cs` | Newspaper pipeline, editor story generation, fillers, headline and market sections |
+| `mod/StardewLivingRPG/Systems/NpcIntentResolver.cs` | Validates and resolves NPC commands into deterministic state mutations |
+| `mod/StardewLivingRPG/Systems/NpcMemoryService.cs` | Per-NPC memory storage, retrieval, scoring, and prompt block shaping |
+| `mod/StardewLivingRPG/Systems/QuestProposalResult.cs` | Result contract for normalized quest proposal outcomes |
+| `mod/StardewLivingRPG/Systems/RumorBoardService.cs` | Daily request board refresh, accept/progress/complete flows, reward application |
+| `mod/StardewLivingRPG/Systems/SalesIngestionService.cs` | Shipping-bin sales queue and day-transition ingestion |
+| `mod/StardewLivingRPG/Systems/TownMemoryService.cs` | Shared town events, propagation/awareness model, prompt block generation |
+| `mod/StardewLivingRPG/Systems/AnchorEventService.cs` | Scripted anchor milestone triggers and resolution side effects |
+
+### `mod/StardewLivingRPG/UI`
+
+| File | Responsibility |
+|---|---|
+| `mod/StardewLivingRPG/UI/MarketBoardMenu.cs` | In-world market board UI with cards, trend glyphs, and short history charting |
+| `mod/StardewLivingRPG/UI/NewspaperMenu.cs` | Newspaper rendering (masthead, sections, two-column story layout, optional portraits) |
+| `mod/StardewLivingRPG/UI/NpcChatInputMenu.cs` | Persistent NPC chat input and response polling surface |
+| `mod/StardewLivingRPG/UI/RequestJournalMenu.cs` | Active/completed request tracking and completion actions |
+| `mod/StardewLivingRPG/UI/RumorBoardMenu.cs` | Board postings UI, accept/complete actions, and "ask for work" interaction |
+
+## 14) Console Surface (Current)
+
+Key command groups:
+- economy and board (`slrpg_sell`, `slrpg_open_board`)
+- newspaper/rumors/journal (`slrpg_open_news`, `slrpg_open_rumors`, `slrpg_open_journal`)
+- quest operations (`slrpg_accept_quest`, `slrpg_complete_quest`, progress commands)
+- state/diagnostics (`slrpg_debug_state`, intent inject/smoketests, memory dumps)
+- Player2 control and health (`slrpg_p2_login`, `slrpg_p2_spawn`, `slrpg_p2_chat`, stream commands, `slrpg_p2_health`)
+- news publish debug (`slrpg_debug_news_toast`)
+
+## 15) Known Constraints and Alignment Notes
+
+- `DailyTickService` remains intentionally lightweight scaffold.
+- `MarketBoardService` is intentionally thin; most rendering decisions live in UI classes.
+- Rumor board deterministic templates remain the guaranteed baseline; AI proposals are additive.
+- Newspaper replacement on NPC publish is deliberate so 2-story layout stays stable.
+- Architecture intent remains "high-level cozy simulation with visible consequences"; implementation should keep converging without breaking determinism or in-world UX.

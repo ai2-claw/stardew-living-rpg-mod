@@ -76,6 +76,13 @@ public sealed class ModEntry : Mod
     private int _pendingNewspaperRefreshDay = -1;
     private int _newspaperBuildInFlight;
     private readonly ConcurrentQueue<NewspaperIssue> _completedNewspaperIssues = new();
+    private int _pendingLateNightPassOutDay = -1;
+    private string _pendingLateNightPassOutLocation = "Town";
+    private readonly Random _ambientNpcRandom = new();
+    private int _ambientNpcConversationDay = -1;
+    private int _ambientNpcConversationsToday;
+    private DateTime _nextAmbientNpcConversationUtc;
+    private int _ambientNpcConversationInFlight;
 
     private string? _pendingNpcDialogueHookName;
     private bool _npcDialogueHookArmed;
@@ -108,6 +115,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
         helper.ConsoleCommands.Add("slrpg_debug_state", "Print compact state snapshot for QA.", OnDebugStateCommand);
         helper.ConsoleCommands.Add("slrpg_intent_inject", "Inject raw NPC intent envelope JSON for resolver QA.", OnIntentInjectCommand);
+        helper.ConsoleCommands.Add("slrpg_debug_news_toast", "Inject debug publish_article/publish_rumor intent and trigger HUD toast: slrpg_debug_news_toast <article|rumor> [text]", OnDebugNewsToastCommand);
         helper.ConsoleCommands.Add("slrpg_intent_smoketest", "Run mini automated intent resolver smoke tests.", OnIntentSmokeTestCommand);
         helper.ConsoleCommands.Add("slrpg_anchor_smoketest", "Run deterministic anchor trigger/resolution smoke test.", OnAnchorSmokeTestCommand);
         helper.ConsoleCommands.Add("slrpg_demo_bootstrap", "Seed reproducible vertical-slice scenario.", OnDemoBootstrapCommand);
@@ -163,6 +171,8 @@ public sealed class ModEntry : Mod
         if (_dailyTickService is null)
             return;
 
+        TryCapturePendingLateNightPassOut();
+
         // Give auto-connect a brief head start so day-start newspaper can use Player2 when available.
         if (_config.EnablePlayer2
             && _config.AutoConnectPlayer2OnLoad
@@ -176,6 +186,8 @@ public sealed class ModEntry : Mod
             _uiManualRequestCountDay = _state.Calendar.Day;
             _uiManualRequestCountToday = 0;
         }
+
+        ResetAmbientNpcConversationScheduleForDay();
 
         var sold = _salesIngestionService?.DrainPendingSales() ?? new Dictionary<string, int>();
         _economyService?.IngestSales(_state.Economy, sold);
@@ -350,6 +362,7 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
+        TrackLateNightPassOutWindow();
         TryCaptureTownIncidents();
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
@@ -358,6 +371,8 @@ public sealed class ModEntry : Mod
             if (shouldAttempt && DateTime.UtcNow - _player2LastAutoConnectAttemptUtc > TimeSpan.FromSeconds(20))
                 StartPlayer2AutoConnect("auto-retry", force: false);
         }
+
+        TryTriggerAmbientNpcConversation();
 
         TryApplyCompletedNewspaperIssues();
         TryRefreshPendingNewspaperIssue("update-tick");
@@ -489,6 +504,113 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private void ResetAmbientNpcConversationScheduleForDay()
+    {
+        _ambientNpcConversationDay = _state.Calendar.Day;
+        _ambientNpcConversationsToday = 0;
+        _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(120, 360));
+    }
+
+    private void TryTriggerAmbientNpcConversation()
+    {
+        if (!_config.EnablePlayer2)
+            return;
+
+        if (_ambientNpcConversationDay != _state.Calendar.Day)
+            ResetAmbientNpcConversationScheduleForDay();
+
+        if (_ambientNpcConversationsToday >= 3)
+            return;
+
+        if (_nextAmbientNpcConversationUtc == default)
+            _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(120, 360));
+
+        if (DateTime.UtcNow < _nextAmbientNpcConversationUtc)
+            return;
+
+        if (!IsPlayer2ReadyForNewspaper())
+            return;
+
+        if (_player2PendingResponseCount > 0 || !string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest))
+            return;
+
+        if (Interlocked.CompareExchange(ref _ambientNpcConversationInFlight, 1, 0) == 1)
+            return;
+
+        try
+        {
+            if (!TryPickAmbientNpcConversationPair(out var speakerShortName, out var speakerNpcId, out var listenerShortName))
+                return;
+
+            var prompt =
+                $"{speakerShortName}, you had a brief offscreen conversation with {listenerShortName} about today's town happenings. " +
+                "Stay in-character and reply naturally. " +
+                "If there is meaningful concrete news, use publish_article with a concise title/content/category. " +
+                "If it is gossip-level information, use publish_rumor with topic, confidence, and target_group. " +
+                "Do not force a command when nothing notable happened.";
+
+            SendPlayer2ChatInternal(prompt, speakerNpcId, speakerShortName);
+            _ambientNpcConversationsToday += 1;
+            Monitor.Log($"Ambient NPC conversation triggered: {speakerShortName} -> {listenerShortName}.", LogLevel.Trace);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _ambientNpcConversationInFlight, 0);
+            _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(180, 480));
+        }
+    }
+
+    private bool TryPickAmbientNpcConversationPair(out string speakerShortName, out string speakerNpcId, out string listenerShortName)
+    {
+        speakerShortName = string.Empty;
+        speakerNpcId = string.Empty;
+        listenerShortName = string.Empty;
+
+        var roster = _player2NpcIdsByShortName
+            .Where(kv => !string.IsNullOrWhiteSpace(kv.Key) && !string.IsNullOrWhiteSpace(kv.Value))
+            .Select(kv => kv.Key)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (roster.Count == 0)
+        {
+            if (string.IsNullOrWhiteSpace(_activeNpcId))
+                return false;
+
+            speakerShortName = "Lewis";
+            speakerNpcId = _activeNpcId!;
+            listenerShortName = "Town";
+            return true;
+        }
+
+        var speakerIndex = _ambientNpcRandom.Next(roster.Count);
+        speakerShortName = roster[speakerIndex];
+        if (!_player2NpcIdsByShortName.TryGetValue(speakerShortName, out var speakerId))
+            return false;
+        speakerNpcId = speakerId;
+
+        if (roster.Count == 1)
+        {
+            listenerShortName = "Town";
+            return true;
+        }
+
+        var listeners = new List<string>();
+        foreach (var candidate in roster)
+        {
+            if (!candidate.Equals(speakerShortName, StringComparison.OrdinalIgnoreCase))
+                listeners.Add(candidate);
+        }
+        if (listeners.Count == 0)
+        {
+            listenerShortName = "Town";
+            return true;
+        }
+
+        listenerShortName = listeners[_ambientNpcRandom.Next(listeners.Count)];
+        return true;
+    }
+
     private void TryCaptureTownIncidents()
     {
         if (_townMemoryService is null || Game1.player is null || Game1.currentLocation is null)
@@ -519,6 +641,67 @@ public sealed class ModEntry : Mod
             severity: 3,
             visibility: "local",
             "mines", "health", "rescue");
+    }
+
+    private void TrackLateNightPassOutWindow()
+    {
+        if (_townMemoryService is null || Game1.player is null || Game1.currentLocation is null)
+            return;
+
+        if (Game1.timeOfDay < 2600)
+            return;
+
+        if (Game1.player.health <= 0)
+            return;
+
+        if (_pendingLateNightPassOutDay == _state.Calendar.Day)
+            return;
+
+        var locationName = Game1.currentLocation.Name ?? "Town";
+        if (IsSleepSafeLocation(locationName))
+            return;
+
+        _pendingLateNightPassOutDay = _state.Calendar.Day;
+        _pendingLateNightPassOutLocation = locationName;
+    }
+
+    private void TryCapturePendingLateNightPassOut()
+    {
+        if (_townMemoryService is null)
+            return;
+
+        if (_pendingLateNightPassOutDay != _state.Calendar.Day)
+            return;
+
+        var locationName = string.IsNullOrWhiteSpace(_pendingLateNightPassOutLocation)
+            ? "Town"
+            : _pendingLateNightPassOutLocation;
+        var key = $"town_incident:passout:{_pendingLateNightPassOutDay}";
+        if (!_state.Facts.Facts.ContainsKey(key))
+        {
+            _state.Facts.Facts[key] = new FactValue { Value = true, SetDay = _pendingLateNightPassOutDay, Source = "system" };
+            _townMemoryService.RecordEvent(
+                _state,
+                "pass_out",
+                $"A farmer was found passed out late at night near {locationName}.",
+                locationName,
+                _pendingLateNightPassOutDay,
+                severity: 2,
+                visibility: "public",
+                "late-night", "pass-out", "rescue");
+        }
+
+        _pendingLateNightPassOutDay = -1;
+        _pendingLateNightPassOutLocation = "Town";
+    }
+
+    private static bool IsSleepSafeLocation(string locationName)
+    {
+        if (string.IsNullOrWhiteSpace(locationName))
+            return false;
+
+        return locationName.Contains("FarmHouse", StringComparison.OrdinalIgnoreCase)
+            || locationName.Contains("Cabin", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
@@ -1014,6 +1197,68 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private void OnDebugNewsToastCommand(string name, string[] args)
+    {
+        if (_intentResolver is null)
+        {
+            Monitor.Log("Intent resolver unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        if (args.Length == 0)
+        {
+            Monitor.Log("Usage: slrpg_debug_news_toast <article|rumor> [text]", LogLevel.Info);
+            return;
+        }
+
+        var mode = args[0].Trim().ToLowerInvariant();
+        var text = args.Length > 1 ? string.Join(' ', args.Skip(1)).Trim() : string.Empty;
+        var npcId = !string.IsNullOrWhiteSpace(_activeNpcId) ? _activeNpcId! : "debug_npc";
+        var intentId = $"debug_news_{mode}_{_state.Calendar.Day}_{DateTime.UtcNow.Ticks}";
+
+        string payload;
+        if (mode == "article")
+        {
+            var title = string.IsNullOrWhiteSpace(text) ? "Debug Market Bulletin" : text;
+            payload = JsonSerializer.Serialize(new
+            {
+                intent_id = intentId,
+                npc_id = npcId,
+                command = "publish_article",
+                arguments = new
+                {
+                    title,
+                    content = "Debug article payload for HUD toast validation.",
+                    category = "community"
+                }
+            });
+        }
+        else if (mode == "rumor")
+        {
+            var topic = string.IsNullOrWhiteSpace(text) ? "Blueberry demand may cool next week" : text;
+            payload = JsonSerializer.Serialize(new
+            {
+                intent_id = intentId,
+                npc_id = npcId,
+                command = "publish_rumor",
+                arguments = new
+                {
+                    topic,
+                    confidence = 0.72f,
+                    target_group = "shopkeepers"
+                }
+            });
+        }
+        else
+        {
+            Monitor.Log("Usage: slrpg_debug_news_toast <article|rumor> [text]", LogLevel.Info);
+            return;
+        }
+
+        TryApplyNpcCommandFromLine(payload);
+        Monitor.Log($"Injected debug news intent via stream path: {mode}", LogLevel.Info);
+    }
+
     private void OnIntentSmokeTestCommand(string name, string[] args)
     {
         if (_intentResolver is null)
@@ -1316,6 +1561,42 @@ public sealed class ModEntry : Mod
                             additionalProperties = false
                         },
                         NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "publish_article",
+                        Description = "Publish a concise in-world newspaper article",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                title = new { type = "string" },
+                                content = new { type = "string" },
+                                category = new { type = "string", @enum = new[] { "community", "market", "social", "nature" } }
+                            },
+                            required = new[] { "title", "content", "category" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "publish_rumor",
+                        Description = "Publish a short town rumor",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                topic = new { type = "string" },
+                                confidence = new { type = "number" },
+                                target_group = new { type = "string" }
+                            },
+                            required = new[] { "topic", "confidence", "target_group" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
                     }
                 }
             };
@@ -1400,6 +1681,40 @@ public sealed class ModEntry : Mod
                                     urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } }
                                 },
                                 required = new[] { "template_id", "target", "urgency" },
+                                additionalProperties = false
+                            }
+                        },
+                        new()
+                        {
+                            Name = "publish_article",
+                            Description = "Publish a concise in-world newspaper article",
+                            Parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    title = new { type = "string" },
+                                    content = new { type = "string" },
+                                    category = new { type = "string", @enum = new[] { "community", "market", "social", "nature" } }
+                                },
+                                required = new[] { "title", "content", "category" },
+                                additionalProperties = false
+                            }
+                        },
+                        new()
+                        {
+                            Name = "publish_rumor",
+                            Description = "Publish a short town rumor",
+                            Parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    topic = new { type = "string" },
+                                    confidence = new { type = "number" },
+                                    target_group = new { type = "string" }
+                                },
+                                required = new[] { "topic", "confidence", "target_group" },
                                 additionalProperties = false
                             }
                         }
@@ -2064,14 +2379,51 @@ public sealed class ModEntry : Mod
                 || result.Command.Equals("publish_article", StringComparison.OrdinalIgnoreCase))
             {
                 ShowNewspaperCommandNotification(result.Command, result.OutcomeId, sourceNpcId);
-                _pendingNewspaperRefreshDay = _state.Calendar.Day;
-                TryRefreshPendingNewspaperIssue($"npc-command:{result.Command}");
+
+                // Avoid rebuilding today's issue after it has already been generated, because rebuilds can
+                // replace dynamic editor stories with fallback fillers. Replace today's visible content/headline
+                // with the latest NPC article directly when possible.
+                if (!TryReplaceTodayIssueWithNpcArticle(result.Command, result.OutcomeId))
+                {
+                    var hasTodayIssue = _state.Newspaper.Issues.Any(i => i.Day == _state.Calendar.Day);
+                    if (!hasTodayIssue)
+                    {
+                        _pendingNewspaperRefreshDay = _state.Calendar.Day;
+                        TryRefreshPendingNewspaperIssue($"npc-command:{result.Command}");
+                    }
+                }
             }
         }
         catch (Exception ex)
         {
             Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
         }
+    }
+
+    private bool TryReplaceTodayIssueWithNpcArticle(string command, string outcomeId)
+    {
+        if (string.IsNullOrWhiteSpace(outcomeId))
+            return false;
+
+        var todayIssue = _state.Newspaper.Issues.FirstOrDefault(i => i.Day == _state.Calendar.Day);
+        if (todayIssue is null)
+            return false;
+
+        var article = _state.Newspaper.Articles
+            .LastOrDefault(a =>
+                a.Day == _state.Calendar.Day
+                && a.ExpirationDay >= _state.Calendar.Day
+                && (string.Equals(a.Title, outcomeId, StringComparison.OrdinalIgnoreCase)
+                    || (command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(a.Title, $"Rumor: {outcomeId}", StringComparison.OrdinalIgnoreCase))));
+
+        if (article is null)
+            return false;
+
+        todayIssue.Articles.Clear();
+        todayIssue.Articles.Add(article);
+        todayIssue.Headline = article.Title;
+        return true;
     }
 
     private void ShowNewspaperCommandNotification(string command, string outcomeId, string? sourceNpcId)

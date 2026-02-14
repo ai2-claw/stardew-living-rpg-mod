@@ -189,6 +189,15 @@ public sealed class NewspaperService
                     Day = state.Calendar.Day,
                     ExpirationDay = state.Calendar.Day + 3
                 },
+                "pass_out" => new NewspaperArticle
+                {
+                    Title = "Late-Night Collapse Reported",
+                    Content = $"{ev.Summary} Town responders assisted and escorted the farmer home safely. The incident occurred on day {ev.Day}.",
+                    Category = "community",
+                    SourceNpc = "Town Report",
+                    Day = state.Calendar.Day,
+                    ExpirationDay = state.Calendar.Day + 3
+                },
                 "achievement" => new NewspaperArticle
                 {
                     Title = "Community Achievement",
