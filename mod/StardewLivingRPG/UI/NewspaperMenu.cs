@@ -187,6 +187,8 @@ public sealed class NewspaperMenu : IClickableMenu
                 {
                     "The Pelican Times" => "Lewis",
                     "Pelican Times Editor" => "Elliott",
+                    "Town Reporter" => "Elliott",
+                    "Town Report" => "Elliott",
                     _ => article.SourceNpc
                 };
                 var npc = Game1.getCharacterFromName(npcName);
@@ -217,6 +219,7 @@ public sealed class NewspaperMenu : IClickableMenu
             {
                 "Debug" => "Anonymous",
                 "Pelican Times Editor" => "Editor",
+                "Town Report" => "Town Reporter",
                 _ => article.SourceNpc
             };
             b.DrawString(Game1.smallFont, displayName, new Vector2(textX, y), new Color(40, 20, 10));
