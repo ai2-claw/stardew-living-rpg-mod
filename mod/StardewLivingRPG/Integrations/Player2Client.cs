@@ -128,7 +128,7 @@ public sealed class Player2Client
         return npcId;
     }
 
-    public async Task SendNpcChatAsync(string apiBaseUrl, string p2Key, string npcId, NpcChatRequest req, CancellationToken ct)
+    public async Task<string?> SendNpcChatAsync(string apiBaseUrl, string p2Key, string npcId, NpcChatRequest req, CancellationToken ct)
     {
         var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
         using var msg = new HttpRequestMessage(HttpMethod.Post, url)
@@ -138,7 +138,9 @@ public sealed class Player2Client
         msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
 
         using var res = await _http.SendAsync(msg, ct);
+        var body = await res.Content.ReadAsStringAsync(ct);
         res.EnsureSuccessStatusCode();
+        return string.IsNullOrWhiteSpace(body) ? null : body;
     }
 
     public async Task<JoulesResponse> GetJoulesAsync(string apiBaseUrl, string p2Key, CancellationToken ct)
@@ -288,6 +290,11 @@ public sealed class Player2Client
         }
 
         return null;
+    }
+
+    public async Task<string?> TryGetLatestNpcHistoryMessageAsync(string apiBaseUrl, string p2Key, string npcId, CancellationToken ct)
+    {
+        return await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
     }
 
     private async Task<string?> TryGetLatestNpcMessageFromHistoryAsync(string apiBaseUrl, string p2Key, string npcId, CancellationToken ct)
@@ -781,9 +788,9 @@ public sealed class Player2Client
 
     /// <summary>
     /// Long-lived NDJSON stream reader for /npcs/responses.
-    /// Calls onLine for each non-empty line until cancelled or stream closes.
+    /// Calls onConnected once headers are received, then onLine for each non-empty line until cancelled or stream closes.
     /// </summary>
-    public async Task StreamNpcResponsesAsync(string apiBaseUrl, string p2Key, Func<string, Task> onLine, CancellationToken ct)
+    public async Task StreamNpcResponsesAsync(string apiBaseUrl, string p2Key, Func<string, Task> onLine, CancellationToken ct, Func<Task>? onConnected = null)
     {
         var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/responses";
         using var msg = new HttpRequestMessage(HttpMethod.Get, url);
@@ -792,6 +799,8 @@ public sealed class Player2Client
 
         using var res = await _http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct);
         res.EnsureSuccessStatusCode();
+        if (onConnected is not null)
+            await onConnected();
 
         await using var stream = await res.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream);
