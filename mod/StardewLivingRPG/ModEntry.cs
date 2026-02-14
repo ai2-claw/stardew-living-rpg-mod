@@ -2381,6 +2381,7 @@ public sealed class ModEntry : Mod
                 || result.Command.Equals("publish_article", StringComparison.OrdinalIgnoreCase))
             {
                 var outcomeId = TryApplyPlayer2SensationalHeadlineToNpcPublish(result.Command, result.OutcomeId, sourceNpcId);
+                TryApplyNpcPublishSourceName(result.Command, outcomeId, sourceNpcId);
                 ShowNewspaperCommandNotification(result.Command, outcomeId, sourceNpcId);
 
                 // Avoid rebuilding today's issue after it has already been generated, because rebuilds can
@@ -2490,8 +2491,14 @@ public sealed class ModEntry : Mod
 
         if (!string.IsNullOrWhiteSpace(sourceNpcId))
         {
+            var sourceShortName = _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
+                ? shortName
+                : null;
             candidates = candidates
-                .Where(a => string.Equals(a.SourceNpc, sourceNpcId, StringComparison.OrdinalIgnoreCase))
+                .Where(a =>
+                    string.Equals(a.SourceNpc, sourceNpcId, StringComparison.OrdinalIgnoreCase)
+                    || (!string.IsNullOrWhiteSpace(sourceShortName)
+                        && string.Equals(a.SourceNpc, sourceShortName, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
         }
 
@@ -2507,6 +2514,24 @@ public sealed class ModEntry : Mod
         }
 
         return candidates.LastOrDefault();
+    }
+
+    private void TryApplyNpcPublishSourceName(string command, string outcomeId, string? sourceNpcId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceNpcId))
+            return;
+
+        if (!_player2NpcShortNameById.TryGetValue(sourceNpcId, out var sourceShortName)
+            || string.IsNullOrWhiteSpace(sourceShortName))
+        {
+            return;
+        }
+
+        var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
+        if (article is null)
+            return;
+
+        article.SourceNpc = sourceShortName;
     }
 
     private static string NormalizeGeneratedHeadline(string? value)
