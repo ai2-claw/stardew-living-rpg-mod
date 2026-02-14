@@ -2724,7 +2724,8 @@ public sealed class ModEntry : Mod
             if (result.Command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase)
                 || result.Command.Equals("publish_article", StringComparison.OrdinalIgnoreCase))
             {
-                var outcomeId = TryApplyPlayer2SensationalHeadlineToNpcPublish(result.Command, result.OutcomeId, sourceNpcId);
+                var outcomeId = result.OutcomeId;
+                var sensationalHeadline = TryApplyPlayer2SensationalHeadlineToNpcPublish(result.Command, outcomeId, sourceNpcId);
                 TryApplyNpcPublishSourceName(result.Command, outcomeId, sourceNpcId);
                 outcomeId = TryClampNpcPublishArticleAsLastResort(result.Command, outcomeId, sourceNpcId);
                 ShowNewspaperCommandNotification(result.Command, outcomeId, sourceNpcId);
@@ -2732,7 +2733,7 @@ public sealed class ModEntry : Mod
                 // Avoid rebuilding today's issue after it has already been generated, because rebuilds can
                 // replace dynamic editor stories with fallback fillers. Replace today's visible content/headline
                 // with the latest NPC article directly when possible.
-                if (!TryReplaceTodayIssueWithNpcArticle(result.Command, outcomeId))
+                if (!TryReplaceTodayIssueWithNpcArticle(result.Command, outcomeId, sensationalHeadline))
                 {
                     var hasTodayIssue = _state.Newspaper.Issues.Any(i => i.Day == _state.Calendar.Day);
                     if (!hasTodayIssue)
@@ -3246,24 +3247,25 @@ public sealed class ModEntry : Mod
     private string TryApplyPlayer2SensationalHeadlineToNpcPublish(string command, string outcomeId, string? sourceNpcId)
     {
         if (string.IsNullOrWhiteSpace(outcomeId))
-            return outcomeId;
+            return string.Empty;
 
         var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
         if (article is null)
-            return outcomeId;
+            return string.Empty;
 
-        var originalTitle = article.Title;
         if (!CanUsePlayer2HeadlineGenerator())
-            return originalTitle;
+            return string.Empty;
 
         var client = _authenticatedPlayer2Client ?? _player2Client;
         if (client is null)
-            return originalTitle;
+            return string.Empty;
 
         try
         {
             client.SetCredentials(_config.Player2ApiBaseUrl, _player2Key!);
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            // Wait long enough for Player2 chat + history fallback so publish commands don't
+            // surface with a pre-headline title and then update moments later.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             var generated = client
                 .TryGenerateSensationalHeadlineAsync(article.Title, article.Category, article.Content, cts.Token)
                 .GetAwaiter()
@@ -3273,20 +3275,17 @@ public sealed class ModEntry : Mod
             if (string.IsNullOrWhiteSpace(normalized))
             {
                 Monitor.Log($"Player2 headline empty for {command}; keeping original title.", LogLevel.Trace);
-                return originalTitle;
+                return string.Empty;
             }
 
-            if (!TryApplyNpcPublishTitle(article, normalized))
-                return originalTitle;
+            Monitor.Log($"Applied Player2 sensational headline for {command}: {normalized}", LogLevel.Trace);
 
-            Monitor.Log($"Applied Player2 sensational headline for {command}: {article.Title}", LogLevel.Trace);
-
-            return article.Title;
+            return normalized;
         }
         catch (Exception ex)
         {
             Monitor.Log($"Player2 sensational headline skipped for {command}: {ex.Message}", LogLevel.Trace);
-            return originalTitle;
+            return string.Empty;
         }
     }
 
@@ -3397,16 +3396,6 @@ public sealed class ModEntry : Mod
         return headline;
     }
 
-    private static bool TryApplyNpcPublishTitle(NewspaperArticle article, string title)
-    {
-        var cleanTitle = (title ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(cleanTitle))
-            return false;
-
-        article.Title = cleanTitle;
-        return true;
-    }
-
     private string TryClampNpcPublishArticleAsLastResort(string command, string outcomeId, string? sourceNpcId)
     {
         var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
@@ -3468,7 +3457,7 @@ public sealed class ModEntry : Mod
         return changed;
     }
 
-    private bool TryReplaceTodayIssueWithNpcArticle(string command, string outcomeId)
+    private bool TryReplaceTodayIssueWithNpcArticle(string command, string outcomeId, string? headlineOverride = null)
     {
         if (string.IsNullOrWhiteSpace(outcomeId))
             return false;
@@ -3490,7 +3479,10 @@ public sealed class ModEntry : Mod
 
         todayIssue.Articles.Clear();
         todayIssue.Articles.Add(article);
-        todayIssue.Headline = article.Title;
+        var cleanHeadlineOverride = (headlineOverride ?? string.Empty).Trim();
+        todayIssue.Headline = string.IsNullOrWhiteSpace(cleanHeadlineOverride)
+            ? article.Title
+            : cleanHeadlineOverride;
         return true;
     }
 
