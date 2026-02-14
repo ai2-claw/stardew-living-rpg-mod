@@ -157,7 +157,8 @@ public sealed class Player2Client
 
     public async Task<string> GenerateSensationalHeadlineAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
     {
-        return await GenerateSensationalHeadlineCoreAsync(apiBaseUrl, p2Key, articleTitle, articleCategory, articleContent, ct);
+        var headline = await TryGenerateSensationalHeadlineAsync(apiBaseUrl, p2Key, articleTitle, articleCategory, articleContent, ct);
+        return string.IsNullOrWhiteSpace(headline) ? FallbackHeadline(articleTitle) : headline;
     }
 
     /// <summary>
@@ -165,17 +166,30 @@ public sealed class Player2Client
     /// </summary>
     public async Task<string> GenerateSensationalHeadlineAsync(string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(_apiBaseUrl) || string.IsNullOrEmpty(_p2Key))
-            return FallbackHeadline(articleTitle);
-
-        return await GenerateSensationalHeadlineCoreAsync(_apiBaseUrl, _p2Key, articleTitle, articleCategory, articleContent, ct);
+        var headline = await TryGenerateSensationalHeadlineAsync(articleTitle, articleCategory, articleContent, ct);
+        return string.IsNullOrWhiteSpace(headline) ? FallbackHeadline(articleTitle) : headline;
     }
 
-    private async Task<string> GenerateSensationalHeadlineCoreAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
+    public async Task<string?> TryGenerateSensationalHeadlineAsync(string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
     {
-        var fallback = FallbackHeadline(articleTitle);
+        if (string.IsNullOrEmpty(_apiBaseUrl) || string.IsNullOrEmpty(_p2Key))
+            return null;
+
+        return await TryGenerateSensationalHeadlineCoreAsync(_apiBaseUrl, _p2Key, articleTitle, articleCategory, articleContent, ct);
+    }
+
+    public async Task<string?> TryGenerateSensationalHeadlineAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
+    {
         if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(p2Key))
-            return fallback;
+            return null;
+
+        return await TryGenerateSensationalHeadlineCoreAsync(apiBaseUrl, p2Key, articleTitle, articleCategory, articleContent, ct);
+    }
+
+    private async Task<string?> TryGenerateSensationalHeadlineCoreAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(p2Key))
+            return null;
 
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -222,7 +236,7 @@ public sealed class Player2Client
             }
         }
 
-        return fallback;
+        return null;
     }
 
     private async Task<string> EnsureHeadlineEditorNpcIdAsync(string apiBaseUrl, string p2Key, CancellationToken ct)

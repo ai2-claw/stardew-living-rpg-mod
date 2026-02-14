@@ -551,8 +551,8 @@ public sealed class ModEntry : Mod
             var prompt =
                 $"{speakerShortName}, you had a brief offscreen conversation with {listenerShortName} about today's town happenings. " +
                 "Stay in-character and reply naturally. " +
-                "If there is meaningful concrete news, use publish_article with a concise title/content/category. " +
-                "If it is gossip-level information, use publish_rumor with topic, confidence, and target_group. " +
+                "If there is meaningful concrete news, use publish_article with a concise title/content/category (title+content must be <= 100 characters total). " +
+                "If it is gossip-level information, use publish_rumor with topic, optional title/content, confidence, and target_group (title+content must be <= 100 characters total when provided). " +
                 "Do not force a command when nothing notable happened.";
 
             SendPlayer2ChatInternal(prompt, speakerNpcId, speakerShortName);
@@ -1546,7 +1546,7 @@ public sealed class ModEntry : Mod
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
                 CharacterDescription = "Mayor Lewis of Pelican Town in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band.",
+                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. For publish_article and publish_rumor, keep title+content within 100 characters total. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -1571,7 +1571,7 @@ public sealed class ModEntry : Mod
                     new()
                     {
                         Name = "publish_article",
-                        Description = "Publish a concise in-world newspaper article",
+                        Description = "Publish a concise in-world newspaper article (title+content <= 100 characters total)",
                         Parameters = new
                         {
                             type = "object",
@@ -1589,13 +1589,15 @@ public sealed class ModEntry : Mod
                     new()
                     {
                         Name = "publish_rumor",
-                        Description = "Publish a short town rumor",
+                        Description = "Publish a short town rumor with optional title/content (title+content <= 100 characters total when provided)",
                         Parameters = new
                         {
                             type = "object",
                             properties = new
                             {
                                 topic = new { type = "string" },
+                                title = new { type = "string" },
+                                content = new { type = "string" },
                                 confidence = new { type = "number" },
                                 target_group = new { type = "string" }
                             },
@@ -1669,7 +1671,7 @@ public sealed class ModEntry : Mod
                     ShortName = shortName,
                     Name = shortName,
                     CharacterDescription = $"{shortName} in Pelican Town, practical and grounded.",
-                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. Use safe command schema when proposing town requests.",
+                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. Use safe command schema when proposing town requests. For publish_article and publish_rumor, keep title+content within 100 characters total.",
                     KeepGameState = true,
                     Commands = new List<SpawnNpcCommand>
                     {
@@ -1693,7 +1695,7 @@ public sealed class ModEntry : Mod
                         new()
                         {
                             Name = "publish_article",
-                            Description = "Publish a concise in-world newspaper article",
+                            Description = "Publish a concise in-world newspaper article (title+content <= 100 characters total)",
                             Parameters = new
                             {
                                 type = "object",
@@ -1710,13 +1712,15 @@ public sealed class ModEntry : Mod
                         new()
                         {
                             Name = "publish_rumor",
-                            Description = "Publish a short town rumor",
+                            Description = "Publish a short town rumor with optional title/content (title+content <= 100 characters total when provided)",
                             Parameters = new
                             {
                                 type = "object",
                                 properties = new
                                 {
                                     topic = new { type = "string" },
+                                    title = new { type = "string" },
+                                    content = new { type = "string" },
                                     confidence = new { type = "number" },
                                     target_group = new { type = "string" }
                                 },
@@ -2305,6 +2309,7 @@ public sealed class ModEntry : Mod
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
+            "RULE: For publish_article/publish_rumor commands, keep title+content within 100 characters total.",
             "MARKET_RULE: For market questions, mention at least one live signal from MARKET_SIGNALS.",
             "REWARD_RULE: Never promise arbitrary gold numbers; follow REWARD_RULES bands.",
             "REWARD_RULES: gather_crop low=350 medium=500 high=700; deliver_item low=360 medium=500 high=650; mine_resource low=450 medium=600 high=800; social_visit low=220 medium=300 high=400.",
@@ -2386,6 +2391,7 @@ public sealed class ModEntry : Mod
             {
                 var outcomeId = TryApplyPlayer2SensationalHeadlineToNpcPublish(result.Command, result.OutcomeId, sourceNpcId);
                 TryApplyNpcPublishSourceName(result.Command, outcomeId, sourceNpcId);
+                outcomeId = TryClampNpcPublishArticleAsLastResort(result.Command, outcomeId, sourceNpcId);
                 ShowNewspaperCommandNotification(result.Command, outcomeId, sourceNpcId);
 
                 // Avoid rebuilding today's issue after it has already been generated, because rebuilds can
@@ -2430,7 +2436,7 @@ public sealed class ModEntry : Mod
             client.SetCredentials(_config.Player2ApiBaseUrl, _player2Key!);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
             var generated = client
-                .GenerateSensationalHeadlineAsync(article.Title, article.Category, article.Content, cts.Token)
+                .TryGenerateSensationalHeadlineAsync(article.Title, article.Category, article.Content, cts.Token)
                 .GetAwaiter()
                 .GetResult();
 
@@ -2441,26 +2447,8 @@ public sealed class ModEntry : Mod
                 return originalTitle;
             }
 
-            // Keep original when generated headline is visibly truncated.
-            if (normalized.EndsWith("...", StringComparison.Ordinal))
-            {
-                Monitor.Log($"Player2 headline truncated for {command}; keeping original title.", LogLevel.Trace);
+            if (!TryApplyNpcPublishTitle(article, normalized))
                 return originalTitle;
-            }
-
-            // If the client fell back to local fallback formatting, keep original title.
-            var fallbackLike = NewspaperService.BuildFallbackSensationalTitle(article.Title);
-            if (string.Equals(normalized, fallbackLike, StringComparison.OrdinalIgnoreCase))
-            {
-                Monitor.Log($"Player2 headline matched fallback pattern for {command}; keeping original title.", LogLevel.Trace);
-                return originalTitle;
-            }
-
-            if (!TryApplyNpcPublishTitleAndLimit(article, normalized))
-            {
-                Monitor.Log($"Player2 headline exceeded publish limits for {command}; keeping original title.", LogLevel.Trace);
-                return originalTitle;
-            }
 
             Monitor.Log($"Applied Player2 sensational headline for {command}: {article.Title}", LogLevel.Trace);
 
@@ -2580,26 +2568,75 @@ public sealed class ModEntry : Mod
         return headline;
     }
 
-    private static bool TryApplyNpcPublishTitleAndLimit(NewspaperArticle article, string title)
+    private static bool TryApplyNpcPublishTitle(NewspaperArticle article, string title)
     {
         var cleanTitle = (title ?? string.Empty).Trim();
-        var cleanContent = (article.Content ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(cleanTitle) || string.IsNullOrWhiteSpace(cleanContent))
-            return false;
-
-        var remaining = MaxNpcPublishCombinedCharacters - cleanTitle.Length;
-        if (remaining <= 0)
-            return false;
-
-        if (cleanContent.Length > remaining)
-            cleanContent = cleanContent[..remaining].Trim();
-
-        if (string.IsNullOrWhiteSpace(cleanContent))
+        if (string.IsNullOrWhiteSpace(cleanTitle))
             return false;
 
         article.Title = cleanTitle;
-        article.Content = cleanContent;
         return true;
+    }
+
+    private string TryClampNpcPublishArticleAsLastResort(string command, string outcomeId, string? sourceNpcId)
+    {
+        var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
+        if (article is null)
+            return outcomeId;
+
+        if (!TryClampNpcPublishArticleInPlace(article))
+            return article.Title;
+
+        Monitor.Log(
+            $"Applied fallback clamp for {command} to keep title+content <= {MaxNpcPublishCombinedCharacters}: '{article.Title}'",
+            LogLevel.Trace);
+
+        return article.Title;
+    }
+
+    private static bool TryClampNpcPublishArticleInPlace(NewspaperArticle article)
+    {
+        var title = (article.Title ?? string.Empty).Trim();
+        var content = (article.Content ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
+            return false;
+
+        if (title.Length + content.Length <= MaxNpcPublishCombinedCharacters)
+        {
+            article.Title = title;
+            article.Content = content;
+            return false;
+        }
+
+        var maxTitleLength = Math.Max(1, MaxNpcPublishCombinedCharacters - 1);
+        if (title.Length > maxTitleLength)
+            title = title[..maxTitleLength].TrimEnd();
+
+        if (string.IsNullOrWhiteSpace(title))
+            return false;
+
+        var maxContentLength = MaxNpcPublishCombinedCharacters - title.Length;
+        if (maxContentLength <= 0)
+        {
+            title = title[..Math.Max(1, MaxNpcPublishCombinedCharacters - 1)].TrimEnd();
+            maxContentLength = MaxNpcPublishCombinedCharacters - title.Length;
+        }
+
+        if (maxContentLength <= 0)
+            return false;
+
+        if (content.Length > maxContentLength)
+            content = content[..maxContentLength].TrimEnd();
+
+        if (string.IsNullOrWhiteSpace(content))
+            return false;
+
+        var changed = !string.Equals(article.Title, title, StringComparison.Ordinal)
+            || !string.Equals(article.Content, content, StringComparison.Ordinal);
+
+        article.Title = title;
+        article.Content = content;
+        return changed;
     }
 
     private bool TryReplaceTodayIssueWithNpcArticle(string command, string outcomeId)

@@ -5,8 +5,6 @@ namespace StardewLivingRPG.Systems;
 
 public sealed class NpcIntentResolver
 {
-    private const int MaxNpcPublishCombinedCharacters = 100;
-
     private static readonly HashSet<string> AllowedCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "propose_quest",
@@ -251,7 +249,7 @@ public sealed class NpcIntentResolver
             return NpcIntentResolveResult.Rejected("publish_rumor missing target_group");
         if (confidence < 0f || confidence > 1f)
             return NpcIntentResolveResult.Rejected("publish_rumor confidence out of range (0..1)", "E_CONFIDENCE_RANGE");
-        if (HasUnexpectedArgs(args, "topic", "confidence", "target_group"))
+        if (HasUnexpectedArgs(args, "topic", "confidence", "target_group", "title", "content"))
             return NpcIntentResolveResult.Rejected("publish_rumor contains unexpected argument fields");
 
         var topic = (tEl.GetString() ?? "town news").Trim();
@@ -268,16 +266,22 @@ public sealed class NpcIntentResolver
         if (todayRumorCount >= 1)
             return NpcIntentResolveResult.Rejected("rumor limit reached for today (1)", "E_RUMOR_LIMIT");
 
-        var title = $"Rumor: {topic}";
-        var content = $"Word on the street among {group}: {topic}.";
-        if (!TryClampNpcPublishContent(title, content, out var clampedContent))
-            return NpcIntentResolveResult.Rejected("publish_rumor exceeds max 100 characters (title + content)", "E_PUBLISH_LENGTH");
+        var title = args.TryGetProperty("title", out var titleEl) && titleEl.ValueKind == JsonValueKind.String
+            ? (titleEl.GetString() ?? string.Empty).Trim()
+            : topic;
+        var content = args.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.String
+            ? (contentEl.GetString() ?? string.Empty).Trim()
+            : topic;
+        if (string.IsNullOrWhiteSpace(title))
+            title = topic;
+        if (string.IsNullOrWhiteSpace(content))
+            content = topic;
 
         // Create article instead of full issue
         var article = new NewspaperArticle
         {
             Title = title,
-            Content = clampedContent,
+            Content = content,
             Category = "social",
             SourceNpc = npcId,
             IsNpcPublished = true,
@@ -334,14 +338,11 @@ public sealed class NpcIntentResolver
         if (todayNpcArticleCount >= 2)
             return NpcIntentResolveResult.Rejected("NPC article limit reached for today (2)", "E_ARTICLE_LIMIT");
 
-        if (!TryClampNpcPublishContent(title, content, out var clampedContent))
-            return NpcIntentResolveResult.Rejected("publish_article exceeds max 100 characters (title + content)", "E_PUBLISH_LENGTH");
-
         // Create article
         var article = new NewspaperArticle
         {
             Title = title,
-            Content = clampedContent,
+            Content = content,
             Category = category,
             SourceNpc = npcId,
             IsNpcPublished = true,
@@ -355,23 +356,6 @@ public sealed class NpcIntentResolver
         MarkIntentProcessed(state, intentId, npcId, "publish_article");
 
         return NpcIntentResolveResult.Applied(intentId, "publish_article", title, fallbackUsed: false, proposal: null);
-    }
-
-    private static bool TryClampNpcPublishContent(string title, string content, out string clampedContent)
-    {
-        clampedContent = (content ?? string.Empty).Trim();
-        var cleanTitle = (title ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(cleanTitle) || string.IsNullOrWhiteSpace(clampedContent))
-            return false;
-
-        var remaining = MaxNpcPublishCombinedCharacters - cleanTitle.Length;
-        if (remaining <= 0)
-            return false;
-
-        if (clampedContent.Length > remaining)
-            clampedContent = clampedContent[..remaining].Trim();
-
-        return !string.IsNullOrWhiteSpace(clampedContent);
     }
 
     private static bool HasUnexpectedArgs(JsonElement args, params string[] allowedKeys)
