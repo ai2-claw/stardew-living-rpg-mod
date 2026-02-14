@@ -19,6 +19,8 @@ namespace StardewLivingRPG;
 
 public sealed class ModEntry : Mod
 {
+    private const int MaxNpcPublishCombinedCharacters = 100;
+
     private ModConfig _config = new();
     private SaveState _state = SaveState.CreateDefault();
     private DailyTickService? _dailyTickService;
@@ -2378,12 +2380,13 @@ public sealed class ModEntry : Mod
             if (result.Command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase)
                 || result.Command.Equals("publish_article", StringComparison.OrdinalIgnoreCase))
             {
-                ShowNewspaperCommandNotification(result.Command, result.OutcomeId, sourceNpcId);
+                var outcomeId = TryApplyPlayer2SensationalHeadlineToNpcPublish(result.Command, result.OutcomeId, sourceNpcId);
+                ShowNewspaperCommandNotification(result.Command, outcomeId, sourceNpcId);
 
                 // Avoid rebuilding today's issue after it has already been generated, because rebuilds can
                 // replace dynamic editor stories with fallback fillers. Replace today's visible content/headline
                 // with the latest NPC article directly when possible.
-                if (!TryReplaceTodayIssueWithNpcArticle(result.Command, result.OutcomeId))
+                if (!TryReplaceTodayIssueWithNpcArticle(result.Command, outcomeId))
                 {
                     var hasTodayIssue = _state.Newspaper.Issues.Any(i => i.Day == _state.Calendar.Day);
                     if (!hasTodayIssue)
@@ -2398,6 +2401,160 @@ public sealed class ModEntry : Mod
         {
             Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
         }
+    }
+
+    private string TryApplyPlayer2SensationalHeadlineToNpcPublish(string command, string outcomeId, string? sourceNpcId)
+    {
+        if (string.IsNullOrWhiteSpace(outcomeId))
+            return outcomeId;
+
+        var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
+        if (article is null)
+            return outcomeId;
+
+        var originalTitle = article.Title;
+        if (!CanUsePlayer2HeadlineGenerator())
+            return originalTitle;
+
+        var client = _authenticatedPlayer2Client ?? _player2Client;
+        if (client is null)
+            return originalTitle;
+
+        try
+        {
+            client.SetCredentials(_config.Player2ApiBaseUrl, _player2Key!);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var generated = client
+                .GenerateSensationalHeadlineAsync(article.Title, article.Category, article.Content, cts.Token)
+                .GetAwaiter()
+                .GetResult();
+
+            var normalized = NormalizeGeneratedHeadline(generated);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                Monitor.Log($"Player2 headline empty for {command}; keeping original title.", LogLevel.Trace);
+                return originalTitle;
+            }
+
+            // Keep original when generated headline is visibly truncated.
+            if (normalized.EndsWith("...", StringComparison.Ordinal))
+            {
+                Monitor.Log($"Player2 headline truncated for {command}; keeping original title.", LogLevel.Trace);
+                return originalTitle;
+            }
+
+            // If the client fell back to local fallback formatting, keep original title.
+            var fallbackLike = NewspaperService.BuildFallbackSensationalTitle(article.Title);
+            if (string.Equals(normalized, fallbackLike, StringComparison.OrdinalIgnoreCase))
+            {
+                Monitor.Log($"Player2 headline matched fallback pattern for {command}; keeping original title.", LogLevel.Trace);
+                return originalTitle;
+            }
+
+            if (!TryApplyNpcPublishTitleAndLimit(article, normalized))
+            {
+                Monitor.Log($"Player2 headline exceeded publish limits for {command}; keeping original title.", LogLevel.Trace);
+                return originalTitle;
+            }
+
+            Monitor.Log($"Applied Player2 sensational headline for {command}: {article.Title}", LogLevel.Trace);
+
+            return article.Title;
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Player2 sensational headline skipped for {command}: {ex.Message}", LogLevel.Trace);
+            return originalTitle;
+        }
+    }
+
+    private bool CanUsePlayer2HeadlineGenerator()
+    {
+        if (!_config.EnablePlayer2)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(_config.Player2ApiBaseUrl) || string.IsNullOrWhiteSpace(_player2Key))
+            return false;
+
+        return _authenticatedPlayer2Client is not null || _player2Client is not null;
+    }
+
+    private NewspaperArticle? FindNpcPublishedArticleForOutcome(string command, string outcomeId, string? sourceNpcId)
+    {
+        var candidates = _state.Newspaper.Articles
+            .Where(a =>
+                a.Day == _state.Calendar.Day
+                && a.ExpirationDay >= _state.Calendar.Day
+                && a.IsNpcPublished)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(sourceNpcId))
+        {
+            candidates = candidates
+                .Where(a => string.Equals(a.SourceNpc, sourceNpcId, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        var byTitle = candidates.LastOrDefault(a => string.Equals(a.Title, outcomeId, StringComparison.OrdinalIgnoreCase));
+        if (byTitle is not null)
+            return byTitle;
+
+        if (command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase))
+        {
+            var rumorCandidate = candidates.LastOrDefault(a => a.Category.Equals("social", StringComparison.OrdinalIgnoreCase));
+            if (rumorCandidate is not null)
+                return rumorCandidate;
+        }
+
+        return candidates.LastOrDefault();
+    }
+
+    private static string NormalizeGeneratedHeadline(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var headline = value
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim()
+            .Trim('"')
+            .Trim('\'')
+            .Trim();
+
+        if (headline.StartsWith("headline:", StringComparison.OrdinalIgnoreCase))
+            headline = headline["headline:".Length..].Trim();
+
+        if (headline.StartsWith("<", StringComparison.Ordinal))
+        {
+            var closing = headline.IndexOf('>');
+            if (closing > 0 && closing + 1 < headline.Length)
+                headline = headline[(closing + 1)..].Trim();
+        }
+
+        return headline;
+    }
+
+    private static bool TryApplyNpcPublishTitleAndLimit(NewspaperArticle article, string title)
+    {
+        var cleanTitle = (title ?? string.Empty).Trim();
+        var cleanContent = (article.Content ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(cleanTitle) || string.IsNullOrWhiteSpace(cleanContent))
+            return false;
+
+        var remaining = MaxNpcPublishCombinedCharacters - cleanTitle.Length;
+        if (remaining <= 0)
+            return false;
+
+        if (cleanContent.Length > remaining)
+            cleanContent = cleanContent[..remaining].Trim();
+
+        if (string.IsNullOrWhiteSpace(cleanContent))
+            return false;
+
+        article.Title = cleanTitle;
+        article.Content = cleanContent;
+        return true;
     }
 
     private bool TryReplaceTodayIssueWithNpcArticle(string command, string outcomeId)

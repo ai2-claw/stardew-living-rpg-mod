@@ -21,6 +21,7 @@ public class NewspaperArticle
     public string Content { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty; // "community", "market", "social", "nature"
     public string SourceNpc { get; set; } = string.Empty;
+    public bool IsNpcPublished { get; set; }
     public int Day { get; set; }
     public int ExpirationDay { get; set; } // Article expires after this many days
 }

@@ -5,6 +5,8 @@ namespace StardewLivingRPG.Systems;
 
 public sealed class NpcIntentResolver
 {
+    private const int MaxNpcPublishCombinedCharacters = 100;
+
     private static readonly HashSet<string> AllowedCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "propose_quest",
@@ -252,8 +254,12 @@ public sealed class NpcIntentResolver
         if (HasUnexpectedArgs(args, "topic", "confidence", "target_group"))
             return NpcIntentResolveResult.Rejected("publish_rumor contains unexpected argument fields");
 
-        var topic = tEl.GetString() ?? "town news";
-        var group = gEl.GetString() ?? "town";
+        var topic = (tEl.GetString() ?? "town news").Trim();
+        var group = (gEl.GetString() ?? "town").Trim();
+        if (string.IsNullOrWhiteSpace(topic))
+            return NpcIntentResolveResult.Rejected("publish_rumor topic cannot be empty");
+        if (string.IsNullOrWhiteSpace(group))
+            group = "town";
 
         // Check daily rumor limit (1 per day)
         var todayRumorCount = state.Newspaper.Articles.Count(a =>
@@ -262,13 +268,19 @@ public sealed class NpcIntentResolver
         if (todayRumorCount >= 1)
             return NpcIntentResolveResult.Rejected("rumor limit reached for today (1)", "E_RUMOR_LIMIT");
 
+        var title = $"Rumor: {topic}";
+        var content = $"Word on the street among {group}: {topic}.";
+        if (!TryClampNpcPublishContent(title, content, out var clampedContent))
+            return NpcIntentResolveResult.Rejected("publish_rumor exceeds max 100 characters (title + content)", "E_PUBLISH_LENGTH");
+
         // Create article instead of full issue
         var article = new NewspaperArticle
         {
-            Title = $"Rumor: {topic}",
-            Content = $"Word on the street among {group}: {topic}.",
+            Title = title,
+            Content = clampedContent,
             Category = "social",
             SourceNpc = npcId,
+            IsNpcPublished = true,
             Day = state.Calendar.Day,
             ExpirationDay = state.Calendar.Day + 3
         };
@@ -284,7 +296,7 @@ public sealed class NpcIntentResolver
         };
 
         state.Telemetry.Daily.WorldMutations += 1;
-        return NpcIntentResolveResult.Applied(intentId, "publish_rumor", topic, fallbackUsed: false, proposal: null);
+        return NpcIntentResolveResult.Applied(intentId, "publish_rumor", title, fallbackUsed: false, proposal: null);
     }
 
     private static NpcIntentResolveResult ResolvePublishArticle(SaveState state, string npcId, string intentId, JsonElement args)
@@ -310,8 +322,10 @@ public sealed class NpcIntentResolver
         if (HasUnexpectedArgs(args, "title", "content", "category"))
             return NpcIntentResolveResult.Rejected("publish_article contains unexpected argument fields");
 
-        var title = tEl.GetString() ?? string.Empty;
-        var content = cEl.GetString() ?? string.Empty;
+        var title = (tEl.GetString() ?? string.Empty).Trim();
+        var content = (cEl.GetString() ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
+            return NpcIntentResolveResult.Rejected("publish_article title/content cannot be empty");
 
         // Check daily NPC article limit (2 per day, separate from rumors)
         var todayNpcArticleCount = state.Newspaper.Articles.Count(a =>
@@ -320,13 +334,17 @@ public sealed class NpcIntentResolver
         if (todayNpcArticleCount >= 2)
             return NpcIntentResolveResult.Rejected("NPC article limit reached for today (2)", "E_ARTICLE_LIMIT");
 
+        if (!TryClampNpcPublishContent(title, content, out var clampedContent))
+            return NpcIntentResolveResult.Rejected("publish_article exceeds max 100 characters (title + content)", "E_PUBLISH_LENGTH");
+
         // Create article
         var article = new NewspaperArticle
         {
             Title = title,
-            Content = content,
+            Content = clampedContent,
             Category = category,
             SourceNpc = npcId,
+            IsNpcPublished = true,
             Day = state.Calendar.Day,
             ExpirationDay = state.Calendar.Day + 14 // 2 weeks
         };
@@ -337,6 +355,23 @@ public sealed class NpcIntentResolver
         MarkIntentProcessed(state, intentId, npcId, "publish_article");
 
         return NpcIntentResolveResult.Applied(intentId, "publish_article", title, fallbackUsed: false, proposal: null);
+    }
+
+    private static bool TryClampNpcPublishContent(string title, string content, out string clampedContent)
+    {
+        clampedContent = (content ?? string.Empty).Trim();
+        var cleanTitle = (title ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(cleanTitle) || string.IsNullOrWhiteSpace(clampedContent))
+            return false;
+
+        var remaining = MaxNpcPublishCombinedCharacters - cleanTitle.Length;
+        if (remaining <= 0)
+            return false;
+
+        if (clampedContent.Length > remaining)
+            clampedContent = clampedContent[..remaining].Trim();
+
+        return !string.IsNullOrWhiteSpace(clampedContent);
     }
 
     private static bool HasUnexpectedArgs(JsonElement args, params string[] allowedKeys)

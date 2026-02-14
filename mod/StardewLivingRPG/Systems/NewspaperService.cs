@@ -444,6 +444,15 @@ public sealed class NewspaperService
         }
     }
 
+    public static string BuildFallbackSensationalTitle(string title)
+    {
+        var clean = (title ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(clean))
+            clean = "Town Buzz";
+
+        return TruncateHeadline(FallbackHeadline(clean));
+    }
+
     private static string FallbackHeadline(string title)
     {
         var prefixes = new[] { "BREAKING:", "SHOCKING:", "URGENT:", "ALERT:" };
