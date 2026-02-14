@@ -20,6 +20,10 @@ namespace StardewLivingRPG;
 public sealed class ModEntry : Mod
 {
     private const int MaxNpcPublishCombinedCharacters = 100;
+    private static readonly Dictionary<string, string> PublishSourceNpcFallbackMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Editor"] = "Elliott"
+    };
 
     private ModConfig _config = new();
     private SaveState _state = SaveState.CreateDefault();
@@ -2531,7 +2535,23 @@ public sealed class ModEntry : Mod
         if (article is null)
             return;
 
-        article.SourceNpc = sourceShortName;
+        article.SourceNpc = ResolvePublishSourceNpcName(sourceShortName);
+    }
+
+    private static string ResolvePublishSourceNpcName(string sourceShortName)
+    {
+        var shortName = (sourceShortName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(shortName))
+            return shortName;
+
+        // Preserve vanilla names as-is; only map non-vanilla short names through strict aliases.
+        if (Game1.getCharacterFromName(shortName) is not null)
+            return shortName;
+
+        if (PublishSourceNpcFallbackMap.TryGetValue(shortName, out var mapped) && !string.IsNullOrWhiteSpace(mapped))
+            return mapped;
+
+        return shortName;
     }
 
     private static string NormalizeGeneratedHeadline(string? value)
@@ -2618,7 +2638,7 @@ public sealed class ModEntry : Mod
             && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
             && !string.IsNullOrWhiteSpace(shortName))
         {
-            sourceName = shortName;
+            sourceName = ResolvePublishSourceNpcName(shortName);
         }
 
         string message;
