@@ -15,6 +15,7 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 namespace StardewLivingRPG;
@@ -76,6 +77,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, ConcurrentQueue<bool>> _npcResponseRoutingById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _npcLastReceivedMessageById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerChatRequestUtcById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerQuestAskUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
     private DateTime _player2LastChatSentUtc;
@@ -512,7 +514,9 @@ public sealed class ModEntry : Mod
 
             Monitor.Log($"Player2 chat line: {line}", LogLevel.Info);
             CaptureNpcUiMessage(line, allowPlayerChatRouting: true);
-            TryApplyNpcCommandFromLine(line);
+            var appliedNpcCommand = TryApplyNpcCommandFromLine(line);
+            if (!appliedNpcCommand)
+                TryApplyFallbackQuestFromPlayerChatLine(line);
         }
 
         while (_pendingPlayer2Lines.TryDequeue(out var line))
@@ -1889,7 +1893,8 @@ public sealed class ModEntry : Mod
             var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
             var senderName = string.IsNullOrWhiteSpace(senderNameOverride) ? (Game1.player?.Name ?? "Player") : senderNameOverride.Trim();
             var effectiveContextTag = contextTag;
-            if (string.IsNullOrWhiteSpace(effectiveContextTag) && IsPlayerAskingForQuest(message))
+            var playerAskedForQuest = IsPlayerAskingForQuest(message);
+            if (string.IsNullOrWhiteSpace(effectiveContextTag) && playerAskedForQuest)
                 effectiveContextTag = "player_chat_quest_request";
             string? previousHistoryMessage = null;
             try
@@ -1916,6 +1921,8 @@ public sealed class ModEntry : Mod
 
             _npcUiPendingById.AddOrUpdate(npcId, 1, (_, v) => v + 1);
             _npcLastPlayerChatRequestUtcById[npcId] = DateTime.UtcNow;
+            if (playerAskedForQuest)
+                _npcLastPlayerQuestAskUtcById[npcId] = DateTime.UtcNow;
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             var immediatePayload = _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, npcId, req, cts.Token)
@@ -2345,18 +2352,21 @@ public sealed class ModEntry : Mod
             var msg = msgEl.GetString();
             if (string.IsNullOrWhiteSpace(msg))
                 return routeToPlayerChat;
+            var playerFacingMsg = NormalizePlayerFacingNpcMessage(msg);
+            if (string.IsNullOrWhiteSpace(playerFacingMsg))
+                playerFacingMsg = msg.Trim();
 
             if (routeToPlayerChat)
             {
                 var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
-                q.Enqueue(msg);
+                q.Enqueue(playerFacingMsg);
                 _npcLastReceivedMessageById[npcId] = msg;
             }
 
             if (_npcMemoryService is not null && routeToPlayerChat)
             {
                 var npcName = GetNpcShortNameById(npcId);
-                _npcMemoryService.WriteTurn(_state, npcName, string.Empty, msg, _state.Calendar.Day);
+                _npcMemoryService.WriteTurn(_state, npcName, string.Empty, playerFacingMsg, _state.Calendar.Day);
             }
 
             return routeToPlayerChat;
@@ -2546,15 +2556,18 @@ public sealed class ModEntry : Mod
             || text.Contains("job", StringComparison.Ordinal)
             || text.Contains("work", StringComparison.Ordinal)
             || text.Contains("posting", StringComparison.Ordinal)
-            || text.Contains("errand", StringComparison.Ordinal);
+            || text.Contains("errand", StringComparison.Ordinal)
+            || text.Contains("help", StringComparison.Ordinal)
+            || text.Contains("mission", StringComparison.Ordinal)
+            || text.Contains("favor", StringComparison.Ordinal);
     }
 
-    private void TryApplyNpcCommandFromLine(string line)
+    private bool TryApplyNpcCommandFromLine(string line)
     {
         try
         {
             if (_intentResolver is null)
-                return;
+                return false;
 
             string? sourceNpcId = null;
             try
@@ -2570,24 +2583,24 @@ public sealed class ModEntry : Mod
 
             var result = _intentResolver.ResolveFromStreamLine(_state, line);
             if (!result.HasIntent)
-                return;
+                return false;
 
             if (result.IsRejected)
             {
                 _state.Telemetry.Daily.NpcIntentsRejected += 1;
                 Monitor.Log($"NPC intent rejected [{result.ReasonCode}]: {result.Reason}", LogLevel.Warn);
-                return;
+                return false;
             }
 
             if (result.IsDuplicate)
             {
                 _state.Telemetry.Daily.NpcIntentsDuplicate += 1;
                 Monitor.Log($"NPC intent duplicate ignored: {result.IntentId}", LogLevel.Debug);
-                return;
+                return false;
             }
 
             if (!result.AppliedOk)
-                return;
+                return false;
 
             _state.Telemetry.Daily.NpcIntentsApplied += 1;
             _state.Telemetry.Daily.NpcCommandAppliedByType.TryGetValue(result.Command, out var cmdCount);
@@ -2633,11 +2646,244 @@ public sealed class ModEntry : Mod
                     }
                 }
             }
+
+            return true;
         }
         catch (Exception ex)
         {
             Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
+            return false;
         }
+    }
+
+    private void TryApplyFallbackQuestFromPlayerChatLine(string line)
+    {
+        if (_intentResolver is null)
+            return;
+
+        if (!TryExtractNpcIdAndMessage(line, out var npcId, out var message))
+            return;
+
+        if (!_npcLastPlayerQuestAskUtcById.TryGetValue(npcId, out var questAskUtc))
+            return;
+
+        if (DateTime.UtcNow - questAskUtc > TimeSpan.FromSeconds(45))
+            return;
+
+        if (LooksLikeQuestDecline(message))
+            return;
+
+        if (!TryInferQuestProposalFromMessage(message, out var templateId, out var target, out var urgency))
+            return;
+
+        var intentId = BuildSyntheticQuestIntentId(npcId, templateId, target, _state.Calendar.Day);
+        if (_state.Facts.ProcessedIntents.ContainsKey(intentId))
+            return;
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            intent_id = intentId,
+            npc_id = npcId,
+            command = "propose_quest",
+            arguments = new
+            {
+                template_id = templateId,
+                target,
+                urgency
+            }
+        });
+
+        if (TryApplyNpcCommandFromLine(payload))
+        {
+            Monitor.Log(
+                $"Applied fallback propose_quest from plain chat text: template={templateId} target={target} urgency={urgency}.",
+                LogLevel.Warn);
+        }
+    }
+
+    private static bool TryExtractNpcIdAndMessage(string line, out string npcId, out string message)
+    {
+        npcId = string.Empty;
+        message = string.Empty;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("npc_id", out var npcEl) || npcEl.ValueKind != JsonValueKind.String)
+                return false;
+            if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
+                return false;
+
+            npcId = npcEl.GetString() ?? string.Empty;
+            message = msgEl.GetString() ?? string.Empty;
+            return !string.IsNullOrWhiteSpace(npcId) && !string.IsNullOrWhiteSpace(message);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool LooksLikeQuestDecline(string message)
+    {
+        var text = message.Trim().ToLowerInvariant();
+        return text.Contains("no request", StringComparison.Ordinal)
+            || text.Contains("nothing right now", StringComparison.Ordinal)
+            || text.Contains("not right now", StringComparison.Ordinal)
+            || text.Contains("don't have anything", StringComparison.Ordinal)
+            || text.Contains("do not have anything", StringComparison.Ordinal);
+    }
+
+    private bool TryInferQuestProposalFromMessage(string message, out string templateId, out string target, out string urgency)
+    {
+        templateId = string.Empty;
+        target = string.Empty;
+        urgency = "low";
+
+        var text = message.ToLowerInvariant();
+        if (ContainsAny(text, "visit", "talk to", "speak with", "check on"))
+        {
+            templateId = "social_visit";
+            target = TryFindNpcTargetInText(text) ?? "lewis";
+            urgency = InferUrgency(text);
+            return true;
+        }
+
+        if (ContainsAny(text, "mine", "mining", "ore", "coal", "quartz", "geode", "stone"))
+        {
+            templateId = "mine_resource";
+            target = TryFindResourceTargetInText(text) ?? "copper_ore";
+            urgency = InferUrgency(text);
+            return true;
+        }
+
+        if (ContainsAny(text, "deliver", "bring", "drop off", "supply"))
+        {
+            templateId = "deliver_item";
+            target = TryFindCropTargetInText(text) ?? "wheat";
+            urgency = InferUrgency(text);
+            return true;
+        }
+
+        if (ContainsAny(text, "gather", "gathering", "collect", "collecting", "harvest", "harvesting", "pick"))
+        {
+            templateId = "gather_crop";
+            target = TryFindCropTargetInText(text) ?? "parsnip";
+            urgency = InferUrgency(text);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsAny(string text, params string[] terms)
+    {
+        foreach (var term in terms)
+        {
+            if (text.Contains(term, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    private string? TryFindCropTargetInText(string text)
+    {
+        var cropCandidates = _state.Economy.Crops.Keys
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .OrderByDescending(k => k.Length)
+            .ToList();
+
+        foreach (var crop in cropCandidates)
+        {
+            if (ContainsTargetToken(text, crop))
+                return NormalizeTargetToken(crop);
+        }
+
+        var match = Regex.Match(
+            text,
+            @"\b(?:gather|gathering|collect|collecting|harvest|harvesting|pick|deliver|delivering|bring|supply|supplying)\s+(?:some\s+|a\s+|an\s+)?([a-z_]+)",
+            RegexOptions.CultureInvariant);
+        if (!match.Success)
+            return null;
+
+        return NormalizeTargetToken(match.Groups[1].Value);
+    }
+
+    private static string? TryFindResourceTargetInText(string text)
+    {
+        var resources = new[]
+        {
+            "copper_ore", "iron_ore", "gold_ore", "coal", "quartz", "stone"
+        };
+
+        foreach (var resource in resources)
+        {
+            if (ContainsTargetToken(text, resource))
+                return resource;
+        }
+
+        return null;
+    }
+
+    private string? TryFindNpcTargetInText(string text)
+    {
+        foreach (var shortName in _player2NpcIdsByShortName.Keys.OrderByDescending(n => n.Length))
+        {
+            if (ContainsTargetToken(text, shortName))
+                return NormalizeTargetToken(shortName);
+        }
+
+        var canonNpcTargets = new[]
+        {
+            "lewis", "robin", "pierre", "linus", "haley", "alex", "demetrius", "wizard", "elliott"
+        };
+        foreach (var npc in canonNpcTargets)
+        {
+            if (ContainsTargetToken(text, npc))
+                return npc;
+        }
+
+        return null;
+    }
+
+    private static bool ContainsTargetToken(string text, string target)
+    {
+        var normalizedTarget = NormalizeTargetToken(target).Replace("_", " ", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalizedTarget))
+            return false;
+
+        var pattern = $@"\b{Regex.Escape(normalizedTarget)}s?\b";
+        return Regex.IsMatch(text, pattern, RegexOptions.CultureInvariant);
+    }
+
+    private static string NormalizeTargetToken(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
+
+        var t = raw.Trim().ToLowerInvariant().Replace(" ", "_", StringComparison.Ordinal);
+        t = Regex.Replace(t, @"[^a-z0-9_]+", string.Empty, RegexOptions.CultureInvariant);
+        if (t.EndsWith("s", StringComparison.Ordinal) && t.Length > 3)
+            t = t[..^1];
+        return t;
+    }
+
+    private static string InferUrgency(string text)
+    {
+        if (ContainsAny(text, "urgent", "asap", "immediately", "right away", "critical", "high demand"))
+            return "high";
+        if (ContainsAny(text, "soon", "need", "needed", "please", "could use"))
+            return "medium";
+        return "low";
+    }
+
+    private static string BuildSyntheticQuestIntentId(string npcId, string templateId, string target, int day)
+    {
+        var baseText = $"synth_qchat_{day}_{npcId}_{templateId}_{target}".ToLowerInvariant();
+        var sanitized = Regex.Replace(baseText, @"[^a-z0-9_]+", "_", RegexOptions.CultureInvariant).Trim('_');
+        return sanitized.Length <= 120 ? sanitized : sanitized[..120];
     }
 
     private void EnsurePlayer2StreamReadyForChat()
@@ -2781,6 +3027,82 @@ public sealed class ModEntry : Mod
         catch
         {
             return null;
+        }
+    }
+
+    private static string NormalizePlayerFacingNpcMessage(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return string.Empty;
+
+        var trimmed = message.Trim();
+        if (!TryExtractEmbeddedJsonObject(trimmed, out var payloadJson, out var prefix))
+            return trimmed;
+
+        try
+        {
+            using var payloadDoc = JsonDocument.Parse(payloadJson);
+            if (payloadDoc.RootElement.ValueKind != JsonValueKind.Object)
+                return trimmed;
+
+            var payload = payloadDoc.RootElement;
+            var looksLikeCommandPayload =
+                payload.TryGetProperty("template_id", out _)
+                || payload.TryGetProperty("command", out _)
+                || payload.TryGetProperty("arguments", out _)
+                || payload.TryGetProperty("player2_message", out _);
+
+            if (!looksLikeCommandPayload)
+                return trimmed;
+
+            if (payload.TryGetProperty("player2_message", out var player2MessageEl)
+                && player2MessageEl.ValueKind == JsonValueKind.String)
+            {
+                var player2Message = (player2MessageEl.GetString() ?? string.Empty).Trim();
+                if (!string.IsNullOrWhiteSpace(player2Message))
+                    return player2Message;
+            }
+
+            if (!string.IsNullOrWhiteSpace(prefix))
+                return prefix;
+        }
+        catch
+        {
+            // Keep original message if embedded payload parse fails.
+        }
+
+        return string.IsNullOrWhiteSpace(prefix) ? trimmed : prefix;
+    }
+
+    private static bool TryExtractEmbeddedJsonObject(string text, out string payloadJson, out string prefix)
+    {
+        payloadJson = string.Empty;
+        prefix = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var trimmed = text.Trim();
+        var start = trimmed.IndexOf('{');
+        if (start < 0)
+            return false;
+
+        var candidate = trimmed[start..].Trim();
+        if (!candidate.StartsWith("{", StringComparison.Ordinal) || !candidate.EndsWith("}", StringComparison.Ordinal))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(candidate);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return false;
+
+            payloadJson = candidate;
+            prefix = trimmed[..start].Trim();
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
