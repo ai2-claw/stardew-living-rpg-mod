@@ -86,6 +86,18 @@ public sealed class ModEntry : Mod
     private DateTime _player2StreamConnectedUtc;
     private int _player2WatchdogRecoveries;
     private DateTime _player2WatchdogWindowStartUtc;
+    private bool _streamChatAwaitingResponse;
+    private string? _lastStreamChatMessage;
+    private string? _lastStreamChatTargetNpcId;
+    private string? _lastStreamChatRequesterShortName;
+    private string? _lastStreamChatSenderNameOverride;
+    private string? _lastStreamChatContextTag;
+    private string? _pendingStreamReplayMessage;
+    private string? _pendingStreamReplayTargetNpcId;
+    private string? _pendingStreamReplayRequesterShortName;
+    private string? _pendingStreamReplaySenderNameOverride;
+    private string? _pendingStreamReplayContextTag;
+    private DateTime _pendingStreamReplayQueuedUtc;
 
     private int _uiManualRequestCountToday;
     private int _uiManualRequestCountDay = -1;
@@ -229,6 +241,7 @@ public sealed class ModEntry : Mod
             if (_config.EnablePlayer2)
             {
                 _pendingNewspaperRefreshDay = _state.Calendar.Day;
+                _pendingDayStartStreamRecycleDay = _state.Calendar.Day;
                 if (!IsPlayer2ReadyForNewspaper())
                 {
                     Monitor.Log($"Deferred newspaper build for day {_state.Calendar.Day} until Player2 roster + stream are ready.", LogLevel.Debug);
@@ -430,11 +443,17 @@ public sealed class ModEntry : Mod
 
             _player2WatchdogRecoveries += 1;
 
-            // Re-queue the latest user-triggered work prompt immediately after stream restart.
-            if (string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest) && !string.IsNullOrWhiteSpace(_lastUiWorkPrompt))
+            if (_streamChatAwaitingResponse
+                && string.IsNullOrWhiteSpace(_pendingStreamReplayMessage)
+                && !string.IsNullOrWhiteSpace(_lastStreamChatMessage))
             {
-                _pendingUiMayorWorkRequest = _lastUiWorkPrompt;
-                _pendingUiRequesterShortName = _lastUiWorkRequesterShortName;
+                QueuePendingStreamReplay(
+                    _lastStreamChatMessage!,
+                    _lastStreamChatTargetNpcId,
+                    _lastStreamChatRequesterShortName,
+                    _lastStreamChatSenderNameOverride,
+                    _lastStreamChatContextTag,
+                    "watchdog");
             }
 
             _player2UiStatus = "No NPC response yet; recovering stream and retrying request...";
@@ -466,8 +485,56 @@ public sealed class ModEntry : Mod
                 _pendingUiRequesterShortName = replayRequester;
                 _player2WatchdogRecoveries = 0;
                 _player2WatchdogWindowStartUtc = DateTime.UtcNow;
+                _streamChatAwaitingResponse = false;
 
                 StartPlayer2AutoConnect("watchdog-escalation", force: true);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_pendingStreamReplayMessage)
+            && !string.IsNullOrWhiteSpace(_player2Key)
+            && !string.IsNullOrWhiteSpace(_activeNpcId)
+            && IsPlayer2StreamReadyForChat())
+        {
+            if (_pendingStreamReplayQueuedUtc != default
+                && DateTime.UtcNow - _pendingStreamReplayQueuedUtc > TimeSpan.FromMinutes(2))
+            {
+                Monitor.Log("Dropped stale pending stream replay (>2 minutes old).", LogLevel.Warn);
+                ClearPendingStreamReplay();
+            }
+            else
+            {
+                var replayMessage = _pendingStreamReplayMessage!;
+                var replayTargetNpcId = _pendingStreamReplayTargetNpcId;
+                var replayRequester = _pendingStreamReplayRequesterShortName;
+                var replaySender = _pendingStreamReplaySenderNameOverride;
+                var replayContext = _pendingStreamReplayContextTag;
+
+                if (!string.IsNullOrWhiteSpace(replayRequester)
+                    && _player2NpcIdsByShortName.TryGetValue(replayRequester, out var remappedNpcId))
+                {
+                    replayTargetNpcId = remappedNpcId;
+                }
+                else if (string.IsNullOrWhiteSpace(replayTargetNpcId))
+                {
+                    replayTargetNpcId = _activeNpcId;
+                }
+
+                if (string.Equals(replayContext, "player_request_board", StringComparison.OrdinalIgnoreCase))
+                {
+                    _pendingUiMayorWorkRequest = null;
+                    _pendingUiRequesterShortName = null;
+                }
+
+                ClearPendingStreamReplay();
+                SendPlayer2ChatInternal(
+                    replayMessage,
+                    replayTargetNpcId,
+                    replayRequester,
+                    senderNameOverride: replaySender,
+                    contextTag: replayContext,
+                    captureForPlayerChat: false);
+                Monitor.Log("Replayed pending stream chat after listener recovery.", LogLevel.Warn);
             }
         }
 
@@ -551,8 +618,13 @@ public sealed class ModEntry : Mod
             _player2LastLineUtc = DateTime.UtcNow;
             _player2StreamBackoffSec = 1;
             var routedToPlayerChat = CaptureNpcUiMessage(line, allowPlayerChatRouting: false);
-            if (!routedToPlayerChat && _player2PendingResponseCount > 0)
-                _player2PendingResponseCount -= 1;
+            if (!routedToPlayerChat)
+            {
+                if (_player2PendingResponseCount > 0)
+                    _player2PendingResponseCount -= 1;
+                _streamChatAwaitingResponse = false;
+                ClearPendingStreamReplay();
+            }
             _player2WatchdogRecoveries = 0;
             _player2WatchdogWindowStartUtc = default;
             TryApplyNpcCommandFromLine(line);
@@ -1822,6 +1894,18 @@ public sealed class ModEntry : Mod
         }
 
         EnsurePlayer2StreamReadyForChat();
+        if (!IsPlayer2StreamReadyForChat())
+        {
+            QueuePendingStreamReplay(
+                message,
+                npcId,
+                requesterShortName,
+                senderNameOverride,
+                contextTag,
+                "listener-not-ready");
+            Monitor.Log("Queued stream-bound NPC chat because listener is not connected yet.", LogLevel.Trace);
+            return;
+        }
 
         try
         {
@@ -1856,11 +1940,25 @@ public sealed class ModEntry : Mod
             _player2LastChatSentUtc = DateTime.UtcNow;
             var routing = _npcResponseRoutingById.GetOrAdd(npcId, _ => new ConcurrentQueue<bool>());
             routing.Enqueue(false);
+            _streamChatAwaitingResponse = true;
+            _lastStreamChatMessage = message;
+            _lastStreamChatTargetNpcId = npcId;
+            _lastStreamChatRequesterShortName = requesterShortName;
+            _lastStreamChatSenderNameOverride = senderNameOverride;
+            _lastStreamChatContextTag = contextTag;
+            ClearPendingStreamReplay();
 
             Monitor.Log($"Sent chat to Player2 NPC ({who}) id={npcId}. Keep stream listener running to receive response lines.", LogLevel.Info);
         }
         catch (Exception ex)
         {
+            QueuePendingStreamReplay(
+                message,
+                npcId,
+                requesterShortName,
+                senderNameOverride,
+                contextTag,
+                "send-failed");
             Monitor.Log($"Player2 chat failed: {ex.Message}", LogLevel.Error);
         }
     }
@@ -2166,8 +2264,6 @@ public sealed class ModEntry : Mod
             {
                 var issue = await service.BuildIssueAsync(snapshot, null);
                 _completedNewspaperIssues.Enqueue(issue);
-                if (source.Equals("day-start", StringComparison.OrdinalIgnoreCase))
-                    _pendingDayStartStreamRecycleDay = issue.Day;
             }
             catch (Exception ex)
             {
@@ -2898,6 +2994,47 @@ public sealed class ModEntry : Mod
         _player2NextReconnectUtc = DateTime.UtcNow;
         _player2StreamBackoffSec = 1;
         StartPlayer2StreamListenerAttempt();
+    }
+
+    private bool IsPlayer2StreamReadyForChat()
+    {
+        if (Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 0)
+            return false;
+        if (_player2StreamConnectedUtc == default)
+            return false;
+
+        // Small guard window so sends don't race stream handler startup.
+        return DateTime.UtcNow - _player2StreamConnectedUtc >= TimeSpan.FromMilliseconds(250);
+    }
+
+    private void QueuePendingStreamReplay(
+        string message,
+        string? targetNpcId,
+        string? requesterShortName,
+        string? senderNameOverride,
+        string? contextTag,
+        string reason)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return;
+
+        _pendingStreamReplayMessage = message;
+        _pendingStreamReplayTargetNpcId = targetNpcId;
+        _pendingStreamReplayRequesterShortName = requesterShortName;
+        _pendingStreamReplaySenderNameOverride = senderNameOverride;
+        _pendingStreamReplayContextTag = contextTag;
+        _pendingStreamReplayQueuedUtc = DateTime.UtcNow;
+        Monitor.Log($"Queued pending stream replay ({reason}).", LogLevel.Trace);
+    }
+
+    private void ClearPendingStreamReplay()
+    {
+        _pendingStreamReplayMessage = null;
+        _pendingStreamReplayTargetNpcId = null;
+        _pendingStreamReplayRequesterShortName = null;
+        _pendingStreamReplaySenderNameOverride = null;
+        _pendingStreamReplayContextTag = null;
+        _pendingStreamReplayQueuedUtc = default;
     }
 
     private void ResetNpcResponseTracking()
