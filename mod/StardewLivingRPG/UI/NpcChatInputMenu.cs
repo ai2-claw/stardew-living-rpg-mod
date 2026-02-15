@@ -20,6 +20,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
     private int _thinkFrame;
     private readonly TextBox _input;
+    private bool _inputHasFocus = true;
 
     private readonly ClickableTextureComponent _sendButton;
     private readonly ClickableTextureComponent _closeButton;
@@ -57,7 +58,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
             Selected = true
         };
 
-        Game1.keyboardDispatcher.Subscriber = _input;
+        SetInputFocus(true);
 
         // --- FIX 1: CLOSE BUTTON POSITION ---
         // Moved to (Width - 20, Y - 20) to hang off the top-right corner properly
@@ -84,6 +85,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         if (_sendButton.containsPoint(x, y))
         {
             Submit();
+            SetInputFocus(true);
             return;
         }
 
@@ -94,7 +96,10 @@ public sealed class NpcChatInputMenu : IClickableMenu
             return;
         }
 
-        _input.SelectMe();
+        if (IsPointInsideInput(x, y))
+            SetInputFocus(true);
+        else
+            SetInputFocus(false);
     }
 
     public override void performHoverAction(int x, int y)
@@ -124,6 +129,19 @@ public sealed class NpcChatInputMenu : IClickableMenu
     {
         base.update(time);
         _input.Update();
+        if (_input.Selected != _inputHasFocus)
+            _input.Selected = _inputHasFocus;
+
+        if (_inputHasFocus)
+        {
+            if (Game1.keyboardDispatcher.Subscriber != _input)
+                Game1.keyboardDispatcher.Subscriber = _input;
+        }
+        else if (Game1.keyboardDispatcher.Subscriber == _input)
+        {
+            Game1.keyboardDispatcher.Subscriber = null;
+        }
+
         _thinkFrame++;
 
         if (_pollIncoming is not null)
@@ -228,5 +246,29 @@ public sealed class NpcChatInputMenu : IClickableMenu
             Game1.keyboardDispatcher.Subscriber = null;
 
         base.exitThisMenuNoSound();
+    }
+
+    private bool IsPointInsideInput(int x, int y)
+    {
+        return x >= _input.X
+            && x < _input.X + _input.Width
+            && y >= _input.Y
+            && y < _input.Y + _input.Height;
+    }
+
+    private void SetInputFocus(bool focused)
+    {
+        _inputHasFocus = focused;
+        _input.Selected = focused;
+        if (focused)
+        {
+            _input.SelectMe();
+            if (Game1.keyboardDispatcher.Subscriber != _input)
+                Game1.keyboardDispatcher.Subscriber = _input;
+        }
+        else if (Game1.keyboardDispatcher.Subscriber == _input)
+        {
+            Game1.keyboardDispatcher.Subscriber = null;
+        }
     }
 }
