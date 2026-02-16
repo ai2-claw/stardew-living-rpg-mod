@@ -64,6 +64,8 @@ NPC intent pipeline:
 
 NPC grounding polish:
 - chat context now includes explicit `MARKET_SIGNALS` (top movers, oversupply, scarcity, recommended alternative crop)
+- chat context now includes `CurrentSeason`, `CurrentWeather`, `CurrentDayOfWeek`, and precise `CurrentTimeOfDay`
+- speech identity is data-driven via `npc_speech_profiles.json` + `NpcSpeechStyleService` (profile syntax, contraction rules, heart warm-up, rain modifiers, and stat-based honorifics)
 - Lewis prompt requires market answers to reference at least one live signal
 - quest wording shifted toward "town requests" and command prompt now enforces strict template enums
 - reward dialogue is constrained to configured payout bands to avoid mismatch with deterministic rewards

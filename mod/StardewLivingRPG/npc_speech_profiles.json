@@ -1,0 +1,50 @@
+{
+  "DefaultProfile": "Traditionalist",
+  "HighCharismaThreshold": 7,
+  "HighSocialThreshold": 7,
+  "NpcProfiles": {
+    "Lewis": "Professional",
+    "Pierre": "Professional",
+    "Robin": "Professional",
+    "Clint": "Professional",
+    "Gus": "Professional",
+    "Willy": "Professional",
+
+    "Caroline": "Traditionalist",
+    "Evelyn": "Traditionalist",
+    "George": "Traditionalist",
+    "Jodi": "Traditionalist",
+    "Kent": "Traditionalist",
+    "Marnie": "Traditionalist",
+    "Pam": "Traditionalist",
+    "Penny": "Traditionalist",
+    "Leah": "Traditionalist",
+
+    "Demetrius": "Intellectual",
+    "Harvey": "Intellectual",
+    "Maru": "Intellectual",
+    "Gunther": "Intellectual",
+    "Wizard": "Intellectual",
+    "Qi": "Intellectual",
+    "Elliott": "Intellectual",
+
+    "Abigail": "Enthusiast",
+    "Alex": "Enthusiast",
+    "Emily": "Enthusiast",
+    "Haley": "Enthusiast",
+    "Leo": "Enthusiast",
+    "Sam": "Enthusiast",
+    "Vincent": "Enthusiast",
+    "Jas": "Enthusiast",
+    "Sandy": "Enthusiast",
+
+    "Linus": "Recluse",
+    "Krobus": "Recluse",
+    "Shane": "Recluse",
+    "Dwarf": "Recluse",
+    "Sebastian": "Recluse",
+    "Marlon": "Recluse",
+    "Gil": "Recluse",
+    "Morris": "Professional"
+  }
+}

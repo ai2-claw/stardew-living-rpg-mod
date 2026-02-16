@@ -50,6 +50,7 @@ public sealed class ModEntry : Mod
     private AnchorEventService? _anchorEventService;
     private NpcMemoryService? _npcMemoryService;
     private TownMemoryService? _townMemoryService;
+    private NpcSpeechStyleService? _npcSpeechStyleService;
 
     // Player2 M2 runtime session state
     private Player2Client? _player2Client;
@@ -87,6 +88,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, ConcurrentQueue<bool>> _npcResponseRoutingById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _npcLastReceivedMessageById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerChatRequestUtcById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _npcLastPlayerPromptById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerQuestAskUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
@@ -141,6 +143,9 @@ public sealed class ModEntry : Mod
         _anchorEventService = new AnchorEventService();
         _npcMemoryService = new NpcMemoryService();
         _townMemoryService = new TownMemoryService();
+        var speechStyleConfig = helper.Data.ReadJsonFile<NpcSpeechStyleConfig>("npc_speech_profiles.json")
+            ?? NpcSpeechStyleConfig.CreateDefault();
+        _npcSpeechStyleService = new NpcSpeechStyleService(speechStyleConfig);
         _player2Client = new Player2Client();
 
         helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
@@ -2161,6 +2166,7 @@ public sealed class ModEntry : Mod
 
             _npcUiPendingById.AddOrUpdate(npcId, 1, (_, v) => v + 1);
             _npcLastPlayerChatRequestUtcById[npcId] = DateTime.UtcNow;
+            _npcLastPlayerPromptById[npcId] = message;
             if (playerAskedForQuest)
                 _npcLastPlayerQuestAskUtcById[npcId] = DateTime.UtcNow;
 
@@ -2590,6 +2596,7 @@ public sealed class ModEntry : Mod
 
             if (routeToPlayerChat)
             {
+                playerFacingMsg = NormalizeNpcTimeReply(npcId, playerFacingMsg);
                 var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
                 q.Enqueue(playerFacingMsg);
                 _npcLastReceivedMessageById[npcId] = msg;
@@ -2608,6 +2615,53 @@ public sealed class ModEntry : Mod
             // ignore non-json or malformed lines for chat UI capture.
             return false;
         }
+    }
+
+    private static bool IsPlayerAskingForClockTime(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var value = text.ToLowerInvariant();
+        return value.Contains("what time", StringComparison.Ordinal)
+            || value.Contains("time is it", StringComparison.Ordinal)
+            || value.Contains("tell me the time", StringComparison.Ordinal)
+            || value.Contains("current time", StringComparison.Ordinal)
+            || value.Contains("clock", StringComparison.Ordinal)
+            || value.Equals("time", StringComparison.Ordinal)
+            || value.Contains("time?", StringComparison.Ordinal)
+            || value.Contains("hour", StringComparison.Ordinal);
+    }
+
+    private string NormalizeNpcTimeReply(string npcId, string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return message;
+
+        if (!_npcLastPlayerPromptById.TryGetValue(npcId, out var lastPrompt)
+            || !IsPlayerAskingForClockTime(lastPrompt))
+        {
+            return message;
+        }
+
+        if (Regex.IsMatch(message, @"\b\d{1,2}:\d{2}\s*[AaPp]\.?[Mm]\.?\b", RegexOptions.CultureInvariant))
+            return message;
+
+        var minuteOnly = Regex.Match(
+            message,
+            @"(?<!:)\b(?<min>\d{1,2})\s*(?<ampm>[AaPp]\.?[Mm]\.?)\b",
+            RegexOptions.CultureInvariant);
+
+        if (!minuteOnly.Success)
+            return message;
+
+        if (!int.TryParse(minuteOnly.Groups["min"].Value, out var minute) || minute is < 0 or > 59)
+            return message;
+
+        var canonical = GetCurrentTimeOfDayLabel(out _, out _);
+        var split = canonical.Split(" (", 2, StringSplitOptions.None);
+        var clockTime = split[0];
+        return $"It's {clockTime}.";
     }
 
     private string? DequeueNpcUiMessage(string npcId)
@@ -2704,6 +2758,15 @@ public sealed class ModEntry : Mod
         var weather = GetCurrentWeatherLabel();
         var dayOfWeek = GetCurrentDayOfWeekLabel();
         var timeOfDay = GetCurrentTimeOfDayLabel(out var hour24, out var minute);
+        var heartLevel = GetNpcHeartLevel(npcName);
+        var charismaStat = GetPlayerRpgStat("charisma");
+        var socialStat = GetPlayerRpgStat("social");
+        var speechStyleBlock = _npcSpeechStyleService?.BuildPromptBlock(
+            npcName,
+            heartLevel,
+            Game1.isRaining,
+            charismaStat,
+            socialStat) ?? string.Empty;
         var movers = _state.Economy.Crops
             .OrderByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
             .Take(3)
@@ -2759,6 +2822,7 @@ public sealed class ModEntry : Mod
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
+            speechStyleBlock,
             "TIME_RULE: If asked for time, answer with hour and minute plus AM/PM (for example: 6:30 AM). Never answer with minutes only.",
             "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
             "QUEST_RULE: Never give text-only task offers without propose_quest.",
@@ -2774,8 +2838,10 @@ public sealed class ModEntry : Mod
             $"STATE: CurrentWeather {weather}.",
             $"STATE: CurrentDayOfWeek {dayOfWeek}.",
             $"STATE: CurrentTimeOfDay {timeOfDay}.",
+            $"STATE: RelationshipHearts {(string.IsNullOrWhiteSpace(npcName) ? 0 : heartLevel)}.",
             $"STATE: CurrentHour24 {hour24:00}.",
             $"STATE: CurrentMinute {minute:00}.",
+            $"STATE: PlayerStats Charisma={charismaStat} Social={socialStat}.",
             $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
             $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}.",
@@ -2826,6 +2892,45 @@ public sealed class ModEntry : Mod
         };
 
         return $"{hour12}:{minute:00} {amPm} ({period})";
+    }
+
+    private static int GetNpcHeartLevel(string? npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName) || Game1.player is null)
+            return 0;
+
+        try
+        {
+            return Math.Max(0, Game1.player.getFriendshipHeartLevelForNPC(npcName));
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int GetPlayerRpgStat(string statKey)
+    {
+        if (Game1.player is null || string.IsNullOrWhiteSpace(statKey))
+            return 0;
+
+        var keys = new[]
+        {
+            $"slrpg.stat.{statKey}",
+            $"stardewlivingrpg.stat.{statKey}",
+            statKey
+        };
+
+        foreach (var key in keys)
+        {
+            if (!Game1.player.modData.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw))
+                continue;
+
+            if (int.TryParse(raw, out var parsed))
+                return Math.Max(0, parsed);
+        }
+
+        return 0;
     }
 
     private static bool IsPlayerAskingForQuest(string? playerText)
@@ -3231,6 +3336,7 @@ public sealed class ModEntry : Mod
         _npcResponseRoutingById.Clear();
         _npcUiPendingById.Clear();
         _npcLastReceivedMessageById.Clear();
+        _npcLastPlayerPromptById.Clear();
     }
 
     private void StartPlayerChatHistoryFallback(string npcId, NpcHistorySnapshot? previousHistorySnapshot, string playerMessage)
