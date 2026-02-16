@@ -23,6 +23,16 @@ namespace StardewLivingRPG;
 public sealed class ModEntry : Mod
 {
     private const int MaxNpcPublishCombinedCharacters = 100;
+
+    private sealed class NpcPublishHeadlineUpdate
+    {
+        public int Day { get; init; }
+        public string Command { get; init; } = string.Empty;
+        public string OutcomeId { get; init; } = string.Empty;
+        public string? SourceNpcId { get; init; }
+        public string Headline { get; init; } = string.Empty;
+    }
+
     private static readonly Dictionary<string, string> PublishSourceNpcFallbackMap = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Editor"] = "Elliott"
@@ -117,6 +127,8 @@ public sealed class ModEntry : Mod
     private int _pendingDayStartStreamRecycleDay = -1;
     private int _newspaperBuildInFlight;
     private readonly ConcurrentQueue<NewspaperIssue> _completedNewspaperIssues = new();
+    private readonly ConcurrentQueue<NpcPublishHeadlineUpdate> _completedNpcPublishHeadlineUpdates = new();
+    private readonly List<NpcPublishHeadlineUpdate> _pendingNpcPublishHeadlineUpdates = new();
     private int _pendingLateNightPassOutDay = -1;
     private string _pendingLateNightPassOutLocation = "Town";
     private readonly Random _ambientNpcRandom = new();
@@ -511,6 +523,7 @@ public sealed class ModEntry : Mod
         TryTriggerAmbientNpcConversation();
 
         TryApplyCompletedNewspaperIssues();
+        TryApplyCompletedNpcPublishHeadlineUpdates();
         TryRefreshPendingNewspaperIssue("update-tick");
 
         if (_player2ReadInFlight == 1 && _player2ReadStartedUtc != default)
@@ -2457,6 +2470,52 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private void TryApplyCompletedNpcPublishHeadlineUpdates()
+    {
+        while (_completedNpcPublishHeadlineUpdates.TryDequeue(out var update))
+        {
+            if (update.Day != _state.Calendar.Day)
+                continue;
+
+            if (TryReplaceTodayIssueWithNpcArticle(update.Command, update.OutcomeId, update.Headline))
+            {
+                Monitor.Log($"Applied queued Player2 sensational headline for {update.Command}: {update.Headline}", LogLevel.Trace);
+                continue;
+            }
+
+            var existingIndex = _pendingNpcPublishHeadlineUpdates.FindIndex(pending =>
+                IsSameNpcPublishHeadlineTarget(pending, update));
+            if (existingIndex >= 0)
+                _pendingNpcPublishHeadlineUpdates[existingIndex] = update;
+            else
+                _pendingNpcPublishHeadlineUpdates.Add(update);
+        }
+
+        for (var i = _pendingNpcPublishHeadlineUpdates.Count - 1; i >= 0; i--)
+        {
+            var pending = _pendingNpcPublishHeadlineUpdates[i];
+            if (pending.Day != _state.Calendar.Day)
+            {
+                _pendingNpcPublishHeadlineUpdates.RemoveAt(i);
+                continue;
+            }
+
+            if (!TryReplaceTodayIssueWithNpcArticle(pending.Command, pending.OutcomeId, pending.Headline))
+                continue;
+
+            Monitor.Log($"Applied deferred Player2 sensational headline for {pending.Command}: {pending.Headline}", LogLevel.Trace);
+            _pendingNpcPublishHeadlineUpdates.RemoveAt(i);
+        }
+    }
+
+    private static bool IsSameNpcPublishHeadlineTarget(NpcPublishHeadlineUpdate left, NpcPublishHeadlineUpdate right)
+    {
+        return left.Day == right.Day
+            && left.Command.Equals(right.Command, StringComparison.OrdinalIgnoreCase)
+            && left.OutcomeId.Equals(right.OutcomeId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(left.SourceNpcId ?? string.Empty, right.SourceNpcId ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IssueContainsEditorArticle(NewspaperIssue issue)
     {
         if (issue?.Articles is null || issue.Articles.Count == 0)
@@ -3062,15 +3121,15 @@ public sealed class ModEntry : Mod
                 || result.Command.Equals("publish_article", StringComparison.OrdinalIgnoreCase))
             {
                 var outcomeId = result.OutcomeId;
-                var sensationalHeadline = TryApplyPlayer2SensationalHeadlineToNpcPublish(result.Command, outcomeId, sourceNpcId);
                 TryApplyNpcPublishSourceName(result.Command, outcomeId, sourceNpcId);
                 outcomeId = TryClampNpcPublishArticleAsLastResort(result.Command, outcomeId, sourceNpcId);
+                QueueNpcPublishHeadlineGeneration(result.Command, outcomeId, sourceNpcId);
                 ShowNewspaperCommandNotification(result.Command, outcomeId, sourceNpcId);
 
                 // Avoid rebuilding today's issue after it has already been generated, because rebuilds can
                 // replace dynamic editor stories with fallback fillers. Replace today's visible content/headline
                 // with the latest NPC article directly when possible.
-                if (!TryReplaceTodayIssueWithNpcArticle(result.Command, outcomeId, sensationalHeadline))
+                if (!TryReplaceTodayIssueWithNpcArticle(result.Command, outcomeId))
                 {
                     var hasTodayIssue = _state.Newspaper.Issues.Any(i => i.Day == _state.Calendar.Day);
                     if (!hasTodayIssue)
@@ -3748,49 +3807,69 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private string TryApplyPlayer2SensationalHeadlineToNpcPublish(string command, string outcomeId, string? sourceNpcId)
+    private void QueueNpcPublishHeadlineGeneration(string command, string outcomeId, string? sourceNpcId)
     {
         if (string.IsNullOrWhiteSpace(outcomeId))
-            return string.Empty;
-
-        var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
-        if (article is null)
-            return string.Empty;
+            return;
 
         if (!CanUsePlayer2HeadlineGenerator())
-            return string.Empty;
+            return;
 
         var client = _authenticatedPlayer2Client ?? _player2Client;
         if (client is null)
-            return string.Empty;
+            return;
 
-        try
+        var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
+        if (article is null)
+            return;
+
+        var articleTitle = (article.Title ?? string.Empty).Trim();
+        var articleCategory = (article.Category ?? string.Empty).Trim();
+        var articleContent = (article.Content ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(articleTitle) || string.IsNullOrWhiteSpace(articleContent))
+            return;
+
+        var day = article.Day;
+        var apiBaseUrl = _config.Player2ApiBaseUrl;
+        var player2Key = _player2Key;
+        if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(player2Key))
+            return;
+
+        _ = Task.Run(async () =>
         {
-            client.SetCredentials(_config.Player2ApiBaseUrl, _player2Key!);
-            // Wait long enough for Player2 chat + history fallback so publish commands don't
-            // surface with a pre-headline title and then update moments later.
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            var generated = client
-                .TryGenerateSensationalHeadlineAsync(article.Title, article.Category, article.Content, cts.Token)
-                .GetAwaiter()
-                .GetResult();
-
-            var normalized = NormalizeGeneratedHeadline(generated);
-            if (string.IsNullOrWhiteSpace(normalized))
+            try
             {
-                Monitor.Log($"Player2 headline empty for {command}; keeping original title.", LogLevel.Trace);
-                return string.Empty;
+                // Keep timeout bounded so delayed headline generation cannot pile up.
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var generated = await client.TryGenerateSensationalHeadlineAsync(
+                    apiBaseUrl,
+                    player2Key,
+                    articleTitle,
+                    articleCategory,
+                    articleContent,
+                    cts.Token);
+
+                var normalized = NormalizeGeneratedHeadline(generated);
+                if (string.IsNullOrWhiteSpace(normalized))
+                {
+                    Monitor.Log($"Player2 headline empty for {command}; keeping original title.", LogLevel.Trace);
+                    return;
+                }
+
+                _completedNpcPublishHeadlineUpdates.Enqueue(new NpcPublishHeadlineUpdate
+                {
+                    Day = day,
+                    Command = command,
+                    OutcomeId = outcomeId,
+                    SourceNpcId = sourceNpcId,
+                    Headline = normalized
+                });
             }
-
-            Monitor.Log($"Applied Player2 sensational headline for {command}: {normalized}", LogLevel.Trace);
-
-            return normalized;
-        }
-        catch (Exception ex)
-        {
-            Monitor.Log($"Player2 sensational headline skipped for {command}: {ex.Message}", LogLevel.Trace);
-            return string.Empty;
-        }
+            catch (Exception ex)
+            {
+                Monitor.Log($"Player2 sensational headline skipped for {command}: {ex.Message}", LogLevel.Trace);
+            }
+        });
     }
 
     private bool CanUsePlayer2HeadlineGenerator()

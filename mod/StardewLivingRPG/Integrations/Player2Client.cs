@@ -372,6 +372,11 @@ public sealed class Player2Client
                 headline = headline[(closing + 1)..].Trim();
         }
 
+        if (TryExtractStructuredHeadline(headline, out var structuredHeadline))
+            headline = structuredHeadline;
+        else if (LooksLikeJsonPayload(headline))
+            return null;
+
         if (LooksLikePromptEcho(headline, articleTitle))
             return null;
 
@@ -383,6 +388,49 @@ public sealed class Player2Client
             headline = headline.Substring(0, 27) + "...";
 
         return string.IsNullOrWhiteSpace(headline) ? null : headline;
+    }
+
+    private static bool TryExtractStructuredHeadline(string raw, out string headline)
+    {
+        headline = string.Empty;
+        if (!LooksLikeJsonPayload(raw))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return false;
+
+            if (TryGetPropertyCaseInsensitive(root, "headline", out var headlineProp)
+                && headlineProp.ValueKind == JsonValueKind.String)
+            {
+                headline = (headlineProp.GetString() ?? string.Empty).Trim();
+                return !string.IsNullOrWhiteSpace(headline);
+            }
+
+            if (!TryGetPropertyCaseInsensitive(root, "articles", out _)
+                && TryGetPropertyCaseInsensitive(root, "title", out var titleProp)
+                && titleProp.ValueKind == JsonValueKind.String)
+            {
+                headline = (titleProp.GetString() ?? string.Empty).Trim();
+                return !string.IsNullOrWhiteSpace(headline);
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool LooksLikeJsonPayload(string text)
+    {
+        var trimmed = (text ?? string.Empty).Trim();
+        return trimmed.StartsWith("{", StringComparison.Ordinal)
+            || trimmed.StartsWith("[", StringComparison.Ordinal);
     }
 
     private static bool LooksLikePromptEcho(string text, string articleTitle)
