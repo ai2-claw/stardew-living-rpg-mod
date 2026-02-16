@@ -951,28 +951,38 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady || Game1.eventUp || Game1.activeClickableMenu is not null)
             return;
 
-        var rect = GetPlayer2HudRect();
         var connected = !string.IsNullOrWhiteSpace(_player2Key)
             && !string.IsNullOrWhiteSpace(_activeNpcId)
             && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
 
-        var bg = connected ? Color.DarkGreen * 0.75f : Color.DarkRed * 0.75f;
+        var label = connected ? "Local Insight: Active" : "Local Insight: Dormant";
+        var textSize = Game1.smallFont.MeasureString(label);
+        const int paddingX = 12;
+        const int paddingY = 6;
+
+        var rect = new Rectangle(
+            16,
+            16,
+            (int)textSize.X + (paddingX * 2),
+            (int)textSize.Y + (paddingY * 2));
+
+        var bg = connected ? new Color(116, 81, 46) * 0.95f : new Color(82, 65, 50) * 0.95f;
         e.SpriteBatch.Draw(Game1.staminaRect, rect, bg);
 
-        var label = connected ? "Town AI: Connected" : "Town AI: Reconnect";
-        var size = Game1.smallFont.MeasureString(label);
-        e.SpriteBatch.DrawString(Game1.smallFont, label, new Vector2(rect.X + (rect.Width - size.X) / 2f, rect.Y + 6), Color.White);
-
-        if (!string.IsNullOrWhiteSpace(_player2UiStatus))
-        {
-            var status = _player2UiStatus.Length > 52 ? _player2UiStatus[..52] + "..." : _player2UiStatus;
-            e.SpriteBatch.DrawString(Game1.smallFont, status, new Vector2(rect.X, rect.Bottom + 4), Game1.textColor * 0.85f);
-        }
+        var textPos = new Vector2(rect.X + paddingX, rect.Y + paddingY);
+        e.SpriteBatch.DrawString(Game1.smallFont, label, textPos + new Vector2(2f, 2f), Color.Black * 0.6f);
+        e.SpriteBatch.DrawString(Game1.smallFont, label, textPos, connected ? Color.PaleGoldenrod : new Color(180, 160, 130));
     }
 
     private Rectangle GetPlayer2HudRect()
     {
-        return new Rectangle(16, 16, 220, 30);
+        var connected = !string.IsNullOrWhiteSpace(_player2Key)
+            && !string.IsNullOrWhiteSpace(_activeNpcId)
+            && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+
+        var label = connected ? "Local Insight: Active" : "Local Insight: Dormant";
+        var textSize = Game1.smallFont.MeasureString(label);
+        return new Rectangle(16, 16, (int)textSize.X + 24, (int)textSize.Y + 12);
     }
 
     private void StartPlayer2AutoConnect(string reason, bool force)

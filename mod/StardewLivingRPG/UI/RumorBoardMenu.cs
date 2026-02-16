@@ -12,6 +12,10 @@ namespace StardewLivingRPG.UI;
 
 public sealed class RumorBoardMenu : IClickableMenu
 {
+    private const string DefaultDetailMessage = "Select a request to view details.";
+    private const string SearchingDetailMessage = "Searching the board for new requests...";
+    private const string DailyCapDetailMessage = "No new posting right now. Check back tomorrow.";
+
     private readonly SaveState _state;
     private readonly RumorBoardService _rumorBoardService;
     private readonly IMonitor _monitor;
@@ -24,7 +28,9 @@ public sealed class RumorBoardMenu : IClickableMenu
     private int _activeScrollOffset;
 
     private QuestEntry? _selectedQuest;
-    private string _statusMessage = "Select a Town Request to view details.";
+    private string _statusMessage = DefaultDetailMessage;
+    private bool _awaitingBoardSearchResult;
+    private int _searchStartAvailableCount;
     private int _lastAvailableCount;
     private int _lastActiveCount;
 
@@ -174,9 +180,12 @@ public sealed class RumorBoardMenu : IClickableMenu
         if (_askWorkButton.Contains(x, y))
         {
             _onAskMayorForWork();
-            _statusMessage = "Looking over the board for new postings...";
+            _statusMessage = SearchingDetailMessage;
+            _awaitingBoardSearchResult = true;
+            _searchStartAvailableCount = _state.Quests.Available.Count;
             _lastAvailableCount = _state.Quests.Available.Count;
             _lastActiveCount = _state.Quests.Active.Count;
+            SyncDetailMessageFromExternalStatus();
             Game1.playSound("newArtifact");
             return;
         }
@@ -225,6 +234,8 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     public override void draw(SpriteBatch b)
     {
+        SyncDetailMessageFromExternalStatus();
+
         if (_lastAvailableCount != _state.Quests.Available.Count || _lastActiveCount != _state.Quests.Active.Count)
         {
             _lastAvailableCount = _state.Quests.Available.Count;
@@ -259,7 +270,21 @@ public sealed class RumorBoardMenu : IClickableMenu
                 }
                 else
                 {
-                    b.Draw(Game1.staminaRect, rect, Color.Black * 0.15f);
+                    // Cream parchment card background.
+                    b.Draw(Game1.staminaRect, rect, new Color(255, 238, 191));
+
+                    // 2px dark brown border to match Stardew's chunky UI framing.
+                    var borderColor = new Color(85, 45, 20);
+                    const int borderThickness = 2;
+
+                    // Top
+                    b.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, rect.Width, borderThickness), borderColor);
+                    // Bottom
+                    b.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y + rect.Height - borderThickness, rect.Width, borderThickness), borderColor);
+                    // Left
+                    b.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, borderThickness, rect.Height), borderColor);
+                    // Right
+                    b.Draw(Game1.staminaRect, new Rectangle(rect.X + rect.Width - borderThickness, rect.Y, borderThickness, rect.Height), borderColor);
                 }
 
                 var title = QuestTextHelper.BuildQuestTitle(quest);
@@ -289,9 +314,8 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         if (_selectedQuest is null)
         {
-            var msg = "Select a request to view details.";
-            var msgSize = Game1.smallFont.MeasureString(msg);
-            b.DrawString(Game1.smallFont, msg, new Vector2(panel.X + (panel.Width / 2f) - (msgSize.X / 2f), panel.Y + 62), Game1.textColor * 0.5f);
+            var msgSize = Game1.smallFont.MeasureString(_statusMessage);
+            b.DrawString(Game1.smallFont, _statusMessage, new Vector2(panel.X + (panel.Width / 2f) - (msgSize.X / 2f), panel.Y + 62), Game1.textColor * 0.5f);
             DrawButton(b, _askWorkButton, "New Postings", enabled: true);
             return;
         }
@@ -330,6 +354,23 @@ public sealed class RumorBoardMenu : IClickableMenu
         DrawButton(b, _acceptButton, "Accept", enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
         DrawButton(b, _completeButton, "Complete", enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
         DrawButton(b, _askWorkButton, "Refresh", enabled: true);
+    }
+
+    private void SyncDetailMessageFromExternalStatus()
+    {
+        var external = (_getExternalStatus?.Invoke() ?? string.Empty).Trim();
+        if (external.IndexOf("No new postings right now", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            _statusMessage = DailyCapDetailMessage;
+            _awaitingBoardSearchResult = false;
+            return;
+        }
+
+        if (_awaitingBoardSearchResult && _state.Quests.Available.Count > _searchStartAvailableCount)
+        {
+            _statusMessage = DefaultDetailMessage;
+            _awaitingBoardSearchResult = false;
+        }
     }
 
     private static void DrawButton(SpriteBatch b, Rectangle rect, string text, bool enabled)
