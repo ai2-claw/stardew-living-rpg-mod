@@ -20,21 +20,26 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
     private int _thinkFrame;
     private readonly TextBox _input;
+    private bool _inputHasFocus = true;
 
     private readonly ClickableTextureComponent _sendButton;
     private readonly ClickableTextureComponent _closeButton;
 
     // Layout constants
+    private const int MenuWidth = 800;
+    private const int MenuHeight = 520;
     private const int Padding = 48;
     private const int TextTopMargin = 110;
-    private const int InputHeight = 48;
+    private const int InputRows = 2;
+    private const int InputInnerPaddingX = 12;
+    private const int InputInnerPaddingY = 10;
 
     public NpcChatInputMenu(string npcName, Action<string> onSend, Func<string?>? pollIncoming = null, Func<bool>? isThinking = null)
         : base(
-            Game1.uiViewport.Width / 2 - 400,
-            Game1.uiViewport.Height / 2 - 200,
-            800,
-            400,
+            Game1.uiViewport.Width / 2 - (MenuWidth / 2),
+            Game1.uiViewport.Height / 2 - (MenuHeight / 2),
+            MenuWidth,
+            MenuHeight,
             true)
     {
         _npcName = npcName;
@@ -42,22 +47,24 @@ public sealed class NpcChatInputMenu : IClickableMenu
         _pollIncoming = pollIncoming;
         _isThinking = isThinking;
 
-        int bottomAreaY = yPositionOnScreen + height - InputHeight - 32;
+        var inputHeight = (Game1.smallFont.LineSpacing * InputRows) + (InputInnerPaddingY * 2);
+        int bottomAreaY = yPositionOnScreen + height - inputHeight - 32;
 
         _input = new TextBox(
             Game1.content.Load<Texture2D>("LooseSprites\\textBox"),
             null,
             Game1.smallFont,
-            Game1.textColor)
+            Color.Transparent)
         {
             X = xPositionOnScreen + Padding,
             Y = bottomAreaY,
             Width = width - (Padding * 2) - 100, // Reduced width slightly to give button more room
-            Height = InputHeight,
+            Height = inputHeight,
             Selected = true
         };
+        _input.limitWidth = false;
 
-        Game1.keyboardDispatcher.Subscriber = _input;
+        SetInputFocus(true);
 
         // --- FIX 1: CLOSE BUTTON POSITION ---
         // Moved to (Width - 20, Y - 20) to hang off the top-right corner properly
@@ -71,7 +78,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         // Switched source rect to (294, 428, 21, 11). 
         // This is a generic blank button texture used in the co-op menus.
         _sendButton = new ClickableTextureComponent(
-            new Rectangle(xPositionOnScreen + width - 140, bottomAreaY - 1, 84, 44), // Adjusted size/pos
+            new Rectangle(xPositionOnScreen + width - 140, bottomAreaY + inputHeight - 44, 84, 44), // Bottom-align beside input
             Game1.mouseCursors,
             new Rectangle(294, 428, 21, 11), 
             4f); // Scale 4x to make it chunky
@@ -84,6 +91,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         if (_sendButton.containsPoint(x, y))
         {
             Submit();
+            SetInputFocus(true);
             return;
         }
 
@@ -94,7 +102,10 @@ public sealed class NpcChatInputMenu : IClickableMenu
             return;
         }
 
-        _input.SelectMe();
+        if (IsPointInsideInput(x, y))
+            SetInputFocus(true);
+        else
+            SetInputFocus(false);
     }
 
     public override void performHoverAction(int x, int y)
@@ -124,6 +135,19 @@ public sealed class NpcChatInputMenu : IClickableMenu
     {
         base.update(time);
         _input.Update();
+        if (_input.Selected != _inputHasFocus)
+            _input.Selected = _inputHasFocus;
+
+        if (_inputHasFocus)
+        {
+            if (Game1.keyboardDispatcher.Subscriber != _input)
+                Game1.keyboardDispatcher.Subscriber = _input;
+        }
+        else if (Game1.keyboardDispatcher.Subscriber == _input)
+        {
+            Game1.keyboardDispatcher.Subscriber = null;
+        }
+
         _thinkFrame++;
 
         if (_pollIncoming is not null)
@@ -180,7 +204,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
             b.DrawString(Game1.smallFont, thinkingText, new Vector2(x, y), Game1.textColor * 0.7f);
         }
 
-        _input.Draw(b);
+        DrawInputBackground(b);
+        DrawWrappedInputText(b);
 
         _closeButton.draw(b);
         _sendButton.draw(b);
@@ -228,5 +253,82 @@ public sealed class NpcChatInputMenu : IClickableMenu
             Game1.keyboardDispatcher.Subscriber = null;
 
         base.exitThisMenuNoSound();
+    }
+
+    private bool IsPointInsideInput(int x, int y)
+    {
+        return x >= _input.X
+            && x < _input.X + _input.Width
+            && y >= _input.Y
+            && y < _input.Y + _input.Height;
+    }
+
+    private void SetInputFocus(bool focused)
+    {
+        _inputHasFocus = focused;
+        _input.Selected = focused;
+        if (focused)
+        {
+            _input.SelectMe();
+            if (Game1.keyboardDispatcher.Subscriber != _input)
+                Game1.keyboardDispatcher.Subscriber = _input;
+        }
+        else if (Game1.keyboardDispatcher.Subscriber == _input)
+        {
+            Game1.keyboardDispatcher.Subscriber = null;
+        }
+    }
+
+    private void DrawWrappedInputText(SpriteBatch b)
+    {
+        var rawText = _input.Text ?? string.Empty;
+        var innerPaddingX = InputInnerPaddingX;
+        var innerPaddingY = InputInnerPaddingY;
+        var lineSpacing = Game1.smallFont.LineSpacing;
+        var textX = _input.X + innerPaddingX;
+        var textY = _input.Y + innerPaddingY;
+        var maxTextWidth = Math.Max(32, _input.Width - (innerPaddingX * 2));
+        var lines = TextWrapHelper.WrapText(Game1.smallFont, rawText, maxTextWidth);
+        var maxVisibleLines = Math.Max(1, (_input.Height - (innerPaddingY * 2)) / Math.Max(1, lineSpacing));
+        var startIndex = Math.Max(0, lines.Length - maxVisibleLines);
+
+        for (int i = startIndex; i < lines.Length; i++)
+        {
+            var drawY = textY + ((i - startIndex) * lineSpacing);
+            b.DrawString(Game1.smallFont, lines[i], new Vector2(textX, drawY), Game1.textColor);
+        }
+
+        if (!_inputHasFocus || (_thinkFrame / 20) % 2 != 0)
+            return;
+
+        var lastLine = lines.Length > 0 ? lines[^1] : string.Empty;
+        var lastLineIndex = Math.Max(0, lines.Length - 1 - startIndex);
+        var caretX = textX + Game1.smallFont.MeasureString(lastLine).X + 1f;
+        var caretMaxX = _input.X + _input.Width - innerPaddingX - 1;
+        if (caretX > caretMaxX)
+            caretX = caretMaxX;
+
+        var caretY = textY + (lastLineIndex * lineSpacing) + 2;
+        b.Draw(Game1.staminaRect, new Rectangle((int)caretX, (int)caretY, 1, Math.Max(8, lineSpacing - 4)), Game1.textColor * 0.9f);
+    }
+
+    private void DrawInputBackground(SpriteBatch b)
+    {
+        b.Draw(
+            Game1.staminaRect,
+            new Rectangle(_input.X, _input.Y, _input.Width, _input.Height),
+            new Color(245, 203, 143));
+
+        const int borderThickness = 2;
+        var borderColor = Game1.textColor * 0.5f;
+
+        // Top
+        b.Draw(Game1.staminaRect, new Rectangle(_input.X, _input.Y, _input.Width, borderThickness), borderColor);
+        // Bottom
+        b.Draw(Game1.staminaRect, new Rectangle(_input.X, _input.Y + _input.Height - borderThickness, _input.Width, borderThickness), borderColor);
+        // Left
+        b.Draw(Game1.staminaRect, new Rectangle(_input.X, _input.Y, borderThickness, _input.Height), borderColor);
+        // Right
+        b.Draw(Game1.staminaRect, new Rectangle(_input.X + _input.Width - borderThickness, _input.Y, borderThickness, _input.Height), borderColor);
     }
 }
