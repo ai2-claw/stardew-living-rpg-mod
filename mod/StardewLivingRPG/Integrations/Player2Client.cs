@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -294,10 +295,11 @@ public sealed class Player2Client
 
     public async Task<string?> TryGetLatestNpcHistoryMessageAsync(string apiBaseUrl, string p2Key, string npcId, CancellationToken ct)
     {
-        return await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
+        var snapshot = await TryGetLatestNpcHistorySnapshotAsync(apiBaseUrl, p2Key, npcId, ct);
+        return snapshot?.LatestMessage;
     }
 
-    private async Task<string?> TryGetLatestNpcMessageFromHistoryAsync(string apiBaseUrl, string p2Key, string npcId, CancellationToken ct)
+    public async Task<NpcHistorySnapshot?> TryGetLatestNpcHistorySnapshotAsync(string apiBaseUrl, string p2Key, string npcId, CancellationToken ct)
     {
         try
         {
@@ -310,12 +312,30 @@ public sealed class Player2Client
                 return null;
 
             var body = await res.Content.ReadAsStringAsync(ct);
-            return TryExtractLatestMessage(body);
+            return new NpcHistorySnapshot
+            {
+                LatestMessage = TryExtractLatestMessage(body),
+                SnapshotHash = ComputeSnapshotHash(body)
+            };
         }
         catch
         {
             return null;
         }
+    }
+
+    private async Task<string?> TryGetLatestNpcMessageFromHistoryAsync(string apiBaseUrl, string p2Key, string npcId, CancellationToken ct)
+    {
+        var snapshot = await TryGetLatestNpcHistorySnapshotAsync(apiBaseUrl, p2Key, npcId, ct);
+        return snapshot?.LatestMessage;
+    }
+
+    private static string ComputeSnapshotHash(string payload)
+    {
+        var text = payload ?? string.Empty;
+        var bytes = Encoding.UTF8.GetBytes(text);
+        var hash = SHA256.HashData(bytes);
+        return Convert.ToHexString(hash);
     }
 
     private static string BuildHeadlinePrompt(string articleTitle, string articleCategory, string articleContent)
@@ -963,6 +983,12 @@ public sealed class NpcChatRequest
 
     [JsonPropertyName("game_state_info")]
     public string? GameStateInfo { get; set; }
+}
+
+public sealed class NpcHistorySnapshot
+{
+    public string? LatestMessage { get; set; }
+    public string SnapshotHash { get; set; } = string.Empty;
 }
 
 public sealed class JoulesResponse

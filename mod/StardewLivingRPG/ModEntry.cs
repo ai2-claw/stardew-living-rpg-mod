@@ -27,6 +27,16 @@ public sealed class ModEntry : Mod
     {
         ["Editor"] = "Elliott"
     };
+    private static readonly string[] VanillaNpcRoster =
+    {
+        "Lewis", "Pierre", "Robin",
+        "Abigail", "Alex", "Caroline", "Clint", "Demetrius",
+        "Dwarf", "Elliott", "Emily", "Evelyn", "George", "Gil", "Gunther",
+        "Gus", "Haley", "Harvey", "Jas", "Jodi", "Kent",
+        "Krobus", "Leah", "Leo", "Linus", "Marnie", "Marlon", "Maru", "Morris",
+        "Pam", "Penny", "Qi", "Sam", "Sandy", "Sebastian", "Shane",
+        "Vincent", "Willy", "Wizard"
+    };
 
     private ModConfig _config = new();
     private SaveState _state = SaveState.CreateDefault();
@@ -115,6 +125,8 @@ public sealed class ModEntry : Mod
 
     private string? _pendingNpcDialogueHookName;
     private bool _npcDialogueHookArmed;
+    private bool _npcDialogueHookMenuOpened;
+    private DateTime _npcDialogueHookArmedUtc;
 
     public override void Entry(IModHelper helper)
     {
@@ -374,6 +386,8 @@ public sealed class ModEntry : Mod
         // We arm a follow-up question shown after vanilla dialogue/menu closes.
         _pendingNpcDialogueHookName = nearbyRequester.Name;
         _npcDialogueHookArmed = true;
+        _npcDialogueHookMenuOpened = false;
+        _npcDialogueHookArmedUtc = DateTime.UtcNow;
         return false;
     }
 
@@ -382,24 +396,47 @@ public sealed class ModEntry : Mod
         if (string.IsNullOrWhiteSpace(name))
             return false;
 
-        var roster = (_config.Player2NpcRosterCsv ?? string.Empty)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var roster = GetExpandedNpcRoster();
 
         return roster.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private List<string> GetExpandedNpcRoster()
+    {
+        var merged = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var configuredRoster = (_config.Player2NpcRosterCsv ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        foreach (var shortName in configuredRoster)
+        {
+            if (string.IsNullOrWhiteSpace(shortName))
+                continue;
+
+            if (seen.Add(shortName))
+                merged.Add(shortName);
+        }
+
+        foreach (var shortName in VanillaNpcRoster)
+        {
+            if (seen.Add(shortName))
+                merged.Add(shortName);
+        }
+
+        return merged;
     }
 
     private bool TryCreateRosterTalkDialogue(GameLocation loc, NPC npc)
     {
         var name = npc.Name ?? string.Empty;
-        if (!(string.Equals(name, "Robin", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(name, "Pierre", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(name, "Lewis", StringComparison.OrdinalIgnoreCase)))
+        if (!IsRosterNpc(name))
             return false;
 
         var prompt = name.ToLowerInvariant() switch
         {
             "robin" => "Before you head out, want me to check the board for fresh postings?",
             "pierre" => "Before you go, should I look for fresh board postings for you?",
+            "lewis" => "Before you head off, do you want me to check for fresh board postings?",
             _ => "Before you head off, do you want me to check for fresh board postings?"
         };
 
@@ -454,10 +491,14 @@ public sealed class ModEntry : Mod
 
         TrackLateNightPassOutWindow();
         TryCaptureTownIncidents();
+        TryHandleNpcDialogueHookFallback();
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
         {
-            var shouldAttempt = string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(_activeNpcId) || !_player2StreamDesired;
+            var shouldAttempt = string.IsNullOrWhiteSpace(_player2Key)
+                || string.IsNullOrWhiteSpace(_activeNpcId)
+                || !_player2StreamDesired
+                || !IsPlayer2RosterReady();
             if (shouldAttempt && DateTime.UtcNow - _player2LastAutoConnectAttemptUtc > TimeSpan.FromSeconds(20))
                 StartPlayer2AutoConnect("auto-retry", force: false);
         }
@@ -906,24 +947,62 @@ public sealed class ModEntry : Mod
 
         // Wait until dialogue/menu closes, then append our choice as a follow-up question.
         if (e.NewMenu is not null)
+        {
+            _npcDialogueHookMenuOpened = true;
             return;
+        }
 
         if (string.IsNullOrWhiteSpace(_pendingNpcDialogueHookName))
         {
-            _npcDialogueHookArmed = false;
+            ClearNpcDialogueHook();
             return;
         }
 
         var requesterName = _pendingNpcDialogueHookName;
-        _pendingNpcDialogueHookName = null;
-        _npcDialogueHookArmed = false;
-
         var loc = Game1.currentLocation;
         var npc = loc?.characters?.FirstOrDefault(c => string.Equals(c?.Name, requesterName, StringComparison.OrdinalIgnoreCase));
+        ClearNpcDialogueHook();
         if (npc is null)
             return;
 
-        if (TryCreateRosterTalkDialogue(loc!, npc))
+        OpenNpcFollowUpDialogue(loc!, npc);
+    }
+
+    private void TryHandleNpcDialogueHookFallback()
+    {
+        if (!_npcDialogueHookArmed || _npcDialogueHookMenuOpened)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_pendingNpcDialogueHookName))
+        {
+            ClearNpcDialogueHook();
+            return;
+        }
+
+        if (Game1.eventUp || Game1.dialogueUp || Game1.activeClickableMenu is not null)
+            return;
+
+        // Give vanilla interaction a brief moment to open dialogue/menu first.
+        if (_npcDialogueHookArmedUtc != default
+            && DateTime.UtcNow - _npcDialogueHookArmedUtc < TimeSpan.FromMilliseconds(350))
+            return;
+
+        var requesterName = _pendingNpcDialogueHookName;
+        var loc = Game1.currentLocation;
+        var npc = loc?.characters?.FirstOrDefault(c => string.Equals(c?.Name, requesterName, StringComparison.OrdinalIgnoreCase));
+        if (npc is null || Vector2.Distance(npc.Tile, Game1.player.Tile) > 2.5f)
+        {
+            ClearNpcDialogueHook();
+            return;
+        }
+
+        ClearNpcDialogueHook();
+        OpenNpcFollowUpDialogue(loc!, npc);
+    }
+
+    private void OpenNpcFollowUpDialogue(GameLocation loc, NPC npc)
+    {
+        if (TryCreateRosterTalkDialogue(loc, npc))
             return;
 
         var responses = new[]
@@ -932,7 +1011,7 @@ public sealed class ModEntry : Mod
             new Response("no", "Not now")
         };
 
-        loc!.createQuestionDialogue(
+        loc.createQuestionDialogue(
             $"{npc.displayName}: Looking for a town request today?",
             responses,
             (_, answer) =>
@@ -944,6 +1023,14 @@ public sealed class ModEntry : Mod
                 Game1.drawObjectDialogue($"{npc.displayName}: I'll pin a fresh posting on the board for you.");
             },
             npc);
+    }
+
+    private void ClearNpcDialogueHook()
+    {
+        _pendingNpcDialogueHookName = null;
+        _npcDialogueHookArmed = false;
+        _npcDialogueHookMenuOpened = false;
+        _npcDialogueHookArmedUtc = default;
     }
 
     private void OnRenderedHud(object? sender, RenderedHudEventArgs e)
@@ -1000,7 +1087,8 @@ public sealed class ModEntry : Mod
         {
             var alreadyConnected = !string.IsNullOrWhiteSpace(_player2Key)
                 && !string.IsNullOrWhiteSpace(_activeNpcId)
-                && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+                && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1)
+                && IsPlayer2RosterReady();
             if (alreadyConnected)
                 return;
         }
@@ -1021,12 +1109,16 @@ public sealed class ModEntry : Mod
                 if (!string.IsNullOrWhiteSpace(_player2Key) && string.IsNullOrWhiteSpace(_activeNpcId))
                     OnPlayer2SpawnNpcCommand("slrpg_p2_spawn", Array.Empty<string>());
 
+                if (!string.IsNullOrWhiteSpace(_player2Key) && !string.IsNullOrWhiteSpace(_activeNpcId))
+                    SpawnAdditionalConfiguredNpcs();
+
                 if (!string.IsNullOrWhiteSpace(_player2Key) && !_player2StreamDesired)
                     OnPlayer2StreamStartCommand("slrpg_p2_stream_start", Array.Empty<string>());
 
                 var ok = !string.IsNullOrWhiteSpace(_player2Key)
                     && !string.IsNullOrWhiteSpace(_activeNpcId)
-                    && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+                    && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1)
+                    && IsPlayer2RosterReady();
 
                 _player2UiStatus = ok ? "Player2 connected." : "Player2 partially connected. Click reconnect.";
             }
@@ -1823,10 +1915,7 @@ public sealed class ModEntry : Mod
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
             return;
 
-        var roster = (_config.Player2NpcRosterCsv ?? string.Empty)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var roster = GetExpandedNpcRoster();
 
         foreach (var shortName in roster)
         {
@@ -2047,12 +2136,12 @@ public sealed class ModEntry : Mod
             var playerAskedForQuest = IsPlayerAskingForQuest(message);
             if (string.IsNullOrWhiteSpace(effectiveContextTag) && playerAskedForQuest)
                 effectiveContextTag = "player_chat_quest_request";
-            string? previousHistoryMessage = null;
+            NpcHistorySnapshot? previousHistorySnapshot = null;
             try
             {
                 using var historyCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                previousHistoryMessage = _player2Client
-                    .TryGetLatestNpcHistoryMessageAsync(_config.Player2ApiBaseUrl, _player2Key!, npcId, historyCts.Token)
+                previousHistorySnapshot = _player2Client
+                    .TryGetLatestNpcHistorySnapshotAsync(_config.Player2ApiBaseUrl, _player2Key!, npcId, historyCts.Token)
                     .GetAwaiter()
                     .GetResult();
             }
@@ -2087,7 +2176,7 @@ public sealed class ModEntry : Mod
             }
             else
             {
-                StartPlayerChatHistoryFallback(npcId, previousHistoryMessage);
+                StartPlayerChatHistoryFallback(npcId, previousHistorySnapshot, message);
             }
 
             Monitor.Log($"Sent player chat via per-message flow to Player2 NPC ({who}) id={npcId}.", LogLevel.Info);
@@ -2171,10 +2260,7 @@ public sealed class ModEntry : Mod
 
     private (string RequesterShortName, string? NpcId) GetNextRequester(string? preferredRequester = null)
     {
-        var roster = (_config.Player2NpcRosterCsv ?? string.Empty)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var roster = GetExpandedNpcRoster();
 
         if (roster.Count == 0)
             return ("Mayor Lewis", _activeNpcId);
@@ -2396,10 +2482,7 @@ public sealed class ModEntry : Mod
         if (string.IsNullOrWhiteSpace(_activeNpcId))
             return false;
 
-        var roster = (_config.Player2NpcRosterCsv ?? string.Empty)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var roster = GetExpandedNpcRoster();
 
         if (roster.Count == 0)
             return true;
@@ -3098,7 +3181,7 @@ public sealed class ModEntry : Mod
         _npcLastReceivedMessageById.Clear();
     }
 
-    private void StartPlayerChatHistoryFallback(string npcId, string? previousHistoryMessage)
+    private void StartPlayerChatHistoryFallback(string npcId, NpcHistorySnapshot? previousHistorySnapshot, string playerMessage)
     {
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(npcId))
             return;
@@ -3112,25 +3195,31 @@ public sealed class ModEntry : Mod
             var delivered = false;
             try
             {
-                using var totalCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var totalCts = new CancellationTokenSource(TimeSpan.FromSeconds(18));
                 while (!totalCts.Token.IsCancellationRequested)
                 {
-                    var latest = await client.TryGetLatestNpcHistoryMessageAsync(apiBaseUrl, p2Key, npcId, totalCts.Token);
-                    if (!string.IsNullOrWhiteSpace(latest)
-                        && !string.Equals(latest, previousHistoryMessage, StringComparison.Ordinal))
+                    var snapshot = await client.TryGetLatestNpcHistorySnapshotAsync(apiBaseUrl, p2Key, npcId, totalCts.Token);
+                    var latest = snapshot?.LatestMessage?.Trim();
+                    if (!string.IsNullOrWhiteSpace(latest))
                     {
-                        if (_npcLastReceivedMessageById.TryGetValue(npcId, out var seen)
-                            && string.Equals(seen, latest, StringComparison.Ordinal))
+                        var hasBaselineHash = !string.IsNullOrWhiteSpace(previousHistorySnapshot?.SnapshotHash);
+                        var historyChanged = hasBaselineHash
+                            && !string.Equals(snapshot!.SnapshotHash, previousHistorySnapshot!.SnapshotHash, StringComparison.Ordinal);
+                        var baselineMissing = !hasBaselineHash;
+                        var differsFromSeen = !_npcLastReceivedMessageById.TryGetValue(npcId, out var seen)
+                            || !string.Equals(seen, latest, StringComparison.Ordinal);
+                        var looksLikePlayerEcho = !string.IsNullOrWhiteSpace(playerMessage)
+                            && string.Equals(latest, playerMessage.Trim(), StringComparison.OrdinalIgnoreCase);
+
+                        if (!looksLikePlayerEcho && (historyChanged || (baselineMissing && differsFromSeen)))
                         {
+                            var fallbackLine = JsonSerializer.Serialize(new { npc_id = npcId, message = latest });
+                            _pendingPlayer2ChatLines.Enqueue(fallbackLine);
                             delivered = true;
+                            Monitor.Log("Injected history chat-response fallback for player chat.", LogLevel.Trace);
                             return;
                         }
 
-                        var fallbackLine = JsonSerializer.Serialize(new { npc_id = npcId, message = latest });
-                        _pendingPlayer2ChatLines.Enqueue(fallbackLine);
-                        delivered = true;
-                        Monitor.Log("Injected history chat-response fallback for player chat.", LogLevel.Trace);
-                        return;
                     }
 
                     await Task.Delay(400, totalCts.Token);
@@ -3163,46 +3252,206 @@ public sealed class ModEntry : Mod
         try
         {
             using var doc = JsonDocument.Parse(trimmed);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
-                return null;
-
             var root = doc.RootElement;
-            var hasMessage = root.TryGetProperty("message", out _);
-            var hasCommand = root.TryGetProperty("command", out _);
-            if (!hasMessage && !hasCommand)
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (TryHasTopLevelCommand(root))
+                    return BuildImmediateLineWithNpcId(root, npcId);
+
+                if (TryGetTopLevelImmediateMessage(root, out var topLevelMessage))
+                    return JsonSerializer.Serialize(new { npc_id = npcId, message = topLevelMessage });
+
+                if (TryFindFirstCommandObject(root, out var nestedCommand))
+                    return BuildImmediateLineWithNpcId(nestedCommand, npcId);
+
+                if (TryExtractLatestImmediateMessage(root, out var extractedMessage))
+                    return JsonSerializer.Serialize(new { npc_id = npcId, message = extractedMessage });
+
                 return null;
-
-            if (root.TryGetProperty("npc_id", out var idEl)
-                && idEl.ValueKind == JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(idEl.GetString()))
-            {
-                return trimmed;
             }
 
-            using var stream = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(stream))
+            if (root.ValueKind == JsonValueKind.Array)
             {
-                writer.WriteStartObject();
-                writer.WriteString("npc_id", npcId);
-                foreach (var prop in root.EnumerateObject())
-                {
-                    if (prop.Name.Equals("npc_id", StringComparison.OrdinalIgnoreCase))
-                        continue;
+                if (TryFindFirstCommandObject(root, out var nestedCommand))
+                    return BuildImmediateLineWithNpcId(nestedCommand, npcId);
 
-                    writer.WritePropertyName(prop.Name);
-                    prop.Value.WriteTo(writer);
-                }
-                writer.WriteEndObject();
-                writer.Flush();
+                if (TryExtractLatestImmediateMessage(root, out var extractedMessage))
+                    return JsonSerializer.Serialize(new { npc_id = npcId, message = extractedMessage });
+
+                return null;
             }
 
-            return Encoding.UTF8.GetString(stream.ToArray());
+            return JsonSerializer.Serialize(new { npc_id = npcId, message = trimmed });
         }
         catch
         {
             // Some deployments return plain message text from /chat.
             return JsonSerializer.Serialize(new { npc_id = npcId, message = trimmed });
         }
+    }
+
+    private static bool TryHasTopLevelCommand(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            return false;
+
+        foreach (var prop in element.EnumerateObject())
+        {
+            if (prop.Name.Equals("command", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string BuildImmediateLineWithNpcId(JsonElement element, string npcId)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            return JsonSerializer.Serialize(new { npc_id = npcId, message = element.ToString() });
+
+        if (element.TryGetProperty("npc_id", out var idEl)
+            && idEl.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(idEl.GetString()))
+        {
+            return element.GetRawText();
+        }
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("npc_id", npcId);
+            foreach (var prop in element.EnumerateObject())
+            {
+                if (prop.Name.Equals("npc_id", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                writer.WritePropertyName(prop.Name);
+                prop.Value.WriteTo(writer);
+            }
+            writer.WriteEndObject();
+            writer.Flush();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static bool TryFindFirstCommandObject(JsonElement element, out JsonElement commandObject)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (TryHasTopLevelCommand(element))
+            {
+                commandObject = element;
+                return true;
+            }
+
+            foreach (var prop in element.EnumerateObject())
+            {
+                if (prop.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array
+                    && TryFindFirstCommandObject(prop.Value, out commandObject))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (item.ValueKind is JsonValueKind.Object or JsonValueKind.Array
+                    && TryFindFirstCommandObject(item, out commandObject))
+                {
+                    return true;
+                }
+            }
+        }
+
+        commandObject = default;
+        return false;
+    }
+
+    private static bool TryGetTopLevelImmediateMessage(JsonElement element, out string message)
+    {
+        message = string.Empty;
+        if (element.ValueKind != JsonValueKind.Object)
+            return false;
+
+        foreach (var prop in element.EnumerateObject())
+        {
+            if (!IsImmediateMessageProperty(prop.Name) || prop.Value.ValueKind != JsonValueKind.String)
+                continue;
+
+            var value = (prop.Value.GetString() ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+
+            message = value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractLatestImmediateMessage(JsonElement element, out string message)
+    {
+        message = string.Empty;
+        var candidates = new List<string>();
+        CollectImmediateMessageCandidates(element, candidates);
+        for (var i = candidates.Count - 1; i >= 0; i--)
+        {
+            var candidate = candidates[i]?.Trim();
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+
+            message = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void CollectImmediateMessageCandidates(JsonElement element, List<string> candidates)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var prop in element.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.String && IsImmediateMessageProperty(prop.Name))
+                    {
+                        var value = prop.Value.GetString();
+                        if (!string.IsNullOrWhiteSpace(value))
+                            candidates.Add(value);
+                    }
+
+                    if (prop.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                        CollectImmediateMessageCandidates(prop.Value, candidates);
+                }
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                    CollectImmediateMessageCandidates(item, candidates);
+                break;
+        }
+    }
+
+    private static bool IsImmediateMessageProperty(string propertyName)
+    {
+        var normalized = propertyName
+            .Replace("_", string.Empty, StringComparison.Ordinal)
+            .Replace("-", string.Empty, StringComparison.Ordinal)
+            .ToLowerInvariant();
+
+        return normalized is "message"
+            or "text"
+            or "response"
+            or "assistantmessage"
+            or "npcmessage"
+            or "output"
+            or "outputtext"
+            or "content"
+            or "player2message";
     }
 
     private static string? TryExtractNpcIdFromLine(string line)
