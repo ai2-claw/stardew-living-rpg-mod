@@ -18,9 +18,6 @@ public sealed class ModConfig
     // Open rumor board menu.
     public SButton OpenRumorBoardKey { get; set; } = SButton.L;
 
-    // Open request journal menu.
-    public SButton OpenRequestJournalKey { get; set; } = SButton.O;
-
     // Player2 integration (M2)
     public bool EnablePlayer2 { get; set; } = false;
     public string Player2GameClientId { get; set; } = "";

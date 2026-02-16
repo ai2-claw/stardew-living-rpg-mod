@@ -136,7 +136,6 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_open_board", "Open Market Board menu.", OnOpenBoardCommand);
         helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
-        helper.ConsoleCommands.Add("slrpg_open_journal", "Open request journal menu.", OnOpenJournalCommand);
         helper.ConsoleCommands.Add("slrpg_accept_quest", "Accept rumor quest: slrpg_accept_quest <questId>", OnAcceptQuestCommand);
         helper.ConsoleCommands.Add("slrpg_quest_progress", "Show active quest progress: slrpg_quest_progress <questId>", OnQuestProgressCommand);
         helper.ConsoleCommands.Add("slrpg_quest_progress_all", "Show progress for all active quests.", OnQuestProgressAllCommand);
@@ -264,25 +263,85 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
+        if (TryHandleMenuHotkeyToggle(e.Button))
+            return;
+
         if (Game1.activeClickableMenu is not null)
             return;
 
         TryHandleNpcWorkDialogueHook(e);
 
-        if (e.Button == _config.OpenBoardKey)
-            OpenMarketBoard();
-        else if (e.Button == _config.OpenNewspaperKey)
-            OpenNewspaper();
-        else if (e.Button == _config.OpenRumorBoardKey)
-            OpenRumorBoard();
-        else if (e.Button == _config.OpenRequestJournalKey)
-            OpenRequestJournal();
-        else if (e.Button == SButton.MouseLeft)
+        if (e.Button == SButton.MouseLeft)
         {
             var point = new Point(Game1.getMouseX(), Game1.getMouseY());
             if (GetPlayer2HudRect().Contains(point))
                 StartPlayer2AutoConnect("hud-button", force: true);
         }
+    }
+
+    private bool TryHandleMenuHotkeyToggle(SButton button)
+    {
+        if (button == _config.OpenBoardKey)
+        {
+            if (Game1.activeClickableMenu is MarketBoardMenu)
+            {
+                CloseActiveMenuFromHotkey();
+                return true;
+            }
+
+            if (Game1.activeClickableMenu is null)
+            {
+                OpenMarketBoard();
+                return true;
+            }
+
+            return false;
+        }
+
+        if (button == _config.OpenNewspaperKey)
+        {
+            if (Game1.activeClickableMenu is NewspaperMenu)
+            {
+                CloseActiveMenuFromHotkey();
+                return true;
+            }
+
+            if (Game1.activeClickableMenu is null)
+            {
+                OpenNewspaper();
+                return true;
+            }
+
+            return false;
+        }
+
+        if (button == _config.OpenRumorBoardKey)
+        {
+            if (Game1.activeClickableMenu is RumorBoardMenu)
+            {
+                CloseActiveMenuFromHotkey();
+                return true;
+            }
+
+            if (Game1.activeClickableMenu is null)
+            {
+                OpenRumorBoard();
+                return true;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+    private static void CloseActiveMenuFromHotkey()
+    {
+        if (Game1.activeClickableMenu is null)
+            return;
+
+        Game1.activeClickableMenu.exitThisMenuNoSound();
+        Game1.playSound("bigDeSelect");
     }
 
     private bool TryHandleNpcWorkDialogueHook(ButtonPressedEventArgs e)
@@ -1041,14 +1100,6 @@ public sealed class ModEntry : Mod
         Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor, () => OnUiAskMayorForWork(), () => _player2UiStatus);
     }
 
-    private void OpenRequestJournal()
-    {
-        if (_rumorBoardService is null)
-            return;
-
-        Game1.activeClickableMenu = new RequestJournalMenu(_state, _rumorBoardService, Monitor);
-    }
-
     private void OnSellCommand(string name, string[] args)
     {
         if (_salesIngestionService is null || args.Length < 2)
@@ -1104,14 +1155,6 @@ public sealed class ModEntry : Mod
             return;
 
         OpenRumorBoard();
-    }
-
-    private void OnOpenJournalCommand(string name, string[] args)
-    {
-        if (!Context.IsWorldReady)
-            return;
-
-        OpenRequestJournal();
     }
 
     private void OnAcceptQuestCommand(string name, string[] args)

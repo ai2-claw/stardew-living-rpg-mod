@@ -2,6 +2,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
 using StardewValley;
+using StardewValley.BellsAndWhistles;
 using StardewValley.Menus;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Systems;
@@ -19,6 +20,8 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     private readonly List<(QuestEntry Quest, Rectangle Rect)> _availableRows = new();
     private readonly List<(QuestEntry Quest, Rectangle Rect)> _activeRows = new();
+    private int _availableScrollOffset;
+    private int _activeScrollOffset;
 
     private QuestEntry? _selectedQuest;
     private string _statusMessage = "Select a Town Request to view details.";
@@ -28,6 +31,14 @@ public sealed class RumorBoardMenu : IClickableMenu
     private Rectangle _acceptButton;
     private Rectangle _completeButton;
     private Rectangle _askWorkButton;
+
+    private const int VisibleQuestRows = 7;
+    private const int SectionLeftMargin = 36;
+    private const int SectionTopY = 130;
+    private const int SectionWidth = 410;
+    private const int SectionRowHeight = 44;
+    private const int SectionRowGap = 8;
+    private const int SectionRowsStartOffset = 45;
 
     public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork, Func<string>? getExternalStatus = null)
         : base(
@@ -51,33 +62,89 @@ public sealed class RumorBoardMenu : IClickableMenu
     {
         _availableRows.Clear();
         _activeRows.Clear();
+        ClampScrollOffsets();
 
-        var leftX = xPositionOnScreen + 24;
-        var topY = yPositionOnScreen + 72;
-        var sectionWidth = 430;
+        var leftX = xPositionOnScreen + SectionLeftMargin;
+        var topY = yPositionOnScreen + SectionTopY;
 
-        var rowHeight = 36;
-        var rowGap = 6;
-
-        var ay = topY + 34;
-        foreach (var q in _state.Quests.Available.Take(8))
+        var ay = topY + SectionRowsStartOffset;
+        foreach (var q in _state.Quests.Available.Skip(_availableScrollOffset).Take(VisibleQuestRows))
         {
-            _availableRows.Add((q, new Rectangle(leftX, ay, sectionWidth, rowHeight)));
-            ay += rowHeight + rowGap;
+            _availableRows.Add((q, new Rectangle(leftX, ay, SectionWidth, SectionRowHeight)));
+            ay += SectionRowHeight + SectionRowGap;
         }
 
-        var rightX = xPositionOnScreen + width - sectionWidth - 24;
-        var ry = topY + 34;
-        foreach (var q in _state.Quests.Active.Take(8))
+        var rightX = xPositionOnScreen + width - SectionWidth - SectionLeftMargin;
+        var ry = topY + SectionRowsStartOffset;
+        foreach (var q in _state.Quests.Active.Skip(_activeScrollOffset).Take(VisibleQuestRows))
         {
-            _activeRows.Add((q, new Rectangle(rightX, ry, sectionWidth, rowHeight)));
-            ry += rowHeight + rowGap;
+            _activeRows.Add((q, new Rectangle(rightX, ry, SectionWidth, SectionRowHeight)));
+            ry += SectionRowHeight + SectionRowGap;
         }
 
-        var detailY = yPositionOnScreen + height - 188;
-        _acceptButton = new Rectangle(xPositionOnScreen + 36, detailY + 128, 160, 40);
-        _completeButton = new Rectangle(xPositionOnScreen + 212, detailY + 128, 190, 40);
-        _askWorkButton = new Rectangle(xPositionOnScreen + width - 250, detailY + 128, 210, 40);
+        var detailY = yPositionOnScreen + height - 230;
+        var buttonY = detailY + 165;
+        _acceptButton = new Rectangle(xPositionOnScreen + 50, buttonY, 160, 44);
+        _completeButton = new Rectangle(xPositionOnScreen + 225, buttonY, 190, 44);
+        _askWorkButton = new Rectangle(xPositionOnScreen + width - 265, buttonY, 210, 44);
+    }
+
+    private void ClampScrollOffsets()
+    {
+        var maxAvailableOffset = Math.Max(0, _state.Quests.Available.Count - VisibleQuestRows);
+        var maxActiveOffset = Math.Max(0, _state.Quests.Active.Count - VisibleQuestRows);
+        _availableScrollOffset = Math.Clamp(_availableScrollOffset, 0, maxAvailableOffset);
+        _activeScrollOffset = Math.Clamp(_activeScrollOffset, 0, maxActiveOffset);
+    }
+
+    private Rectangle GetAvailableListBounds()
+    {
+        var x = xPositionOnScreen + SectionLeftMargin;
+        var y = yPositionOnScreen + SectionTopY + SectionRowsStartOffset;
+        var listHeight = (SectionRowHeight * VisibleQuestRows) + (SectionRowGap * (VisibleQuestRows - 1));
+        return new Rectangle(x, y, SectionWidth, listHeight);
+    }
+
+    private Rectangle GetActiveListBounds()
+    {
+        var x = xPositionOnScreen + width - SectionWidth - SectionLeftMargin;
+        var y = yPositionOnScreen + SectionTopY + SectionRowsStartOffset;
+        var listHeight = (SectionRowHeight * VisibleQuestRows) + (SectionRowGap * (VisibleQuestRows - 1));
+        return new Rectangle(x, y, SectionWidth, listHeight);
+    }
+
+    public override void receiveScrollWheelAction(int direction)
+    {
+        base.receiveScrollWheelAction(direction);
+        if (direction == 0)
+            return;
+
+        var delta = direction > 0 ? -1 : 1;
+        var mouseX = Game1.getMouseX();
+        var mouseY = Game1.getMouseY();
+
+        if (GetAvailableListBounds().Contains(mouseX, mouseY))
+        {
+            var maxAvailableOffset = Math.Max(0, _state.Quests.Available.Count - VisibleQuestRows);
+            var next = Math.Clamp(_availableScrollOffset + delta, 0, maxAvailableOffset);
+            if (next != _availableScrollOffset)
+            {
+                _availableScrollOffset = next;
+                BuildLayout();
+            }
+            return;
+        }
+
+        if (GetActiveListBounds().Contains(mouseX, mouseY))
+        {
+            var maxActiveOffset = Math.Max(0, _state.Quests.Active.Count - VisibleQuestRows);
+            var next = Math.Clamp(_activeScrollOffset + delta, 0, maxActiveOffset);
+            if (next != _activeScrollOffset)
+            {
+                _activeScrollOffset = next;
+                BuildLayout();
+            }
+        }
     }
 
     public override void receiveLeftClick(int x, int y, bool playSound = true)
@@ -165,25 +232,13 @@ public sealed class RumorBoardMenu : IClickableMenu
             BuildLayout();
         }
 
+        b.Draw(Game1.fadeToBlackRect, Game1.graphics.GraphicsDevice.Viewport.Bounds, Color.Black * 0.4f);
         Game1.drawDialogueBox(xPositionOnScreen, yPositionOnScreen, width, height, false, true);
-
-        var titleX = xPositionOnScreen + 24;
-        var titleY = yPositionOnScreen + 20;
-        b.DrawString(Game1.dialogueFont, "Town Request Board", new Vector2(titleX, titleY), Game1.textColor);
+        SpriteText.drawStringWithScrollCenteredAt(b, "Town Request Board", xPositionOnScreen + (width / 2), yPositionOnScreen + 16);
 
         DrawSection(b, "Available", _availableRows, isActiveSection: false);
         DrawSection(b, "Active", _activeRows, isActiveSection: true);
-
         DrawDetailPanel(b);
-
-        var external = _getExternalStatus?.Invoke() ?? string.Empty;
-        var showExternal = !string.IsNullOrWhiteSpace(external) && !string.Equals(external, _statusMessage, StringComparison.OrdinalIgnoreCase);
-
-        var statusBarHeight = showExternal ? 40 : 20;
-        b.Draw(Game1.staminaRect, new Rectangle(xPositionOnScreen + 20, yPositionOnScreen + height - (24 + statusBarHeight), width - 40, statusBarHeight), Color.Black * 0.25f);
-        b.DrawString(Game1.smallFont, _statusMessage, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + height - (22 + statusBarHeight)), Game1.textColor * 0.9f);
-        if (showExternal)
-            b.DrawString(Game1.smallFont, external, new Vector2(xPositionOnScreen + 24, yPositionOnScreen + height - 24), Game1.textColor * 0.8f);
 
         drawMouse(b);
     }
@@ -191,42 +246,52 @@ public sealed class RumorBoardMenu : IClickableMenu
     private void DrawSection(SpriteBatch b, string label, List<(QuestEntry Quest, Rectangle Rect)> rows, bool isActiveSection)
     {
         var labelX = rows.Count > 0 ? rows[0].Rect.X : (isActiveSection ? xPositionOnScreen + width - 454 : xPositionOnScreen + 24);
-        var labelY = yPositionOnScreen + 72;
-
-        b.DrawString(Game1.smallFont, label + ":", new Vector2(labelX, labelY), Game1.textColor);
+        var labelY = rows.Count > 0 ? rows[0].Rect.Y - 45 : yPositionOnScreen + 130;
+        SpriteText.drawString(b, label, (int)labelX, (int)labelY);
 
         if (rows.Count > 0)
         {
             foreach (var (quest, rect) in rows)
             {
-                var bg = _selectedQuest?.QuestId == quest.QuestId ? Color.CornflowerBlue * 0.35f : Color.Black * 0.22f;
-                b.Draw(Game1.staminaRect, rect, bg);
+                if (_selectedQuest?.QuestId == quest.QuestId)
+                {
+                    IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(375, 357, 3, 3), rect.X, rect.Y, rect.Width, rect.Height, Color.White, 4f, false);
+                }
+                else
+                {
+                    b.Draw(Game1.staminaRect, rect, Color.Black * 0.15f);
+                }
 
                 var title = QuestTextHelper.BuildQuestTitle(quest);
                 var text = isActiveSection
-                    ? $"{title} (day {quest.ExpiresDay})"
+                    ? $"{title} (Day {quest.ExpiresDay})"
                     : $"{title}  +{quest.RewardGold}g";
 
-                b.DrawString(Game1.smallFont, text, new Vector2(rect.X + 8, rect.Y + 8), Game1.textColor);
+                if (isActiveSection)
+                    DrawClockIcon(b, rect.X + 12, rect.Y + 14);
+                else
+                    DrawCoinIcon(b, rect.X + 12, rect.Y + 14);
+
+                b.DrawString(Game1.smallFont, text, new Vector2(rect.X + 45, rect.Y + 10), Game1.textColor);
             }
         }
         else
         {
-            var emptyX = labelX;
-            var emptyY = labelY + 38;
             var text = isActiveSection ? "No active requests." : "No requests posted today.";
-            b.DrawString(Game1.smallFont, text, new Vector2(emptyX, emptyY), Game1.textColor * 0.8f);
+            b.DrawString(Game1.smallFont, text, new Vector2(labelX, labelY + 45), Game1.textColor * 0.7f);
         }
     }
 
     private void DrawDetailPanel(SpriteBatch b)
     {
-        var panel = new Rectangle(xPositionOnScreen + 24, yPositionOnScreen + height - 190, width - 48, 160);
-        b.Draw(Game1.staminaRect, panel, Color.Black * 0.18f);
+        var panel = new Rectangle(xPositionOnScreen + 32, yPositionOnScreen + height - 230, width - 64, 215);
+        IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(384, 396, 15, 15), panel.X, panel.Y, panel.Width, panel.Height, Color.White, 4f, false);
 
         if (_selectedQuest is null)
         {
-            b.DrawString(Game1.smallFont, "Select a request to view details and actions.", new Vector2(panel.X + 12, panel.Y + 12), Game1.textColor * 0.8f);
+            var msg = "Select a request to view details.";
+            var msgSize = Game1.smallFont.MeasureString(msg);
+            b.DrawString(Game1.smallFont, msg, new Vector2(panel.X + (panel.Width / 2f) - (msgSize.X / 2f), panel.Y + 62), Game1.textColor * 0.5f);
             DrawButton(b, _askWorkButton, "New Postings", enabled: true);
             return;
         }
@@ -238,38 +303,57 @@ public sealed class RumorBoardMenu : IClickableMenu
         {
             $"Request: {QuestTextHelper.BuildQuestTitle(q)} ({q.Status})",
             $"From: {QuestTextHelper.PrettyName(q.Issuer)} | Reward: +{q.RewardGold}g | Expires day {q.ExpiresDay}",
-            q.Summary,
-            $"Reference: {q.QuestId}"
+            q.Summary
         };
 
         if (progress.Exists && progress.RequiresItems)
             lines.Add($"Progress: {progress.HaveCount}/{progress.NeedCount} {q.TargetItem} (ready={progress.IsReadyToComplete})");
 
-        var y = panel.Y + 12;
+        var y = panel.Y + 16;
+        var maxY = _acceptButton.Y - 8;
         foreach (var line in lines)
         {
-            var wrapped = TextWrapHelper.WrapText(Game1.smallFont, line, panel.Width - 20);
+            var wrapped = TextWrapHelper.WrapText(Game1.smallFont, line, panel.Width - 32);
             foreach (var w in wrapped)
             {
-                b.DrawString(Game1.smallFont, w, new Vector2(panel.X + 12, y), Game1.textColor);
-                y += 24;
+                if (y + 24 > maxY)
+                    break;
+
+                b.DrawString(Game1.smallFont, w, new Vector2(panel.X + 16, y), Game1.textColor);
+                y += 26;
             }
+
+            if (y + 24 > maxY)
+                break;
         }
 
         DrawButton(b, _acceptButton, "Accept", enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
         DrawButton(b, _completeButton, "Complete", enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
-        DrawButton(b, _askWorkButton, "New Postings", enabled: true);
+        DrawButton(b, _askWorkButton, "Refresh", enabled: true);
     }
 
     private static void DrawButton(SpriteBatch b, Rectangle rect, string text, bool enabled)
     {
-        var bg = enabled ? Color.DarkSlateBlue * 0.65f : Color.DimGray * 0.45f;
-        b.Draw(Game1.staminaRect, rect, bg);
+        IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(432, 439, 9, 9), rect.X, rect.Y, rect.Width, rect.Height, enabled ? Color.White : Color.Gray, 4f, false);
 
         var size = Game1.smallFont.MeasureString(text);
-        var tx = rect.X + (rect.Width - size.X) / 2f;
-        var ty = rect.Y + (rect.Height - size.Y) / 2f;
-        b.DrawString(Game1.smallFont, text, new Vector2(tx, ty), Color.White * (enabled ? 1f : 0.7f));
+        var pos = new Vector2(rect.X + (rect.Width - size.X) / 2f, rect.Y + (rect.Height - size.Y) / 2f);
+        b.DrawString(Game1.smallFont, text, pos + new Vector2(2f, 2f), Color.Black * 0.4f);
+        b.DrawString(Game1.smallFont, text, pos, enabled ? Game1.textColor : Game1.textColor * 0.5f);
     }
 
+    private static void DrawCoinIcon(SpriteBatch b, int x, int y)
+    {
+        b.Draw(Game1.staminaRect, new Rectangle(x, y, 12, 12), new Color(196, 142, 32));
+        b.Draw(Game1.staminaRect, new Rectangle(x + 1, y + 1, 10, 10), new Color(233, 190, 77));
+        b.Draw(Game1.staminaRect, new Rectangle(x + 3, y + 3, 4, 4), new Color(255, 234, 160));
+    }
+
+    private static void DrawClockIcon(SpriteBatch b, int x, int y)
+    {
+        b.Draw(Game1.staminaRect, new Rectangle(x, y, 12, 12), new Color(60, 50, 40));
+        b.Draw(Game1.staminaRect, new Rectangle(x + 1, y + 1, 10, 10), new Color(235, 230, 215));
+        b.Draw(Game1.staminaRect, new Rectangle(x + 5, y + 3, 1, 4), new Color(90, 75, 55));
+        b.Draw(Game1.staminaRect, new Rectangle(x + 5, y + 5, 3, 1), new Color(90, 75, 55));
+    }
 }

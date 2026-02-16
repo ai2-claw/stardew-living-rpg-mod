@@ -21,7 +21,6 @@ M0 + M1 scaffold includes:
 - `slrpg_open_board`: open Market Board menu
 - `slrpg_open_news`: open latest newspaper issue
 - `slrpg_open_rumors`: open Town Request Board menu (select requests, then Accept/Complete in-menu)
-- `slrpg_open_journal`: open Request Journal menu (active/completed tabs and in-menu completion)
 - `slrpg_accept_quest <questId>`: accept a listed rumor quest
 - `slrpg_quest_progress <questId>`: show active quest progress (`have/need`) for item hand-ins
 - `slrpg_quest_progress_all`: show progress summary for all active quests
