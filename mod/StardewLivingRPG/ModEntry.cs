@@ -2701,6 +2701,9 @@ public sealed class ModEntry : Mod
 
     private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null, string? contextTag = null)
     {
+        var weather = GetCurrentWeatherLabel();
+        var dayOfWeek = GetCurrentDayOfWeekLabel();
+        var timeOfDay = GetCurrentTimeOfDayLabel(out var hour24, out var minute);
         var movers = _state.Economy.Crops
             .OrderByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
             .Take(3)
@@ -2756,6 +2759,7 @@ public sealed class ModEntry : Mod
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
+            "TIME_RULE: If asked for time, answer with hour and minute plus AM/PM (for example: 6:30 AM). Never answer with minutes only.",
             "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
             "QUEST_RULE: Never give text-only task offers without propose_quest.",
             "QUEST_RULE: If no suitable request exists, explicitly say none is available in-character.",
@@ -2766,6 +2770,12 @@ public sealed class ModEntry : Mod
             "MARKET_RULE: For market questions, mention at least one live signal from MARKET_SIGNALS.",
             "REWARD_RULE: Never promise arbitrary gold numbers; follow REWARD_RULES bands.",
             "REWARD_RULES: gather_crop low=350 medium=500 high=700; deliver_item low=360 medium=500 high=650; mine_resource low=450 medium=600 high=800; social_visit low=220 medium=300 high=400.",
+            $"STATE: CurrentSeason {_state.Calendar.Season}.",
+            $"STATE: CurrentWeather {weather}.",
+            $"STATE: CurrentDayOfWeek {dayOfWeek}.",
+            $"STATE: CurrentTimeOfDay {timeOfDay}.",
+            $"STATE: CurrentHour24 {hour24:00}.",
+            $"STATE: CurrentMinute {minute:00}.",
             $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
             $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}.",
@@ -2774,6 +2784,48 @@ public sealed class ModEntry : Mod
             npcMemory,
             townMemory
         );
+    }
+
+    private static string GetCurrentWeatherLabel()
+    {
+        if (Game1.isLightning)
+            return "storm";
+        if (Game1.isRaining)
+            return "rain";
+        if (Game1.isSnowing)
+            return "snow";
+        return "clear";
+    }
+
+    private static string GetCurrentDayOfWeekLabel()
+    {
+        var day = Math.Clamp(Game1.dayOfMonth, 1, 28);
+        var dayNames = new[] { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
+        return dayNames[(day - 1) % dayNames.Length];
+    }
+
+    private static string GetCurrentTimeOfDayLabel(out int hour24, out int minute)
+    {
+        var hhmm = Math.Clamp(Game1.timeOfDay, 0, 2600);
+        hour24 = hhmm / 100;
+        minute = hhmm % 100;
+        if (minute > 59)
+            minute = 59;
+
+        var amPm = hour24 >= 12 ? "PM" : "AM";
+        var hour12 = hour24 % 12;
+        if (hour12 == 0)
+            hour12 = 12;
+
+        var period = hhmm switch
+        {
+            < 1200 => "morning",
+            < 1700 => "afternoon",
+            < 2200 => "evening",
+            _ => "night"
+        };
+
+        return $"{hour12}:{minute:00} {amPm} ({period})";
     }
 
     private static bool IsPlayerAskingForQuest(string? playerText)
