@@ -1043,9 +1043,7 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady || Game1.eventUp || Game1.activeClickableMenu is not null)
             return;
 
-        var connected = !string.IsNullOrWhiteSpace(_player2Key)
-            && !string.IsNullOrWhiteSpace(_activeNpcId)
-            && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+        var connected = IsLocalInsightHudActive();
 
         var label = connected ? "Local Insight: Active" : "Local Insight: Dormant";
         var textSize = Game1.smallFont.MeasureString(label);
@@ -1068,13 +1066,24 @@ public sealed class ModEntry : Mod
 
     private Rectangle GetPlayer2HudRect()
     {
-        var connected = !string.IsNullOrWhiteSpace(_player2Key)
-            && !string.IsNullOrWhiteSpace(_activeNpcId)
-            && (_player2StreamDesired || Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1);
+        var connected = IsLocalInsightHudActive();
 
         var label = connected ? "Local Insight: Active" : "Local Insight: Dormant";
         var textSize = Game1.smallFont.MeasureString(label);
         return new Rectangle(16, 16, (int)textSize.X + 24, (int)textSize.Y + 12);
+    }
+
+    private bool IsLocalInsightHudActive()
+    {
+        if (string.IsNullOrWhiteSpace(_player2Key))
+            return false;
+
+        var streamRunning = Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1;
+        var connectInFlight = Interlocked.CompareExchange(ref _player2ConnectInFlight, 0, 0) == 1;
+        return connectInFlight
+            || !string.IsNullOrWhiteSpace(_activeNpcId)
+            || _player2StreamDesired
+            || streamRunning;
     }
 
     private void StartPlayer2AutoConnect(string reason, bool force)
@@ -2439,10 +2448,45 @@ public sealed class ModEntry : Mod
 
             if (_pendingDayStartStreamRecycleDay == issue.Day)
             {
+                if (IssueContainsEditorArticle(issue))
+                    ShowDayStartNewspaperReadyToast(issue);
+
                 _pendingDayStartStreamRecycleDay = -1;
                 TryRecyclePlayer2StreamAfterDayStartIssue(issue.Day);
             }
         }
+    }
+
+    private static bool IssueContainsEditorArticle(NewspaperIssue issue)
+    {
+        if (issue?.Articles is null || issue.Articles.Count == 0)
+            return false;
+
+        foreach (var article in issue.Articles)
+        {
+            var source = (article?.SourceNpc ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(source))
+                continue;
+
+            if (source.Equals("Pelican Times Editor", StringComparison.OrdinalIgnoreCase)
+                || source.Equals("Editor", StringComparison.OrdinalIgnoreCase)
+                || source.Contains("Editor", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void ShowDayStartNewspaperReadyToast(NewspaperIssue issue)
+    {
+        if (!Context.IsWorldReady || issue is null)
+            return;
+
+        var headline = TrimForHud(issue.Headline, 30);
+        var message = $"Morning edition ready: {headline}";
+        Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
     }
 
     private static SaveState CloneSaveState(SaveState state)
@@ -3973,7 +4017,7 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        Game1.addHUDMessage(new HUDMessage(message));
+        Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
     }
 
     private static string TrimForHud(string text, int maxLength)
