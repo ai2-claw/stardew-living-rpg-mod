@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using StardewLivingRPG.State;
 
@@ -69,6 +71,9 @@ public sealed class NpcIntentResolver
                 return ResolveEnvelope(state, envelope);
             }
         }
+
+        if (TryResolveEmbeddedMessageQuestPayload(state, root, out var embeddedResult))
+            return embeddedResult;
 
         return NpcIntentResolveResult.None;
     }
@@ -249,11 +254,15 @@ public sealed class NpcIntentResolver
             return NpcIntentResolveResult.Rejected("publish_rumor missing target_group");
         if (confidence < 0f || confidence > 1f)
             return NpcIntentResolveResult.Rejected("publish_rumor confidence out of range (0..1)", "E_CONFIDENCE_RANGE");
-        if (HasUnexpectedArgs(args, "topic", "confidence", "target_group"))
+        if (HasUnexpectedArgs(args, "topic", "confidence", "target_group", "title", "content"))
             return NpcIntentResolveResult.Rejected("publish_rumor contains unexpected argument fields");
 
-        var topic = tEl.GetString() ?? "town news";
-        var group = gEl.GetString() ?? "town";
+        var topic = (tEl.GetString() ?? "town news").Trim();
+        var group = (gEl.GetString() ?? "town").Trim();
+        if (string.IsNullOrWhiteSpace(topic))
+            return NpcIntentResolveResult.Rejected("publish_rumor topic cannot be empty");
+        if (string.IsNullOrWhiteSpace(group))
+            group = "town";
 
         // Check daily rumor limit (1 per day)
         var todayRumorCount = state.Newspaper.Articles.Count(a =>
@@ -262,13 +271,25 @@ public sealed class NpcIntentResolver
         if (todayRumorCount >= 1)
             return NpcIntentResolveResult.Rejected("rumor limit reached for today (1)", "E_RUMOR_LIMIT");
 
+        var title = args.TryGetProperty("title", out var titleEl) && titleEl.ValueKind == JsonValueKind.String
+            ? (titleEl.GetString() ?? string.Empty).Trim()
+            : topic;
+        var content = args.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.String
+            ? (contentEl.GetString() ?? string.Empty).Trim()
+            : topic;
+        if (string.IsNullOrWhiteSpace(title))
+            title = topic;
+        if (string.IsNullOrWhiteSpace(content))
+            content = topic;
+
         // Create article instead of full issue
         var article = new NewspaperArticle
         {
-            Title = $"Rumor: {topic}",
-            Content = $"Word on the street among {group}: {topic}.",
+            Title = title,
+            Content = content,
             Category = "social",
             SourceNpc = npcId,
+            IsNpcPublished = true,
             Day = state.Calendar.Day,
             ExpirationDay = state.Calendar.Day + 3
         };
@@ -284,7 +305,7 @@ public sealed class NpcIntentResolver
         };
 
         state.Telemetry.Daily.WorldMutations += 1;
-        return NpcIntentResolveResult.Applied(intentId, "publish_rumor", topic, fallbackUsed: false, proposal: null);
+        return NpcIntentResolveResult.Applied(intentId, "publish_rumor", title, fallbackUsed: false, proposal: null);
     }
 
     private static NpcIntentResolveResult ResolvePublishArticle(SaveState state, string npcId, string intentId, JsonElement args)
@@ -310,8 +331,10 @@ public sealed class NpcIntentResolver
         if (HasUnexpectedArgs(args, "title", "content", "category"))
             return NpcIntentResolveResult.Rejected("publish_article contains unexpected argument fields");
 
-        var title = tEl.GetString() ?? string.Empty;
-        var content = cEl.GetString() ?? string.Empty;
+        var title = (tEl.GetString() ?? string.Empty).Trim();
+        var content = (cEl.GetString() ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
+            return NpcIntentResolveResult.Rejected("publish_article title/content cannot be empty");
 
         // Check daily NPC article limit (2 per day, separate from rumors)
         var todayNpcArticleCount = state.Newspaper.Articles.Count(a =>
@@ -327,6 +350,7 @@ public sealed class NpcIntentResolver
             Content = content,
             Category = category,
             SourceNpc = npcId,
+            IsNpcPublished = true,
             Day = state.Calendar.Day,
             ExpirationDay = state.Calendar.Day + 14 // 2 weeks
         };
@@ -350,6 +374,108 @@ public sealed class NpcIntentResolver
         }
 
         return false;
+    }
+
+    private bool TryResolveEmbeddedMessageQuestPayload(SaveState state, JsonElement root, out NpcIntentResolveResult result)
+    {
+        result = NpcIntentResolveResult.None;
+
+        if (!root.TryGetProperty("npc_id", out var npcIdEl) || npcIdEl.ValueKind != JsonValueKind.String)
+            return false;
+        if (!root.TryGetProperty("message", out var messageEl) || messageEl.ValueKind != JsonValueKind.String)
+            return false;
+
+        var npcId = npcIdEl.GetString() ?? "unknown";
+        var message = messageEl.GetString() ?? string.Empty;
+        if (!TryExtractEmbeddedJsonObject(message, out var payloadJson))
+            return false;
+
+        try
+        {
+            using var payloadDoc = JsonDocument.Parse(payloadJson);
+            if (payloadDoc.RootElement.ValueKind != JsonValueKind.Object)
+                return false;
+
+            var payload = payloadDoc.RootElement;
+            if (!payload.TryGetProperty("template_id", out var templateEl) || templateEl.ValueKind != JsonValueKind.String)
+                return false;
+            if (!payload.TryGetProperty("target", out var targetEl) || targetEl.ValueKind != JsonValueKind.String)
+                return false;
+            if (!payload.TryGetProperty("urgency", out var urgencyEl) || urgencyEl.ValueKind != JsonValueKind.String)
+                return false;
+
+            var templateId = (templateEl.GetString() ?? string.Empty).Trim();
+            var target = (targetEl.GetString() ?? string.Empty).Trim();
+            var urgency = (urgencyEl.GetString() ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(templateId) || string.IsNullOrWhiteSpace(target) || string.IsNullOrWhiteSpace(urgency))
+                return false;
+
+            var intentId = BuildSyntheticIntentId(npcId, "propose_quest", templateId, target, urgency);
+            var envelope = BuildEnvelopeFromSynthetic(
+                npcId,
+                intentId,
+                "propose_quest",
+                new Dictionary<string, object?>
+                {
+                    ["template_id"] = templateId,
+                    ["target"] = target,
+                    ["urgency"] = urgency
+                });
+
+            result = ResolveEnvelope(state, envelope);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryExtractEmbeddedJsonObject(string message, out string json)
+    {
+        json = string.Empty;
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var trimmed = message.Trim();
+        var start = trimmed.IndexOf('{');
+        if (start < 0)
+            return false;
+
+        var candidate = trimmed[start..].Trim();
+        if (!candidate.StartsWith("{", StringComparison.Ordinal) || !candidate.EndsWith("}", StringComparison.Ordinal))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(candidate);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return false;
+
+            json = candidate;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string BuildSyntheticIntentId(string npcId, string command, params string[] parts)
+    {
+        var keyBuilder = new StringBuilder()
+            .Append((npcId ?? "unknown").Trim().ToLowerInvariant())
+            .Append('|')
+            .Append((command ?? "unknown").Trim().ToLowerInvariant());
+
+        foreach (var part in parts)
+        {
+            keyBuilder.Append('|').Append((part ?? string.Empty).Trim().ToLowerInvariant());
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(keyBuilder.ToString()));
+        var token = Convert.ToHexString(hash).ToLowerInvariant();
+        return $"synth_{token[..24]}";
     }
 
     private static bool TryRepairTemplateId(string rawTemplateId, out string repaired)
@@ -391,6 +517,20 @@ public sealed class NpcIntentResolver
         }
 
         return false;
+    }
+
+    private static JsonElement BuildEnvelopeFromSynthetic(string npcId, string intentId, string commandName, Dictionary<string, object?> args)
+    {
+        var obj = new Dictionary<string, object?>
+        {
+            ["intent_id"] = intentId,
+            ["npc_id"] = npcId,
+            ["command"] = commandName,
+            ["arguments"] = args
+        };
+
+        var json = JsonSerializer.Serialize(obj);
+        return JsonDocument.Parse(json).RootElement.Clone();
     }
 
     private static void MarkIntentProcessed(SaveState state, string intentId, string npcId, string command)

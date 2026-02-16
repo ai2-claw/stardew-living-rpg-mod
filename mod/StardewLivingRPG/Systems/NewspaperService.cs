@@ -9,6 +9,9 @@ public sealed class NewspaperService
 {
     private const int MinDailyArticles = 2;
     private const int MaxDailyArticles = 5;
+    private const int MaxEventArticleCombinedCharacters = 100;
+    private const string TownReporterByline = "Town Reporter";
+    private const string LegacyTownReporterByline = "Town Report";
     private Player2Client? _player2;
     private readonly IMonitor _monitor;
 
@@ -185,7 +188,16 @@ public sealed class NewspaperService
                     Title = "Rescue at Mines",
                     Content = $"A local farmer was found unconscious in mines and was brought to safety by a rescue operation. The incident occurred on day {ev.Day}.",
                     Category = "community",
-                    SourceNpc = "Town Report",
+                    SourceNpc = TownReporterByline,
+                    Day = state.Calendar.Day,
+                    ExpirationDay = state.Calendar.Day + 3
+                },
+                "pass_out" => new NewspaperArticle
+                {
+                    Title = "Late-Night Collapse Reported",
+                    Content = $"{ev.Summary} Town responders assisted and escorted the farmer home safely. The incident occurred on day {ev.Day}.",
+                    Category = "community",
+                    SourceNpc = TownReporterByline,
                     Day = state.Calendar.Day,
                     ExpirationDay = state.Calendar.Day + 3
                 },
@@ -194,7 +206,7 @@ public sealed class NewspaperService
                     Title = "Community Achievement",
                     Content = $"{ev.Summary}. Residents are celebrating this milestone as a sign of the town's growing prosperity.",
                     Category = "community",
-                    SourceNpc = "Town Report",
+                    SourceNpc = TownReporterByline,
                     Day = state.Calendar.Day,
                     ExpirationDay = state.Calendar.Day + 3
                 },
@@ -203,7 +215,7 @@ public sealed class NewspaperService
                     Title = "Storm Damage Reported",
                     Content = $"{ev.Summary}. Repair efforts are underway across affected areas.",
                     Category = "nature",
-                    SourceNpc = "Town Report",
+                    SourceNpc = TownReporterByline,
                     Day = state.Calendar.Day,
                     ExpirationDay = state.Calendar.Day + 3
                 },
@@ -212,7 +224,7 @@ public sealed class NewspaperService
                     Title = "Rescue at Mines",
                     Content = $"{ev.Summary}. Town responders assisted with recovery and safety checks.",
                     Category = "community",
-                    SourceNpc = "Town Report",
+                    SourceNpc = TownReporterByline,
                     Day = state.Calendar.Day,
                     ExpirationDay = state.Calendar.Day + 3
                 },
@@ -220,7 +232,10 @@ public sealed class NewspaperService
             };
 
             if (article is not null && articles.Count < 2)
+            {
+                ClampArticleCombinedLengthInPlace(article, MaxEventArticleCombinedCharacters);
                 articles.Add(article);
+            }
         }
 
         return articles;
@@ -370,7 +385,7 @@ public sealed class NewspaperService
 
         // Priority 1: High-severity incidents
         var highSeverityArticle = articles
-            .FirstOrDefault(a => a.SourceNpc == "Town Report" &&
+            .FirstOrDefault(a => IsTownReporterSource(a.SourceNpc) &&
                 (a.Content.Contains("incident", StringComparison.OrdinalIgnoreCase)
                 || a.Content.Contains("Rescue", StringComparison.OrdinalIgnoreCase)
                 || a.Content.Contains("Storm", StringComparison.OrdinalIgnoreCase)));
@@ -435,6 +450,15 @@ public sealed class NewspaperService
         }
     }
 
+    public static string BuildFallbackSensationalTitle(string title)
+    {
+        var clean = (title ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(clean))
+            clean = "Town Buzz";
+
+        return TruncateHeadline(FallbackHeadline(clean));
+    }
+
     private static string FallbackHeadline(string title)
     {
         var prefixes = new[] { "BREAKING:", "SHOCKING:", "URGENT:", "ALERT:" };
@@ -450,6 +474,56 @@ public sealed class NewspaperService
             return headline;
 
         return headline.Substring(0, 27) + "...";
+    }
+
+    private static bool IsTownReporterSource(string sourceNpc)
+    {
+        if (string.IsNullOrWhiteSpace(sourceNpc))
+            return false;
+
+        return string.Equals(sourceNpc, TownReporterByline, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(sourceNpc, LegacyTownReporterByline, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ClampArticleCombinedLengthInPlace(NewspaperArticle article, int maxCombinedCharacters)
+    {
+        var title = (article.Title ?? string.Empty).Trim();
+        var content = (article.Content ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
+            return;
+
+        if (title.Length + content.Length <= maxCombinedCharacters)
+        {
+            article.Title = title;
+            article.Content = content;
+            return;
+        }
+
+        var maxTitleLength = Math.Max(1, maxCombinedCharacters - 1);
+        if (title.Length > maxTitleLength)
+            title = title[..maxTitleLength].TrimEnd();
+
+        if (string.IsNullOrWhiteSpace(title))
+            return;
+
+        var maxContentLength = maxCombinedCharacters - title.Length;
+        if (maxContentLength <= 0)
+        {
+            title = title[..Math.Max(1, maxCombinedCharacters - 1)].TrimEnd();
+            maxContentLength = maxCombinedCharacters - title.Length;
+        }
+
+        if (maxContentLength <= 0)
+            return;
+
+        if (content.Length > maxContentLength)
+            content = content[..maxContentLength].TrimEnd();
+
+        if (string.IsNullOrWhiteSpace(content))
+            return;
+
+        article.Title = title;
+        article.Content = content;
     }
 
     private static string Cap(string value) => string.IsNullOrEmpty(value) ? value : char.ToUpper(value[0]) + value.Substring(1);

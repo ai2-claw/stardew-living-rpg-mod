@@ -12,13 +12,22 @@ using StardewLivingRPG.UI;
 using StardewLivingRPG.Utils;
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.IO;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 namespace StardewLivingRPG;
 
 public sealed class ModEntry : Mod
 {
+    private const int MaxNpcPublishCombinedCharacters = 100;
+    private static readonly Dictionary<string, string> PublishSourceNpcFallbackMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Editor"] = "Elliott"
+    };
+
     private ModConfig _config = new();
     private SaveState _state = SaveState.CreateDefault();
     private DailyTickService? _dailyTickService;
@@ -38,6 +47,7 @@ public sealed class ModEntry : Mod
     private string? _player2Key;
     private string? _activeNpcId;
     private readonly ConcurrentQueue<string> _pendingPlayer2Lines = new();
+    private readonly ConcurrentQueue<string> _pendingPlayer2ChatLines = new();
     private DateTime _player2LastLineUtc;
     private DateTime _player2LastCommandAppliedUtc;
     private string _player2LastCommandApplied = "(none)";
@@ -64,18 +74,44 @@ public sealed class ModEntry : Mod
     private readonly Dictionary<string, string> _player2NpcIdsByShortName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _player2NpcShortNameById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<string>> _npcUiMessagesById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ConcurrentQueue<bool>> _npcResponseRoutingById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _npcLastReceivedMessageById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerChatRequestUtcById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerQuestAskUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
     private DateTime _player2LastChatSentUtc;
     private DateTime _player2LastStreamRecoveryUtc;
+    private DateTime _player2LastStreamStartUtc;
+    private DateTime _player2StreamConnectedUtc;
     private int _player2WatchdogRecoveries;
     private DateTime _player2WatchdogWindowStartUtc;
+    private bool _streamChatAwaitingResponse;
+    private string? _lastStreamChatMessage;
+    private string? _lastStreamChatTargetNpcId;
+    private string? _lastStreamChatRequesterShortName;
+    private string? _lastStreamChatSenderNameOverride;
+    private string? _lastStreamChatContextTag;
+    private string? _pendingStreamReplayMessage;
+    private string? _pendingStreamReplayTargetNpcId;
+    private string? _pendingStreamReplayRequesterShortName;
+    private string? _pendingStreamReplaySenderNameOverride;
+    private string? _pendingStreamReplayContextTag;
+    private DateTime _pendingStreamReplayQueuedUtc;
 
     private int _uiManualRequestCountToday;
     private int _uiManualRequestCountDay = -1;
     private int _pendingNewspaperRefreshDay = -1;
+    private int _pendingDayStartStreamRecycleDay = -1;
     private int _newspaperBuildInFlight;
     private readonly ConcurrentQueue<NewspaperIssue> _completedNewspaperIssues = new();
+    private int _pendingLateNightPassOutDay = -1;
+    private string _pendingLateNightPassOutLocation = "Town";
+    private readonly Random _ambientNpcRandom = new();
+    private int _ambientNpcConversationDay = -1;
+    private int _ambientNpcConversationsToday;
+    private DateTime _nextAmbientNpcConversationUtc;
+    private int _ambientNpcConversationInFlight;
 
     private string? _pendingNpcDialogueHookName;
     private bool _npcDialogueHookArmed;
@@ -108,6 +144,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_set_sentiment", "Set sentiment: slrpg_set_sentiment economy <value>", OnSetSentimentCommand);
         helper.ConsoleCommands.Add("slrpg_debug_state", "Print compact state snapshot for QA.", OnDebugStateCommand);
         helper.ConsoleCommands.Add("slrpg_intent_inject", "Inject raw NPC intent envelope JSON for resolver QA.", OnIntentInjectCommand);
+        helper.ConsoleCommands.Add("slrpg_debug_news_toast", "Inject debug publish_article/publish_rumor intent and trigger HUD toast: slrpg_debug_news_toast <article|rumor> [text]", OnDebugNewsToastCommand);
         helper.ConsoleCommands.Add("slrpg_intent_smoketest", "Run mini automated intent resolver smoke tests.", OnIntentSmokeTestCommand);
         helper.ConsoleCommands.Add("slrpg_anchor_smoketest", "Run deterministic anchor trigger/resolution smoke test.", OnAnchorSmokeTestCommand);
         helper.ConsoleCommands.Add("slrpg_demo_bootstrap", "Seed reproducible vertical-slice scenario.", OnDemoBootstrapCommand);
@@ -163,6 +200,9 @@ public sealed class ModEntry : Mod
         if (_dailyTickService is null)
             return;
 
+        _pendingDayStartStreamRecycleDay = -1;
+        TryCapturePendingLateNightPassOut();
+
         // Give auto-connect a brief head start so day-start newspaper can use Player2 when available.
         if (_config.EnablePlayer2
             && _config.AutoConnectPlayer2OnLoad
@@ -176,6 +216,8 @@ public sealed class ModEntry : Mod
             _uiManualRequestCountDay = _state.Calendar.Day;
             _uiManualRequestCountToday = 0;
         }
+
+        ResetAmbientNpcConversationScheduleForDay();
 
         var sold = _salesIngestionService?.DrainPendingSales() ?? new Dictionary<string, int>();
         _economyService?.IngestSales(_state.Economy, sold);
@@ -199,6 +241,7 @@ public sealed class ModEntry : Mod
             if (_config.EnablePlayer2)
             {
                 _pendingNewspaperRefreshDay = _state.Calendar.Day;
+                _pendingDayStartStreamRecycleDay = _state.Calendar.Day;
                 if (!IsPlayer2ReadyForNewspaper())
                 {
                     Monitor.Log($"Deferred newspaper build for day {_state.Calendar.Day} until Player2 roster + stream are ready.", LogLevel.Debug);
@@ -350,6 +393,7 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
+        TrackLateNightPassOutWindow();
         TryCaptureTownIncidents();
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
@@ -358,6 +402,8 @@ public sealed class ModEntry : Mod
             if (shouldAttempt && DateTime.UtcNow - _player2LastAutoConnectAttemptUtc > TimeSpan.FromSeconds(20))
                 StartPlayer2AutoConnect("auto-retry", force: false);
         }
+
+        TryTriggerAmbientNpcConversation();
 
         TryApplyCompletedNewspaperIssues();
         TryRefreshPendingNewspaperIssue("update-tick");
@@ -397,11 +443,17 @@ public sealed class ModEntry : Mod
 
             _player2WatchdogRecoveries += 1;
 
-            // Re-queue the latest user-triggered work prompt immediately after stream restart.
-            if (string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest) && !string.IsNullOrWhiteSpace(_lastUiWorkPrompt))
+            if (_streamChatAwaitingResponse
+                && string.IsNullOrWhiteSpace(_pendingStreamReplayMessage)
+                && !string.IsNullOrWhiteSpace(_lastStreamChatMessage))
             {
-                _pendingUiMayorWorkRequest = _lastUiWorkPrompt;
-                _pendingUiRequesterShortName = _lastUiWorkRequesterShortName;
+                QueuePendingStreamReplay(
+                    _lastStreamChatMessage!,
+                    _lastStreamChatTargetNpcId,
+                    _lastStreamChatRequesterShortName,
+                    _lastStreamChatSenderNameOverride,
+                    _lastStreamChatContextTag,
+                    "watchdog");
             }
 
             _player2UiStatus = "No NPC response yet; recovering stream and retrying request...";
@@ -411,7 +463,9 @@ public sealed class ModEntry : Mod
             _player2StreamCts?.Cancel();
             _player2StreamCts = null;
             Interlocked.Exchange(ref _player2StreamRunning, 0);
+            _player2StreamConnectedUtc = default;
             _player2PendingResponseCount = 0;
+            ResetNpcResponseTracking();
             _player2StreamBackoffSec = Math.Min(Math.Max(2, _player2StreamBackoffSec * 2), 30);
             _player2NextReconnectUtc = DateTime.UtcNow.AddSeconds(_player2StreamBackoffSec);
 
@@ -431,8 +485,56 @@ public sealed class ModEntry : Mod
                 _pendingUiRequesterShortName = replayRequester;
                 _player2WatchdogRecoveries = 0;
                 _player2WatchdogWindowStartUtc = DateTime.UtcNow;
+                _streamChatAwaitingResponse = false;
 
                 StartPlayer2AutoConnect("watchdog-escalation", force: true);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_pendingStreamReplayMessage)
+            && !string.IsNullOrWhiteSpace(_player2Key)
+            && !string.IsNullOrWhiteSpace(_activeNpcId)
+            && IsPlayer2StreamReadyForChat())
+        {
+            if (_pendingStreamReplayQueuedUtc != default
+                && DateTime.UtcNow - _pendingStreamReplayQueuedUtc > TimeSpan.FromMinutes(2))
+            {
+                Monitor.Log("Dropped stale pending stream replay (>2 minutes old).", LogLevel.Warn);
+                ClearPendingStreamReplay();
+            }
+            else
+            {
+                var replayMessage = _pendingStreamReplayMessage!;
+                var replayTargetNpcId = _pendingStreamReplayTargetNpcId;
+                var replayRequester = _pendingStreamReplayRequesterShortName;
+                var replaySender = _pendingStreamReplaySenderNameOverride;
+                var replayContext = _pendingStreamReplayContextTag;
+
+                if (!string.IsNullOrWhiteSpace(replayRequester)
+                    && _player2NpcIdsByShortName.TryGetValue(replayRequester, out var remappedNpcId))
+                {
+                    replayTargetNpcId = remappedNpcId;
+                }
+                else if (string.IsNullOrWhiteSpace(replayTargetNpcId))
+                {
+                    replayTargetNpcId = _activeNpcId;
+                }
+
+                if (string.Equals(replayContext, "player_request_board", StringComparison.OrdinalIgnoreCase))
+                {
+                    _pendingUiMayorWorkRequest = null;
+                    _pendingUiRequesterShortName = null;
+                }
+
+                ClearPendingStreamReplay();
+                SendPlayer2ChatInternal(
+                    replayMessage,
+                    replayTargetNpcId,
+                    replayRequester,
+                    senderNameOverride: replaySender,
+                    contextTag: replayContext,
+                    captureForPlayerChat: false);
+                Monitor.Log("Replayed pending stream chat after listener recovery.", LogLevel.Warn);
             }
         }
 
@@ -457,10 +559,31 @@ public sealed class ModEntry : Mod
                 _pendingUiRequesterShortName = null;
 
                 if (!string.IsNullOrWhiteSpace(requester) && _player2NpcIdsByShortName.TryGetValue(requester, out var pendingNpcId))
-                    SendPlayer2ChatInternal(req, pendingNpcId, requester);
+                    SendPlayer2ChatInternal(req, pendingNpcId, requester, contextTag: "player_request_board", captureForPlayerChat: false);
                 else
-                    SendPlayer2ChatInternal(req);
+                    SendPlayer2ChatInternal(req, contextTag: "player_request_board", captureForPlayerChat: false);
             }
+        }
+
+        while (_pendingPlayer2ChatLines.TryDequeue(out var line))
+        {
+            if (line.StartsWith("__ERR__", StringComparison.Ordinal))
+            {
+                Monitor.Log($"Player2 chat read failed: {line[7..]}", LogLevel.Error);
+                continue;
+            }
+
+            if (line == "__EMPTY__")
+            {
+                Monitor.Log("No player chat response line received (timeout/empty).", LogLevel.Warn);
+                continue;
+            }
+
+            Monitor.Log($"Player2 chat line: {line}", LogLevel.Info);
+            CaptureNpcUiMessage(line, allowPlayerChatRouting: true);
+            var appliedNpcCommand = TryApplyNpcCommandFromLine(line);
+            if (!appliedNpcCommand)
+                TryApplyFallbackQuestFromPlayerChatLine(line);
         }
 
         while (_pendingPlayer2Lines.TryDequeue(out var line))
@@ -477,16 +600,148 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
+            var streamNpcId = TryExtractNpcIdFromLine(line);
+            if (!string.IsNullOrWhiteSpace(streamNpcId)
+                && _npcLastPlayerChatRequestUtcById.TryGetValue(streamNpcId, out var recentPlayerChatUtc)
+                && DateTime.UtcNow - recentPlayerChatUtc <= TimeSpan.FromSeconds(20))
+            {
+                var hasPendingAmbientRouting = _npcResponseRoutingById.TryGetValue(streamNpcId, out var routingQueue)
+                    && !routingQueue.IsEmpty;
+                if (!hasPendingAmbientRouting)
+                {
+                    Monitor.Log($"Ignored non-ambient stream line for NPC {streamNpcId}; player chat uses request/response path.", LogLevel.Trace);
+                    continue;
+                }
+            }
+
             Monitor.Log($"Player2 stream line: {line}", LogLevel.Info);
             _player2LastLineUtc = DateTime.UtcNow;
             _player2StreamBackoffSec = 1;
-            if (_player2PendingResponseCount > 0)
-                _player2PendingResponseCount -= 1;
+            var routedToPlayerChat = CaptureNpcUiMessage(line, allowPlayerChatRouting: false);
+            if (!routedToPlayerChat)
+            {
+                if (_player2PendingResponseCount > 0)
+                    _player2PendingResponseCount -= 1;
+                _streamChatAwaitingResponse = false;
+                ClearPendingStreamReplay();
+            }
             _player2WatchdogRecoveries = 0;
             _player2WatchdogWindowStartUtc = default;
-            CaptureNpcUiMessage(line);
             TryApplyNpcCommandFromLine(line);
         }
+    }
+
+    private void ResetAmbientNpcConversationScheduleForDay()
+    {
+        _ambientNpcConversationDay = _state.Calendar.Day;
+        _ambientNpcConversationsToday = 0;
+        _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(120, 360));
+    }
+
+    private void TryTriggerAmbientNpcConversation()
+    {
+        if (!_config.EnablePlayer2)
+            return;
+
+        if (_ambientNpcConversationDay != _state.Calendar.Day)
+            ResetAmbientNpcConversationScheduleForDay();
+
+        if (_ambientNpcConversationsToday >= 3)
+            return;
+
+        if (_nextAmbientNpcConversationUtc == default)
+            _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(120, 360));
+
+        if (DateTime.UtcNow < _nextAmbientNpcConversationUtc)
+            return;
+
+        if (!IsPlayer2ReadyForNewspaper())
+            return;
+
+        if (_player2PendingResponseCount > 0 || !string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest))
+            return;
+
+        if (Interlocked.CompareExchange(ref _ambientNpcConversationInFlight, 1, 0) == 1)
+            return;
+
+        try
+        {
+            if (!TryPickAmbientNpcConversationPair(out var speakerShortName, out var speakerNpcId, out var listenerShortName))
+                return;
+
+            var prompt =
+                $"{speakerShortName}, you had a brief offscreen conversation with {listenerShortName} about today's town happenings. " +
+                "Stay in-character and reply naturally. " +
+                "If there is meaningful concrete news, use publish_article with a concise title/content/category (title+content must be <= 100 characters total). " +
+                "If it is gossip-level information, use publish_rumor with topic, optional title/content, confidence, and target_group (title+content must be <= 100 characters total when provided). " +
+                "Do not force a command when nothing notable happened.";
+
+            SendPlayer2ChatInternal(
+                prompt,
+                speakerNpcId,
+                speakerShortName,
+                senderNameOverride: listenerShortName,
+                contextTag: "npc_to_npc_ambient",
+                captureForPlayerChat: false);
+            _ambientNpcConversationsToday += 1;
+            Monitor.Log($"Ambient NPC conversation triggered: {speakerShortName} -> {listenerShortName}.", LogLevel.Trace);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _ambientNpcConversationInFlight, 0);
+            _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(180, 480));
+        }
+    }
+
+    private bool TryPickAmbientNpcConversationPair(out string speakerShortName, out string speakerNpcId, out string listenerShortName)
+    {
+        speakerShortName = string.Empty;
+        speakerNpcId = string.Empty;
+        listenerShortName = string.Empty;
+
+        var roster = _player2NpcIdsByShortName
+            .Where(kv => !string.IsNullOrWhiteSpace(kv.Key) && !string.IsNullOrWhiteSpace(kv.Value))
+            .Select(kv => kv.Key)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (roster.Count == 0)
+        {
+            if (string.IsNullOrWhiteSpace(_activeNpcId))
+                return false;
+
+            speakerShortName = "Lewis";
+            speakerNpcId = _activeNpcId!;
+            listenerShortName = "Town";
+            return true;
+        }
+
+        var speakerIndex = _ambientNpcRandom.Next(roster.Count);
+        speakerShortName = roster[speakerIndex];
+        if (!_player2NpcIdsByShortName.TryGetValue(speakerShortName, out var speakerId))
+            return false;
+        speakerNpcId = speakerId;
+
+        if (roster.Count == 1)
+        {
+            listenerShortName = "Town";
+            return true;
+        }
+
+        var listeners = new List<string>();
+        foreach (var candidate in roster)
+        {
+            if (!candidate.Equals(speakerShortName, StringComparison.OrdinalIgnoreCase))
+                listeners.Add(candidate);
+        }
+        if (listeners.Count == 0)
+        {
+            listenerShortName = "Town";
+            return true;
+        }
+
+        listenerShortName = listeners[_ambientNpcRandom.Next(listeners.Count)];
+        return true;
     }
 
     private void TryCaptureTownIncidents()
@@ -519,6 +774,67 @@ public sealed class ModEntry : Mod
             severity: 3,
             visibility: "local",
             "mines", "health", "rescue");
+    }
+
+    private void TrackLateNightPassOutWindow()
+    {
+        if (_townMemoryService is null || Game1.player is null || Game1.currentLocation is null)
+            return;
+
+        if (Game1.timeOfDay < 2600)
+            return;
+
+        if (Game1.player.health <= 0)
+            return;
+
+        if (_pendingLateNightPassOutDay == _state.Calendar.Day)
+            return;
+
+        var locationName = Game1.currentLocation.Name ?? "Town";
+        if (IsSleepSafeLocation(locationName))
+            return;
+
+        _pendingLateNightPassOutDay = _state.Calendar.Day;
+        _pendingLateNightPassOutLocation = locationName;
+    }
+
+    private void TryCapturePendingLateNightPassOut()
+    {
+        if (_townMemoryService is null)
+            return;
+
+        if (_pendingLateNightPassOutDay != _state.Calendar.Day)
+            return;
+
+        var locationName = string.IsNullOrWhiteSpace(_pendingLateNightPassOutLocation)
+            ? "Town"
+            : _pendingLateNightPassOutLocation;
+        var key = $"town_incident:passout:{_pendingLateNightPassOutDay}";
+        if (!_state.Facts.Facts.ContainsKey(key))
+        {
+            _state.Facts.Facts[key] = new FactValue { Value = true, SetDay = _pendingLateNightPassOutDay, Source = "system" };
+            _townMemoryService.RecordEvent(
+                _state,
+                "pass_out",
+                $"A farmer was found passed out late at night near {locationName}.",
+                locationName,
+                _pendingLateNightPassOutDay,
+                severity: 2,
+                visibility: "public",
+                "late-night", "pass-out", "rescue");
+        }
+
+        _pendingLateNightPassOutDay = -1;
+        _pendingLateNightPassOutLocation = "Town";
+    }
+
+    private static bool IsSleepSafeLocation(string locationName)
+    {
+        if (string.IsNullOrWhiteSpace(locationName))
+            return false;
+
+        return locationName.Contains("FarmHouse", StringComparison.OrdinalIgnoreCase)
+            || locationName.Contains("Cabin", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
@@ -1014,6 +1330,68 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private void OnDebugNewsToastCommand(string name, string[] args)
+    {
+        if (_intentResolver is null)
+        {
+            Monitor.Log("Intent resolver unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        if (args.Length == 0)
+        {
+            Monitor.Log("Usage: slrpg_debug_news_toast <article|rumor> [text]", LogLevel.Info);
+            return;
+        }
+
+        var mode = args[0].Trim().ToLowerInvariant();
+        var text = args.Length > 1 ? string.Join(' ', args.Skip(1)).Trim() : string.Empty;
+        var npcId = !string.IsNullOrWhiteSpace(_activeNpcId) ? _activeNpcId! : "debug_npc";
+        var intentId = $"debug_news_{mode}_{_state.Calendar.Day}_{DateTime.UtcNow.Ticks}";
+
+        string payload;
+        if (mode == "article")
+        {
+            var title = string.IsNullOrWhiteSpace(text) ? "Debug Market Bulletin" : text;
+            payload = JsonSerializer.Serialize(new
+            {
+                intent_id = intentId,
+                npc_id = npcId,
+                command = "publish_article",
+                arguments = new
+                {
+                    title,
+                    content = "Debug article payload for HUD toast validation.",
+                    category = "community"
+                }
+            });
+        }
+        else if (mode == "rumor")
+        {
+            var topic = string.IsNullOrWhiteSpace(text) ? "Blueberry demand may cool next week" : text;
+            payload = JsonSerializer.Serialize(new
+            {
+                intent_id = intentId,
+                npc_id = npcId,
+                command = "publish_rumor",
+                arguments = new
+                {
+                    topic,
+                    confidence = 0.72f,
+                    target_group = "shopkeepers"
+                }
+            });
+        }
+        else
+        {
+            Monitor.Log("Usage: slrpg_debug_news_toast <article|rumor> [text]", LogLevel.Info);
+            return;
+        }
+
+        TryApplyNpcCommandFromLine(payload);
+        Monitor.Log($"Injected debug news intent via stream path: {mode}", LogLevel.Info);
+    }
+
     private void OnIntentSmokeTestCommand(string name, string[] args)
     {
         if (_intentResolver is null)
@@ -1295,7 +1673,7 @@ public sealed class ModEntry : Mod
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
                 CharacterDescription = "Mayor Lewis of Pelican Town in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band.",
+                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For publish_article and publish_rumor, keep title+content within 100 characters total. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -1313,6 +1691,44 @@ public sealed class ModEntry : Mod
                                 urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } }
                             },
                             required = new[] { "template_id", "target", "urgency" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "publish_article",
+                        Description = "Publish a concise in-world newspaper article (title+content <= 100 characters total)",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                title = new { type = "string" },
+                                content = new { type = "string" },
+                                category = new { type = "string", @enum = new[] { "community", "market", "social", "nature" } }
+                            },
+                            required = new[] { "title", "content", "category" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "publish_rumor",
+                        Description = "Publish a short town rumor with optional title/content (title+content <= 100 characters total when provided)",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                topic = new { type = "string" },
+                                title = new { type = "string" },
+                                content = new { type = "string" },
+                                confidence = new { type = "number" },
+                                target_group = new { type = "string" }
+                            },
+                            required = new[] { "topic", "confidence", "target_group" },
                             additionalProperties = false
                         },
                         NeverRespondWithMessage = false
@@ -1382,7 +1798,7 @@ public sealed class ModEntry : Mod
                     ShortName = shortName,
                     Name = shortName,
                     CharacterDescription = $"{shortName} in Pelican Town, practical and grounded.",
-                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. Use safe command schema when proposing town requests.",
+                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. For publish_article and publish_rumor, keep title+content within 100 characters total.",
                     KeepGameState = true,
                     Commands = new List<SpawnNpcCommand>
                     {
@@ -1400,6 +1816,42 @@ public sealed class ModEntry : Mod
                                     urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } }
                                 },
                                 required = new[] { "template_id", "target", "urgency" },
+                                additionalProperties = false
+                            }
+                        },
+                        new()
+                        {
+                            Name = "publish_article",
+                            Description = "Publish a concise in-world newspaper article (title+content <= 100 characters total)",
+                            Parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    title = new { type = "string" },
+                                    content = new { type = "string" },
+                                    category = new { type = "string", @enum = new[] { "community", "market", "social", "nature" } }
+                                },
+                                required = new[] { "title", "content", "category" },
+                                additionalProperties = false
+                            }
+                        },
+                        new()
+                        {
+                            Name = "publish_rumor",
+                            Description = "Publish a short town rumor with optional title/content (title+content <= 100 characters total when provided)",
+                            Parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    topic = new { type = "string" },
+                                    title = new { type = "string" },
+                                    content = new { type = "string" },
+                                    confidence = new { type = "number" },
+                                    target_group = new { type = "string" }
+                                },
+                                required = new[] { "topic", "confidence", "target_group" },
                                 additionalProperties = false
                             }
                         }
@@ -1421,12 +1873,39 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private void SendPlayer2ChatInternal(string message, string? targetNpcId = null, string? requesterShortName = null)
+    private void SendPlayer2ChatInternal(
+        string message,
+        string? targetNpcId = null,
+        string? requesterShortName = null,
+        string? senderNameOverride = null,
+        string? contextTag = null,
+        bool captureForPlayerChat = true)
     {
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(_activeNpcId))
             return;
 
         var npcId = string.IsNullOrWhiteSpace(targetNpcId) ? _activeNpcId! : targetNpcId;
+        var isPlayerInitiated = string.IsNullOrWhiteSpace(senderNameOverride);
+        var routeToPlayerChat = captureForPlayerChat && isPlayerInitiated;
+        if (routeToPlayerChat)
+        {
+            SendPlayer2ChatPerMessage(message, npcId, requesterShortName, senderNameOverride, contextTag);
+            return;
+        }
+
+        EnsurePlayer2StreamReadyForChat();
+        if (!IsPlayer2StreamReadyForChat())
+        {
+            QueuePendingStreamReplay(
+                message,
+                npcId,
+                requesterShortName,
+                senderNameOverride,
+                contextTag,
+                "listener-not-ready");
+            Monitor.Log("Queued stream-bound NPC chat because listener is not connected yet.", LogLevel.Trace);
+            return;
+        }
 
         try
         {
@@ -1444,15 +1923,13 @@ public sealed class ModEntry : Mod
             }
 
             var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
-
-            if (_npcMemoryService is not null)
-                _npcMemoryService.WriteTurn(_state, who, message, string.Empty, _state.Calendar.Day);
+            var senderName = isPlayerInitiated ? (Game1.player?.Name ?? "Player") : senderNameOverride!.Trim();
 
             var req = new NpcChatRequest
             {
-                SenderName = Game1.player?.Name ?? "Player",
+                SenderName = string.IsNullOrWhiteSpace(senderName) ? "Player" : senderName,
                 SenderMessage = message,
-                GameStateInfo = BuildCompactGameStateInfo(who, message)
+                GameStateInfo = BuildCompactGameStateInfo(who, message, contextTag)
             };
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -1461,12 +1938,110 @@ public sealed class ModEntry : Mod
 
             _player2PendingResponseCount += 1;
             _player2LastChatSentUtc = DateTime.UtcNow;
-            _npcUiPendingById.AddOrUpdate(npcId, 1, (_, v) => v + 1);
+            var routing = _npcResponseRoutingById.GetOrAdd(npcId, _ => new ConcurrentQueue<bool>());
+            routing.Enqueue(false);
+            _streamChatAwaitingResponse = true;
+            _lastStreamChatMessage = message;
+            _lastStreamChatTargetNpcId = npcId;
+            _lastStreamChatRequesterShortName = requesterShortName;
+            _lastStreamChatSenderNameOverride = senderNameOverride;
+            _lastStreamChatContextTag = contextTag;
+            ClearPendingStreamReplay();
 
             Monitor.Log($"Sent chat to Player2 NPC ({who}) id={npcId}. Keep stream listener running to receive response lines.", LogLevel.Info);
         }
         catch (Exception ex)
         {
+            QueuePendingStreamReplay(
+                message,
+                npcId,
+                requesterShortName,
+                senderNameOverride,
+                contextTag,
+                "send-failed");
+            Monitor.Log($"Player2 chat failed: {ex.Message}", LogLevel.Error);
+        }
+    }
+
+    private void SendPlayer2ChatPerMessage(
+        string message,
+        string npcId,
+        string? requesterShortName,
+        string? senderNameOverride,
+        string? contextTag)
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+            return;
+
+        try
+        {
+            if (_config.Player2BlockChatWhenLowJoules)
+            {
+                var joules = TryGetJoules(out var joulesInfo);
+                if (joules.HasValue && joules.Value < Math.Max(0, _config.Player2MinJoulesToChat))
+                {
+                    Monitor.Log($"Player2 chat blocked: low joules ({joules.Value} < {_config.Player2MinJoulesToChat}). Use slrpg_p2_status to inspect account state.", LogLevel.Warn);
+                    return;
+                }
+
+                if (joulesInfo is not null)
+                    Monitor.Log($"Player2 joules preflight | balance={joulesInfo.Joules} tier={joulesInfo.PatronTier}", LogLevel.Trace);
+            }
+
+            var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
+            var senderName = string.IsNullOrWhiteSpace(senderNameOverride) ? (Game1.player?.Name ?? "Player") : senderNameOverride.Trim();
+            var effectiveContextTag = contextTag;
+            var playerAskedForQuest = IsPlayerAskingForQuest(message);
+            if (string.IsNullOrWhiteSpace(effectiveContextTag) && playerAskedForQuest)
+                effectiveContextTag = "player_chat_quest_request";
+            string? previousHistoryMessage = null;
+            try
+            {
+                using var historyCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                previousHistoryMessage = _player2Client
+                    .TryGetLatestNpcHistoryMessageAsync(_config.Player2ApiBaseUrl, _player2Key!, npcId, historyCts.Token)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch
+            {
+            }
+
+            if (_npcMemoryService is not null)
+                _npcMemoryService.WriteTurn(_state, who, message, string.Empty, _state.Calendar.Day);
+
+            var req = new NpcChatRequest
+            {
+                SenderName = string.IsNullOrWhiteSpace(senderName) ? "Player" : senderName,
+                SenderMessage = message,
+                GameStateInfo = BuildCompactGameStateInfo(who, message, effectiveContextTag)
+            };
+
+            _npcUiPendingById.AddOrUpdate(npcId, 1, (_, v) => v + 1);
+            _npcLastPlayerChatRequestUtcById[npcId] = DateTime.UtcNow;
+            if (playerAskedForQuest)
+                _npcLastPlayerQuestAskUtcById[npcId] = DateTime.UtcNow;
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var immediatePayload = _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, npcId, req, cts.Token)
+                .GetAwaiter()
+                .GetResult();
+
+            var immediateLine = TryBuildImmediateNpcResponseLine(immediatePayload, npcId);
+            if (!string.IsNullOrWhiteSpace(immediateLine))
+            {
+                _pendingPlayer2ChatLines.Enqueue(immediateLine);
+            }
+            else
+            {
+                StartPlayerChatHistoryFallback(npcId, previousHistoryMessage);
+            }
+
+            Monitor.Log($"Sent player chat via per-message flow to Player2 NPC ({who}) id={npcId}.", LogLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
             Monitor.Log($"Player2 chat failed: {ex.Message}", LogLevel.Error);
         }
     }
@@ -1531,7 +2106,7 @@ public sealed class ModEntry : Mod
                 return;
             }
 
-            SendPlayer2ChatInternal(prompt, requesterNpcId, requester);
+            SendPlayer2ChatInternal(prompt, requesterNpcId, requester, contextTag: "player_request_board", captureForPlayerChat: false);
             _lastUiWorkRequestUtc = DateTime.UtcNow;
             _player2UiStatus = $"Checked with {requester} for new board postings.";
         }
@@ -1716,6 +2291,12 @@ public sealed class ModEntry : Mod
 
             _pendingNewspaperRefreshDay = -1;
             Monitor.Log($"Newspaper build completed: day={issue.Day}, headline='{issue.Headline}'", LogLevel.Debug);
+
+            if (_pendingDayStartStreamRecycleDay == issue.Day)
+            {
+                _pendingDayStartStreamRecycleDay = -1;
+                TryRecyclePlayer2StreamAfterDayStartIssue(issue.Day);
+            }
         }
     }
 
@@ -1779,12 +2360,31 @@ public sealed class ModEntry : Mod
         return true;
     }
 
+    private void TryRecyclePlayer2StreamAfterDayStartIssue(int day)
+    {
+        if (!_config.EnablePlayer2 || _player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+            return;
+
+        _player2StreamDesired = true;
+        _player2StreamCts?.Cancel();
+        _player2StreamCts = null;
+        Interlocked.Exchange(ref _player2StreamRunning, 0);
+        _player2StreamConnectedUtc = default;
+        _player2PendingResponseCount = 0;
+        ResetNpcResponseTracking();
+        _player2StreamBackoffSec = 1;
+        _player2NextReconnectUtc = DateTime.UtcNow;
+        StartPlayer2StreamListenerAttempt();
+        Monitor.Log($"Recycled Player2 stream after day-start newspaper build (day {day}).", LogLevel.Debug);
+    }
+
     private void OnPlayer2StreamStopCommand(string name, string[] args)
     {
         _player2StreamDesired = false;
         _player2StreamCts?.Cancel();
         _player2StreamCts = null;
         Interlocked.Exchange(ref _player2StreamRunning, 0);
+        _player2StreamConnectedUtc = default;
         Monitor.Log("Stopped Player2 stream listener.", LogLevel.Info);
     }
 
@@ -1819,36 +2419,58 @@ public sealed class ModEntry : Mod
         Monitor.Log($"P2 health | login={loggedIn} npc={npc} stream={running}/{_player2StreamDesired} joules={joulesText} pending={_player2PendingResponseCount} lastLineAgo={lineAgo} lastCmd={_player2LastCommandApplied} lastCmdAgo={cmdAgo}", LogLevel.Info);
     }
 
-    private void CaptureNpcUiMessage(string line)
+    private bool CaptureNpcUiMessage(string line, bool allowPlayerChatRouting)
     {
         try
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
             if (!root.TryGetProperty("npc_id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
-                return;
-            if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
-                return;
-
+                return false;
             var npcId = idEl.GetString();
+            if (string.IsNullOrWhiteSpace(npcId))
+                return false;
+
+            var routeToPlayerChat = allowPlayerChatRouting
+                && _npcUiPendingById.TryGetValue(npcId, out var pending)
+                && pending > 0;
+            if (_npcResponseRoutingById.TryGetValue(npcId, out var routingQueue) && routingQueue.TryDequeue(out var routed))
+                routeToPlayerChat = allowPlayerChatRouting && routed;
+
+            if (routeToPlayerChat)
+            {
+                _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+            }
+
+            if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
+                return routeToPlayerChat;
+
             var msg = msgEl.GetString();
-            if (string.IsNullOrWhiteSpace(npcId) || string.IsNullOrWhiteSpace(msg))
-                return;
+            if (string.IsNullOrWhiteSpace(msg))
+                return routeToPlayerChat;
+            var playerFacingMsg = NormalizePlayerFacingNpcMessage(msg);
+            if (string.IsNullOrWhiteSpace(playerFacingMsg))
+                playerFacingMsg = msg.Trim();
 
-            var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
-            q.Enqueue(msg);
+            if (routeToPlayerChat)
+            {
+                var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
+                q.Enqueue(playerFacingMsg);
+                _npcLastReceivedMessageById[npcId] = msg;
+            }
 
-            _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
-
-            if (_npcMemoryService is not null)
+            if (_npcMemoryService is not null && routeToPlayerChat)
             {
                 var npcName = GetNpcShortNameById(npcId);
-                _npcMemoryService.WriteTurn(_state, npcName, string.Empty, msg, _state.Calendar.Day);
+                _npcMemoryService.WriteTurn(_state, npcName, string.Empty, playerFacingMsg, _state.Calendar.Day);
             }
+
+            return routeToPlayerChat;
         }
         catch
         {
             // ignore non-json or malformed lines for chat UI capture.
+            return false;
         }
     }
 
@@ -1892,6 +2514,8 @@ public sealed class ModEntry : Mod
         if (Interlocked.Exchange(ref _player2StreamRunning, 1) == 1)
             return;
 
+        _player2LastStreamStartUtc = DateTime.UtcNow;
+        _player2StreamConnectedUtc = default;
         _player2StreamCts?.Cancel();
         _player2StreamCts = new CancellationTokenSource();
         var ct = _player2StreamCts.Token;
@@ -1902,11 +2526,20 @@ public sealed class ModEntry : Mod
         {
             try
             {
-                await _player2Client.StreamNpcResponsesAsync(_config.Player2ApiBaseUrl, _player2Key!, async line =>
-                {
-                    _pendingPlayer2Lines.Enqueue(line);
-                    await Task.CompletedTask;
-                }, ct);
+                await _player2Client.StreamNpcResponsesAsync(
+                    _config.Player2ApiBaseUrl,
+                    _player2Key!,
+                    async line =>
+                    {
+                        _pendingPlayer2Lines.Enqueue(line);
+                        await Task.CompletedTask;
+                    },
+                    ct,
+                    async () =>
+                    {
+                        _player2StreamConnectedUtc = DateTime.UtcNow;
+                        await Task.CompletedTask;
+                    });
 
                 if (!ct.IsCancellationRequested)
                     _pendingPlayer2Lines.Enqueue("__ERR__Player2 stream closed by server.");
@@ -1919,6 +2552,7 @@ public sealed class ModEntry : Mod
             finally
             {
                 Interlocked.Exchange(ref _player2StreamRunning, 0);
+                _player2StreamConnectedUtc = default;
 
                 if (_player2StreamDesired)
                 {
@@ -1929,7 +2563,7 @@ public sealed class ModEntry : Mod
         });
     }
 
-    private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null)
+    private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null, string? contextTag = null)
     {
         var movers = _state.Economy.Crops
             .OrderByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
@@ -1967,6 +2601,7 @@ public sealed class ModEntry : Mod
 
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
+        var playerAskedForRequest = IsPlayerAskingForQuest(playerText);
         if (!string.IsNullOrWhiteSpace(npcName))
         {
             if (_npcMemoryService is not null)
@@ -1979,11 +2614,19 @@ public sealed class ModEntry : Mod
             "CANON_WORLD: Stardew Valley.",
             "CANON_TOWN: Pelican Town.",
             $"CANON_NPCS: [{canonNpcs}].",
+            $"CONTEXT: {(string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag)}.",
             "RULE: Never invent towns, regions, or citizens outside this canon list.",
-            "STYLE: Reply strictly in-character as Mayor Lewis, concise, natural, no assistant-speak.",
+            $"STYLE: Reply strictly in-character as {(string.IsNullOrWhiteSpace(npcName) ? "the addressed NPC" : npcName)}, concise, natural, no assistant-speak.",
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
+            "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
+            "QUEST_RULE: Never give text-only task offers without propose_quest.",
+            "QUEST_RULE: If no suitable request exists, explicitly say none is available in-character.",
+            playerAskedForRequest
+                ? "QUEST_CONTEXT: Player explicitly asked for work/request now. You must either emit propose_quest or decline clearly; no text-only task offers."
+                : string.Empty,
+            "RULE: For publish_article/publish_rumor commands, keep title+content within 100 characters total.",
             "MARKET_RULE: For market questions, mention at least one live signal from MARKET_SIGNALS.",
             "REWARD_RULE: Never promise arbitrary gold numbers; follow REWARD_RULES bands.",
             "REWARD_RULES: gather_crop low=350 medium=500 high=700; deliver_item low=360 medium=500 high=650; mine_resource low=450 medium=600 high=800; social_visit low=220 medium=300 high=400.",
@@ -1997,12 +2640,30 @@ public sealed class ModEntry : Mod
         );
     }
 
-    private void TryApplyNpcCommandFromLine(string line)
+    private static bool IsPlayerAskingForQuest(string? playerText)
+    {
+        if (string.IsNullOrWhiteSpace(playerText))
+            return false;
+
+        var text = playerText.ToLowerInvariant();
+        return text.Contains("quest", StringComparison.Ordinal)
+            || text.Contains("task", StringComparison.Ordinal)
+            || text.Contains("request", StringComparison.Ordinal)
+            || text.Contains("job", StringComparison.Ordinal)
+            || text.Contains("work", StringComparison.Ordinal)
+            || text.Contains("posting", StringComparison.Ordinal)
+            || text.Contains("errand", StringComparison.Ordinal)
+            || text.Contains("help", StringComparison.Ordinal)
+            || text.Contains("mission", StringComparison.Ordinal)
+            || text.Contains("favor", StringComparison.Ordinal);
+    }
+
+    private bool TryApplyNpcCommandFromLine(string line)
     {
         try
         {
             if (_intentResolver is null)
-                return;
+                return false;
 
             string? sourceNpcId = null;
             try
@@ -2018,24 +2679,24 @@ public sealed class ModEntry : Mod
 
             var result = _intentResolver.ResolveFromStreamLine(_state, line);
             if (!result.HasIntent)
-                return;
+                return false;
 
             if (result.IsRejected)
             {
                 _state.Telemetry.Daily.NpcIntentsRejected += 1;
                 Monitor.Log($"NPC intent rejected [{result.ReasonCode}]: {result.Reason}", LogLevel.Warn);
-                return;
+                return false;
             }
 
             if (result.IsDuplicate)
             {
                 _state.Telemetry.Daily.NpcIntentsDuplicate += 1;
                 Monitor.Log($"NPC intent duplicate ignored: {result.IntentId}", LogLevel.Debug);
-                return;
+                return false;
             }
 
             if (!result.AppliedOk)
-                return;
+                return false;
 
             _state.Telemetry.Daily.NpcIntentsApplied += 1;
             _state.Telemetry.Daily.NpcCommandAppliedByType.TryGetValue(result.Command, out var cmdCount);
@@ -2063,15 +2724,766 @@ public sealed class ModEntry : Mod
             if (result.Command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase)
                 || result.Command.Equals("publish_article", StringComparison.OrdinalIgnoreCase))
             {
-                ShowNewspaperCommandNotification(result.Command, result.OutcomeId, sourceNpcId);
-                _pendingNewspaperRefreshDay = _state.Calendar.Day;
-                TryRefreshPendingNewspaperIssue($"npc-command:{result.Command}");
+                var outcomeId = result.OutcomeId;
+                var sensationalHeadline = TryApplyPlayer2SensationalHeadlineToNpcPublish(result.Command, outcomeId, sourceNpcId);
+                TryApplyNpcPublishSourceName(result.Command, outcomeId, sourceNpcId);
+                outcomeId = TryClampNpcPublishArticleAsLastResort(result.Command, outcomeId, sourceNpcId);
+                ShowNewspaperCommandNotification(result.Command, outcomeId, sourceNpcId);
+
+                // Avoid rebuilding today's issue after it has already been generated, because rebuilds can
+                // replace dynamic editor stories with fallback fillers. Replace today's visible content/headline
+                // with the latest NPC article directly when possible.
+                if (!TryReplaceTodayIssueWithNpcArticle(result.Command, outcomeId, sensationalHeadline))
+                {
+                    var hasTodayIssue = _state.Newspaper.Issues.Any(i => i.Day == _state.Calendar.Day);
+                    if (!hasTodayIssue)
+                    {
+                        _pendingNewspaperRefreshDay = _state.Calendar.Day;
+                        TryRefreshPendingNewspaperIssue($"npc-command:{result.Command}");
+                    }
+                }
             }
+
+            return true;
         }
         catch (Exception ex)
         {
             Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
+            return false;
         }
+    }
+
+    private void TryApplyFallbackQuestFromPlayerChatLine(string line)
+    {
+        if (_intentResolver is null)
+            return;
+
+        if (!TryExtractNpcIdAndMessage(line, out var npcId, out var message))
+            return;
+
+        if (!_npcLastPlayerQuestAskUtcById.TryGetValue(npcId, out var questAskUtc))
+            return;
+
+        if (DateTime.UtcNow - questAskUtc > TimeSpan.FromSeconds(45))
+            return;
+
+        if (LooksLikeQuestDecline(message))
+            return;
+
+        if (!TryInferQuestProposalFromMessage(message, out var templateId, out var target, out var urgency))
+            return;
+
+        var intentId = BuildSyntheticQuestIntentId(npcId, templateId, target, _state.Calendar.Day);
+        if (_state.Facts.ProcessedIntents.ContainsKey(intentId))
+            return;
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            intent_id = intentId,
+            npc_id = npcId,
+            command = "propose_quest",
+            arguments = new
+            {
+                template_id = templateId,
+                target,
+                urgency
+            }
+        });
+
+        if (TryApplyNpcCommandFromLine(payload))
+        {
+            Monitor.Log(
+                $"Applied fallback propose_quest from plain chat text: template={templateId} target={target} urgency={urgency}.",
+                LogLevel.Warn);
+        }
+    }
+
+    private static bool TryExtractNpcIdAndMessage(string line, out string npcId, out string message)
+    {
+        npcId = string.Empty;
+        message = string.Empty;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("npc_id", out var npcEl) || npcEl.ValueKind != JsonValueKind.String)
+                return false;
+            if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
+                return false;
+
+            npcId = npcEl.GetString() ?? string.Empty;
+            message = msgEl.GetString() ?? string.Empty;
+            return !string.IsNullOrWhiteSpace(npcId) && !string.IsNullOrWhiteSpace(message);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool LooksLikeQuestDecline(string message)
+    {
+        var text = message.Trim().ToLowerInvariant();
+        return text.Contains("no request", StringComparison.Ordinal)
+            || text.Contains("nothing right now", StringComparison.Ordinal)
+            || text.Contains("not right now", StringComparison.Ordinal)
+            || text.Contains("don't have anything", StringComparison.Ordinal)
+            || text.Contains("do not have anything", StringComparison.Ordinal);
+    }
+
+    private bool TryInferQuestProposalFromMessage(string message, out string templateId, out string target, out string urgency)
+    {
+        templateId = string.Empty;
+        target = string.Empty;
+        urgency = "low";
+
+        var text = message.ToLowerInvariant();
+        if (ContainsAny(text, "visit", "talk to", "speak with", "check on"))
+        {
+            templateId = "social_visit";
+            target = TryFindNpcTargetInText(text) ?? "lewis";
+            urgency = InferUrgency(text);
+            return true;
+        }
+
+        if (ContainsAny(text, "mine", "mining", "ore", "coal", "quartz", "geode", "stone"))
+        {
+            templateId = "mine_resource";
+            target = TryFindResourceTargetInText(text) ?? "copper_ore";
+            urgency = InferUrgency(text);
+            return true;
+        }
+
+        if (ContainsAny(text, "deliver", "bring", "drop off", "supply"))
+        {
+            templateId = "deliver_item";
+            target = TryFindCropTargetInText(text) ?? "wheat";
+            urgency = InferUrgency(text);
+            return true;
+        }
+
+        if (ContainsAny(text, "gather", "gathering", "collect", "collecting", "harvest", "harvesting", "pick"))
+        {
+            templateId = "gather_crop";
+            target = TryFindCropTargetInText(text) ?? "parsnip";
+            urgency = InferUrgency(text);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsAny(string text, params string[] terms)
+    {
+        foreach (var term in terms)
+        {
+            if (text.Contains(term, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    private string? TryFindCropTargetInText(string text)
+    {
+        var cropCandidates = _state.Economy.Crops.Keys
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .OrderByDescending(k => k.Length)
+            .ToList();
+
+        foreach (var crop in cropCandidates)
+        {
+            if (ContainsTargetToken(text, crop))
+                return NormalizeTargetToken(crop);
+        }
+
+        var match = Regex.Match(
+            text,
+            @"\b(?:gather|gathering|collect|collecting|harvest|harvesting|pick|deliver|delivering|bring|supply|supplying)\s+(?:some\s+|a\s+|an\s+)?([a-z_]+)",
+            RegexOptions.CultureInvariant);
+        if (!match.Success)
+            return null;
+
+        return NormalizeTargetToken(match.Groups[1].Value);
+    }
+
+    private static string? TryFindResourceTargetInText(string text)
+    {
+        var resources = new[]
+        {
+            "copper_ore", "iron_ore", "gold_ore", "coal", "quartz", "stone"
+        };
+
+        foreach (var resource in resources)
+        {
+            if (ContainsTargetToken(text, resource))
+                return resource;
+        }
+
+        return null;
+    }
+
+    private string? TryFindNpcTargetInText(string text)
+    {
+        foreach (var shortName in _player2NpcIdsByShortName.Keys.OrderByDescending(n => n.Length))
+        {
+            if (ContainsTargetToken(text, shortName))
+                return NormalizeTargetToken(shortName);
+        }
+
+        var canonNpcTargets = new[]
+        {
+            "lewis", "robin", "pierre", "linus", "haley", "alex", "demetrius", "wizard", "elliott"
+        };
+        foreach (var npc in canonNpcTargets)
+        {
+            if (ContainsTargetToken(text, npc))
+                return npc;
+        }
+
+        return null;
+    }
+
+    private static bool ContainsTargetToken(string text, string target)
+    {
+        var normalizedTarget = NormalizeTargetToken(target).Replace("_", " ", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalizedTarget))
+            return false;
+
+        var pattern = $@"\b{Regex.Escape(normalizedTarget)}s?\b";
+        return Regex.IsMatch(text, pattern, RegexOptions.CultureInvariant);
+    }
+
+    private static string NormalizeTargetToken(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
+
+        var t = raw.Trim().ToLowerInvariant().Replace(" ", "_", StringComparison.Ordinal);
+        t = Regex.Replace(t, @"[^a-z0-9_]+", string.Empty, RegexOptions.CultureInvariant);
+        if (t.EndsWith("s", StringComparison.Ordinal) && t.Length > 3)
+            t = t[..^1];
+        return t;
+    }
+
+    private static string InferUrgency(string text)
+    {
+        if (ContainsAny(text, "urgent", "asap", "immediately", "right away", "critical", "high demand"))
+            return "high";
+        if (ContainsAny(text, "soon", "need", "needed", "please", "could use"))
+            return "medium";
+        return "low";
+    }
+
+    private static string BuildSyntheticQuestIntentId(string npcId, string templateId, string target, int day)
+    {
+        var baseText = $"synth_qchat_{day}_{npcId}_{templateId}_{target}".ToLowerInvariant();
+        var sanitized = Regex.Replace(baseText, @"[^a-z0-9_]+", "_", RegexOptions.CultureInvariant).Trim('_');
+        return sanitized.Length <= 120 ? sanitized : sanitized[..120];
+    }
+
+    private void EnsurePlayer2StreamReadyForChat()
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+            return;
+
+        _player2StreamDesired = true;
+        if (Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1)
+            return;
+
+        _player2NextReconnectUtc = DateTime.UtcNow;
+        _player2StreamBackoffSec = 1;
+        StartPlayer2StreamListenerAttempt();
+    }
+
+    private bool IsPlayer2StreamReadyForChat()
+    {
+        if (Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 0)
+            return false;
+        if (_player2StreamConnectedUtc == default)
+            return false;
+
+        // Small guard window so sends don't race stream handler startup.
+        return DateTime.UtcNow - _player2StreamConnectedUtc >= TimeSpan.FromMilliseconds(250);
+    }
+
+    private void QueuePendingStreamReplay(
+        string message,
+        string? targetNpcId,
+        string? requesterShortName,
+        string? senderNameOverride,
+        string? contextTag,
+        string reason)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return;
+
+        _pendingStreamReplayMessage = message;
+        _pendingStreamReplayTargetNpcId = targetNpcId;
+        _pendingStreamReplayRequesterShortName = requesterShortName;
+        _pendingStreamReplaySenderNameOverride = senderNameOverride;
+        _pendingStreamReplayContextTag = contextTag;
+        _pendingStreamReplayQueuedUtc = DateTime.UtcNow;
+        Monitor.Log($"Queued pending stream replay ({reason}).", LogLevel.Trace);
+    }
+
+    private void ClearPendingStreamReplay()
+    {
+        _pendingStreamReplayMessage = null;
+        _pendingStreamReplayTargetNpcId = null;
+        _pendingStreamReplayRequesterShortName = null;
+        _pendingStreamReplaySenderNameOverride = null;
+        _pendingStreamReplayContextTag = null;
+        _pendingStreamReplayQueuedUtc = default;
+    }
+
+    private void ResetNpcResponseTracking()
+    {
+        _npcResponseRoutingById.Clear();
+        _npcUiPendingById.Clear();
+        _npcLastReceivedMessageById.Clear();
+    }
+
+    private void StartPlayerChatHistoryFallback(string npcId, string? previousHistoryMessage)
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(npcId))
+            return;
+
+        var client = _player2Client;
+        var apiBaseUrl = _config.Player2ApiBaseUrl;
+        var p2Key = _player2Key!;
+
+        _ = Task.Run(async () =>
+        {
+            var delivered = false;
+            try
+            {
+                using var totalCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                while (!totalCts.Token.IsCancellationRequested)
+                {
+                    var latest = await client.TryGetLatestNpcHistoryMessageAsync(apiBaseUrl, p2Key, npcId, totalCts.Token);
+                    if (!string.IsNullOrWhiteSpace(latest)
+                        && !string.Equals(latest, previousHistoryMessage, StringComparison.Ordinal))
+                    {
+                        if (_npcLastReceivedMessageById.TryGetValue(npcId, out var seen)
+                            && string.Equals(seen, latest, StringComparison.Ordinal))
+                        {
+                            delivered = true;
+                            return;
+                        }
+
+                        var fallbackLine = JsonSerializer.Serialize(new { npc_id = npcId, message = latest });
+                        _pendingPlayer2ChatLines.Enqueue(fallbackLine);
+                        delivered = true;
+                        Monitor.Log("Injected history chat-response fallback for player chat.", LogLevel.Trace);
+                        return;
+                    }
+
+                    await Task.Delay(400, totalCts.Token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"History chat-response fallback failed: {ex.Message}", LogLevel.Trace);
+            }
+            finally
+            {
+                if (!delivered && _npcUiPendingById.TryGetValue(npcId, out var pending) && pending > 0)
+                {
+                    _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+                    Monitor.Log("Player chat history poll timed out with no fresh NPC response.", LogLevel.Warn);
+                }
+            }
+        });
+    }
+
+    private static string? TryBuildImmediateNpcResponseLine(string? payload, string npcId)
+    {
+        var trimmed = payload?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
+
+            var root = doc.RootElement;
+            var hasMessage = root.TryGetProperty("message", out _);
+            var hasCommand = root.TryGetProperty("command", out _);
+            if (!hasMessage && !hasCommand)
+                return null;
+
+            if (root.TryGetProperty("npc_id", out var idEl)
+                && idEl.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(idEl.GetString()))
+            {
+                return trimmed;
+            }
+
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("npc_id", npcId);
+                foreach (var prop in root.EnumerateObject())
+                {
+                    if (prop.Name.Equals("npc_id", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    writer.WritePropertyName(prop.Name);
+                    prop.Value.WriteTo(writer);
+                }
+                writer.WriteEndObject();
+                writer.Flush();
+            }
+
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+        catch
+        {
+            // Some deployments return plain message text from /chat.
+            return JsonSerializer.Serialize(new { npc_id = npcId, message = trimmed });
+        }
+    }
+
+    private static string? TryExtractNpcIdFromLine(string line)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            if (!doc.RootElement.TryGetProperty("npc_id", out var npcEl) || npcEl.ValueKind != JsonValueKind.String)
+                return null;
+
+            return npcEl.GetString();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string NormalizePlayerFacingNpcMessage(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return string.Empty;
+
+        var trimmed = message.Trim();
+        if (!TryExtractEmbeddedJsonObject(trimmed, out var payloadJson, out var prefix))
+            return trimmed;
+
+        try
+        {
+            using var payloadDoc = JsonDocument.Parse(payloadJson);
+            if (payloadDoc.RootElement.ValueKind != JsonValueKind.Object)
+                return trimmed;
+
+            var payload = payloadDoc.RootElement;
+            var looksLikeCommandPayload =
+                payload.TryGetProperty("template_id", out _)
+                || payload.TryGetProperty("command", out _)
+                || payload.TryGetProperty("arguments", out _)
+                || payload.TryGetProperty("player2_message", out _);
+
+            if (!looksLikeCommandPayload)
+                return trimmed;
+
+            if (payload.TryGetProperty("player2_message", out var player2MessageEl)
+                && player2MessageEl.ValueKind == JsonValueKind.String)
+            {
+                var player2Message = (player2MessageEl.GetString() ?? string.Empty).Trim();
+                if (!string.IsNullOrWhiteSpace(player2Message))
+                    return player2Message;
+            }
+
+            if (!string.IsNullOrWhiteSpace(prefix))
+                return prefix;
+        }
+        catch
+        {
+            // Keep original message if embedded payload parse fails.
+        }
+
+        return string.IsNullOrWhiteSpace(prefix) ? trimmed : prefix;
+    }
+
+    private static bool TryExtractEmbeddedJsonObject(string text, out string payloadJson, out string prefix)
+    {
+        payloadJson = string.Empty;
+        prefix = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var trimmed = text.Trim();
+        var start = trimmed.IndexOf('{');
+        if (start < 0)
+            return false;
+
+        var candidate = trimmed[start..].Trim();
+        if (!candidate.StartsWith("{", StringComparison.Ordinal) || !candidate.EndsWith("}", StringComparison.Ordinal))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(candidate);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return false;
+
+            payloadJson = candidate;
+            prefix = trimmed[..start].Trim();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string TryApplyPlayer2SensationalHeadlineToNpcPublish(string command, string outcomeId, string? sourceNpcId)
+    {
+        if (string.IsNullOrWhiteSpace(outcomeId))
+            return string.Empty;
+
+        var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
+        if (article is null)
+            return string.Empty;
+
+        if (!CanUsePlayer2HeadlineGenerator())
+            return string.Empty;
+
+        var client = _authenticatedPlayer2Client ?? _player2Client;
+        if (client is null)
+            return string.Empty;
+
+        try
+        {
+            client.SetCredentials(_config.Player2ApiBaseUrl, _player2Key!);
+            // Wait long enough for Player2 chat + history fallback so publish commands don't
+            // surface with a pre-headline title and then update moments later.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var generated = client
+                .TryGenerateSensationalHeadlineAsync(article.Title, article.Category, article.Content, cts.Token)
+                .GetAwaiter()
+                .GetResult();
+
+            var normalized = NormalizeGeneratedHeadline(generated);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                Monitor.Log($"Player2 headline empty for {command}; keeping original title.", LogLevel.Trace);
+                return string.Empty;
+            }
+
+            Monitor.Log($"Applied Player2 sensational headline for {command}: {normalized}", LogLevel.Trace);
+
+            return normalized;
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Player2 sensational headline skipped for {command}: {ex.Message}", LogLevel.Trace);
+            return string.Empty;
+        }
+    }
+
+    private bool CanUsePlayer2HeadlineGenerator()
+    {
+        if (!_config.EnablePlayer2)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(_config.Player2ApiBaseUrl) || string.IsNullOrWhiteSpace(_player2Key))
+            return false;
+
+        return _authenticatedPlayer2Client is not null || _player2Client is not null;
+    }
+
+    private NewspaperArticle? FindNpcPublishedArticleForOutcome(string command, string outcomeId, string? sourceNpcId)
+    {
+        var candidates = _state.Newspaper.Articles
+            .Where(a =>
+                a.Day == _state.Calendar.Day
+                && a.ExpirationDay >= _state.Calendar.Day
+                && a.IsNpcPublished)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(sourceNpcId))
+        {
+            var sourceShortName = _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
+                ? shortName
+                : null;
+            candidates = candidates
+                .Where(a =>
+                    string.Equals(a.SourceNpc, sourceNpcId, StringComparison.OrdinalIgnoreCase)
+                    || (!string.IsNullOrWhiteSpace(sourceShortName)
+                        && string.Equals(a.SourceNpc, sourceShortName, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
+
+        var byTitle = candidates.LastOrDefault(a => string.Equals(a.Title, outcomeId, StringComparison.OrdinalIgnoreCase));
+        if (byTitle is not null)
+            return byTitle;
+
+        if (command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase))
+        {
+            var rumorCandidate = candidates.LastOrDefault(a => a.Category.Equals("social", StringComparison.OrdinalIgnoreCase));
+            if (rumorCandidate is not null)
+                return rumorCandidate;
+        }
+
+        return candidates.LastOrDefault();
+    }
+
+    private void TryApplyNpcPublishSourceName(string command, string outcomeId, string? sourceNpcId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceNpcId))
+            return;
+
+        if (!_player2NpcShortNameById.TryGetValue(sourceNpcId, out var sourceShortName)
+            || string.IsNullOrWhiteSpace(sourceShortName))
+        {
+            return;
+        }
+
+        var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
+        if (article is null)
+            return;
+
+        article.SourceNpc = ResolvePublishSourceNpcName(sourceShortName);
+    }
+
+    private static string ResolvePublishSourceNpcName(string sourceShortName)
+    {
+        var shortName = (sourceShortName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(shortName))
+            return shortName;
+
+        // Preserve vanilla names as-is; only map non-vanilla short names through strict aliases.
+        if (Game1.getCharacterFromName(shortName) is not null)
+            return shortName;
+
+        if (PublishSourceNpcFallbackMap.TryGetValue(shortName, out var mapped) && !string.IsNullOrWhiteSpace(mapped))
+            return mapped;
+
+        return shortName;
+    }
+
+    private static string NormalizeGeneratedHeadline(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var headline = value
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim()
+            .Trim('"')
+            .Trim('\'')
+            .Trim();
+
+        if (headline.StartsWith("headline:", StringComparison.OrdinalIgnoreCase))
+            headline = headline["headline:".Length..].Trim();
+
+        if (headline.StartsWith("<", StringComparison.Ordinal))
+        {
+            var closing = headline.IndexOf('>');
+            if (closing > 0 && closing + 1 < headline.Length)
+                headline = headline[(closing + 1)..].Trim();
+        }
+
+        return headline;
+    }
+
+    private string TryClampNpcPublishArticleAsLastResort(string command, string outcomeId, string? sourceNpcId)
+    {
+        var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
+        if (article is null)
+            return outcomeId;
+
+        if (!TryClampNpcPublishArticleInPlace(article))
+            return article.Title;
+
+        Monitor.Log(
+            $"Applied fallback clamp for {command} to keep title+content <= {MaxNpcPublishCombinedCharacters}: '{article.Title}'",
+            LogLevel.Trace);
+
+        return article.Title;
+    }
+
+    private static bool TryClampNpcPublishArticleInPlace(NewspaperArticle article)
+    {
+        var title = (article.Title ?? string.Empty).Trim();
+        var content = (article.Content ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
+            return false;
+
+        if (title.Length + content.Length <= MaxNpcPublishCombinedCharacters)
+        {
+            article.Title = title;
+            article.Content = content;
+            return false;
+        }
+
+        var maxTitleLength = Math.Max(1, MaxNpcPublishCombinedCharacters - 1);
+        if (title.Length > maxTitleLength)
+            title = title[..maxTitleLength].TrimEnd();
+
+        if (string.IsNullOrWhiteSpace(title))
+            return false;
+
+        var maxContentLength = MaxNpcPublishCombinedCharacters - title.Length;
+        if (maxContentLength <= 0)
+        {
+            title = title[..Math.Max(1, MaxNpcPublishCombinedCharacters - 1)].TrimEnd();
+            maxContentLength = MaxNpcPublishCombinedCharacters - title.Length;
+        }
+
+        if (maxContentLength <= 0)
+            return false;
+
+        if (content.Length > maxContentLength)
+            content = content[..maxContentLength].TrimEnd();
+
+        if (string.IsNullOrWhiteSpace(content))
+            return false;
+
+        var changed = !string.Equals(article.Title, title, StringComparison.Ordinal)
+            || !string.Equals(article.Content, content, StringComparison.Ordinal);
+
+        article.Title = title;
+        article.Content = content;
+        return changed;
+    }
+
+    private bool TryReplaceTodayIssueWithNpcArticle(string command, string outcomeId, string? headlineOverride = null)
+    {
+        if (string.IsNullOrWhiteSpace(outcomeId))
+            return false;
+
+        var todayIssue = _state.Newspaper.Issues.FirstOrDefault(i => i.Day == _state.Calendar.Day);
+        if (todayIssue is null)
+            return false;
+
+        var article = _state.Newspaper.Articles
+            .LastOrDefault(a =>
+                a.Day == _state.Calendar.Day
+                && a.ExpirationDay >= _state.Calendar.Day
+                && (string.Equals(a.Title, outcomeId, StringComparison.OrdinalIgnoreCase)
+                    || (command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(a.Title, $"Rumor: {outcomeId}", StringComparison.OrdinalIgnoreCase))));
+
+        if (article is null)
+            return false;
+
+        todayIssue.Articles.Clear();
+        todayIssue.Articles.Add(article);
+        var cleanHeadlineOverride = (headlineOverride ?? string.Empty).Trim();
+        todayIssue.Headline = string.IsNullOrWhiteSpace(cleanHeadlineOverride)
+            ? article.Title
+            : cleanHeadlineOverride;
+        return true;
     }
 
     private void ShowNewspaperCommandNotification(string command, string outcomeId, string? sourceNpcId)
@@ -2084,7 +3496,7 @@ public sealed class ModEntry : Mod
             && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
             && !string.IsNullOrWhiteSpace(shortName))
         {
-            sourceName = shortName;
+            sourceName = ResolvePublishSourceNpcName(shortName);
         }
 
         string message;

@@ -106,6 +106,21 @@ public sealed class NewspaperMenu : IClickableMenu
         b.DrawString(Game1.smallFont, "Community News", new Vector2(paperRect.X + 30, y), new Color(50, 30, 20));
         y += 50; // Extra spacing for portrait (portrait is 40px tall, category badge is ~14px)
 
+        var useSingleColumn = _issue.Articles.Any(a => a.IsNpcPublished);
+        if (useSingleColumn)
+        {
+            var singleColumnX = paperRect.X + 30;
+            var singleColumnWidth = paperRect.Width - 60;
+            var singleColumnY = y;
+            foreach (var article in _issue.Articles)
+            {
+                DrawArticle(b, article, singleColumnX, ref singleColumnY, singleColumnWidth);
+                singleColumnY += 16;
+            }
+
+            return singleColumnY;
+        }
+
         // Two-column layout
         var columnGap = 30;
         var sideMargin = 30;
@@ -172,6 +187,8 @@ public sealed class NewspaperMenu : IClickableMenu
                 {
                     "The Pelican Times" => "Lewis",
                     "Pelican Times Editor" => "Elliott",
+                    "Town Reporter" => "Elliott",
+                    "Town Report" => "Elliott",
                     _ => article.SourceNpc
                 };
                 var npc = Game1.getCharacterFromName(npcName);
@@ -202,6 +219,7 @@ public sealed class NewspaperMenu : IClickableMenu
             {
                 "Debug" => "Anonymous",
                 "Pelican Times Editor" => "Editor",
+                "Town Report" => "Town Reporter",
                 _ => article.SourceNpc
             };
             b.DrawString(Game1.smallFont, displayName, new Vector2(textX, y), new Color(40, 20, 10));

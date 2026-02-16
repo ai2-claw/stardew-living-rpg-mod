@@ -128,7 +128,7 @@ public sealed class Player2Client
         return npcId;
     }
 
-    public async Task SendNpcChatAsync(string apiBaseUrl, string p2Key, string npcId, NpcChatRequest req, CancellationToken ct)
+    public async Task<string?> SendNpcChatAsync(string apiBaseUrl, string p2Key, string npcId, NpcChatRequest req, CancellationToken ct)
     {
         var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
         using var msg = new HttpRequestMessage(HttpMethod.Post, url)
@@ -138,7 +138,9 @@ public sealed class Player2Client
         msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
 
         using var res = await _http.SendAsync(msg, ct);
+        var body = await res.Content.ReadAsStringAsync(ct);
         res.EnsureSuccessStatusCode();
+        return string.IsNullOrWhiteSpace(body) ? null : body;
     }
 
     public async Task<JoulesResponse> GetJoulesAsync(string apiBaseUrl, string p2Key, CancellationToken ct)
@@ -157,7 +159,8 @@ public sealed class Player2Client
 
     public async Task<string> GenerateSensationalHeadlineAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
     {
-        return await GenerateSensationalHeadlineCoreAsync(apiBaseUrl, p2Key, articleTitle, articleCategory, articleContent, ct);
+        var headline = await TryGenerateSensationalHeadlineAsync(apiBaseUrl, p2Key, articleTitle, articleCategory, articleContent, ct);
+        return string.IsNullOrWhiteSpace(headline) ? FallbackHeadline(articleTitle) : headline;
     }
 
     /// <summary>
@@ -165,17 +168,30 @@ public sealed class Player2Client
     /// </summary>
     public async Task<string> GenerateSensationalHeadlineAsync(string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(_apiBaseUrl) || string.IsNullOrEmpty(_p2Key))
-            return FallbackHeadline(articleTitle);
-
-        return await GenerateSensationalHeadlineCoreAsync(_apiBaseUrl, _p2Key, articleTitle, articleCategory, articleContent, ct);
+        var headline = await TryGenerateSensationalHeadlineAsync(articleTitle, articleCategory, articleContent, ct);
+        return string.IsNullOrWhiteSpace(headline) ? FallbackHeadline(articleTitle) : headline;
     }
 
-    private async Task<string> GenerateSensationalHeadlineCoreAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
+    public async Task<string?> TryGenerateSensationalHeadlineAsync(string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
     {
-        var fallback = FallbackHeadline(articleTitle);
+        if (string.IsNullOrEmpty(_apiBaseUrl) || string.IsNullOrEmpty(_p2Key))
+            return null;
+
+        return await TryGenerateSensationalHeadlineCoreAsync(_apiBaseUrl, _p2Key, articleTitle, articleCategory, articleContent, ct);
+    }
+
+    public async Task<string?> TryGenerateSensationalHeadlineAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
+    {
         if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(p2Key))
-            return fallback;
+            return null;
+
+        return await TryGenerateSensationalHeadlineCoreAsync(apiBaseUrl, p2Key, articleTitle, articleCategory, articleContent, ct);
+    }
+
+    private async Task<string?> TryGenerateSensationalHeadlineCoreAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(p2Key))
+            return null;
 
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -222,7 +238,7 @@ public sealed class Player2Client
             }
         }
 
-        return fallback;
+        return null;
     }
 
     private async Task<string> EnsureHeadlineEditorNpcIdAsync(string apiBaseUrl, string p2Key, CancellationToken ct)
@@ -274,6 +290,11 @@ public sealed class Player2Client
         }
 
         return null;
+    }
+
+    public async Task<string?> TryGetLatestNpcHistoryMessageAsync(string apiBaseUrl, string p2Key, string npcId, CancellationToken ct)
+    {
+        return await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
     }
 
     private async Task<string?> TryGetLatestNpcMessageFromHistoryAsync(string apiBaseUrl, string p2Key, string npcId, CancellationToken ct)
@@ -767,9 +788,9 @@ public sealed class Player2Client
 
     /// <summary>
     /// Long-lived NDJSON stream reader for /npcs/responses.
-    /// Calls onLine for each non-empty line until cancelled or stream closes.
+    /// Calls onConnected once headers are received, then onLine for each non-empty line until cancelled or stream closes.
     /// </summary>
-    public async Task StreamNpcResponsesAsync(string apiBaseUrl, string p2Key, Func<string, Task> onLine, CancellationToken ct)
+    public async Task StreamNpcResponsesAsync(string apiBaseUrl, string p2Key, Func<string, Task> onLine, CancellationToken ct, Func<Task>? onConnected = null)
     {
         var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/responses";
         using var msg = new HttpRequestMessage(HttpMethod.Get, url);
@@ -778,6 +799,8 @@ public sealed class Player2Client
 
         using var res = await _http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct);
         res.EnsureSuccessStatusCode();
+        if (onConnected is not null)
+            await onConnected();
 
         await using var stream = await res.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream);
