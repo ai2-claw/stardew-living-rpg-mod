@@ -81,6 +81,13 @@ public sealed class NpcSpeechStyleService
             ? $"REPUTATION_MODIFIER: Address player with honorific '{honorific}' at least once when natural."
             : string.Empty;
 
+        var relationshipModifier = heartLevel switch
+        {
+            <= 2 => "RELATIONSHIP_RULE: Keep tone reserved and polite. Do not use affectionate, flirty, or over-familiar language. Avoid pet names/endearments.",
+            >= 6 => "RELATIONSHIP_RULE: Warmth is allowed, but stay natural and in-character for this NPC.",
+            _ => "RELATIONSHIP_RULE: Keep tone neutral-friendly without intimate language."
+        };
+
         return string.Join(" ",
             $"SPEECH_PROFILE: {profile}.",
             $"HEART_CONTEXT: {heartLevel} hearts ({warmthBand}).",
@@ -88,6 +95,7 @@ public sealed class NpcSpeechStyleService
             $"STYLE_RULES: {stylePrimer}",
             $"WARMTH_RULE: {warmthModifier}",
             $"CONTRACTION_RULE: {contractionRule}",
+            relationshipModifier,
             rainModifier,
             reputationModifier
         ).Trim();

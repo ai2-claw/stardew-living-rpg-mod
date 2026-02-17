@@ -534,6 +534,8 @@ public sealed class ModEntry : Mod
     {
         var npcName = string.IsNullOrWhiteSpace(npc.Name) ? npc.displayName : npc.Name;
         var profile = _npcSpeechStyleService?.GetProfile(npcName) ?? NpcVerbalProfile.Traditionalist;
+        var heartLevel = GetNpcHeartLevel(npcName);
+        var isReserved = heartLevel <= 2;
         var dayPeriod = Game1.timeOfDay switch
         {
             < 1200 => "morning",
@@ -544,6 +546,18 @@ public sealed class ModEntry : Mod
 
         if (IsFirstInteractionWithNpc(npcName))
         {
+            if (isReserved)
+            {
+                return profile switch
+                {
+                    NpcVerbalProfile.Professional => $"Good {dayPeriod}. I do not think we have spoken before.",
+                    NpcVerbalProfile.Intellectual => $"Good {dayPeriod}. I do not believe we have met properly.",
+                    NpcVerbalProfile.Enthusiast => $"Good {dayPeriod}. I do not think we have talked before.",
+                    NpcVerbalProfile.Recluse => $"...Good {dayPeriod}. I do not know you yet.",
+                    _ => $"Good {dayPeriod}, Farmer. I do not think we have spoken before."
+                };
+            }
+
             return profile switch
             {
                 NpcVerbalProfile.Professional => $"Good {dayPeriod}. I do not think we have chatted properly before. Name's {npc.displayName}.",
@@ -557,7 +571,7 @@ public sealed class ModEntry : Mod
         var greetings = new List<string>();
         var weather = GetCurrentWeatherLabel();
 
-        if (TryBuildMemoryGreeting(npcName, out var memoryGreeting))
+        if (!isReserved && TryBuildMemoryGreeting(npcName, heartLevel, out var memoryGreeting))
             greetings.Add(memoryGreeting);
         if (TryBuildTownPulseGreeting(out var townGreeting))
             greetings.Add(townGreeting);
@@ -566,22 +580,35 @@ public sealed class ModEntry : Mod
 
         var baseGreeting = profile switch
         {
-            NpcVerbalProfile.Professional => $"Good {dayPeriod}. Keeping things steady around town today.",
-            NpcVerbalProfile.Intellectual => $"Good {dayPeriod}. I have been making a few observations around town.",
-            NpcVerbalProfile.Enthusiast => $"Hey! Good {dayPeriod}! The town feels lively today.",
-            NpcVerbalProfile.Recluse => $"...{dayPeriod} then. Town is quieter than usual.",
-            _ => $"Good {dayPeriod}, Farmer. How are things on your side?"
+            NpcVerbalProfile.Professional => isReserved
+                ? $"Good {dayPeriod}. Is there something specific you needed?"
+                : $"Good {dayPeriod}. Keeping things steady around town today.",
+            NpcVerbalProfile.Intellectual => isReserved
+                ? $"Good {dayPeriod}. Have you come by for something specific?"
+                : $"Good {dayPeriod}. I have been making a few observations around town.",
+            NpcVerbalProfile.Enthusiast => isReserved
+                ? $"Good {dayPeriod}. Need anything around town?"
+                : $"Hey! Good {dayPeriod}! The town feels lively today.",
+            NpcVerbalProfile.Recluse => isReserved
+                ? $"...{dayPeriod}. What do you need?"
+                : $"...{dayPeriod} then. Town is quieter than usual.",
+            _ => isReserved
+                ? $"Good {dayPeriod}, Farmer. What can I do for you?"
+                : $"Good {dayPeriod}, Farmer. How are things on your side?"
         };
         greetings.Add(baseGreeting);
 
         if (weather == "rain")
         {
-            greetings.Add(profile switch
-            {
-                NpcVerbalProfile.Professional => "Rain's slowing everyone down a little, but we'll manage.",
-                NpcVerbalProfile.Recluse => "Rain again... keeps people indoors.",
-                _ => "Rain's settled in over town today."
-            });
+            if (isReserved)
+                greetings.Add("Rain's coming down steadily today.");
+            else
+                greetings.Add(profile switch
+                {
+                    NpcVerbalProfile.Professional => "Rain's slowing everyone down a little, but we'll manage.",
+                    NpcVerbalProfile.Recluse => "Rain again... keeps people indoors.",
+                    _ => "Rain's settled in over town today."
+                });
         }
         else if (weather == "snow")
         {
@@ -591,7 +618,7 @@ public sealed class ModEntry : Mod
         return greetings[_ambientNpcRandom.Next(greetings.Count)];
     }
 
-    private bool TryBuildMemoryGreeting(string npcName, out string greeting)
+    private bool TryBuildMemoryGreeting(string npcName, int heartLevel, out string greeting)
     {
         greeting = string.Empty;
         if (string.IsNullOrWhiteSpace(npcName))
@@ -606,9 +633,17 @@ public sealed class ModEntry : Mod
 
         var topic = lastTurn.Tags?.FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
         if (!string.IsNullOrWhiteSpace(topic))
-            greeting = $"Hey, I was still thinking about what you said on {topic}.";
+        {
+            greeting = heartLevel >= 6
+                ? $"Hey, I was still thinking about what you said on {topic}."
+                : $"I was still thinking about what you said on {topic}.";
+        }
         else
-            greeting = "Hey, good to see you again.";
+        {
+            greeting = heartLevel >= 6
+                ? "Hey, good to see you again."
+                : "Good to see you again.";
+        }
 
         return !string.IsNullOrWhiteSpace(greeting);
     }
@@ -3088,6 +3123,7 @@ public sealed class ModEntry : Mod
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
             speechStyleBlock,
+            "RELATIONSHIP_RULE: Match familiarity to STATE: RelationshipHearts. At 0-2 hearts, keep distance and avoid affectionate language.",
             "TIME_RULE: If asked for time, answer with hour and minute plus AM/PM (for example: 6:30 AM). Never answer with minutes only.",
             "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
             "QUEST_RULE: Never give text-only task offers without propose_quest.",
