@@ -37,14 +37,17 @@ public sealed class RumorBoardMenu : IClickableMenu
     private Rectangle _acceptButton;
     private Rectangle _completeButton;
     private Rectangle _askWorkButton;
+    private readonly ClickableTextureComponent _closeButton;
 
     private const int VisibleQuestRows = 7;
     private const int SectionLeftMargin = 36;
-    private const int SectionTopY = 130;
+    private const int SectionTopY = 116;
     private const int SectionWidth = 410;
     private const int SectionRowHeight = 44;
     private const int SectionRowGap = 8;
-    private const int SectionRowsStartOffset = 45;
+    private const int SectionRowsStartOffset = 36;
+    private const int DetailPanelHeight = 190;
+    private const int DetailBottomPadding = 36;
 
     public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork, Func<string>? getExternalStatus = null)
         : base(
@@ -59,6 +62,11 @@ public sealed class RumorBoardMenu : IClickableMenu
         _monitor = monitor;
         _onAskMayorForWork = onAskMayorForWork;
         _getExternalStatus = getExternalStatus;
+        _closeButton = new ClickableTextureComponent(
+            new Rectangle(xPositionOnScreen + width - 68, yPositionOnScreen + 20, 48, 48),
+            Game1.mouseCursors,
+            new Rectangle(337, 494, 12, 12),
+            4f);
         _lastAvailableCount = _state.Quests.Available.Count;
         _lastActiveCount = _state.Quests.Active.Count;
         BuildLayout();
@@ -88,8 +96,8 @@ public sealed class RumorBoardMenu : IClickableMenu
             ry += SectionRowHeight + SectionRowGap;
         }
 
-        var detailY = yPositionOnScreen + height - 230;
-        var buttonY = detailY + 165;
+        var detailPanel = GetDetailPanelBounds();
+        var buttonY = detailPanel.Bottom - 52;
         _acceptButton = new Rectangle(xPositionOnScreen + 50, buttonY, 160, 44);
         _completeButton = new Rectangle(xPositionOnScreen + 225, buttonY, 190, 44);
         _askWorkButton = new Rectangle(xPositionOnScreen + width - 265, buttonY, 210, 44);
@@ -117,6 +125,15 @@ public sealed class RumorBoardMenu : IClickableMenu
         var y = yPositionOnScreen + SectionTopY + SectionRowsStartOffset;
         var listHeight = (SectionRowHeight * VisibleQuestRows) + (SectionRowGap * (VisibleQuestRows - 1));
         return new Rectangle(x, y, SectionWidth, listHeight);
+    }
+
+    private Rectangle GetDetailPanelBounds()
+    {
+        return new Rectangle(
+            xPositionOnScreen + 32,
+            yPositionOnScreen + height - DetailPanelHeight - DetailBottomPadding,
+            width - 64,
+            DetailPanelHeight);
     }
 
     public override void receiveScrollWheelAction(int direction)
@@ -156,6 +173,12 @@ public sealed class RumorBoardMenu : IClickableMenu
     public override void receiveLeftClick(int x, int y, bool playSound = true)
     {
         base.receiveLeftClick(x, y, playSound);
+
+        if (_closeButton.containsPoint(x, y))
+        {
+            exitThisMenu(playSound);
+            return;
+        }
 
         foreach (var (quest, rect) in _availableRows)
         {
@@ -232,6 +255,12 @@ public sealed class RumorBoardMenu : IClickableMenu
         }
     }
 
+    public override void performHoverAction(int x, int y)
+    {
+        base.performHoverAction(x, y);
+        _closeButton.tryHover(x, y);
+    }
+
     public override void draw(SpriteBatch b)
     {
         SyncDetailMessageFromExternalStatus();
@@ -250,6 +279,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         DrawSection(b, "Available", _availableRows, isActiveSection: false);
         DrawSection(b, "Active", _activeRows, isActiveSection: true);
         DrawDetailPanel(b);
+        _closeButton.draw(b);
 
         drawMouse(b);
     }
@@ -257,13 +287,18 @@ public sealed class RumorBoardMenu : IClickableMenu
     private void DrawSection(SpriteBatch b, string label, List<(QuestEntry Quest, Rectangle Rect)> rows, bool isActiveSection)
     {
         var labelX = rows.Count > 0 ? rows[0].Rect.X : (isActiveSection ? xPositionOnScreen + width - 454 : xPositionOnScreen + 24);
-        var labelY = rows.Count > 0 ? rows[0].Rect.Y - 45 : yPositionOnScreen + 130;
-        SpriteText.drawString(b, label, (int)labelX, (int)labelY);
+        var labelY = rows.Count > 0 ? rows[0].Rect.Y - 24 : yPositionOnScreen + SectionTopY + 6;
+        var labelPos = new Vector2(labelX, labelY);
+        const float labelScale = 0.8f;
+        b.DrawString(Game1.smallFont, label, labelPos, new Color(70, 110, 185), 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
 
         if (rows.Count > 0)
         {
             foreach (var (quest, rect) in rows)
             {
+                // Row container drop shadow.
+                b.Draw(Game1.staminaRect, new Rectangle(rect.X + 2, rect.Y + 2, rect.Width, rect.Height), Color.Black * 0.18f);
+
                 if (_selectedQuest?.QuestId == quest.QuestId)
                 {
                     IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(375, 357, 3, 3), rect.X, rect.Y, rect.Width, rect.Height, Color.White, 4f, false);
@@ -309,7 +344,7 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     private void DrawDetailPanel(SpriteBatch b)
     {
-        var panel = new Rectangle(xPositionOnScreen + 32, yPositionOnScreen + height - 230, width - 64, 215);
+        var panel = GetDetailPanelBounds();
         IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(384, 396, 15, 15), panel.X, panel.Y, panel.Width, panel.Height, Color.White, 4f, false);
 
         if (_selectedQuest is null)
@@ -381,7 +416,6 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         var size = Game1.smallFont.MeasureString(text);
         var pos = new Vector2(rect.X + (rect.Width - size.X) / 2f, rect.Y + (rect.Height - size.Y) / 2f);
-        b.DrawString(Game1.smallFont, text, pos + new Vector2(2f, 2f), Color.Black * 0.4f);
         b.DrawString(Game1.smallFont, text, pos, enabled ? Game1.textColor : Game1.textColor * 0.5f);
     }
 
