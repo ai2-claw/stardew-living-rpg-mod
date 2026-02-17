@@ -36,6 +36,14 @@ public sealed class ModEntry : Mod
     private static readonly FieldInfo? RealMsPerGameMinuteField = typeof(Game1).GetField(
         "realMilliSecondsPerGameMinute",
         BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+    private static readonly MethodInfo? UpdateAmbientLightingMethod = typeof(GameLocation).GetMethod(
+        "_updateAmbientLighting",
+        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+        binder: null,
+        types: Type.EmptyTypes,
+        modifiers: null);
+    private static readonly GameTime NpcChatZeroGameTime = new(TimeSpan.Zero, TimeSpan.Zero);
+    private static readonly GameTime NpcChatVisualRefreshGameTime = new(TimeSpan.Zero, TimeSpan.FromMilliseconds(16d));
 
     private sealed class NpcPublishHeadlineUpdate
     {
@@ -157,6 +165,8 @@ public sealed class ModEntry : Mod
     private DateTime _npcChatClockLastTickUtc;
     private double _npcChatClockAccumulatorMs;
     private bool _npcChatClockMethodMissingLogged;
+    private bool _npcChatVisualRefreshFailedLogged;
+    private bool _npcChatLocationUpdateFailedLogged;
 
     public override void Entry(IModHelper helper)
     {
@@ -732,6 +742,7 @@ public sealed class ModEntry : Mod
 
         // Clamp to avoid huge jumps after tabbing out.
         elapsedMs = Math.Min(elapsedMs, 250d);
+        TryUpdateNpcChatLocationVisuals(elapsedMs);
         _npcChatClockAccumulatorMs += elapsedMs;
 
         var msPerClockStep = GetNpcChatClockStepMs(Game1.currentLocation);
@@ -785,6 +796,7 @@ public sealed class ModEntry : Mod
         try
         {
             PerformTenMinuteClockUpdateMethod.Invoke(null, null);
+            TryRefreshNpcChatVisuals();
             return true;
         }
         catch (Exception ex)
@@ -796,6 +808,53 @@ public sealed class ModEntry : Mod
             }
 
             return false;
+        }
+    }
+
+    private void TryRefreshNpcChatVisuals()
+    {
+        var location = Game1.currentLocation;
+        if (location is null)
+            return;
+
+        try
+        {
+            Game1.UpdateGameClock(NpcChatZeroGameTime);
+            Game1.updateWeather(NpcChatVisualRefreshGameTime);
+            UpdateAmbientLightingMethod?.Invoke(location, null);
+        }
+        catch (Exception ex)
+        {
+            if (_npcChatVisualRefreshFailedLogged)
+                return;
+
+            _npcChatVisualRefreshFailedLogged = true;
+            Monitor.Log($"NPC chat lighting refresh failed: {ex.Message}", LogLevel.Trace);
+        }
+    }
+
+    private void TryUpdateNpcChatLocationVisuals(double elapsedMs)
+    {
+        var location = Game1.currentLocation;
+        if (location is null)
+            return;
+
+        var ms = Math.Clamp(elapsedMs, 1d, 250d);
+        var gameTime = new GameTime(TimeSpan.FromMilliseconds(ms), TimeSpan.FromMilliseconds(ms));
+
+        try
+        {
+            Game1.UpdateGameClock(gameTime);
+            Game1.updateWeather(gameTime);
+            UpdateAmbientLightingMethod?.Invoke(location, null);
+        }
+        catch (Exception ex)
+        {
+            if (_npcChatLocationUpdateFailedLogged)
+                return;
+
+            _npcChatLocationUpdateFailedLogged = true;
+            Monitor.Log($"NPC chat location visual update failed: {ex.Message}", LogLevel.Trace);
         }
     }
 
