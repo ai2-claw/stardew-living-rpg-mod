@@ -490,6 +490,7 @@ public sealed class ModEntry : Mod
     private void OpenNpcChatMenu(NPC npc)
     {
         var npcName = npc.Name ?? npc.displayName;
+        var heartLevel = GetNpcHeartLevel(npcName);
         var npcIdForChat = _player2NpcIdsByShortName.TryGetValue(npcName, out var knownNpcId)
             ? knownNpcId
             : _activeNpcId;
@@ -504,7 +505,8 @@ public sealed class ModEntry : Mod
                     SendPlayer2ChatInternal(text);
             },
             () => string.IsNullOrWhiteSpace(npcIdForChat) ? null : DequeueNpcUiMessage(npcIdForChat),
-            () => !string.IsNullOrWhiteSpace(npcIdForChat) && IsNpcThinking(npcIdForChat));
+            () => !string.IsNullOrWhiteSpace(npcIdForChat) && IsNpcThinking(npcIdForChat),
+            heartLevel);
     }
 
     private bool HasPendingQuestForNpc(string npcName)

@@ -12,6 +12,7 @@ namespace StardewLivingRPG.UI;
 public sealed class NpcChatInputMenu : IClickableMenu
 {
     private readonly string _npcName;
+    private readonly int _heartLevel;
     private readonly Action<string> _onSend;
     private readonly Func<string?>? _pollIncoming;
     private readonly Func<bool>? _isThinking;
@@ -47,7 +48,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
         string npcName,
         Action<string> onSend,
         Func<string?>? pollIncoming = null,
-        Func<bool>? isThinking = null)
+        Func<bool>? isThinking = null,
+        int heartLevel = 0)
         : base(
             Game1.uiViewport.Width / 2 - (MenuWidth / 2),
             Game1.uiViewport.Height / 2 - (MenuHeight / 2),
@@ -56,6 +58,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
             true)
     {
         _npcName = npcName;
+        _heartLevel = Math.Max(0, heartLevel);
         _onSend = onSend;
         _pollIncoming = pollIncoming;
         _isThinking = isThinking;
@@ -291,7 +294,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
         // 2. Parchment Area
         DrawParchment(b);
 
-        // 3. Portrait
+        // 3. NPC header and portrait
+        DrawNpcHeader(b);
         DrawPortrait(b);
 
         // 4. Conversation Text
@@ -331,6 +335,23 @@ public sealed class NpcChatInputMenu : IClickableMenu
         Utility.drawTextWithShadow(b, btnText, Game1.smallFont, textPos, btnTextColor);
 
         drawMouse(b);
+    }
+
+    private void DrawNpcHeader(SpriteBatch b)
+    {
+        var nameLabel = string.IsNullOrWhiteSpace(_npcName) ? "Villager" : _npcName;
+        var heartLabel = _heartLevel == 1 ? "Heart" : "Hearts";
+        var header = $"{nameLabel} | {_heartLevel} {heartLabel}";
+        var textSize = Game1.smallFont.MeasureString(header);
+
+        float x = _portraitRegion.X + (_portraitRegion.Width - textSize.X) / 2f;
+        float y = Math.Max(_parchmentRegion.Y + 10f, _portraitRegion.Y - Game1.smallFont.LineSpacing - 12f);
+        Utility.drawTextWithShadow(b, header, Game1.smallFont, new Vector2(x, y), new Color(72, 46, 24));
+
+        int lineWidth = Math.Max(120, (int)textSize.X + 12);
+        int lineX = _portraitRegion.X + (_portraitRegion.Width - lineWidth) / 2;
+        int lineY = (int)(y + Game1.smallFont.LineSpacing + 2f);
+        b.Draw(Game1.staminaRect, new Rectangle(lineX, lineY, lineWidth, 1), Color.BurlyWood * 0.9f);
     }
 
     private void DrawParchment(SpriteBatch b)
