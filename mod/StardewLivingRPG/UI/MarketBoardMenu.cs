@@ -100,7 +100,7 @@ public sealed class MarketBoardMenu : IClickableMenu
         else
             season = "Spring";
 
-        string dateStr = $"Day {_state.Calendar.Day} ({season}) • Price: Free";
+        string dateStr = $"Day {_state.Calendar.Day} ({season}) - Price: Free";
         Vector2 dateSize = Game1.smallFont.MeasureString(dateStr);
         b.DrawString(Game1.smallFont, dateStr, new Vector2(centerX - dateSize.X / 2f, topY + 45), new Color(80, 60, 40));
 
@@ -112,11 +112,7 @@ public sealed class MarketBoardMenu : IClickableMenu
 
     private void DrawCropsGrid(SpriteBatch b, Rectangle paperRect, int startY)
     {
-        // Get top crops sorted by TrendEma
-        var topCrops = _state.Economy.Crops
-            .OrderByDescending(kv => kv.Value.TrendEma)
-            .Take(ColumnCount * RowCount)
-            .ToList();
+        var topCrops = SelectTopBoardEntries();
 
         var gridStartX = paperRect.X + (paperRect.Width - (ColumnCount * CropEntryWidth + (ColumnCount - 1) * ColumnGap)) / 2;
 
@@ -153,7 +149,7 @@ public sealed class MarketBoardMenu : IClickableMenu
         var nameY = y + 8;
 
         // Name
-        var displayName = char.ToUpper(cropName[0]) + cropName.Substring(1);
+        var displayName = QuestTextHelper.PrettyName(cropName);
         b.DrawString(Game1.smallFont, displayName, new Vector2(textX, nameY), new Color(60, 40, 20));
 
         // Price with trend indicator
@@ -243,17 +239,75 @@ public sealed class MarketBoardMenu : IClickableMenu
     private static string GetTrendArrow(CropEconomyEntry entry)
     {
         if (entry.TrendEma > 0.05f)
-            return "↑↑↑";
+            return "^^^";
         if (entry.TrendEma > 0.02f)
-            return "↑↑";
+            return "^^";
         if (entry.TrendEma > 0f)
-            return "↑";
+            return "^";
         if (entry.TrendEma < -0.05f)
-            return "↓↓↓";
+            return "vvv";
         if (entry.TrendEma < -0.02f)
-            return "↓↓";
+            return "vv";
         if (entry.TrendEma < 0f)
-            return "↓";
-        return "→";
+            return "v";
+        return "->";
+    }
+
+    private List<KeyValuePair<string, CropEconomyEntry>> SelectTopBoardEntries()
+    {
+        return _state.Economy.Crops
+            .Select(kv => new
+            {
+                kv.Key,
+                kv.Value,
+                Score = ComputeBoardRelevance(kv.Value),
+                TieBreaker = ComputeDailyTieBreaker(kv.Key, _state.Calendar.Day)
+            })
+            .OrderByDescending(x => x.Score)
+            .ThenByDescending(x => Math.Abs(x.Value.PriceToday - x.Value.PriceYesterday))
+            .ThenByDescending(x => Math.Abs(x.Value.TrendEma))
+            .ThenByDescending(x => x.TieBreaker)
+            .Take(ColumnCount * RowCount)
+            .Select(x => new KeyValuePair<string, CropEconomyEntry>(x.Key, x.Value))
+            .ToList();
+    }
+
+    private static float ComputeBoardRelevance(CropEconomyEntry entry)
+    {
+        var yesterday = Math.Max(1, entry.PriceYesterday);
+        var dailyDeltaPct = Math.Abs(entry.PriceToday - entry.PriceYesterday) / (float)yesterday;
+        var trend = Math.Abs(entry.TrendEma);
+        var demandShift = Math.Abs(entry.DemandFactor - 1f);
+        var supplyShift = Math.Abs(entry.SupplyPressureFactor - 1f);
+        var scarcity = Math.Abs(entry.ScarcityBonus);
+
+        // Prioritize true movers (price + trend), then pressure/scarcity context.
+        var score = (dailyDeltaPct * 6f)
+            + (trend * 4f)
+            + (demandShift * 2f)
+            + (supplyShift * 2f)
+            + (scarcity * 2f);
+
+        return score;
+    }
+
+    private static int ComputeDailyTieBreaker(string value, int day)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return 0;
+
+        unchecked
+        {
+            uint hash = 2166136261u; // FNV-1a seed
+            foreach (var ch in value)
+            {
+                hash ^= ch;
+                hash *= 16777619u;
+            }
+
+            hash ^= (uint)day * 16777619u;
+            hash *= 2246822519u;
+            return (int)(hash & int.MaxValue);
+        }
     }
 }

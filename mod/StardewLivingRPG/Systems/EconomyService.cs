@@ -1,30 +1,18 @@
 using StardewLivingRPG.State;
+using StardewLivingRPG.Utils;
 
 namespace StardewLivingRPG.Systems;
 
 public sealed class EconomyService
 {
-    private static readonly Dictionary<string, int> BasePrices = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["parsnip"] = 35,
-        ["potato"] = 80,
-        ["cauliflower"] = 175,
-        ["blueberry"] = 50,
-        ["melon"] = 250,
-        ["pumpkin"] = 320,
-        ["cranberry"] = 75,
-        ["corn"] = 50,
-        ["wheat"] = 25,
-        ["tomato"] = 60
-    };
-
     public void EnsureInitialized(EconomyState economy)
     {
-        foreach (var (crop, basePrice) in BasePrices)
+        foreach (var (crop, cropData) in VanillaCropCatalog.GetEntries())
         {
             if (economy.Crops.ContainsKey(crop))
                 continue;
 
+            var basePrice = Math.Max(1, cropData.BasePrice);
             economy.Crops[crop] = new CropEconomyEntry
             {
                 BasePrice = basePrice,
@@ -104,26 +92,32 @@ public sealed class EconomyService
         if (string.IsNullOrWhiteSpace(rawName))
             return false;
 
-        var key = rawName.Trim().ToLowerInvariant();
-        if (BasePrices.ContainsKey(key))
+        var known = VanillaCropCatalog.GetEntries();
+        var key = VanillaCropCatalog.NormalizeCropKey(rawName);
+        if (known.ContainsKey(key))
         {
             cropKey = key;
             return true;
         }
 
-        // Common display-name aliases from shipped item names.
-        key = key.Replace(" ", string.Empty).Replace("'", string.Empty);
-        var alias = key switch
+        if (key.EndsWith("ies", StringComparison.Ordinal) && key.Length > 3)
         {
-            "blueberries" => "blueberry",
-            "cranberries" => "cranberry",
-            _ => key
-        };
+            var singularY = key[..^3] + "y";
+            if (known.ContainsKey(singularY))
+            {
+                cropKey = singularY;
+                return true;
+            }
+        }
 
-        if (BasePrices.ContainsKey(alias))
+        if (key.EndsWith("s", StringComparison.Ordinal) && key.Length > 1)
         {
-            cropKey = alias;
-            return true;
+            var singular = key[..^1];
+            if (known.ContainsKey(singular))
+            {
+                cropKey = singular;
+                return true;
+            }
         }
 
         return false;

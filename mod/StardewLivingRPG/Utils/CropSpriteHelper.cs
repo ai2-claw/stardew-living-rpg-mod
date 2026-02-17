@@ -6,23 +6,19 @@ namespace StardewLivingRPG.Utils;
 
 public static class CropSpriteHelper
 {
-    // Maps crop names (lowercase) to their sprite indices in Game1.objectSpriteSheet
-    private static readonly Dictionary<string, int> CropSpriteIndices = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["parsnip"] = 16,
-        ["potato"] = 121,
-        ["cauliflower"] = 304,
-        ["blueberry"] = 395,
-        ["melon"] = 396,
-        ["pumpkin"] = 272,
-        ["cranberry"] = 416,
-        ["corn"] = 86,
-        ["wheat"] = 262,
-        ["tomato"] = 392
-    };
-
     public static bool TryGetSpriteIndex(string cropName, out int index)
-        => CropSpriteIndices.TryGetValue(cropName, out index);
+    {
+        index = 0;
+        var key = VanillaCropCatalog.NormalizeCropKey(cropName);
+        if (string.IsNullOrWhiteSpace(key))
+            return false;
+
+        if (!VanillaCropCatalog.GetEntries().TryGetValue(key, out var crop))
+            return false;
+
+        index = crop.ObjectId;
+        return true;
+    }
 
     public static void DrawCropSprite(SpriteBatch b, string cropName, Vector2 position, float scale = 1f)
     {
