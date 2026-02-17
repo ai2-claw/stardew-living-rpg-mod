@@ -332,6 +332,8 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         if (progress.Exists && progress.RequiresItems)
             lines.Add($"Progress: {progress.HaveCount}/{progress.NeedCount} {q.TargetItem} (ready={progress.IsReadyToComplete})");
+        else if (progress.Exists && q.TemplateId.Equals("social_visit", StringComparison.OrdinalIgnoreCase))
+            lines.Add($"Progress: visit {QuestTextHelper.PrettyName(q.TargetItem)} ({progress.HaveCount}/{progress.NeedCount})");
 
         var y = panel.Y + 16;
         var maxY = _acceptButton.Y - 8;

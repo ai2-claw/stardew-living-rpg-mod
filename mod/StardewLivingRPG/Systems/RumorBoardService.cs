@@ -21,7 +21,13 @@ public sealed class RumorBoardService
 
     private static readonly HashSet<string> ValidNpcTargets = new(StringComparer.OrdinalIgnoreCase)
     {
-        "lewis", "pierre", "robin", "linus", "haley", "alex", "demetrius", "wizard"
+        "lewis", "pierre", "robin",
+        "abigail", "alex", "caroline", "clint", "demetrius",
+        "dwarf", "elliott", "emily", "evelyn", "george", "gil", "gunther",
+        "gus", "haley", "harvey", "jas", "jodi", "kent",
+        "krobus", "leah", "leo", "linus", "marnie", "marlon", "maru", "morris",
+        "pam", "penny", "qi", "sam", "sandy", "sebastian", "shane",
+        "vincent", "willy", "wizard"
     };
 
     private static readonly Dictionary<string, string> CropAliases = new(StringComparer.OrdinalIgnoreCase)
@@ -55,6 +61,8 @@ public sealed class RumorBoardService
         state.Quests.Available.Clear();
 
         var crop = SelectFallbackCropTarget(state, allowParsnip: IsParsnipCrisisActive(state));
+        var visitTarget = SelectFallbackVisitTarget(state, fallbackSeed: $"daily_social_{state.Calendar.Day}");
+        var visitName = QuestTextHelper.PrettyName(visitTarget);
 
         state.Quests.Available.Add(new QuestEntry
         {
@@ -78,8 +86,8 @@ public sealed class RumorBoardService
             Source = "rumor_mill",
             Issuer = "haley",
             ExpiresDay = state.Calendar.Day + 2,
-            Summary = "Rumor Mill: Check in with a town resident and bring a thoughtful gift.",
-            TargetItem = "gift",
+            Summary = $"Rumor Mill: Check in with {visitName} and brighten their day.",
+            TargetItem = visitTarget,
             TargetCount = 1,
             RewardGold = 250
         });
@@ -125,6 +133,7 @@ public sealed class RumorBoardService
         state.Quests.Available.Remove(quest);
         quest.Status = "active";
         state.Quests.Active.Add(quest);
+        state.Facts.Facts.Remove(BuildSocialVisitFactKey(quest.QuestId));
 
         state.Facts.Facts[$"quest:{quest.QuestId}:accepted"] = new FactValue
         {
@@ -135,6 +144,38 @@ public sealed class RumorBoardService
 
         state.Telemetry.Daily.RumorBoardAccepts += 1;
         return true;
+    }
+
+    public int RecordSocialVisitProgress(SaveState state, string npcName)
+    {
+        var normalizedNpc = NormalizeNpcTarget(npcName);
+        if (string.IsNullOrWhiteSpace(normalizedNpc))
+            return 0;
+
+        var marked = 0;
+        foreach (var quest in state.Quests.Active)
+        {
+            if (!string.Equals(quest.TemplateId, "social_visit", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var target = NormalizeNpcTarget(quest.TargetItem);
+            if (!string.Equals(target, normalizedNpc, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var factKey = BuildSocialVisitFactKey(quest.QuestId);
+            if (state.Facts.Facts.TryGetValue(factKey, out var existing) && existing.Value)
+                continue;
+
+            state.Facts.Facts[factKey] = new FactValue
+            {
+                Value = true,
+                SetDay = state.Calendar.Day,
+                Source = "system"
+            };
+            marked += 1;
+        }
+
+        return marked;
     }
 
     public bool CompleteQuest(SaveState state, string questId)
@@ -154,6 +195,25 @@ public sealed class RumorBoardService
             return new QuestCompletionResult { Success = false, Message = $"Active quest not found: {questId}" };
 
         var quest = progress.Quest!;
+
+        if (!progress.IsReadyToComplete)
+        {
+            if (string.Equals(quest.TemplateId, "social_visit", StringComparison.OrdinalIgnoreCase))
+            {
+                var visitTarget = QuestTextHelper.PrettyName(quest.TargetItem);
+                return new QuestCompletionResult
+                {
+                    Success = false,
+                    Message = $"Visit {visitTarget} first, then complete this request."
+                };
+            }
+
+            return new QuestCompletionResult
+            {
+                Success = false,
+                Message = $"Request not ready yet: {QuestTextHelper.BuildQuestTitle(quest)}."
+            };
+        }
 
         if (progress.RequiresItems && progress.HaveCount < progress.NeedCount)
         {
@@ -193,6 +253,36 @@ public sealed class RumorBoardService
         if (quest is null)
             return QuestProgressResult.NotFound(questId);
 
+        if (string.Equals(quest.TemplateId, "social_visit", StringComparison.OrdinalIgnoreCase))
+        {
+            var normalizedTarget = NormalizeNpcTarget(quest.TargetItem);
+            if (!ValidNpcTargets.Contains(normalizedTarget))
+            {
+                return new QuestProgressResult
+                {
+                    Exists = true,
+                    QuestId = quest.QuestId,
+                    Quest = quest,
+                    RequiresItems = false,
+                    NeedCount = 0,
+                    HaveCount = 0,
+                    IsReadyToComplete = true
+                };
+            }
+
+            var visited = HasRecordedSocialVisit(state, quest);
+            return new QuestProgressResult
+            {
+                Exists = true,
+                QuestId = quest.QuestId,
+                Quest = quest,
+                RequiresItems = false,
+                NeedCount = 1,
+                HaveCount = visited ? 1 : 0,
+                IsReadyToComplete = visited
+            };
+        }
+
         var requiresItems = RequiresItemDelivery(quest.TemplateId);
         var need = requiresItems ? Math.Max(1, quest.TargetCount) : 0;
         var have = requiresItems ? CountMatchingItems(player, quest.TargetItem) : 0;
@@ -221,7 +311,7 @@ public sealed class RumorBoardService
             return QuestProposalResult.Duplicate;
 
         var safeTemplate = NormalizeTemplate(templateId);
-        var safeTarget = NormalizeTargetForTemplate(state, safeTemplate, target);
+        var safeTarget = NormalizeTargetForTemplate(state, safeTemplate, target, intentKey);
         var safeUrgency = NormalizeUrgency(urgency);
 
         var (count, minRewardGold, expiresDelta) = BoundsForTemplateAndUrgency(safeTemplate, safeUrgency);
@@ -491,32 +581,33 @@ public sealed class RumorBoardService
         return (int)MathF.Round(value / (float)step) * step;
     }
 
-    private static string NormalizeTargetForTemplate(SaveState state, string templateId, string rawTarget)
+    private static string NormalizeTargetForTemplate(SaveState state, string templateId, string rawTarget, string? fallbackSeed = null)
     {
-        var t = NormalizeCropCandidate(rawTarget);
+        var cropTarget = NormalizeCropCandidate(rawTarget);
+        var npcTarget = NormalizeNpcTarget(rawTarget);
         var allowParsnip = IsParsnipCrisisActive(state);
 
         return templateId switch
         {
-            "gather_crop" => NormalizeCropTargetOrFallback(state, t, allowParsnip),
-            "deliver_item" => NormalizeCropTargetOrFallback(state, t, allowParsnip),
-            "mine_resource" => ValidResources.Contains(t) ? t : "copper_ore",
-            "social_visit" => ValidNpcTargets.Contains(t) ? t : "lewis",
-            _ => NormalizeCropTargetOrFallback(state, t, allowParsnip)
+            "gather_crop" => NormalizeCropTargetOrFallback(state, cropTarget, allowParsnip, fallbackSeed),
+            "deliver_item" => NormalizeCropTargetOrFallback(state, cropTarget, allowParsnip, fallbackSeed),
+            "mine_resource" => ValidResources.Contains(cropTarget) ? cropTarget : "copper_ore",
+            "social_visit" => ValidNpcTargets.Contains(npcTarget) ? npcTarget : SelectFallbackVisitTarget(state, fallbackSeed),
+            _ => NormalizeCropTargetOrFallback(state, cropTarget, allowParsnip, fallbackSeed)
         };
     }
 
-    private static string NormalizeCropTargetOrFallback(SaveState state, string candidate, bool allowParsnip)
+    private static string NormalizeCropTargetOrFallback(SaveState state, string candidate, bool allowParsnip, string? fallbackSeed = null)
     {
         if (ValidCrops.Contains(candidate))
         {
             if (candidate.Equals("parsnip", StringComparison.OrdinalIgnoreCase) && !allowParsnip)
-                return SelectFallbackCropTarget(state, allowParsnip: false);
+                return SelectFallbackCropTarget(state, allowParsnip: false, fallbackSeed);
 
             return candidate;
         }
 
-        return SelectFallbackCropTarget(state, allowParsnip);
+        return SelectFallbackCropTarget(state, allowParsnip, fallbackSeed);
     }
 
     private static string NormalizeCropCandidate(string? rawTarget)
@@ -547,7 +638,7 @@ public sealed class RumorBoardService
         return t;
     }
 
-    private static string SelectFallbackCropTarget(SaveState state, bool allowParsnip)
+    private static string SelectFallbackCropTarget(SaveState state, bool allowParsnip, string? fallbackSeed = null)
     {
         var ordered = state.Economy.Crops
             .Where(kv => ValidCrops.Contains(kv.Key))
@@ -561,11 +652,75 @@ public sealed class RumorBoardService
         if (!allowParsnip)
             ordered = ordered.Where(c => !c.Equals("parsnip", StringComparison.OrdinalIgnoreCase)).ToList();
 
-        var best = ordered.FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(best))
-            return best;
+        if (ordered.Count > 0)
+        {
+            var topCandidates = ordered.Take(Math.Min(4, ordered.Count)).ToList();
+            var index = GetDiversifiedFallbackIndex(topCandidates.Count, fallbackSeed, state.Calendar.Day);
+            return topCandidates[index];
+        }
 
         return GetSeasonalFallbackCrop(state.Calendar.Season, allowParsnip);
+    }
+
+    private static string SelectFallbackVisitTarget(SaveState state, string? fallbackSeed = null)
+    {
+        var sorted = ValidNpcTargets
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (sorted.Count == 0)
+            return "lewis";
+
+        var index = GetDiversifiedFallbackIndex(sorted.Count, fallbackSeed, state.Calendar.Day);
+        return sorted[index];
+    }
+
+    private static int GetDiversifiedFallbackIndex(int count, string? seed, int day)
+    {
+        if (count <= 1)
+            return 0;
+
+        if (!string.IsNullOrWhiteSpace(seed))
+        {
+            var hash = Math.Abs(seed.GetHashCode());
+            return hash % count;
+        }
+
+        return Math.Abs(day) % count;
+    }
+
+    private static string BuildSocialVisitFactKey(string questId)
+    {
+        return $"quest:{questId}:social_visit:visited";
+    }
+
+    private static bool HasRecordedSocialVisit(SaveState state, QuestEntry quest)
+    {
+        var key = BuildSocialVisitFactKey(quest.QuestId);
+        return state.Facts.Facts.TryGetValue(key, out var fact) && fact.Value;
+    }
+
+    private static string NormalizeNpcTarget(string? rawTarget)
+    {
+        if (string.IsNullOrWhiteSpace(rawTarget))
+            return string.Empty;
+
+        var normalized = rawTarget
+            .Trim()
+            .ToLowerInvariant()
+            .Replace(" ", "_", StringComparison.Ordinal)
+            .Replace("-", "_", StringComparison.Ordinal)
+            .Replace(".", string.Empty, StringComparison.Ordinal)
+            .Replace("'", string.Empty, StringComparison.Ordinal)
+            .Trim('"', '\'', '.', ',', '!', '?', ';', ':');
+
+        if (normalized.StartsWith("mr_", StringComparison.Ordinal))
+            normalized = normalized[3..];
+        else if (normalized.StartsWith("mrs_", StringComparison.Ordinal))
+            normalized = normalized[4..];
+        else if (normalized.StartsWith("ms_", StringComparison.Ordinal))
+            normalized = normalized[3..];
+
+        return normalized;
     }
 
     private static string GetSeasonalFallbackCrop(string? season, bool allowParsnip)

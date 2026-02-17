@@ -1342,6 +1342,7 @@ public sealed class ModEntry : Mod
         if (npc is null)
             return;
 
+        TryRecordSocialVisitProgress(npc.Name);
         OpenNpcFollowUpDialogue(loc!, npc);
     }
 
@@ -1374,6 +1375,7 @@ public sealed class ModEntry : Mod
         }
 
         ClearNpcDialogueHook();
+        TryRecordSocialVisitProgress(npc.Name);
         OpenNpcFollowUpDialogue(loc!, npc);
     }
 
@@ -1416,6 +1418,16 @@ public sealed class ModEntry : Mod
         _npcDialogueHookArmed = false;
         _npcDialogueHookMenuOpened = false;
         _npcDialogueHookArmedUtc = default;
+    }
+
+    private void TryRecordSocialVisitProgress(string? npcName)
+    {
+        if (_rumorBoardService is null || string.IsNullOrWhiteSpace(npcName))
+            return;
+
+        var completedVisits = _rumorBoardService.RecordSocialVisitProgress(_state, npcName);
+        if (completedVisits > 0)
+            Monitor.Log($"Social visit progress updated for {npcName} ({completedVisits} request(s)).", LogLevel.Trace);
     }
 
     private void OnRenderedHud(object? sender, RenderedHudEventArgs e)
@@ -3743,7 +3755,7 @@ public sealed class ModEntry : Mod
         if (LooksLikeQuestDecline(message))
             return;
 
-        if (!TryInferQuestProposalFromMessage(message, out var templateId, out var target, out var urgency))
+        if (!TryInferQuestProposalFromMessage(npcId, message, out var templateId, out var target, out var urgency))
             return;
 
         var intentId = BuildSyntheticQuestIntentId(npcId, templateId, target, _state.Calendar.Day);
@@ -3822,6 +3834,14 @@ public sealed class ModEntry : Mod
                 "collect",
                 "harvest",
                 "supply",
+                "visit",
+                "talk to",
+                "speak with",
+                "check on",
+                "check in with",
+                "stop by",
+                "drop by",
+                "swing by",
                 "town market",
                 "i'll reward",
                 "i will reward",
@@ -3865,17 +3885,17 @@ public sealed class ModEntry : Mod
             || text.Contains("i will take it", StringComparison.Ordinal);
     }
 
-    private bool TryInferQuestProposalFromMessage(string message, out string templateId, out string target, out string urgency)
+    private bool TryInferQuestProposalFromMessage(string npcId, string message, out string templateId, out string target, out string urgency)
     {
         templateId = string.Empty;
         target = string.Empty;
         urgency = "low";
 
         var text = message.ToLowerInvariant();
-        if (ContainsAny(text, "visit", "talk to", "speak with", "check on"))
+        if (ContainsAny(text, "visit", "talk to", "speak with", "check on", "check in with", "stop by", "drop by", "swing by", "go see", "see if"))
         {
             templateId = "social_visit";
-            target = TryFindNpcTargetInText(text) ?? "lewis";
+            target = TryFindNpcTargetInText(text) ?? GetFallbackVisitTargetForInference(npcId);
             urgency = InferUrgency(text);
             return true;
         }
@@ -3891,7 +3911,7 @@ public sealed class ModEntry : Mod
         if (ContainsAny(text, "deliver", "bring", "drop off", "supply"))
         {
             templateId = "deliver_item";
-            target = TryFindCropTargetInText(text) ?? GetFallbackQuestCropTargetForInference();
+            target = TryFindCropTargetInText(text) ?? GetFallbackQuestCropTargetForInference($"{npcId}:{text}");
             urgency = InferUrgency(text);
             return true;
         }
@@ -3899,7 +3919,7 @@ public sealed class ModEntry : Mod
         if (ContainsAny(text, "gather", "gathering", "collect", "collecting", "harvest", "harvesting", "pick"))
         {
             templateId = "gather_crop";
-            target = TryFindCropTargetInText(text) ?? GetFallbackQuestCropTargetForInference();
+            target = TryFindCropTargetInText(text) ?? GetFallbackQuestCropTargetForInference($"{npcId}:{text}");
             urgency = InferUrgency(text);
             return true;
         }
@@ -3967,7 +3987,13 @@ public sealed class ModEntry : Mod
 
         var canonNpcTargets = new[]
         {
-            "lewis", "robin", "pierre", "linus", "haley", "alex", "demetrius", "wizard", "elliott"
+            "lewis", "pierre", "robin",
+            "abigail", "alex", "caroline", "clint", "demetrius",
+            "dwarf", "elliott", "emily", "evelyn", "george", "gil", "gunther",
+            "gus", "haley", "harvey", "jas", "jodi", "kent",
+            "krobus", "leah", "leo", "linus", "marnie", "marlon", "maru", "morris",
+            "pam", "penny", "qi", "sam", "sandy", "sebastian", "shane",
+            "vincent", "willy", "wizard"
         };
         foreach (var npc in canonNpcTargets)
         {
@@ -4000,7 +4026,7 @@ public sealed class ModEntry : Mod
         return t;
     }
 
-    private string GetFallbackQuestCropTargetForInference()
+    private string GetFallbackQuestCropTargetForInference(string? seed = null)
     {
         var allowParsnip = IsParsnipQuestCrisisActive();
         var ordered = _state.Economy.Crops
@@ -4015,9 +4041,12 @@ public sealed class ModEntry : Mod
         if (!allowParsnip)
             ordered = ordered.Where(c => !c.Equals("parsnip", StringComparison.OrdinalIgnoreCase)).ToList();
 
-        var best = ordered.FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(best))
-            return best;
+        if (ordered.Count > 0)
+        {
+            var topCandidates = ordered.Take(Math.Min(4, ordered.Count)).ToList();
+            var index = GetDiversifiedFallbackIndex(topCandidates.Count, seed, _state.Calendar.Day);
+            return topCandidates[index];
+        }
 
         var season = (_state.Calendar.Season ?? string.Empty).Trim().ToLowerInvariant();
         if (allowParsnip)
@@ -4038,6 +4067,36 @@ public sealed class ModEntry : Mod
             "fall" => "pumpkin",
             _ => "wheat"
         };
+    }
+
+    private string GetFallbackVisitTargetForInference(string? seed = null)
+    {
+        var candidates = GetExpandedNpcRoster()
+            .Select(n => NormalizeTargetToken(n))
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (candidates.Count == 0)
+            return "lewis";
+
+        var index = GetDiversifiedFallbackIndex(candidates.Count, seed, _state.Calendar.Day);
+        return candidates[index];
+    }
+
+    private static int GetDiversifiedFallbackIndex(int count, string? seed, int day)
+    {
+        if (count <= 1)
+            return 0;
+
+        if (!string.IsNullOrWhiteSpace(seed))
+        {
+            var hash = Math.Abs(seed.GetHashCode());
+            return hash % count;
+        }
+
+        return Math.Abs(day) % count;
     }
 
     private bool IsParsnipQuestCrisisActive()
