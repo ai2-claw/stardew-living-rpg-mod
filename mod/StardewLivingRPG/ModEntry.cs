@@ -1423,33 +1423,33 @@ public sealed class ModEntry : Mod
             return;
 
         var connected = IsLocalInsightHudActive();
+        var rect = GetPlayer2HudRect();
 
-        var label = connected ? "Local Insight: Active" : "Local Insight: Dormant";
-        var textSize = Game1.smallFont.MeasureString(label);
-        const int paddingX = 12;
-        const int paddingY = 6;
+        var fill = connected ? new Color(126, 170, 86) : new Color(106, 88, 74);
+        var border = connected ? new Color(54, 86, 34) : new Color(64, 50, 40);
+        const int borderThickness = 4;
+        const int shadowOffset = 3;
 
-        var rect = new Rectangle(
-            16,
-            16,
-            (int)textSize.X + (paddingX * 2),
-            (int)textSize.Y + (paddingY * 2));
+        var shadowRect = new Rectangle(rect.X + shadowOffset, rect.Y + shadowOffset, rect.Width, rect.Height);
+        e.SpriteBatch.Draw(Game1.staminaRect, shadowRect, Color.Black * 0.35f);
 
-        var bg = connected ? new Color(116, 81, 46) * 0.95f : new Color(82, 65, 50) * 0.95f;
-        e.SpriteBatch.Draw(Game1.staminaRect, rect, bg);
+        e.SpriteBatch.Draw(Game1.staminaRect, rect, fill);
+        e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, rect.Width, borderThickness), border);
+        e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Bottom - borderThickness, rect.Width, borderThickness), border);
+        e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, borderThickness, rect.Height), border);
+        e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.Right - borderThickness, rect.Y, borderThickness, rect.Height), border);
 
-        var textPos = new Vector2(rect.X + paddingX, rect.Y + paddingY);
-        e.SpriteBatch.DrawString(Game1.smallFont, label, textPos + new Vector2(2f, 2f), Color.Black * 0.6f);
-        e.SpriteBatch.DrawString(Game1.smallFont, label, textPos, connected ? Color.PaleGoldenrod : new Color(180, 160, 130));
+        var point = new Point(Game1.getMouseX(), Game1.getMouseY());
+        if (rect.Contains(point))
+        {
+            var tooltip = connected ? "Local Insight: Active" : "Local Insight: Dormant";
+            IClickableMenu.drawHoverText(e.SpriteBatch, tooltip, Game1.smallFont);
+        }
     }
 
     private Rectangle GetPlayer2HudRect()
     {
-        var connected = IsLocalInsightHudActive();
-
-        var label = connected ? "Local Insight: Active" : "Local Insight: Dormant";
-        var textSize = Game1.smallFont.MeasureString(label);
-        return new Rectangle(16, 16, (int)textSize.X + 24, (int)textSize.Y + 12);
+        return new Rectangle(16, 16, 32, 32);
     }
 
     private bool IsLocalInsightHudActive()
