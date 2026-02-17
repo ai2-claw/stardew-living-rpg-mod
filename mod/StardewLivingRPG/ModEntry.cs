@@ -13,6 +13,7 @@ using StardewLivingRPG.Utils;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -23,6 +24,18 @@ namespace StardewLivingRPG;
 public sealed class ModEntry : Mod
 {
     private const int MaxNpcPublishCombinedCharacters = 100;
+    private const double DefaultMsPerNpcChatClockStep = 7000d;
+    private const double NpcChatClockSlowdownMultiplier = 2d;
+
+    private static readonly MethodInfo? PerformTenMinuteClockUpdateMethod = typeof(Game1).GetMethod(
+        "performTenMinuteClockUpdate",
+        BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+        binder: null,
+        types: Type.EmptyTypes,
+        modifiers: null);
+    private static readonly FieldInfo? RealMsPerGameMinuteField = typeof(Game1).GetField(
+        "realMilliSecondsPerGameMinute",
+        BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
 
     private sealed class NpcPublishHeadlineUpdate
     {
@@ -141,6 +154,9 @@ public sealed class ModEntry : Mod
     private bool _npcDialogueHookArmed;
     private bool _npcDialogueHookMenuOpened;
     private DateTime _npcDialogueHookArmedUtc;
+    private DateTime _npcChatClockLastTickUtc;
+    private double _npcChatClockAccumulatorMs;
+    private bool _npcChatClockMethodMissingLogged;
 
     public override void Entry(IModHelper helper)
     {
@@ -690,11 +706,105 @@ public sealed class ModEntry : Mod
         return true;
     }
 
+    private void TryAdvanceClockWhileNpcChatOpen()
+    {
+        if (Game1.activeClickableMenu is not NpcChatInputMenu
+            || Game1.eventUp
+            || Game1.dialogueUp
+            || Game1.currentLocation is null)
+        {
+            _npcChatClockLastTickUtc = default;
+            _npcChatClockAccumulatorMs = 0d;
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (_npcChatClockLastTickUtc == default)
+        {
+            _npcChatClockLastTickUtc = now;
+            return;
+        }
+
+        var elapsedMs = (now - _npcChatClockLastTickUtc).TotalMilliseconds;
+        _npcChatClockLastTickUtc = now;
+        if (elapsedMs <= 0d)
+            return;
+
+        // Clamp to avoid huge jumps after tabbing out.
+        elapsedMs = Math.Min(elapsedMs, 250d);
+        _npcChatClockAccumulatorMs += elapsedMs;
+
+        var msPerClockStep = GetNpcChatClockStepMs(Game1.currentLocation);
+        while (_npcChatClockAccumulatorMs >= msPerClockStep)
+        {
+            _npcChatClockAccumulatorMs -= msPerClockStep;
+            if (!TryInvokeTenMinuteClockUpdate())
+            {
+                _npcChatClockAccumulatorMs = 0d;
+                return;
+            }
+        }
+    }
+
+    private double GetNpcChatClockStepMs(GameLocation location)
+    {
+        var baseMsPerMinute = DefaultMsPerNpcChatClockStep / 10d;
+        var raw = RealMsPerGameMinuteField?.GetValue(null);
+        switch (raw)
+        {
+            case int i when i > 0:
+                baseMsPerMinute = i;
+                break;
+            case float f when f > 0f:
+                baseMsPerMinute = f;
+                break;
+            case double d when d > 0d:
+                baseMsPerMinute = d;
+                break;
+        }
+
+        // performTenMinuteClockUpdate advances the world by 10 in-game minutes per call.
+        // Apply slowdown multiplier so chat time moves slower than normal.
+        var perMinuteTotal = Math.Max(1d, baseMsPerMinute + Math.Max(0, location.ExtraMillisecondsPerInGameMinute));
+        return Math.Max(300d, perMinuteTotal * 10d * NpcChatClockSlowdownMultiplier);
+    }
+
+    private bool TryInvokeTenMinuteClockUpdate()
+    {
+        if (PerformTenMinuteClockUpdateMethod is null)
+        {
+            if (!_npcChatClockMethodMissingLogged)
+            {
+                _npcChatClockMethodMissingLogged = true;
+                Monitor.Log("NPC chat unpause fallback unavailable: performTenMinuteClockUpdate not found.", LogLevel.Warn);
+            }
+
+            return false;
+        }
+
+        try
+        {
+            PerformTenMinuteClockUpdateMethod.Invoke(null, null);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (!_npcChatClockMethodMissingLogged)
+            {
+                _npcChatClockMethodMissingLogged = true;
+                Monitor.Log($"NPC chat unpause failed to invoke clock update: {ex.Message}", LogLevel.Warn);
+            }
+
+            return false;
+        }
+    }
+
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)
     {
         if (!Context.IsWorldReady)
             return;
 
+        TryAdvanceClockWhileNpcChatOpen();
         TrackLateNightPassOutWindow();
         TryCaptureTownIncidents();
         TryHandleNpcDialogueHookFallback();
