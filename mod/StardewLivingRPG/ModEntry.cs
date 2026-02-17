@@ -24,6 +24,7 @@ namespace StardewLivingRPG;
 public sealed class ModEntry : Mod
 {
     private const int MaxNpcPublishCombinedCharacters = 100;
+    private const int NpcPublishAfternoonStartTime = 1300;
     private const double DefaultMsPerNpcChatClockStep = 7000d;
     private const double NpcChatClockSlowdownMultiplier = 2d;
 
@@ -2843,20 +2844,14 @@ public sealed class ModEntry : Mod
             if (update.Day != _state.Calendar.Day)
                 continue;
 
-            if (TryReplaceTodayIssueWithNpcArticle(update.Command, update.OutcomeId, update.Headline))
-            {
-                Monitor.Log($"Applied queued Player2 sensational headline for {update.Command}: {update.Headline}", LogLevel.Trace);
-                continue;
-            }
-
-            var existingIndex = _pendingNpcPublishHeadlineUpdates.FindIndex(pending =>
-                IsSameNpcPublishHeadlineTarget(pending, update));
-            if (existingIndex >= 0)
-                _pendingNpcPublishHeadlineUpdates[existingIndex] = update;
-            else
-                _pendingNpcPublishHeadlineUpdates.Add(update);
+            UpsertPendingNpcPublishUpdate(update);
         }
 
+        TryApplyPendingNpcPublishUpdates();
+    }
+
+    private void TryApplyPendingNpcPublishUpdates()
+    {
         for (var i = _pendingNpcPublishHeadlineUpdates.Count - 1; i >= 0; i--)
         {
             var pending = _pendingNpcPublishHeadlineUpdates[i];
@@ -2866,12 +2861,57 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            if (!TryReplaceTodayIssueWithNpcArticle(pending.Command, pending.OutcomeId, pending.Headline))
+            if (!CanPublishNpcNewsNow(pending.Day))
                 continue;
 
-            Monitor.Log($"Applied deferred Player2 sensational headline for {pending.Command}: {pending.Headline}", LogLevel.Trace);
+            if (!TryReplaceTodayIssueWithNpcArticle(pending.Command, pending.OutcomeId, pending.Headline))
+            {
+                var hasTodayIssue = _state.Newspaper.Issues.Any(issue => issue.Day == _state.Calendar.Day);
+                if (!hasTodayIssue)
+                {
+                    _pendingNewspaperRefreshDay = _state.Calendar.Day;
+                    TryRefreshPendingNewspaperIssue($"npc-command:{pending.Command}:afternoon");
+                }
+
+                continue;
+            }
+
+            ShowNewspaperCommandNotification(pending.Command, pending.OutcomeId, pending.SourceNpcId);
+            Monitor.Log($"Published deferred NPC news for {pending.Command} in afternoon.", LogLevel.Trace);
             _pendingNpcPublishHeadlineUpdates.RemoveAt(i);
         }
+    }
+
+    private void UpsertPendingNpcPublishUpdate(NpcPublishHeadlineUpdate update)
+    {
+        var existingIndex = _pendingNpcPublishHeadlineUpdates.FindIndex(pending =>
+            IsSameNpcPublishHeadlineTarget(pending, update));
+        if (existingIndex < 0)
+        {
+            _pendingNpcPublishHeadlineUpdates.Add(update);
+            return;
+        }
+
+        var existing = _pendingNpcPublishHeadlineUpdates[existingIndex];
+        if (string.IsNullOrWhiteSpace(update.Headline) && !string.IsNullOrWhiteSpace(existing.Headline))
+        {
+            update = new NpcPublishHeadlineUpdate
+            {
+                Day = update.Day,
+                Command = update.Command,
+                OutcomeId = update.OutcomeId,
+                SourceNpcId = update.SourceNpcId,
+                Headline = existing.Headline
+            };
+        }
+
+        _pendingNpcPublishHeadlineUpdates[existingIndex] = update;
+    }
+
+    private bool CanPublishNpcNewsNow(int day)
+    {
+        return day == _state.Calendar.Day
+            && Game1.timeOfDay >= NpcPublishAfternoonStartTime;
     }
 
     private static bool IsSameNpcPublishHeadlineTarget(NpcPublishHeadlineUpdate left, NpcPublishHeadlineUpdate right)
@@ -3652,21 +3692,16 @@ public sealed class ModEntry : Mod
                 var outcomeId = result.OutcomeId;
                 TryApplyNpcPublishSourceName(result.Command, outcomeId, sourceNpcId);
                 outcomeId = TryClampNpcPublishArticleAsLastResort(result.Command, outcomeId, sourceNpcId);
-                QueueNpcPublishHeadlineGeneration(result.Command, outcomeId, sourceNpcId);
-                ShowNewspaperCommandNotification(result.Command, outcomeId, sourceNpcId);
-
-                // Avoid rebuilding today's issue after it has already been generated, because rebuilds can
-                // replace dynamic editor stories with fallback fillers. Replace today's visible content/headline
-                // with the latest NPC article directly when possible.
-                if (!TryReplaceTodayIssueWithNpcArticle(result.Command, outcomeId))
+                UpsertPendingNpcPublishUpdate(new NpcPublishHeadlineUpdate
                 {
-                    var hasTodayIssue = _state.Newspaper.Issues.Any(i => i.Day == _state.Calendar.Day);
-                    if (!hasTodayIssue)
-                    {
-                        _pendingNewspaperRefreshDay = _state.Calendar.Day;
-                        TryRefreshPendingNewspaperIssue($"npc-command:{result.Command}");
-                    }
-                }
+                    Day = _state.Calendar.Day,
+                    Command = result.Command,
+                    OutcomeId = outcomeId,
+                    SourceNpcId = sourceNpcId,
+                    Headline = string.Empty
+                });
+                QueueNpcPublishHeadlineGeneration(result.Command, outcomeId, sourceNpcId);
+                TryApplyCompletedNpcPublishHeadlineUpdates();
             }
 
             return true;
