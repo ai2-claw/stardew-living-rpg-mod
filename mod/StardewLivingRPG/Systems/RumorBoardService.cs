@@ -38,6 +38,17 @@ public sealed class RumorBoardService
         ["tomatoes"] = "tomato"
     };
 
+    private static readonly Dictionary<string, int> ResourceUnitValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["copper_ore"] = 75,
+        ["iron_ore"] = 150,
+        ["gold_ore"] = 250,
+        ["coal"] = 150,
+        ["quartz"] = 50,
+        ["amethyst"] = 100,
+        ["topaz"] = 80
+    };
+
     public void RefreshDailyRumors(SaveState state)
     {
         // Keep active quests untouched; rotate available list daily.
@@ -213,7 +224,8 @@ public sealed class RumorBoardService
         var safeTarget = NormalizeTargetForTemplate(state, safeTemplate, target);
         var safeUrgency = NormalizeUrgency(urgency);
 
-        var (count, rewardGold, expiresDelta) = BoundsForTemplateAndUrgency(safeTemplate, safeUrgency);
+        var (count, minRewardGold, expiresDelta) = BoundsForTemplateAndUrgency(safeTemplate, safeUrgency);
+        var rewardGold = ComputeRewardGold(state, safeTemplate, safeTarget, safeUrgency, count, minRewardGold);
 
         var suffix = Math.Abs(intentKey.GetHashCode()) % 100000;
         var questId = $"quest_ai_{safeTemplate}_{safeTarget}_{state.Calendar.Day}_{suffix}";
@@ -385,7 +397,7 @@ public sealed class RumorBoardService
         };
     }
 
-    private static (int Count, int RewardGold, int ExpiresDelta) BoundsForTemplateAndUrgency(string templateId, string urgency)
+    private static (int Count, int MinRewardGold, int ExpiresDelta) BoundsForTemplateAndUrgency(string templateId, string urgency)
     {
         return templateId switch
         {
@@ -414,6 +426,69 @@ public sealed class RumorBoardService
                 _ => (14, 350, 4)
             }
         };
+    }
+
+    private static int ComputeRewardGold(SaveState state, string templateId, string target, string urgency, int count, int minRewardGold)
+    {
+        if (string.Equals(templateId, "social_visit", StringComparison.OrdinalIgnoreCase))
+            return minRewardGold;
+
+        var unitValue = ResolveTargetUnitValue(state, templateId, target);
+        var marketValue = Math.Max(1, unitValue) * Math.Max(1, count);
+        var multiplier = ResolveRewardMultiplier(templateId, urgency);
+        var scaledReward = (int)MathF.Round(marketValue * multiplier);
+        var roundedReward = RoundToNearest(scaledReward, 25);
+
+        return Math.Clamp(Math.Max(minRewardGold, roundedReward), minRewardGold, 12000);
+    }
+
+    private static float ResolveRewardMultiplier(string templateId, string urgency)
+    {
+        return templateId switch
+        {
+            "mine_resource" => urgency switch
+            {
+                "high" => 1.05f,
+                "medium" => 0.90f,
+                _ => 0.75f
+            },
+            "deliver_item" => urgency switch
+            {
+                "high" => 0.90f,
+                "medium" => 0.75f,
+                _ => 0.60f
+            },
+            _ => urgency switch // gather_crop
+            {
+                "high" => 0.85f,
+                "medium" => 0.70f,
+                _ => 0.55f
+            }
+        };
+    }
+
+    private static int ResolveTargetUnitValue(SaveState state, string templateId, string target)
+    {
+        if (string.Equals(templateId, "mine_resource", StringComparison.OrdinalIgnoreCase))
+            return ResourceUnitValues.TryGetValue(target, out var unit) ? unit : 75;
+
+        if (state.Economy.Crops.TryGetValue(target, out var crop))
+        {
+            if (crop.PriceToday > 0)
+                return crop.PriceToday;
+            if (crop.BasePrice > 0)
+                return crop.BasePrice;
+        }
+
+        return 80;
+    }
+
+    private static int RoundToNearest(int value, int step)
+    {
+        if (step <= 1)
+            return Math.Max(0, value);
+
+        return (int)MathF.Round(value / (float)step) * step;
     }
 
     private static string NormalizeTargetForTemplate(SaveState state, string templateId, string rawTarget)

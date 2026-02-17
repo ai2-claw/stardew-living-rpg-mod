@@ -3065,6 +3065,8 @@ public sealed class ModEntry : Mod
 
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
+        var newsContext = BuildNewsAwarenessBlock();
+        var eventsContext = BuildRecentEventAwarenessBlock();
         var playerAskedForRequest = IsPlayerAskingForQuest(playerText);
         var parsnipCrisis = IsParsnipQuestCrisisActive();
         if (!string.IsNullOrWhiteSpace(npcName))
@@ -3095,10 +3097,11 @@ public sealed class ModEntry : Mod
             playerAskedForRequest
                 ? "QUEST_CONTEXT: Player explicitly asked for work/request now. You must either emit propose_quest or decline clearly; no text-only task offers."
                 : string.Empty,
+            "NEWS_RULE: If asked about news, rumors, or recent events, answer using NEWS_CONTEXT and RECENT_EVENTS first.",
             "RULE: For publish_article/publish_rumor commands, keep title+content within 100 characters total.",
             "MARKET_RULE: For market questions, mention at least one live signal from MARKET_SIGNALS.",
             "REWARD_RULE: Never promise arbitrary gold numbers; follow REWARD_RULES bands.",
-            "REWARD_RULES: gather_crop low=350 medium=500 high=700; deliver_item low=360 medium=500 high=650; mine_resource low=450 medium=600 high=800; social_visit low=220 medium=300 high=400.",
+            "REWARD_RULES: Rewards are dynamic from target value x count with urgency bands (low=modest, medium=solid, high=premium). Social visits stay in a small fixed band.",
             $"STATE: CurrentSeason {_state.Calendar.Season}.",
             $"STATE: CurrentWeather {weather}.",
             $"STATE: CurrentDayOfWeek {dayOfWeek}.",
@@ -3111,11 +3114,113 @@ public sealed class ModEntry : Mod
             $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
             $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}.",
+            newsContext,
+            eventsContext,
             $"STATE: AvailableTownRequests {_state.Quests.Available.Count} ids=[{string.Join(",", availableQuestIds)}].",
             $"STATE: ActiveTownRequests {_state.Quests.Active.Count} ids=[{string.Join(",", activeQuestIds)}].",
             npcMemory,
             townMemory
         );
+    }
+
+    private string BuildNewsAwarenessBlock()
+    {
+        var day = _state.Calendar.Day;
+        var latestIssue = _state.Newspaper.Issues
+            .OrderByDescending(i => i.Day)
+            .FirstOrDefault();
+
+        var headline = TrimForContext(latestIssue?.Headline, 48, "none");
+        var issueDay = latestIssue?.Day ?? 0;
+
+        var editorItems = (latestIssue?.Articles ?? new List<NewspaperArticle>())
+            .Where(a => IsEditorNewsSource(a.SourceNpc))
+            .Select(a => TrimForContext(a.Title, 34, "untitled"))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToArray();
+
+        var rumorItems = _state.Newspaper.Articles
+            .Where(a =>
+                a.Day <= day
+                && a.ExpirationDay >= day
+                && a.Category.Equals("social", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(a => a.Day)
+            .Select(a => TrimForContext(a.Title, 34, "rumor"))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .ToArray();
+
+        var bulletinItems = _state.Newspaper.Articles
+            .Where(a =>
+                a.Day <= day
+                && a.ExpirationDay >= day
+                && !a.Category.Equals("social", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(a => a.Day)
+            .Select(a => TrimForContext(a.Title, 34, "bulletin"))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .ToArray();
+
+        return
+            $"NEWS_CONTEXT: issue_day={issueDay} headline='{headline}' " +
+            $"editor=[{JoinContextItems(editorItems)}] rumors=[{JoinContextItems(rumorItems)}] " +
+            $"bulletins=[{JoinContextItems(bulletinItems)}].";
+    }
+
+    private string BuildRecentEventAwarenessBlock()
+    {
+        var day = _state.Calendar.Day;
+        var events = _state.TownMemory.Events
+            .Where(ev =>
+                ev.Day <= day
+                && ev.Day >= day - 3
+                && !string.IsNullOrWhiteSpace(ev.Summary))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .Take(3)
+            .Select(ev => $"{ev.Kind}:{TrimForContext(ev.Summary, 44, "event")}")
+            .ToArray();
+
+        return $"RECENT_EVENTS: [{JoinContextItems(events)}].";
+    }
+
+    private static bool IsEditorNewsSource(string? sourceNpc)
+    {
+        var source = (sourceNpc ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(source))
+            return false;
+
+        return source.Equals("Pelican Times Editor", StringComparison.OrdinalIgnoreCase)
+            || source.Equals("Editor", StringComparison.OrdinalIgnoreCase)
+            || source.Contains("Editor", StringComparison.OrdinalIgnoreCase)
+            || source.Equals("Town Reporter", StringComparison.OrdinalIgnoreCase)
+            || source.Equals("Town Report", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string JoinContextItems(IEnumerable<string> values)
+    {
+        var items = values
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(v => v.Trim())
+            .ToArray();
+
+        if (items.Length == 0)
+            return "none";
+
+        return string.Join(" | ", items);
+    }
+
+    private static string TrimForContext(string? raw, int maxLength, string fallback)
+    {
+        var value = (raw ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return fallback;
+
+        if (value.Length <= maxLength)
+            return value;
+
+        return value[..Math.Max(1, maxLength - 3)] + "...";
     }
 
     private static string GetCurrentWeatherLabel()
