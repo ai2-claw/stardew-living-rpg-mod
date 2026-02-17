@@ -538,6 +538,7 @@ public sealed class ModEntry : Mod
         var profile = _npcSpeechStyleService?.GetProfile(npcName) ?? NpcVerbalProfile.Traditionalist;
         var heartLevel = GetNpcHeartLevel(npcName);
         var isReserved = heartLevel <= 2;
+        var playerAddress = ResolvePlayerAddressForNpc(npcName);
         var dayPeriod = Game1.timeOfDay switch
         {
             < 1200 => "morning",
@@ -556,7 +557,7 @@ public sealed class ModEntry : Mod
                     NpcVerbalProfile.Intellectual => $"Good {dayPeriod}. I do not believe we have met properly.",
                     NpcVerbalProfile.Enthusiast => $"Good {dayPeriod}. I do not think we have talked before.",
                     NpcVerbalProfile.Recluse => $"...Good {dayPeriod}. I do not know you yet.",
-                    _ => $"Good {dayPeriod}, Farmer. I do not think we have spoken before."
+                    _ => $"Good {dayPeriod}, {playerAddress}. I do not think we have spoken before."
                 };
             }
 
@@ -566,7 +567,7 @@ public sealed class ModEntry : Mod
                 NpcVerbalProfile.Intellectual => $"Good {dayPeriod}. I do not believe we have spoken much before. I am {npc.displayName}.",
                 NpcVerbalProfile.Enthusiast => $"Hey! Good {dayPeriod}! I do not think we have talked much yet.",
                 NpcVerbalProfile.Recluse => $"...Oh. You are new to me. I am {npc.displayName}.",
-                _ => $"Good {dayPeriod}, Farmer. I do not think we have properly talked before."
+                _ => $"Good {dayPeriod}, {playerAddress}. I do not think we have properly talked before."
             };
         }
 
@@ -595,8 +596,8 @@ public sealed class ModEntry : Mod
                 ? $"...{dayPeriod}. What do you need?"
                 : $"...{dayPeriod} then. Town is quieter than usual.",
             _ => isReserved
-                ? $"Good {dayPeriod}, Farmer. What can I do for you?"
-                : $"Good {dayPeriod}, Farmer. How are things on your side?"
+                ? $"Good {dayPeriod}, {playerAddress}. What can I do for you?"
+                : $"Good {dayPeriod}, {playerAddress}. How are things on your side?"
         };
         greetings.Add(baseGreeting);
 
@@ -3058,6 +3059,9 @@ public sealed class ModEntry : Mod
         var dayOfWeek = GetCurrentDayOfWeekLabel();
         var timeOfDay = GetCurrentTimeOfDayLabel(out var hour24, out var minute);
         var heartLevel = GetNpcHeartLevel(npcName);
+        var npcHasMetPlayer = HasNpcMetPlayer(npcName);
+        var playerName = GetPlayerDisplayNameForContext();
+        var preferredAddress = npcHasMetPlayer ? playerName : "Farmer";
         var charismaStat = GetPlayerRpgStat("charisma");
         var socialStat = GetPlayerRpgStat("social");
         var speechStyleBlock = _npcSpeechStyleService?.BuildPromptBlock(
@@ -3126,6 +3130,7 @@ public sealed class ModEntry : Mod
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
             speechStyleBlock,
             "RELATIONSHIP_RULE: Match familiarity to STATE: RelationshipHearts. At 0-2 hearts, keep distance and avoid affectionate language.",
+            "PLAYER_NAME_RULE: Use PLAYER_KNOWLEDGE to decide how to address the player. If NpcHasMetPlayer is false, do not call the player by name.",
             "TIME_RULE: If asked for time, answer with hour and minute plus AM/PM (for example: 6:30 AM). Never answer with minutes only.",
             "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
             "QUEST_RULE: Never give text-only task offers without propose_quest.",
@@ -3148,6 +3153,7 @@ public sealed class ModEntry : Mod
             $"STATE: CurrentHour24 {hour24:00}.",
             $"STATE: CurrentMinute {minute:00}.",
             $"STATE: ParsnipCrisis {parsnipCrisis}.",
+            $"PLAYER_KNOWLEDGE: PlayerName='{playerName}' NpcHasMetPlayer={npcHasMetPlayer} PreferredAddress='{preferredAddress}'.",
             $"STATE: PlayerStats Charisma={charismaStat} Social={socialStat}.",
             $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
@@ -3159,6 +3165,54 @@ public sealed class ModEntry : Mod
             npcMemory,
             townMemory
         );
+    }
+
+    private static string GetPlayerDisplayNameForContext()
+    {
+        var raw = Game1.player?.Name ?? string.Empty;
+        return string.IsNullOrWhiteSpace(raw) ? "Farmer" : raw.Trim();
+    }
+
+    private static string ResolvePlayerAddressForNpc(string? npcName)
+    {
+        if (!HasNpcMetPlayer(npcName))
+            return "Farmer";
+
+        return GetPlayerDisplayNameForContext();
+    }
+
+    private static bool HasNpcMetPlayer(string? npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName) || Game1.player is null)
+            return false;
+
+        var normalizedNpc = npcName.Trim();
+        if (normalizedNpc.Length == 0)
+            return false;
+
+        try
+        {
+            var escapedNpc = normalizedNpc.Replace("\"", "\\\"", StringComparison.Ordinal);
+            var query = $"PLAYER_HAS_MET Current \"{escapedNpc}\"";
+            if (GameStateQuery.CheckConditions(query, Game1.currentLocation, Game1.player, null, null, null, null))
+                return true;
+        }
+        catch
+        {
+            // Fallback below if game-state query fails for any reason.
+        }
+
+        try
+        {
+            if (Game1.player.friendshipData is not null && Game1.player.friendshipData.ContainsKey(normalizedNpc))
+                return true;
+        }
+        catch
+        {
+            // Ignore and continue.
+        }
+
+        return Game1.player.mailReceived.Contains("Introductions", StringComparer.OrdinalIgnoreCase);
     }
 
     private string BuildNewsAwarenessBlock()
