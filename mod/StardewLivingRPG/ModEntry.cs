@@ -25,6 +25,7 @@ public sealed class ModEntry : Mod
 {
     private const int MaxNpcPublishCombinedCharacters = 100;
     private const int NpcPublishAfternoonStartTime = 1300;
+    private const int NpcPublishMinimumIntervalMinutes = 120;
     private const double DefaultMsPerNpcChatClockStep = 7000d;
     private const double NpcChatClockSlowdownMultiplier = 2d;
 
@@ -151,6 +152,8 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentQueue<NewspaperIssue> _completedNewspaperIssues = new();
     private readonly ConcurrentQueue<NpcPublishHeadlineUpdate> _completedNpcPublishHeadlineUpdates = new();
     private readonly List<NpcPublishHeadlineUpdate> _pendingNpcPublishHeadlineUpdates = new();
+    private int _lastNpcPublishAppliedDay = -1;
+    private int _lastNpcPublishAppliedTimeOfDay = -1;
     private int _pendingLateNightPassOutDay = -1;
     private string _pendingLateNightPassOutLocation = "Town";
     private readonly Random _ambientNpcRandom = new();
@@ -257,6 +260,8 @@ public sealed class ModEntry : Mod
 
         _pendingDayStartStreamRecycleDay = -1;
         TryCapturePendingLateNightPassOut();
+        _lastNpcPublishAppliedDay = -1;
+        _lastNpcPublishAppliedTimeOfDay = -1;
 
         // Give auto-connect a brief head start so day-start newspaper can use Player2 when available.
         if (_config.EnablePlayer2
@@ -2890,6 +2895,8 @@ public sealed class ModEntry : Mod
 
             ShowNewspaperCommandNotification(pending.Command, pending.OutcomeId, pending.SourceNpcId);
             Monitor.Log($"Published deferred NPC news for {pending.Command} in afternoon.", LogLevel.Trace);
+            _lastNpcPublishAppliedDay = _state.Calendar.Day;
+            _lastNpcPublishAppliedTimeOfDay = Game1.timeOfDay;
             _pendingNpcPublishHeadlineUpdates.RemoveAt(i);
         }
     }
@@ -2922,8 +2929,26 @@ public sealed class ModEntry : Mod
 
     private bool CanPublishNpcNewsNow(int day)
     {
-        return day == _state.Calendar.Day
-            && Game1.timeOfDay >= NpcPublishAfternoonStartTime;
+        if (day != _state.Calendar.Day)
+            return false;
+
+        if (Game1.timeOfDay < NpcPublishAfternoonStartTime)
+            return false;
+
+        if (_lastNpcPublishAppliedDay != day || _lastNpcPublishAppliedTimeOfDay <= 0)
+            return true;
+
+        var nowMinutes = ToMinutesFromTimeOfDay(Game1.timeOfDay);
+        var lastMinutes = ToMinutesFromTimeOfDay(_lastNpcPublishAppliedTimeOfDay);
+        return nowMinutes - lastMinutes >= NpcPublishMinimumIntervalMinutes;
+    }
+
+    private static int ToMinutesFromTimeOfDay(int hhmm)
+    {
+        var clamped = Math.Clamp(hhmm, 0, 2600);
+        var hours = clamped / 100;
+        var minutes = clamped % 100;
+        return (hours * 60) + Math.Clamp(minutes, 0, 59);
     }
 
     private static bool IsSameNpcPublishHeadlineTarget(NpcPublishHeadlineUpdate left, NpcPublishHeadlineUpdate right)
