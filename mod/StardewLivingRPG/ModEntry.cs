@@ -449,55 +449,206 @@ public sealed class ModEntry : Mod
         if (!IsRosterNpc(name))
             return false;
 
-        var prompt = name.ToLowerInvariant() switch
-        {
-            "robin" => "Before you head out, want me to check the board for fresh postings?",
-            "pierre" => "Before you go, should I look for fresh board postings for you?",
-            "lewis" => "Before you head off, do you want me to check for fresh board postings?",
-            _ => "Before you head off, do you want me to check for fresh board postings?"
-        };
-
-        var responses = new[]
-        {
-            new Response("requests", "Any new requests?"),
-            new Response("talk", "Let's just talk."),
-            new Response("later", "See you later.")
-        };
+        var prompt = BuildNpcFollowUpGreeting(npc);
+        var responses = new List<Response>();
+        if (HasPendingQuestForNpc(name))
+            responses.Add(new Response("town_word", "What's the word around town?"));
+        responses.Add(new Response("talk", "Got a minute to chat?"));
+        responses.Add(new Response("later", "Catch you later!"));
 
         loc.createQuestionDialogue(
             $"{npc.displayName}: {prompt}",
-            responses,
+            responses.ToArray(),
             (_, answer) =>
             {
-                if (string.Equals(answer, "requests", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(answer, "town_word", StringComparison.OrdinalIgnoreCase))
                 {
-                    OnUiAskMayorForWork(npc.Name);
-                    Game1.drawObjectDialogue($"{npc.displayName}: I'll pin a fresh posting on the board for you.");
+                    if (HasPendingQuestForNpc(name))
+                    {
+                        OpenRumorBoard();
+                        return;
+                    }
+
+                    if (_state.Newspaper.Issues.Any())
+                    {
+                        OpenNewspaper();
+                        return;
+                    }
+
+                    Game1.drawObjectDialogue($"{npc.displayName}: Quiet day so far. Nothing urgent on my side.");
                     return;
                 }
 
                 if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
-                {
-                    var npcName = npc.Name ?? npc.displayName;
-                    var npcIdForChat = _player2NpcIdsByShortName.TryGetValue(npcName, out var knownNpcId)
-                        ? knownNpcId
-                        : _activeNpcId;
-
-                    Game1.activeClickableMenu = new NpcChatInputMenu(
-                        npc.displayName,
-                        text =>
-                        {
-                            if (!string.IsNullOrWhiteSpace(npcIdForChat))
-                                SendPlayer2ChatInternal(text, npcIdForChat, npcName);
-                            else
-                                SendPlayer2ChatInternal(text);
-                        },
-                        () => string.IsNullOrWhiteSpace(npcIdForChat) ? null : DequeueNpcUiMessage(npcIdForChat),
-                        () => !string.IsNullOrWhiteSpace(npcIdForChat) && IsNpcThinking(npcIdForChat));
-                }
+                    OpenNpcChatMenu(npc);
             },
             npc);
 
+        return true;
+    }
+
+    private void OpenNpcChatMenu(NPC npc)
+    {
+        var npcName = npc.Name ?? npc.displayName;
+        var npcIdForChat = _player2NpcIdsByShortName.TryGetValue(npcName, out var knownNpcId)
+            ? knownNpcId
+            : _activeNpcId;
+
+        Game1.activeClickableMenu = new NpcChatInputMenu(
+            npc.displayName,
+            text =>
+            {
+                if (!string.IsNullOrWhiteSpace(npcIdForChat))
+                    SendPlayer2ChatInternal(text, npcIdForChat, npcName);
+                else
+                    SendPlayer2ChatInternal(text);
+            },
+            () => string.IsNullOrWhiteSpace(npcIdForChat) ? null : DequeueNpcUiMessage(npcIdForChat),
+            () => !string.IsNullOrWhiteSpace(npcIdForChat) && IsNpcThinking(npcIdForChat));
+    }
+
+    private bool HasPendingQuestForNpc(string npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName))
+            return false;
+
+        var issuer = npcName.Trim().ToLowerInvariant();
+        return _state.Quests.Available.Any(q =>
+            !string.IsNullOrWhiteSpace(q.Issuer)
+            && q.Issuer.Equals(issuer, StringComparison.OrdinalIgnoreCase)
+            && (q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day));
+    }
+
+    private bool IsFirstInteractionWithNpc(string npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName))
+            return true;
+
+        if (!_state.NpcMemory.Profiles.TryGetValue(npcName, out var profile))
+            return true;
+
+        return profile.RecentTurns.Count == 0 && profile.Facts.Count == 0;
+    }
+
+    private string BuildNpcFollowUpGreeting(NPC npc)
+    {
+        var npcName = string.IsNullOrWhiteSpace(npc.Name) ? npc.displayName : npc.Name;
+        var profile = _npcSpeechStyleService?.GetProfile(npcName) ?? NpcVerbalProfile.Traditionalist;
+        var dayPeriod = Game1.timeOfDay switch
+        {
+            < 1200 => "morning",
+            < 1700 => "afternoon",
+            < 2200 => "evening",
+            _ => "night"
+        };
+
+        if (IsFirstInteractionWithNpc(npcName))
+        {
+            return profile switch
+            {
+                NpcVerbalProfile.Professional => $"Good {dayPeriod}. I do not think we have chatted properly before. Name's {npc.displayName}.",
+                NpcVerbalProfile.Intellectual => $"Good {dayPeriod}. I do not believe we have spoken much before. I am {npc.displayName}.",
+                NpcVerbalProfile.Enthusiast => $"Hey! Good {dayPeriod}! I do not think we have talked much yet.",
+                NpcVerbalProfile.Recluse => $"...Oh. You are new to me. I am {npc.displayName}.",
+                _ => $"Good {dayPeriod}, Farmer. I do not think we have properly talked before."
+            };
+        }
+
+        var greetings = new List<string>();
+        var weather = GetCurrentWeatherLabel();
+
+        if (TryBuildMemoryGreeting(npcName, out var memoryGreeting))
+            greetings.Add(memoryGreeting);
+        if (TryBuildTownPulseGreeting(out var townGreeting))
+            greetings.Add(townGreeting);
+        if (TryBuildEconomySignalGreeting(out var economyGreeting))
+            greetings.Add(economyGreeting);
+
+        var baseGreeting = profile switch
+        {
+            NpcVerbalProfile.Professional => $"Good {dayPeriod}. Keeping things steady around town today.",
+            NpcVerbalProfile.Intellectual => $"Good {dayPeriod}. I have been making a few observations around town.",
+            NpcVerbalProfile.Enthusiast => $"Hey! Good {dayPeriod}! The town feels lively today.",
+            NpcVerbalProfile.Recluse => $"...{dayPeriod} then. Town is quieter than usual.",
+            _ => $"Good {dayPeriod}, Farmer. How are things on your side?"
+        };
+        greetings.Add(baseGreeting);
+
+        if (weather == "rain")
+        {
+            greetings.Add(profile switch
+            {
+                NpcVerbalProfile.Professional => "Rain's slowing everyone down a little, but we'll manage.",
+                NpcVerbalProfile.Recluse => "Rain again... keeps people indoors.",
+                _ => "Rain's settled in over town today."
+            });
+        }
+        else if (weather == "snow")
+        {
+            greetings.Add("Snow has everyone moving a bit slower today.");
+        }
+
+        return greetings[_ambientNpcRandom.Next(greetings.Count)];
+    }
+
+    private bool TryBuildMemoryGreeting(string npcName, out string greeting)
+    {
+        greeting = string.Empty;
+        if (string.IsNullOrWhiteSpace(npcName))
+            return false;
+
+        if (!_state.NpcMemory.Profiles.TryGetValue(npcName, out var profile))
+            return false;
+
+        var lastTurn = profile.RecentTurns.LastOrDefault();
+        if (lastTurn is null)
+            return false;
+
+        var topic = lastTurn.Tags?.FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
+        if (!string.IsNullOrWhiteSpace(topic))
+            greeting = $"Hey, I was still thinking about what you said on {topic}.";
+        else
+            greeting = "Hey, good to see you again.";
+
+        return !string.IsNullOrWhiteSpace(greeting);
+    }
+
+    private bool TryBuildTownPulseGreeting(out string greeting)
+    {
+        greeting = string.Empty;
+        var recent = _state.TownMemory.Events
+            .Where(ev => ev.Day >= _state.Calendar.Day - 2 && !string.IsNullOrWhiteSpace(ev.Summary))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .FirstOrDefault();
+
+        if (recent is null)
+            return false;
+
+        var summary = recent.Summary.Trim();
+        if (summary.Length > 72)
+            summary = summary[..69] + "...";
+
+        greeting = $"Town's been buzzing: {summary}";
+        return true;
+    }
+
+    private bool TryBuildEconomySignalGreeting(out string greeting)
+    {
+        greeting = string.Empty;
+        if (_state.Economy.Crops.Count == 0)
+            return false;
+
+        var mover = _state.Economy.Crops
+            .Select(kv => new { Crop = kv.Key, Delta = kv.Value.PriceToday - kv.Value.PriceYesterday })
+            .OrderByDescending(x => Math.Abs(x.Delta))
+            .FirstOrDefault();
+
+        if (mover is null || Math.Abs(mover.Delta) < 2)
+            return false;
+
+        var direction = mover.Delta > 0 ? "up" : "down";
+        greeting = $"{mover.Crop} prices are {direction} today.";
         return true;
     }
 
@@ -1023,22 +1174,30 @@ public sealed class ModEntry : Mod
         if (TryCreateRosterTalkDialogue(loc, npc))
             return;
 
-        var responses = new[]
-        {
-            new Response("yes", "Any new postings?"),
-            new Response("no", "Not now")
-        };
+        var responses = new List<Response>();
+        if (HasPendingQuestForNpc(npc.Name ?? npc.displayName))
+            responses.Add(new Response("town_word", "What's the word around town?"));
+        responses.Add(new Response("talk", "Got a minute to chat?"));
+        responses.Add(new Response("later", "Catch you later!"));
 
         loc.createQuestionDialogue(
-            $"{npc.displayName}: Looking for a town request today?",
-            responses,
+            $"{npc.displayName}: {BuildNpcFollowUpGreeting(npc)}",
+            responses.ToArray(),
             (_, answer) =>
             {
-                if (!string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(answer, "town_word", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (HasPendingQuestForNpc(npc.Name ?? npc.displayName))
+                        OpenRumorBoard();
+                    else if (_state.Newspaper.Issues.Any())
+                        OpenNewspaper();
+                    else
+                        Game1.drawObjectDialogue($"{npc.displayName}: Quiet day so far. Nothing urgent on my side.");
                     return;
+                }
 
-                OnUiAskMayorForWork(npc.Name);
-                Game1.drawObjectDialogue($"{npc.displayName}: I'll pin a fresh posting on the board for you.");
+                if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
+                    OpenNpcChatMenu(npc);
             },
             npc);
     }

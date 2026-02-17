@@ -93,6 +93,11 @@ public sealed class NpcSpeechStyleService
         ).Trim();
     }
 
+    public NpcVerbalProfile GetProfile(string? npcName)
+    {
+        return ResolveProfile(npcName);
+    }
+
     private NpcVerbalProfile ResolveProfile(string? npcName)
     {
         if (string.IsNullOrWhiteSpace(npcName))
