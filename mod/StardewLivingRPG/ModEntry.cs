@@ -2907,6 +2907,7 @@ public sealed class ModEntry : Mod
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
         var playerAskedForRequest = IsPlayerAskingForQuest(playerText);
+        var parsnipCrisis = IsParsnipQuestCrisisActive();
         if (!string.IsNullOrWhiteSpace(npcName))
         {
             if (_npcMemoryService is not null)
@@ -2930,6 +2931,8 @@ public sealed class ModEntry : Mod
             "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
             "QUEST_RULE: Never give text-only task offers without propose_quest.",
             "QUEST_RULE: If no suitable request exists, explicitly say none is available in-character.",
+            "QUEST_RULE: Do not proactively offer a new quest during normal small talk. Offer quests only when the player asks for work/request or explicitly agrees to help.",
+            "QUEST_TARGET_RULE: Do not default to parsnip. Use parsnip only when STATE: ParsnipCrisis is true; otherwise choose another valid crop target or decline.",
             playerAskedForRequest
                 ? "QUEST_CONTEXT: Player explicitly asked for work/request now. You must either emit propose_quest or decline clearly; no text-only task offers."
                 : string.Empty,
@@ -2944,6 +2947,7 @@ public sealed class ModEntry : Mod
             $"STATE: RelationshipHearts {(string.IsNullOrWhiteSpace(npcName) ? 0 : heartLevel)}.",
             $"STATE: CurrentHour24 {hour24:00}.",
             $"STATE: CurrentMinute {minute:00}.",
+            $"STATE: ParsnipCrisis {parsnipCrisis}.",
             $"STATE: PlayerStats Charisma={charismaStat} Social={socialStat}.",
             $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
@@ -3157,10 +3161,23 @@ public sealed class ModEntry : Mod
         if (!TryExtractNpcIdAndMessage(line, out var npcId, out var message))
             return;
 
-        if (!_npcLastPlayerQuestAskUtcById.TryGetValue(npcId, out var questAskUtc))
+        if (!_npcLastPlayerChatRequestUtcById.TryGetValue(npcId, out var lastPlayerChatUtc))
             return;
 
-        if (DateTime.UtcNow - questAskUtc > TimeSpan.FromSeconds(45))
+        if (DateTime.UtcNow - lastPlayerChatUtc > TimeSpan.FromSeconds(45))
+            return;
+
+        var playerAskedForQuestRecently = _npcLastPlayerQuestAskUtcById.TryGetValue(npcId, out var questAskUtc)
+            && DateTime.UtcNow - questAskUtc <= TimeSpan.FromSeconds(60);
+
+        _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPlayerPrompt);
+        var playerAcceptedQuest = IsPlayerAcceptingQuest(lastPlayerPrompt);
+
+        // Only synthesize propose_quest when the player either asked for work or explicitly accepted.
+        if (!playerAskedForQuestRecently && !playerAcceptedQuest)
+            return;
+
+        if (!LooksLikeQuestOffer(message))
             return;
 
         if (LooksLikeQuestDecline(message))
@@ -3228,6 +3245,66 @@ public sealed class ModEntry : Mod
             || text.Contains("do not have anything", StringComparison.Ordinal);
     }
 
+    private static bool LooksLikeQuestOffer(string message)
+    {
+        var text = message.Trim().ToLowerInvariant();
+        if (ContainsAny(
+                text,
+                "could you",
+                "can you",
+                "would you",
+                "please",
+                "bring me",
+                "bring back",
+                "drop off",
+                "deliver",
+                "gather",
+                "collect",
+                "harvest",
+                "supply",
+                "town market",
+                "i'll reward",
+                "i will reward",
+                "reward you",
+                "payout"))
+        {
+            return true;
+        }
+
+        if (Regex.IsMatch(text, @"\b(?:bring|gather|collect|deliver|harvest)\s+\d+\b", RegexOptions.CultureInvariant))
+            return true;
+
+        return false;
+    }
+
+    private static bool IsPlayerAcceptingQuest(string? playerText)
+    {
+        if (string.IsNullOrWhiteSpace(playerText))
+            return false;
+
+        var text = playerText.Trim().ToLowerInvariant();
+        return text == "yes"
+            || text == "yep"
+            || text == "yeah"
+            || text == "sure"
+            || text == "ok"
+            || text == "okay"
+            || text.Contains("i can help", StringComparison.Ordinal)
+            || text.Contains("i'll help", StringComparison.Ordinal)
+            || text.Contains("i will help", StringComparison.Ordinal)
+            || text.Contains("count me in", StringComparison.Ordinal)
+            || text.Contains("i accept", StringComparison.Ordinal)
+            || text.Contains("let's do it", StringComparison.Ordinal)
+            || text.Contains("lets do it", StringComparison.Ordinal)
+            || text.Contains("i can do that", StringComparison.Ordinal)
+            || text.Contains("i'll do it", StringComparison.Ordinal)
+            || text.Contains("i will do it", StringComparison.Ordinal)
+            || text.Contains("sounds good", StringComparison.Ordinal)
+            || text.Contains("i can take it", StringComparison.Ordinal)
+            || text.Contains("i'll take it", StringComparison.Ordinal)
+            || text.Contains("i will take it", StringComparison.Ordinal);
+    }
+
     private bool TryInferQuestProposalFromMessage(string message, out string templateId, out string target, out string urgency)
     {
         templateId = string.Empty;
@@ -3254,7 +3331,7 @@ public sealed class ModEntry : Mod
         if (ContainsAny(text, "deliver", "bring", "drop off", "supply"))
         {
             templateId = "deliver_item";
-            target = TryFindCropTargetInText(text) ?? "wheat";
+            target = TryFindCropTargetInText(text) ?? GetFallbackQuestCropTargetForInference();
             urgency = InferUrgency(text);
             return true;
         }
@@ -3262,7 +3339,7 @@ public sealed class ModEntry : Mod
         if (ContainsAny(text, "gather", "gathering", "collect", "collecting", "harvest", "harvesting", "pick"))
         {
             templateId = "gather_crop";
-            target = TryFindCropTargetInText(text) ?? "parsnip";
+            target = TryFindCropTargetInText(text) ?? GetFallbackQuestCropTargetForInference();
             urgency = InferUrgency(text);
             return true;
         }
@@ -3361,6 +3438,78 @@ public sealed class ModEntry : Mod
         if (t.EndsWith("s", StringComparison.Ordinal) && t.Length > 3)
             t = t[..^1];
         return t;
+    }
+
+    private string GetFallbackQuestCropTargetForInference()
+    {
+        var allowParsnip = IsParsnipQuestCrisisActive();
+        var ordered = _state.Economy.Crops
+            .Where(kv => !string.IsNullOrWhiteSpace(kv.Key))
+            .OrderByDescending(kv => kv.Value.ScarcityBonus)
+            .ThenByDescending(kv => kv.Value.DemandFactor)
+            .ThenByDescending(kv => kv.Value.SupplyPressureFactor)
+            .Select(kv => kv.Key.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!allowParsnip)
+            ordered = ordered.Where(c => !c.Equals("parsnip", StringComparison.OrdinalIgnoreCase)).ToList();
+
+        var best = ordered.FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(best))
+            return best;
+
+        var season = (_state.Calendar.Season ?? string.Empty).Trim().ToLowerInvariant();
+        if (allowParsnip)
+        {
+            return season switch
+            {
+                "spring" => "parsnip",
+                "summer" => "tomato",
+                "fall" => "pumpkin",
+                _ => "wheat"
+            };
+        }
+
+        return season switch
+        {
+            "spring" => "potato",
+            "summer" => "tomato",
+            "fall" => "pumpkin",
+            _ => "wheat"
+        };
+    }
+
+    private bool IsParsnipQuestCrisisActive()
+    {
+        if (!_state.Facts.Facts.TryGetValue("anchor:town_hall_crisis:status:triggered", out var triggered) || !triggered.Value)
+            return false;
+
+        if (_state.Facts.Facts.TryGetValue("anchor:town_hall_crisis:status:resolved", out var resolved) && resolved.Value)
+            return false;
+
+        if (!_state.Economy.Crops.TryGetValue("parsnip", out var parsnip))
+            return false;
+
+        var topByScarcity = _state.Economy.Crops
+            .OrderByDescending(kv => kv.Value.ScarcityBonus)
+            .ThenByDescending(kv => kv.Value.DemandFactor)
+            .Select(kv => kv.Key)
+            .FirstOrDefault();
+
+        if (!string.Equals(topByScarcity, "parsnip", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var secondScarcity = _state.Economy.Crops
+            .Where(kv => !kv.Key.Equals("parsnip", StringComparison.OrdinalIgnoreCase))
+            .Select(kv => kv.Value.ScarcityBonus)
+            .DefaultIfEmpty(0f)
+            .Max();
+
+        var scarcityLead = parsnip.ScarcityBonus - secondScarcity;
+        return parsnip.DemandFactor >= 1.04f
+            && parsnip.ScarcityBonus >= 0.04f
+            && scarcityLead >= 0.01f;
     }
 
     private static string InferUrgency(string text)

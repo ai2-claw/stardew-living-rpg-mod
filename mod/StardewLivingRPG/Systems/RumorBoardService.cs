@@ -6,6 +6,9 @@ namespace StardewLivingRPG.Systems;
 
 public sealed class RumorBoardService
 {
+    private const string TownHallStatusTriggered = "anchor:town_hall_crisis:status:triggered";
+    private const string TownHallStatusResolved = "anchor:town_hall_crisis:status:resolved";
+
     private static readonly HashSet<string> ValidCrops = new(StringComparer.OrdinalIgnoreCase)
     {
         "parsnip", "potato", "cauliflower", "blueberry", "melon", "pumpkin", "cranberry", "corn", "wheat", "tomato"
@@ -21,16 +24,26 @@ public sealed class RumorBoardService
         "lewis", "pierre", "robin", "linus", "haley", "alex", "demetrius", "wizard"
     };
 
+    private static readonly Dictionary<string, string> CropAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["parsnips"] = "parsnip",
+        ["potatoes"] = "potato",
+        ["cauliflowers"] = "cauliflower",
+        ["blueberries"] = "blueberry",
+        ["melons"] = "melon",
+        ["pumpkins"] = "pumpkin",
+        ["cranberries"] = "cranberry",
+        ["corns"] = "corn",
+        ["wheats"] = "wheat",
+        ["tomatoes"] = "tomato"
+    };
+
     public void RefreshDailyRumors(SaveState state)
     {
         // Keep active quests untouched; rotate available list daily.
         state.Quests.Available.Clear();
 
-        var crop = state.Economy.Crops
-            .OrderByDescending(kv => kv.Value.ScarcityBonus)
-            .ThenBy(kv => kv.Value.SupplyPressureFactor)
-            .Select(kv => kv.Key)
-            .FirstOrDefault() ?? "parsnip";
+        var crop = SelectFallbackCropTarget(state, allowParsnip: IsParsnipCrisisActive(state));
 
         state.Quests.Available.Add(new QuestEntry
         {
@@ -197,7 +210,7 @@ public sealed class RumorBoardService
             return QuestProposalResult.Duplicate;
 
         var safeTemplate = NormalizeTemplate(templateId);
-        var safeTarget = NormalizeTargetForTemplate(safeTemplate, target);
+        var safeTarget = NormalizeTargetForTemplate(state, safeTemplate, target);
         var safeUrgency = NormalizeUrgency(urgency);
 
         var (count, rewardGold, expiresDelta) = BoundsForTemplateAndUrgency(safeTemplate, safeUrgency);
@@ -403,18 +416,137 @@ public sealed class RumorBoardService
         };
     }
 
-    private static string NormalizeTargetForTemplate(string templateId, string rawTarget)
+    private static string NormalizeTargetForTemplate(SaveState state, string templateId, string rawTarget)
     {
-        var t = (rawTarget ?? string.Empty).Trim().ToLowerInvariant();
+        var t = NormalizeCropCandidate(rawTarget);
+        var allowParsnip = IsParsnipCrisisActive(state);
 
         return templateId switch
         {
-            "gather_crop" => ValidCrops.Contains(t) ? t : "parsnip",
-            "deliver_item" => ValidCrops.Contains(t) ? t : "wheat",
+            "gather_crop" => NormalizeCropTargetOrFallback(state, t, allowParsnip),
+            "deliver_item" => NormalizeCropTargetOrFallback(state, t, allowParsnip),
             "mine_resource" => ValidResources.Contains(t) ? t : "copper_ore",
             "social_visit" => ValidNpcTargets.Contains(t) ? t : "lewis",
-            _ => ValidCrops.Contains(t) ? t : "parsnip"
+            _ => NormalizeCropTargetOrFallback(state, t, allowParsnip)
         };
+    }
+
+    private static string NormalizeCropTargetOrFallback(SaveState state, string candidate, bool allowParsnip)
+    {
+        if (ValidCrops.Contains(candidate))
+        {
+            if (candidate.Equals("parsnip", StringComparison.OrdinalIgnoreCase) && !allowParsnip)
+                return SelectFallbackCropTarget(state, allowParsnip: false);
+
+            return candidate;
+        }
+
+        return SelectFallbackCropTarget(state, allowParsnip);
+    }
+
+    private static string NormalizeCropCandidate(string? rawTarget)
+    {
+        var t = (rawTarget ?? string.Empty)
+            .Trim()
+            .ToLowerInvariant()
+            .Replace(" ", "_", StringComparison.Ordinal)
+            .Trim('"', '\'', '.', ',', '!', '?', ';', ':');
+
+        if (CropAliases.TryGetValue(t, out var alias))
+            return alias;
+
+        if (t.EndsWith("ies", StringComparison.Ordinal) && t.Length > 3)
+        {
+            var singularY = t[..^3] + "y";
+            if (ValidCrops.Contains(singularY))
+                return singularY;
+        }
+
+        if (t.EndsWith("s", StringComparison.Ordinal) && t.Length > 1)
+        {
+            var singular = t[..^1];
+            if (ValidCrops.Contains(singular))
+                return singular;
+        }
+
+        return t;
+    }
+
+    private static string SelectFallbackCropTarget(SaveState state, bool allowParsnip)
+    {
+        var ordered = state.Economy.Crops
+            .Where(kv => ValidCrops.Contains(kv.Key))
+            .OrderByDescending(kv => kv.Value.ScarcityBonus)
+            .ThenByDescending(kv => kv.Value.DemandFactor)
+            .ThenByDescending(kv => kv.Value.SupplyPressureFactor)
+            .Select(kv => kv.Key.ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!allowParsnip)
+            ordered = ordered.Where(c => !c.Equals("parsnip", StringComparison.OrdinalIgnoreCase)).ToList();
+
+        var best = ordered.FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(best))
+            return best;
+
+        return GetSeasonalFallbackCrop(state.Calendar.Season, allowParsnip);
+    }
+
+    private static string GetSeasonalFallbackCrop(string? season, bool allowParsnip)
+    {
+        var s = (season ?? string.Empty).Trim().ToLowerInvariant();
+        if (allowParsnip)
+        {
+            return s switch
+            {
+                "spring" => "parsnip",
+                "summer" => "tomato",
+                "fall" => "pumpkin",
+                _ => "wheat"
+            };
+        }
+
+        return s switch
+        {
+            "spring" => "potato",
+            "summer" => "tomato",
+            "fall" => "pumpkin",
+            _ => "wheat"
+        };
+    }
+
+    private static bool IsParsnipCrisisActive(SaveState state)
+    {
+        if (!state.Facts.Facts.TryGetValue(TownHallStatusTriggered, out var triggered) || !triggered.Value)
+            return false;
+
+        if (state.Facts.Facts.TryGetValue(TownHallStatusResolved, out var resolved) && resolved.Value)
+            return false;
+
+        if (!state.Economy.Crops.TryGetValue("parsnip", out var parsnip))
+            return false;
+
+        var topByScarcity = state.Economy.Crops
+            .Where(kv => ValidCrops.Contains(kv.Key))
+            .OrderByDescending(kv => kv.Value.ScarcityBonus)
+            .ThenByDescending(kv => kv.Value.DemandFactor)
+            .Select(kv => kv.Key)
+            .FirstOrDefault();
+
+        if (!string.Equals(topByScarcity, "parsnip", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var secondScarcity = state.Economy.Crops
+            .Where(kv => ValidCrops.Contains(kv.Key) && !kv.Key.Equals("parsnip", StringComparison.OrdinalIgnoreCase))
+            .Select(kv => kv.Value.ScarcityBonus)
+            .DefaultIfEmpty(0f)
+            .Max();
+
+        var scarcityLead = parsnip.ScarcityBonus - secondScarcity;
+        return parsnip.DemandFactor >= 1.04f
+            && parsnip.ScarcityBonus >= 0.04f
+            && scarcityLead >= 0.01f;
     }
 
     private static void ApplyRewards(SaveState state, QuestEntry quest)
