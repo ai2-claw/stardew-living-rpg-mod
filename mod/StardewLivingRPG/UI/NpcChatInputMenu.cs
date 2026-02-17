@@ -155,10 +155,39 @@ public sealed class NpcChatInputMenu : IClickableMenu
             var next = _pollIncoming();
             if (!string.IsNullOrWhiteSpace(next))
             {
-                var clean = Regex.Replace(next, @"^(\<[^>]+>|[^:]+:)\s*", "").Trim();
+                var clean = CleanIncomingNpcMessage(next);
                 _lastNpcMessage = clean;
             }
         }
+    }
+
+    private string CleanIncomingNpcMessage(string raw)
+    {
+        var clean = (raw ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(clean))
+            return string.Empty;
+
+        // Remove optional "<Speaker>" tags without stripping regular sentence text like "It's 8:20 AM".
+        while (true)
+        {
+            var tagMatch = Regex.Match(clean, @"^\<[^>]+\>\s*", RegexOptions.CultureInvariant);
+            if (!tagMatch.Success || tagMatch.Length <= 0)
+                break;
+
+            clean = clean[tagMatch.Length..].TrimStart();
+        }
+
+        if (!string.IsNullOrWhiteSpace(_npcName))
+        {
+            var label = _npcName.Trim();
+            if (!string.IsNullOrWhiteSpace(label)
+                && clean.StartsWith(label + ":", StringComparison.OrdinalIgnoreCase))
+            {
+                clean = clean[(label.Length + 1)..].TrimStart();
+            }
+        }
+
+        return clean;
     }
 
     public override void draw(SpriteBatch b)
