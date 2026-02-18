@@ -59,8 +59,19 @@ Player-facing Player2 UX:
 
 NPC intent pipeline:
 - validates intent envelopes against `NPC_COMMAND_SCHEMA.json` command constraints
-- implemented deterministic handlers: `propose_quest`, `adjust_reputation`, `shift_interest_influence`, `apply_market_modifier`, `publish_rumor`
+- implemented deterministic handlers:
+  - `propose_quest`
+  - `adjust_reputation`
+  - `shift_interest_influence`
+  - `apply_market_modifier`
+  - `publish_rumor`
+  - `publish_article`
+  - `record_memory_fact`
+  - `record_town_event`
+  - `adjust_town_sentiment`
 - runs deterministic resolver path with explicit reject/duplicate/applied logs
+- supports automatic and manual command exposure lanes with lane-aware telemetry
+- manual relationship/interest/market asks now pass through a deterministic accept/defer/reject gate before mutation-capable prompts are sent
 
 NPC grounding polish:
 - chat context now includes explicit `MARKET_SIGNALS` (top movers, oversupply, scarcity, recommended alternative crop)

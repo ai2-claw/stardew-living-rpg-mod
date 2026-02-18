@@ -41,6 +41,17 @@ public sealed class EconomyService
     {
         EnsureInitialized(state.Economy);
 
+        // Keep only active/future market events so stale modifiers do not accumulate forever.
+        state.Economy.MarketEvents.RemoveAll(ev => ev.EndDay < state.Calendar.Day);
+
+        var activeMarketEventModifierByCrop = state.Economy.MarketEvents
+            .Where(ev => ev.StartDay <= state.Calendar.Day && state.Calendar.Day <= ev.EndDay)
+            .GroupBy(ev => (ev.Crop ?? string.Empty).Trim().ToLowerInvariant())
+            .ToDictionary(
+                g => g.Key,
+                g => Clamp(g.Sum(ev => ev.DeltaPct), -0.25f, 0.25f),
+                StringComparer.OrdinalIgnoreCase);
+
         // Identify oversupplied crop(s) to generate scarcity bonus opportunities for alternatives.
         var maxVolume = state.Economy.Crops.Values.Max(c => c.RollingSellVolume7D);
         var oversupplied = state.Economy.Crops
@@ -68,6 +79,8 @@ public sealed class EconomyService
             entry.ScarcityBonus = (!oversupplied.Contains(crop) && oversupplied.Count > 0) ? 0.04f : 0f;
 
             var raw = entry.BasePrice * entry.DemandFactor * entry.SupplyPressureFactor * entry.SentimentFactor * (1f + entry.ScarcityBonus);
+            if (activeMarketEventModifierByCrop.TryGetValue(crop, out var marketEventDeltaPct))
+                raw *= 1f + marketEventDeltaPct;
             var floor = entry.BasePrice * state.Config.PriceFloorPct;
             var ceiling = entry.BasePrice * state.Config.PriceCeilingPct;
 

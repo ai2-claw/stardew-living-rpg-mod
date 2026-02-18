@@ -162,11 +162,16 @@ Supported commands:
 - `apply_market_modifier`
 - `publish_rumor`
 - `publish_article`
+- `record_memory_fact`
+- `record_town_event`
+- `adjust_town_sentiment`
 
 Safety controls:
 - strict argument validation and normalization
 - bounded deltas/ranges
 - idempotency tracking through processed intent facts
+- fact-key cooldown gates for memory/event/sentiment command families
+- lane-aware telemetry (`auto` vs `manual`) and ask-gate outcomes (`accept|defer|reject`)
 - daily publish caps:
 - rumors: max 1 social rumor/day
 - non-social NPC articles: max 2/day

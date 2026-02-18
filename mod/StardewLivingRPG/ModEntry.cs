@@ -70,6 +70,26 @@ public sealed class ModEntry : Mod
         "Pam", "Penny", "Qi", "Sam", "Sandy", "Sebastian", "Shane",
         "Vincent", "Willy", "Wizard"
     };
+    private static readonly string[] SpringNpcSupplyPool =
+    {
+        "parsnip", "potato", "cauliflower", "kale", "garlic", "strawberry", "green_bean", "rhubarb"
+    };
+    private static readonly string[] SummerNpcSupplyPool =
+    {
+        "blueberry", "melon", "tomato", "corn", "hot_pepper", "radish", "wheat", "hops"
+    };
+    private static readonly string[] FallNpcSupplyPool =
+    {
+        "pumpkin", "cranberry", "corn", "wheat", "eggplant", "yam", "bok_choy", "grape", "beet", "amaranth"
+    };
+    private static readonly string[] WinterNpcSupplyPool =
+    {
+        "wheat", "potato", "kale", "corn", "apple", "orange", "peach", "pomegranate"
+    };
+    private static readonly string[] OrchardNpcSupplyPool =
+    {
+        "apple", "orange", "peach", "pomegranate", "apricot", "cherry"
+    };
 
     private ModConfig _config = new();
     private SaveState _state = SaveState.CreateDefault();
@@ -84,6 +104,7 @@ public sealed class ModEntry : Mod
     private NpcMemoryService? _npcMemoryService;
     private TownMemoryService? _townMemoryService;
     private NpcSpeechStyleService? _npcSpeechStyleService;
+    private NpcAskGateService? _npcAskGateService;
 
     // Player2 M2 runtime session state
     private Player2Client? _player2Client;
@@ -122,6 +143,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, string> _npcLastReceivedMessageById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerChatRequestUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _npcLastPlayerPromptById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _npcLastContextTagById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerQuestAskUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
@@ -181,13 +203,14 @@ public sealed class ModEntry : Mod
         _salesIngestionService = new SalesIngestionService();
         _newspaperService = new NewspaperService(Monitor, _player2Client);
         _rumorBoardService = new RumorBoardService();
-        _intentResolver = new NpcIntentResolver(_rumorBoardService, _config.StrictNpcTemplateValidation);
-        _anchorEventService = new AnchorEventService();
         _npcMemoryService = new NpcMemoryService();
         _townMemoryService = new TownMemoryService();
+        _intentResolver = new NpcIntentResolver(_rumorBoardService, _npcMemoryService, _townMemoryService, _config.StrictNpcTemplateValidation);
+        _anchorEventService = new AnchorEventService();
         var speechStyleConfig = helper.Data.ReadJsonFile<NpcSpeechStyleConfig>("npc_speech_profiles.json")
             ?? NpcSpeechStyleConfig.CreateDefault();
         _npcSpeechStyleService = new NpcSpeechStyleService(speechStyleConfig);
+        _npcAskGateService = new NpcAskGateService();
         _player2Client = new Player2Client();
 
         helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
@@ -279,7 +302,9 @@ public sealed class ModEntry : Mod
 
         ResetAmbientNpcConversationScheduleForDay();
 
+        _economyService?.EnsureInitialized(_state.Economy);
         var sold = _salesIngestionService?.DrainPendingSales() ?? new Dictionary<string, int>();
+        AppendSimulatedNpcMarketSales(sold);
         _economyService?.IngestSales(_state.Economy, sold);
         _economyService?.RunDailyPricing(_state);
         _dailyTickService.Run(_state);
@@ -512,7 +537,10 @@ public sealed class ModEntry : Mod
                 }
 
                 if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
+                {
                     OpenNpcChatMenu(npc);
+                    return;
+                }
             },
             npc);
 
@@ -885,6 +913,9 @@ public sealed class ModEntry : Mod
         }
 
         TryTriggerAmbientNpcConversation();
+
+        if (e.IsMultipleOf(60))
+            TryRunAutomaticNpcCommandExposureHooks();
 
         TryApplyCompletedNewspaperIssues();
         TryApplyCompletedNpcPublishHeadlineUpdates();
@@ -1567,6 +1598,124 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private void AppendSimulatedNpcMarketSales(Dictionary<string, int> sold)
+    {
+        if (sold is null || _economyService is null || _state.Economy.Crops.Count == 0)
+            return;
+
+        var simulated = BuildNpcSimulatedMarketSales();
+        if (simulated.Count == 0)
+            return;
+
+        foreach (var (crop, count) in simulated)
+        {
+            sold.TryGetValue(crop, out var existing);
+            sold[crop] = existing + count;
+        }
+    }
+
+    private Dictionary<string, int> BuildNpcSimulatedMarketSales()
+    {
+        var simulated = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var season = (_state.Calendar.Season ?? "spring").Trim().ToLowerInvariant();
+        var day = Math.Max(1, _state.Calendar.Day);
+        var year = Math.Max(1, _state.Calendar.Year);
+
+        void AddIfKnown(string rawKey, int minCount, int maxCount, string seed)
+        {
+            if (minCount <= 0 || maxCount < minCount)
+                return;
+            if (!_economyService!.TryNormalizeCropKey(rawKey, out var cropKey))
+                return;
+            if (!_state.Economy.Crops.ContainsKey(cropKey))
+                return;
+
+            var quantity = RollDeterministicRange(minCount, maxCount, seed, day, year, season);
+            if (quantity <= 0)
+                return;
+
+            simulated.TryGetValue(cropKey, out var existing);
+            simulated[cropKey] = existing + quantity;
+        }
+
+        // Marnie ranch throughput: poultry + dairy always influence supply.
+        AddIfKnown("egg", 6, 12, "marnie_egg");
+        AddIfKnown("brown_egg", 3, 7, "marnie_brown_egg");
+        AddIfKnown("milk", 4, 8, "marnie_milk");
+        if (RollDeterministicModulo("marnie_duck_egg", day, year, season, 3) == 0)
+            AddIfKnown("duck_egg", 1, 3, "marnie_duck_egg_qty");
+        if (RollDeterministicModulo("marnie_void_egg", day, year, season, 4) == 0)
+            AddIfKnown("void_egg", 1, 2, "marnie_void_egg_qty");
+        if (RollDeterministicModulo("marnie_goat_milk", day, year, season, 2) == 0)
+            AddIfKnown("goat_milk", 1, 3, "marnie_goat_milk_qty");
+        if (RollDeterministicModulo("marnie_large_milk", day, year, season, 2) == 0)
+            AddIfKnown("large_milk", 1, 2, "marnie_large_milk_qty");
+        if (RollDeterministicModulo("marnie_large_goat_milk", day, year, season, 4) == 0)
+            AddIfKnown("large_goat_milk", 1, 2, "marnie_large_goat_milk_qty");
+
+        var seasonalPool = GetSeasonalNpcSupplyPool(season);
+        if (seasonalPool.Length > 0)
+        {
+            var start = RollDeterministicModulo("town_seasonal_start", day, year, season, seasonalPool.Length);
+            for (var i = 0; i < Math.Min(3, seasonalPool.Length); i++)
+            {
+                var crop = seasonalPool[(start + (i * 2)) % seasonalPool.Length];
+                AddIfKnown(crop, 3, 10, $"town_seasonal_{i}_{crop}");
+            }
+        }
+
+        if (season is "summer" or "fall")
+        {
+            var startFruit = RollDeterministicModulo("town_orchard_start", day, year, season, OrchardNpcSupplyPool.Length);
+            for (var i = 0; i < 2; i++)
+            {
+                var fruit = OrchardNpcSupplyPool[(startFruit + i) % OrchardNpcSupplyPool.Length];
+                AddIfKnown(fruit, 2, 6, $"town_orchard_{i}_{fruit}");
+            }
+        }
+
+        return simulated;
+    }
+
+    private static string[] GetSeasonalNpcSupplyPool(string season)
+    {
+        return season switch
+        {
+            "spring" => SpringNpcSupplyPool,
+            "summer" => SummerNpcSupplyPool,
+            "fall" => FallNpcSupplyPool,
+            "winter" => WinterNpcSupplyPool,
+            _ => SpringNpcSupplyPool
+        };
+    }
+
+    private static int RollDeterministicRange(int min, int max, string seed, int day, int year, string season)
+    {
+        if (max <= min)
+            return min;
+
+        var span = max - min + 1;
+        return min + (RollDeterministicModulo(seed, day, year, season, span));
+    }
+
+    private static int RollDeterministicModulo(string seed, int day, int year, string season, int modulo)
+    {
+        if (modulo <= 1)
+            return 0;
+
+        unchecked
+        {
+            var hash = 17;
+            foreach (var ch in seed)
+                hash = (hash * 31) + ch;
+            foreach (var ch in season)
+                hash = (hash * 31) + ch;
+            hash = (hash * 31) + day;
+            hash = (hash * 31) + year;
+            return (hash & int.MaxValue) % modulo;
+        }
+    }
+
     private void TryRefreshPendingNewspaperIssue(string source)
     {
         if (_pendingNewspaperRefreshDay < 0)
@@ -1832,6 +1981,8 @@ public sealed class ModEntry : Mod
         Monitor.Log($"Quests | available: {_state.Quests.Available.Count}, active: {_state.Quests.Active.Count}, completed: {_state.Quests.Completed.Count}, failed: {_state.Quests.Failed.Count}", LogLevel.Info);
         Monitor.Log($"Telemetry | opens(board): {_state.Telemetry.Daily.MarketBoardOpens}, accepts: {_state.Telemetry.Daily.RumorBoardAccepts}, completes: {_state.Telemetry.Daily.RumorBoardCompletions}, anchors: {_state.Telemetry.Daily.AnchorEventsTriggered}, mutations: {_state.Telemetry.Daily.WorldMutations}", LogLevel.Info);
         Monitor.Log($"Telemetry NPC intents | applied: {_state.Telemetry.Daily.NpcIntentsApplied}, rejected: {_state.Telemetry.Daily.NpcIntentsRejected}, duplicate: {_state.Telemetry.Daily.NpcIntentsDuplicate}", LogLevel.Info);
+        Monitor.Log($"Telemetry NPC lanes | auto(applied/rejected): {_state.Telemetry.Daily.NpcIntentsAutoApplied}/{_state.Telemetry.Daily.NpcIntentsAutoRejected}, manual(applied/rejected): {_state.Telemetry.Daily.NpcIntentsManualApplied}/{_state.Telemetry.Daily.NpcIntentsManualRejected}", LogLevel.Info);
+        Monitor.Log($"Telemetry ask gate | accept: {_state.Telemetry.Daily.NpcAskGateAccepted}, defer: {_state.Telemetry.Daily.NpcAskGateDeferred}, reject: {_state.Telemetry.Daily.NpcAskGateRejected}", LogLevel.Info);
     }
 
     private void OnIntentInjectCommand(string name, string[] args)
@@ -1989,6 +2140,56 @@ public sealed class ModEntry : Mod
                 "applied"
             ),
             (
+                "publish_article valid",
+                "{\"intent_id\":\"smoke_art_001\",\"npc_id\":\"lewis\",\"command\":\"publish_article\",\"arguments\":{\"title\":\"Town Bulletin\",\"content\":\"Market lane stable today.\",\"category\":\"community\"}}",
+                "applied"
+            ),
+            (
+                "record_memory_fact valid",
+                "{\"intent_id\":\"smoke_mem_001\",\"npc_id\":\"lewis\",\"command\":\"record_memory_fact\",\"arguments\":{\"category\":\"event\",\"text\":\"The farmer helped sort crates at the shop.\",\"weight\":3}}",
+                "applied"
+            ),
+            (
+                "record_memory_fact duplicate text",
+                "{\"intent_id\":\"smoke_mem_002\",\"npc_id\":\"lewis\",\"command\":\"record_memory_fact\",\"arguments\":{\"category\":\"event\",\"text\":\"The farmer helped sort crates at the shop.\",\"weight\":2}}",
+                "rejected"
+            ),
+            (
+                "record_town_event valid",
+                "{\"intent_id\":\"smoke_evt_001\",\"npc_id\":\"lewis\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"market\",\"summary\":\"Shops saw a clear blueberry demand bump this morning.\",\"location\":\"Town Square\",\"severity\":2,\"visibility\":\"public\",\"tags\":[\"market\",\"blueberry\"]}}",
+                "applied"
+            ),
+            (
+                "record_town_event cap 2",
+                "{\"intent_id\":\"smoke_evt_002\",\"npc_id\":\"pierre\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"community\",\"summary\":\"Residents gathered to clean the square at noon today.\",\"location\":\"Town Square\",\"severity\":1,\"visibility\":\"public\",\"tags\":[\"community\"]}}",
+                "applied"
+            ),
+            (
+                "record_town_event cap exceeded",
+                "{\"intent_id\":\"smoke_evt_003\",\"npc_id\":\"robin\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"social\",\"summary\":\"Another social note that should hit the daily town-event cap.\",\"location\":\"Saloon\",\"severity\":1,\"visibility\":\"local\",\"tags\":[\"social\"]}}",
+                "rejected"
+            ),
+            (
+                "adjust_town_sentiment valid",
+                "{\"intent_id\":\"smoke_sent_001\",\"npc_id\":\"lewis\",\"command\":\"adjust_town_sentiment\",\"arguments\":{\"axis\":\"community\",\"delta\":2,\"reason\":\"helpful town discussion\"}}",
+                "applied"
+            ),
+            (
+                "adjust_town_sentiment npc-axis cap",
+                "{\"intent_id\":\"smoke_sent_002\",\"npc_id\":\"lewis\",\"command\":\"adjust_town_sentiment\",\"arguments\":{\"axis\":\"community\",\"delta\":1,\"reason\":\"repeat same npc axis\"}}",
+                "rejected"
+            ),
+            (
+                "adjust_town_sentiment daily axis cap boundary",
+                "{\"intent_id\":\"smoke_sent_003\",\"npc_id\":\"pierre\",\"command\":\"adjust_town_sentiment\",\"arguments\":{\"axis\":\"economy\",\"delta\":5,\"reason\":\"market signal 1\"}}",
+                "applied"
+            ),
+            (
+                "adjust_town_sentiment daily axis cap exceeded",
+                "{\"intent_id\":\"smoke_sent_004\",\"npc_id\":\"robin\",\"command\":\"adjust_town_sentiment\",\"arguments\":{\"axis\":\"economy\",\"delta\":6,\"reason\":\"out of range and cap\"}}",
+                "rejected"
+            ),
+            (
                 "unknown command",
                 "{\"intent_id\":\"smoke_unk_001\",\"npc_id\":\"lewis\",\"command\":\"launch_rocket\",\"arguments\":{}}",
                 "rejected"
@@ -2025,7 +2226,49 @@ public sealed class ModEntry : Mod
             }
         }
 
-        Monitor.Log($"Intent smoketest complete: pass={pass} fail={fail} total={tests.Length}", fail == 0 ? LogLevel.Info : LogLevel.Warn);
+        if (_npcAskGateService is not null)
+        {
+            var gateReject = _npcAskGateService.Evaluate(
+                _state,
+                "Linus",
+                NpcVerbalProfile.Recluse,
+                heartLevel: 0,
+                askTopic: "manual_market",
+                timeOfDay: 2300,
+                isRaining: true);
+            if (gateReject.Decision == NpcAskDecision.Reject)
+            {
+                pass++;
+                Monitor.Log("[PASS] ask gate reject scenario -> reject", LogLevel.Info);
+            }
+            else
+            {
+                fail++;
+                Monitor.Log($"[FAIL] ask gate reject scenario -> expected reject, got {gateReject.Decision}", LogLevel.Warn);
+            }
+
+            var gateAccept = _npcAskGateService.Evaluate(
+                _state,
+                "Lewis",
+                NpcVerbalProfile.Professional,
+                heartLevel: 8,
+                askTopic: "manual_market",
+                timeOfDay: 1200,
+                isRaining: false);
+            if (gateAccept.Decision == NpcAskDecision.Accept)
+            {
+                pass++;
+                Monitor.Log("[PASS] ask gate accept scenario -> accept", LogLevel.Info);
+            }
+            else
+            {
+                fail++;
+                Monitor.Log($"[FAIL] ask gate accept scenario -> expected accept, got {gateAccept.Decision}", LogLevel.Warn);
+            }
+        }
+
+        var total = tests.Length + (_npcAskGateService is null ? 0 : 2);
+        Monitor.Log($"Intent smoketest complete: pass={pass} fail={fail} total={total}", fail == 0 ? LogLevel.Info : LogLevel.Warn);
     }
 
     private void OnAnchorSmokeTestCommand(string name, string[] args)
@@ -2229,7 +2472,7 @@ public sealed class ModEntry : Mod
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
                 CharacterDescription = "Mayor Lewis of Pelican Town in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For publish_article and publish_rumor, keep title+content within 100 characters total. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band.",
+                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For social outcomes, you may use adjust_reputation sparingly for meaningful shifts only. For town-group dynamics, you may use shift_interest_influence only when discussion clearly concerns a town group priority. For market dynamics, use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -2247,6 +2490,61 @@ public sealed class ModEntry : Mod
                                 urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } }
                             },
                             required = new[] { "template_id", "target", "urgency" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "adjust_reputation",
+                        Description = "Adjust social relationship standing after a meaningful interaction outcome",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                target = new { type = "string" },
+                                delta = new { type = "integer", minimum = -10, maximum = 10 },
+                                reason = new { type = "string" }
+                            },
+                            required = new[] { "target", "delta" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "shift_interest_influence",
+                        Description = "Shift influence for a town interest group based on discussion outcomes",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                interest = new { type = "string", @enum = new[] { "farmers_circle", "shopkeepers_guild", "adventurers_club", "nature_keepers" } },
+                                delta = new { type = "integer", minimum = -5, maximum = 5 },
+                                reason = new { type = "string" }
+                            },
+                            required = new[] { "interest", "delta" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "apply_market_modifier",
+                        Description = "Apply a bounded temporary market modifier when a clear anomaly is present",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                crop = new { type = "string" },
+                                delta_pct = new { type = "number", minimum = -0.15, maximum = 0.15 },
+                                duration_days = new { type = "integer", minimum = 1, maximum = 7 },
+                                reason = new { type = "string" }
+                            },
+                            required = new[] { "crop", "delta_pct", "duration_days" },
                             additionalProperties = false
                         },
                         NeverRespondWithMessage = false
@@ -2351,7 +2649,7 @@ public sealed class ModEntry : Mod
                     ShortName = shortName,
                     Name = shortName,
                     CharacterDescription = $"{shortName} in Pelican Town, practical and grounded.",
-                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. For publish_article and publish_rumor, keep title+content within 100 characters total.",
+                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total.",
                     KeepGameState = true,
                     Commands = new List<SpawnNpcCommand>
                     {
@@ -2369,6 +2667,58 @@ public sealed class ModEntry : Mod
                                     urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } }
                                 },
                                 required = new[] { "template_id", "target", "urgency" },
+                                additionalProperties = false
+                            }
+                        },
+                        new()
+                        {
+                            Name = "adjust_reputation",
+                            Description = "Adjust social relationship standing after a meaningful interaction outcome",
+                            Parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    target = new { type = "string" },
+                                    delta = new { type = "integer", minimum = -10, maximum = 10 },
+                                    reason = new { type = "string" }
+                                },
+                                required = new[] { "target", "delta" },
+                                additionalProperties = false
+                            }
+                        },
+                        new()
+                        {
+                            Name = "shift_interest_influence",
+                            Description = "Shift influence for a town interest group based on discussion outcomes",
+                            Parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    interest = new { type = "string", @enum = new[] { "farmers_circle", "shopkeepers_guild", "adventurers_club", "nature_keepers" } },
+                                    delta = new { type = "integer", minimum = -5, maximum = 5 },
+                                    reason = new { type = "string" }
+                                },
+                                required = new[] { "interest", "delta" },
+                                additionalProperties = false
+                            }
+                        },
+                        new()
+                        {
+                            Name = "apply_market_modifier",
+                            Description = "Apply a bounded temporary market modifier when a clear anomaly is present",
+                            Parameters = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    crop = new { type = "string" },
+                                    delta_pct = new { type = "number", minimum = -0.15, maximum = 0.15 },
+                                    duration_days = new { type = "integer", minimum = 1, maximum = 7 },
+                                    reason = new { type = "string" }
+                                },
+                                required = new[] { "crop", "delta_pct", "duration_days" },
                                 additionalProperties = false
                             }
                         },
@@ -2477,6 +2827,7 @@ public sealed class ModEntry : Mod
 
             var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
             var senderName = isPlayerInitiated ? (Game1.player?.Name ?? "Player") : senderNameOverride!.Trim();
+            _npcLastContextTagById[npcId] = string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag!;
 
             var req = new NpcChatRequest
             {
@@ -2544,9 +2895,53 @@ public sealed class ModEntry : Mod
             var who = string.IsNullOrWhiteSpace(requesterShortName) ? GetNpcShortNameById(npcId) : requesterShortName;
             var senderName = string.IsNullOrWhiteSpace(senderNameOverride) ? (Game1.player?.Name ?? "Player") : senderNameOverride.Trim();
             var effectiveContextTag = contextTag;
+            if (string.IsNullOrWhiteSpace(effectiveContextTag)
+                && TryInferManualAskContextTag(message, out var inferredManualTag))
+            {
+                effectiveContextTag = inferredManualTag;
+            }
             var playerAskedForQuest = IsPlayerAskingForQuest(message);
             if (string.IsNullOrWhiteSpace(effectiveContextTag) && playerAskedForQuest)
                 effectiveContextTag = "player_chat_quest_request";
+
+            if (!string.IsNullOrWhiteSpace(effectiveContextTag)
+                && effectiveContextTag.StartsWith("manual_", StringComparison.OrdinalIgnoreCase))
+            {
+                var heartLevel = GetNpcHeartLevel(who);
+                var profile = _npcSpeechStyleService?.GetProfile(who) ?? NpcVerbalProfile.Traditionalist;
+                var gate = _npcAskGateService?.Evaluate(
+                    _state,
+                    who,
+                    profile,
+                    heartLevel,
+                    effectiveContextTag,
+                    Game1.timeOfDay,
+                    Game1.isRaining);
+
+                if (gate is not null && gate.Decision != NpcAskDecision.Accept)
+                {
+                    if (gate.Decision == NpcAskDecision.Defer)
+                        _state.Telemetry.Daily.NpcAskGateDeferred += 1;
+                    else
+                        _state.Telemetry.Daily.NpcAskGateRejected += 1;
+
+                    Monitor.Log($"Manual ask gate: npc={who} topic={effectiveContextTag} decision={gate.Decision} reason={gate.ReasonCode}", LogLevel.Debug);
+                    if (!string.IsNullOrWhiteSpace(gate.PlayerFacingMessage))
+                    {
+                        EnqueueNpcUiMessage(npcId, gate.PlayerFacingMessage);
+                        if (_npcMemoryService is not null)
+                            _npcMemoryService.WriteTurn(_state, who, message, gate.PlayerFacingMessage, _state.Calendar.Day);
+                    }
+
+                    return;
+                }
+
+                _state.Telemetry.Daily.NpcAskGateAccepted += 1;
+                if (gate is not null)
+                    Monitor.Log($"Manual ask gate: npc={who} topic={effectiveContextTag} decision={gate.Decision} reason={gate.ReasonCode}", LogLevel.Trace);
+            }
+
+            _npcLastContextTagById[npcId] = string.IsNullOrWhiteSpace(effectiveContextTag) ? "player_chat" : effectiveContextTag!;
             NpcHistorySnapshot? previousHistorySnapshot = null;
             try
             {
@@ -3218,6 +3613,15 @@ public sealed class ModEntry : Mod
         return q.TryDequeue(out var msg) ? msg : null;
     }
 
+    private void EnqueueNpcUiMessage(string npcId, string message)
+    {
+        if (string.IsNullOrWhiteSpace(npcId) || string.IsNullOrWhiteSpace(message))
+            return;
+
+        var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
+        q.Enqueue(message.Trim());
+    }
+
     private bool IsNpcThinking(string npcId)
     {
         return _npcUiPendingById.TryGetValue(npcId, out var c) && c > 0;
@@ -3305,6 +3709,7 @@ public sealed class ModEntry : Mod
         var dayOfWeek = GetCurrentDayOfWeekLabel();
         var timeOfDay = GetCurrentTimeOfDayLabel(out var hour24, out var minute);
         var heartLevel = GetNpcHeartLevel(npcName);
+        var npcReputation = GetNpcReputation(npcName);
         var npcHasMetPlayer = HasNpcMetPlayer(npcName);
         var playerName = GetPlayerDisplayNameForContext();
         var preferredAddress = npcHasMetPlayer ? playerName : "Farmer";
@@ -3355,6 +3760,13 @@ public sealed class ModEntry : Mod
         var newsContext = BuildNewsAwarenessBlock();
         var eventsContext = BuildRecentEventAwarenessBlock();
         var playerAskedForRequest = IsPlayerAskingForQuest(playerText);
+        var manualIntentRule = contextTag switch
+        {
+            "manual_relationship" => "MANUAL_INTENT_RULE: Player explicitly asked a relationship check. If trust is low or context is poor, reject or defer in-character with a brief reason.",
+            "manual_interest" => "MANUAL_INTENT_RULE: Player explicitly asked about town groups. If evidence is weak, defer or decline in-character rather than forcing a shift.",
+            "manual_market" => "MANUAL_INTENT_RULE: Player explicitly asked market pulse. If no anomaly exists, decline market modifiers and explain briefly in-character.",
+            _ => string.Empty
+        };
         var parsnipCrisis = IsParsnipQuestCrisisActive();
         if (!string.IsNullOrWhiteSpace(npcName))
         {
@@ -3376,6 +3788,8 @@ public sealed class ModEntry : Mod
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
             speechStyleBlock,
             "RELATIONSHIP_RULE: Match familiarity to STATE: RelationshipHearts. At 0-2 hearts, keep distance and avoid affectionate language.",
+            "TRUST_RULE: Use STATE: NpcReputation as reliability/trust for commitments only; do not use it to override warmth from hearts.",
+            "TRUST_RULE: If hearts are high but reputation is low, remain warm in tone but cautious on promises, favors, and high-stakes requests.",
             "PLAYER_NAME_RULE: Use PLAYER_KNOWLEDGE to decide how to address the player. If NpcHasMetPlayer is false, do not call the player by name.",
             "TIME_RULE: If asked for time, answer with hour and minute plus AM/PM (for example: 6:30 AM). Never answer with minutes only.",
             "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
@@ -3383,6 +3797,11 @@ public sealed class ModEntry : Mod
             "QUEST_RULE: If no suitable request exists, explicitly say none is available in-character.",
             "QUEST_RULE: Do not proactively offer a new quest during normal small talk. Offer quests only when the player asks for work/request or explicitly agrees to help.",
             "QUEST_TARGET_RULE: Do not default to parsnip. Use parsnip only when STATE: ParsnipCrisis is true; otherwise choose another valid crop target or decline.",
+            "SOCIAL_RULE: Use adjust_reputation only for meaningful interaction outcomes, not routine greetings.",
+            "INTEREST_RULE: Use shift_interest_influence only when the conversation clearly concerns town groups or priorities.",
+            "MARKET_MOD_RULE: Use apply_market_modifier only when MARKET_SIGNALS show a clear anomaly, and keep changes bounded/temporary.",
+            "DECLINE_RULE: If a request is not appropriate for personality/relationship/context, reject or defer naturally in-character with a short reason.",
+            manualIntentRule,
             playerAskedForRequest
                 ? "QUEST_CONTEXT: Player explicitly asked for work/request now. You must either emit propose_quest or decline clearly; no text-only task offers."
                 : string.Empty,
@@ -3396,6 +3815,7 @@ public sealed class ModEntry : Mod
             $"STATE: CurrentDayOfWeek {dayOfWeek}.",
             $"STATE: CurrentTimeOfDay {timeOfDay}.",
             $"STATE: RelationshipHearts {(string.IsNullOrWhiteSpace(npcName) ? 0 : heartLevel)}.",
+            $"STATE: NpcReputation {(string.IsNullOrWhiteSpace(npcName) ? 0 : npcReputation)}.",
             $"STATE: CurrentHour24 {hour24:00}.",
             $"STATE: CurrentMinute {minute:00}.",
             $"STATE: ParsnipCrisis {parsnipCrisis}.",
@@ -3618,6 +4038,21 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private int GetNpcReputation(string? npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName))
+            return 0;
+
+        if (_state.Social.NpcReputation.TryGetValue(npcName, out var direct))
+            return Math.Clamp(direct, -100, 100);
+
+        var normalized = npcName.Trim().ToLowerInvariant();
+        if (_state.Social.NpcReputation.TryGetValue(normalized, out var normalizedValue))
+            return Math.Clamp(normalizedValue, -100, 100);
+
+        return 0;
+    }
+
     private static int GetPlayerRpgStat(string statKey)
     {
         if (Game1.player is null || string.IsNullOrWhiteSpace(statKey))
@@ -3660,6 +4095,66 @@ public sealed class ModEntry : Mod
             || text.Contains("favor", StringComparison.Ordinal);
     }
 
+    private static bool TryInferManualAskContextTag(string? playerText, out string contextTag)
+    {
+        contextTag = string.Empty;
+        if (string.IsNullOrWhiteSpace(playerText))
+            return false;
+
+        var text = playerText.Trim().ToLowerInvariant();
+
+        if (ContainsAny(
+                text,
+                "market pulse",
+                "market outlook",
+                "market today",
+                "market right now",
+                "what's the market",
+                "whats the market",
+                "price today",
+                "prices today",
+                "oversupply",
+                "scarcity",
+                "supply and demand"))
+        {
+            contextTag = "manual_market";
+            return true;
+        }
+
+        if (ContainsAny(
+                text,
+                "town groups",
+                "groups lately",
+                "which group",
+                "who has influence",
+                "influence in town",
+                "town priorities",
+                "farmers circle",
+                "shopkeepers guild",
+                "adventurers club",
+                "nature keepers"))
+        {
+            contextTag = "manual_interest";
+            return true;
+        }
+
+        if (ContainsAny(
+                text,
+                "how are we doing",
+                "where do we stand",
+                "our relationship",
+                "do you trust me",
+                "what do you think of me",
+                "how are you doing",
+                "how are you feeling about me"))
+        {
+            contextTag = "manual_relationship";
+            return true;
+        }
+
+        return false;
+    }
+
     private bool TryApplyNpcCommandFromLine(string line)
     {
         try
@@ -3683,10 +4178,17 @@ public sealed class ModEntry : Mod
             if (!result.HasIntent)
                 return false;
 
+            var intentLane = ResolveIntentLane(result.IntentId, sourceNpcId);
+
             if (result.IsRejected)
             {
                 _state.Telemetry.Daily.NpcIntentsRejected += 1;
-                Monitor.Log($"NPC intent rejected [{result.ReasonCode}]: {result.Reason}", LogLevel.Warn);
+                if (intentLane == "auto")
+                    _state.Telemetry.Daily.NpcIntentsAutoRejected += 1;
+                else if (intentLane == "manual")
+                    _state.Telemetry.Daily.NpcIntentsManualRejected += 1;
+
+                Monitor.Log($"NPC intent rejected lane={intentLane} [{result.ReasonCode}]: {result.Reason}", LogLevel.Warn);
                 return false;
             }
 
@@ -3701,10 +4203,15 @@ public sealed class ModEntry : Mod
                 return false;
 
             _state.Telemetry.Daily.NpcIntentsApplied += 1;
+            if (intentLane == "auto")
+                _state.Telemetry.Daily.NpcIntentsAutoApplied += 1;
+            else if (intentLane == "manual")
+                _state.Telemetry.Daily.NpcIntentsManualApplied += 1;
+
             _state.Telemetry.Daily.NpcCommandAppliedByType.TryGetValue(result.Command, out var cmdCount);
             _state.Telemetry.Daily.NpcCommandAppliedByType[result.Command] = cmdCount + 1;
 
-            Monitor.Log($"Applied NPC command: {result.Command} -> outcome {result.OutcomeId} (intent={result.IntentId})", LogLevel.Info);
+            Monitor.Log($"Applied NPC command lane={intentLane}: {result.Command} -> outcome {result.OutcomeId} (intent={result.IntentId})", LogLevel.Info);
 
             if (result.Proposal is not null)
             {
@@ -3748,6 +4255,224 @@ public sealed class ModEntry : Mod
             Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
             return false;
         }
+    }
+
+    private string ResolveIntentLane(string? intentId, string? sourceNpcId)
+    {
+        if (!string.IsNullOrWhiteSpace(intentId)
+            && intentId.StartsWith("auto_", StringComparison.OrdinalIgnoreCase))
+        {
+            return "auto";
+        }
+
+        if (!string.IsNullOrWhiteSpace(sourceNpcId)
+            && _npcLastContextTagById.TryGetValue(sourceNpcId, out var contextTag)
+            && !string.IsNullOrWhiteSpace(contextTag)
+            && contextTag.StartsWith("manual_", StringComparison.OrdinalIgnoreCase))
+        {
+            return "manual";
+        }
+
+        return "chat";
+    }
+
+    private void TryRunAutomaticNpcCommandExposureHooks()
+    {
+        if (!Context.IsWorldReady || _intentResolver is null)
+            return;
+
+        TryRunAutoQuestLifecycleReputationHooks();
+        TryRunAutoMarketModifierHooks();
+        TryRunAutoInterestShiftHooks();
+    }
+
+    private void TryRunAutoQuestLifecycleReputationHooks()
+    {
+        // Snapshot keys first because applying intents mutates the facts table.
+        var lifecycleFactKeysToday = _state.Facts.Facts
+            .Where(kv => kv.Value.SetDay == _state.Calendar.Day)
+            .Select(kv => kv.Key)
+            .ToArray();
+
+        foreach (var key in lifecycleFactKeysToday)
+        {
+            if (!TryParseQuestLifecycleFact(key, out var questId, out var lifecycle))
+                continue;
+
+            var delta = lifecycle switch
+            {
+                "accepted" => 1,
+                "completed" => 2,
+                "failed" => -2,
+                _ => 0
+            };
+            if (delta == 0)
+                continue;
+
+            var issuer = ResolveQuestIssuerById(questId);
+            if (string.IsNullOrWhiteSpace(issuer))
+                continue;
+
+            var intentId = $"auto_rep_q_{_state.Calendar.Day}_{lifecycle}_{questId}";
+            TryApplyAutoIntentOnce(
+                intentId,
+                "auto_quest",
+                "adjust_reputation",
+                new
+                {
+                    target = issuer,
+                    delta,
+                    reason = $"auto:{lifecycle}:quest_lifecycle"
+                });
+        }
+    }
+
+    private void TryRunAutoMarketModifierHooks()
+    {
+        if (_state.Economy.Crops.Count == 0)
+            return;
+
+        var scarcityCandidate = _state.Economy.Crops
+            .OrderByDescending(kv => kv.Value.ScarcityBonus)
+            .ThenByDescending(kv => kv.Value.TrendEma)
+            .FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(scarcityCandidate.Key) && scarcityCandidate.Value.ScarcityBonus >= 0.04f)
+        {
+            var intentId = $"auto_mkt_up_{_state.Calendar.Day}_{scarcityCandidate.Key}";
+            TryApplyAutoIntentOnce(
+                intentId,
+                "auto_market",
+                "apply_market_modifier",
+                new
+                {
+                    crop = scarcityCandidate.Key,
+                    delta_pct = 0.05f,
+                    duration_days = 2,
+                    reason = "auto:market_scarcity_spike"
+                });
+        }
+
+        var oversupplyCandidate = _state.Economy.Crops
+            .OrderByDescending(kv => kv.Value.RollingSellVolume7D)
+            .ThenBy(kv => kv.Value.SupplyPressureFactor)
+            .FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(oversupplyCandidate.Key)
+            && oversupplyCandidate.Value.RollingSellVolume7D > 0
+            && oversupplyCandidate.Value.SupplyPressureFactor <= 0.92f)
+        {
+            var intentId = $"auto_mkt_down_{_state.Calendar.Day}_{oversupplyCandidate.Key}";
+            TryApplyAutoIntentOnce(
+                intentId,
+                "auto_market",
+                "apply_market_modifier",
+                new
+                {
+                    crop = oversupplyCandidate.Key,
+                    delta_pct = -0.05f,
+                    duration_days = 2,
+                    reason = "auto:market_oversupply_pressure"
+                });
+        }
+    }
+
+    private void TryRunAutoInterestShiftHooks()
+    {
+        var todayEvents = _state.TownMemory.Events
+            .Where(ev => ev.Day == _state.Calendar.Day)
+            .ToList();
+        if (todayEvents.Count == 0)
+            return;
+
+        var interest = ResolveInterestFromTownEvents(todayEvents);
+        if (string.IsNullOrWhiteSpace(interest))
+            return;
+
+        var intentId = $"auto_interest_{_state.Calendar.Day}_{interest}";
+        TryApplyAutoIntentOnce(
+            intentId,
+            "auto_town",
+            "shift_interest_influence",
+            new
+            {
+                interest,
+                delta = 1,
+                reason = "auto:daily_town_event_signal"
+            });
+    }
+
+    private void TryApplyAutoIntentOnce(string intentId, string npcId, string command, object arguments)
+    {
+        var attemptKey = $"auto:intent:attempted:{intentId}";
+        if (_state.Facts.Facts.ContainsKey(attemptKey))
+            return;
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            intent_id = intentId,
+            npc_id = npcId,
+            command,
+            arguments
+        });
+
+        TryApplyNpcCommandFromLine(payload);
+        _state.Facts.Facts[attemptKey] = new FactValue
+        {
+            Value = true,
+            SetDay = _state.Calendar.Day,
+            Source = "auto_command"
+        };
+    }
+
+    private string ResolveQuestIssuerById(string questId)
+    {
+        if (string.IsNullOrWhiteSpace(questId))
+            return string.Empty;
+
+        var quest = _state.Quests.Active.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase))
+            ?? _state.Quests.Completed.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase))
+            ?? _state.Quests.Failed.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase))
+            ?? _state.Quests.Available.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
+        return (quest?.Issuer ?? string.Empty).Trim().ToLowerInvariant();
+    }
+
+    private static bool TryParseQuestLifecycleFact(string key, out string questId, out string lifecycle)
+    {
+        questId = string.Empty;
+        lifecycle = string.Empty;
+        if (string.IsNullOrWhiteSpace(key))
+            return false;
+
+        var parts = key.Split(':', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3 || !parts[0].Equals("quest", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var status = parts[2].Trim().ToLowerInvariant();
+        if (status is not ("accepted" or "completed" or "failed"))
+            return false;
+
+        questId = parts[1].Trim();
+        lifecycle = status;
+        return !string.IsNullOrWhiteSpace(questId);
+    }
+
+    private static string ResolveInterestFromTownEvents(IEnumerable<TownMemoryEvent> events)
+    {
+        var latest = events
+            .OrderByDescending(ev => ev.Severity)
+            .ThenByDescending(ev => ev.Day)
+            .FirstOrDefault();
+        if (latest is null)
+            return string.Empty;
+
+        return latest.Kind.Trim().ToLowerInvariant() switch
+        {
+            "market" => "shopkeepers_guild",
+            "nature" => "nature_keepers",
+            "incident" => "adventurers_club",
+            "social" => "farmers_circle",
+            "community" => "farmers_circle",
+            _ => "farmers_circle"
+        };
     }
 
     private void TryApplyFallbackQuestFromPlayerChatLine(string line)
@@ -4233,6 +4958,7 @@ public sealed class ModEntry : Mod
         _npcUiPendingById.Clear();
         _npcLastReceivedMessageById.Clear();
         _npcLastPlayerPromptById.Clear();
+        _npcLastContextTagById.Clear();
     }
 
     private void StartPlayerChatHistoryFallback(string npcId, NpcHistorySnapshot? previousHistorySnapshot, string playerMessage)

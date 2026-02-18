@@ -14,7 +14,10 @@ public sealed class NpcIntentResolver
         "shift_interest_influence",
         "apply_market_modifier",
         "publish_rumor",
-        "publish_article"
+        "publish_article",
+        "record_memory_fact",
+        "record_town_event",
+        "adjust_town_sentiment"
     };
 
     private static readonly HashSet<string> AllowedTemplates = new(StringComparer.OrdinalIgnoreCase)
@@ -32,12 +35,21 @@ public sealed class NpcIntentResolver
         "farmers_circle", "shopkeepers_guild", "adventurers_club", "nature_keepers"
     };
 
+    private static readonly HashSet<string> AllowedMemoryCategories = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "preference", "promise", "event", "relationship"
+    };
+
     private readonly RumorBoardService _rumorBoardService;
+    private readonly NpcMemoryService _npcMemoryService;
+    private readonly TownMemoryService _townMemoryService;
     private readonly bool _strictTemplateValidation;
 
-    public NpcIntentResolver(RumorBoardService rumorBoardService, bool strictTemplateValidation = false)
+    public NpcIntentResolver(RumorBoardService rumorBoardService, NpcMemoryService npcMemoryService, TownMemoryService townMemoryService, bool strictTemplateValidation = false)
     {
         _rumorBoardService = rumorBoardService;
+        _npcMemoryService = npcMemoryService;
+        _townMemoryService = townMemoryService;
         _strictTemplateValidation = strictTemplateValidation;
     }
 
@@ -103,6 +115,9 @@ public sealed class NpcIntentResolver
             "apply_market_modifier" => ResolveApplyMarketModifier(state, npcId, intentId, args),
             "publish_rumor" => ResolvePublishRumor(state, npcId, intentId, args),
             "publish_article" => ResolvePublishArticle(state, npcId, intentId, args),
+            "record_memory_fact" => ResolveRecordMemoryFact(state, npcId, intentId, args),
+            "record_town_event" => ResolveRecordTownEvent(state, npcId, intentId, args),
+            "adjust_town_sentiment" => ResolveAdjustTownSentiment(state, npcId, intentId, args),
             _ => NpcIntentResolveResult.Rejected($"unhandled command '{command}'")
         };
     }
@@ -363,6 +378,226 @@ public sealed class NpcIntentResolver
         return NpcIntentResolveResult.Applied(intentId, "publish_article", title, fallbackUsed: false, proposal: null);
     }
 
+    private NpcIntentResolveResult ResolveRecordMemoryFact(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (!args.TryGetProperty("category", out var categoryEl) || categoryEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("record_memory_fact missing category", "E_MEMORY_CATEGORY_INVALID");
+        if (!args.TryGetProperty("text", out var textEl) || textEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("record_memory_fact missing text", "E_MEMORY_TEXT_INVALID");
+        if (HasUnexpectedArgs(args, "category", "text", "weight"))
+            return NpcIntentResolveResult.Rejected("record_memory_fact contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
+
+        var category = (categoryEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+        if (!AllowedMemoryCategories.Contains(category))
+            return NpcIntentResolveResult.Rejected($"invalid category '{category}'", "E_MEMORY_CATEGORY_INVALID");
+
+        var text = (textEl.GetString() ?? string.Empty).Trim();
+        if (text.Length < 8 || text.Length > 140)
+            return NpcIntentResolveResult.Rejected("record_memory_fact text length out of range (8..140)", "E_MEMORY_TEXT_INVALID");
+
+        var weight = 2;
+        if (args.TryGetProperty("weight", out var weightEl))
+        {
+            if (weightEl.ValueKind != JsonValueKind.Number || !weightEl.TryGetInt32(out weight))
+                return NpcIntentResolveResult.Rejected("record_memory_fact weight must be an integer", "E_MEMORY_WEIGHT_RANGE");
+            if (weight < 1 || weight > 5)
+                return NpcIntentResolveResult.Rejected("record_memory_fact weight out of range (1..5)", "E_MEMORY_WEIGHT_RANGE");
+        }
+
+        if (!state.NpcMemory.Profiles.TryGetValue(npcId, out var existingProfile))
+            existingProfile = null;
+
+        var memoryDailyPrefix = $"memory:fact:day:{state.Calendar.Day}:{npcId}:";
+        var todaysMemoryCount = CountFactKeysWithPrefix(state, memoryDailyPrefix);
+        if (todaysMemoryCount >= 2)
+            return NpcIntentResolveResult.Rejected("record_memory_fact daily cap reached (2)", "E_MEMORY_DAILY_CAP");
+
+        var isDuplicate = existingProfile?.Facts.Any(f =>
+            string.Equals(f.Text, text, StringComparison.OrdinalIgnoreCase)) ?? false;
+        if (isDuplicate)
+            return NpcIntentResolveResult.Rejected("record_memory_fact duplicate text", "E_MEMORY_DUPLICATE");
+
+        _npcMemoryService.WriteFact(state, npcId, category, text, state.Calendar.Day, weight);
+        MarkIntentProcessed(state, intentId, npcId, "record_memory_fact");
+        state.Facts.Facts[$"memory:fact:{intentId}"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "npc_command"
+        };
+        state.Facts.Facts[$"memory:fact:day:{state.Calendar.Day}:{npcId}:{intentId}"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "npc_command"
+        };
+
+        state.Telemetry.Daily.WorldMutations += 1;
+        var outcome = $"memory:{npcId}:{category}";
+        return NpcIntentResolveResult.Applied(intentId, "record_memory_fact", outcome, fallbackUsed: false, proposal: null);
+    }
+
+    private NpcIntentResolveResult ResolveRecordTownEvent(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (!args.TryGetProperty("kind", out var kindEl) || kindEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("record_town_event missing kind", "E_TOWN_EVENT_KIND_INVALID");
+        if (!args.TryGetProperty("summary", out var summaryEl) || summaryEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("record_town_event missing summary", "E_TOWN_EVENT_SUMMARY_INVALID");
+        if (!args.TryGetProperty("location", out var locationEl) || locationEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("record_town_event missing location", "E_TOWN_EVENT_LOCATION_INVALID");
+        if (!args.TryGetProperty("severity", out var severityEl) || severityEl.ValueKind != JsonValueKind.Number || !severityEl.TryGetInt32(out var severity))
+            return NpcIntentResolveResult.Rejected("record_town_event missing integer severity", "E_TOWN_EVENT_SEVERITY_RANGE");
+        if (!args.TryGetProperty("visibility", out var visibilityEl) || visibilityEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("record_town_event missing visibility", "E_TOWN_EVENT_VISIBILITY_INVALID");
+        if (HasUnexpectedArgs(args, "kind", "summary", "location", "severity", "visibility", "tags"))
+            return NpcIntentResolveResult.Rejected("record_town_event contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
+
+        var kind = (kindEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+        if (kind is not ("market" or "social" or "nature" or "incident" or "community"))
+            return NpcIntentResolveResult.Rejected($"invalid kind '{kind}'", "E_TOWN_EVENT_KIND_INVALID");
+
+        var summary = (summaryEl.GetString() ?? string.Empty).Trim();
+        if (summary.Length < 12 || summary.Length > 160)
+            return NpcIntentResolveResult.Rejected("record_town_event summary length out of range (12..160)", "E_TOWN_EVENT_SUMMARY_INVALID");
+
+        var location = (locationEl.GetString() ?? string.Empty).Trim();
+        if (location.Length < 2 || location.Length > 40)
+            return NpcIntentResolveResult.Rejected("record_town_event location length out of range (2..40)", "E_TOWN_EVENT_LOCATION_INVALID");
+
+        if (severity < 1 || severity > 5)
+            return NpcIntentResolveResult.Rejected("record_town_event severity out of range (1..5)", "E_TOWN_EVENT_SEVERITY_RANGE");
+
+        var visibility = (visibilityEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+        if (visibility is not ("local" or "public"))
+            return NpcIntentResolveResult.Rejected($"invalid visibility '{visibility}'", "E_TOWN_EVENT_VISIBILITY_INVALID");
+
+        var townEventDailyPrefix = $"town:event:day:{state.Calendar.Day}:";
+        var todayTownEventCount = CountFactKeysWithPrefix(state, townEventDailyPrefix);
+        if (todayTownEventCount >= 2)
+            return NpcIntentResolveResult.Rejected("record_town_event daily cap reached (2)", "E_TOWN_EVENT_DAILY_CAP");
+
+        var tags = Array.Empty<string>();
+        if (args.TryGetProperty("tags", out var tagsEl))
+        {
+            if (tagsEl.ValueKind != JsonValueKind.Array)
+                return NpcIntentResolveResult.Rejected("record_town_event tags must be an array", "E_TOWN_EVENT_TAGS_INVALID");
+
+            var parsed = new List<string>();
+            foreach (var tagEl in tagsEl.EnumerateArray())
+            {
+                if (tagEl.ValueKind != JsonValueKind.String)
+                    return NpcIntentResolveResult.Rejected("record_town_event tags must be strings", "E_TOWN_EVENT_TAGS_INVALID");
+
+                var tag = (tagEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+                if (tag.Length < 2 || tag.Length > 24)
+                    return NpcIntentResolveResult.Rejected("record_town_event tag length out of range (2..24)", "E_TOWN_EVENT_TAGS_INVALID");
+
+                parsed.Add(tag);
+                if (parsed.Count > 5)
+                    return NpcIntentResolveResult.Rejected("record_town_event tags maxItems exceeded (5)", "E_TOWN_EVENT_TAGS_INVALID");
+            }
+
+            tags = parsed.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+
+        _townMemoryService.RecordEvent(
+            state,
+            kind,
+            summary,
+            location,
+            state.Calendar.Day,
+            severity,
+            visibility,
+            tags);
+
+        MarkIntentProcessed(state, intentId, npcId, "record_town_event");
+        state.Facts.Facts[$"town:event:{intentId}"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "npc_command"
+        };
+        state.Facts.Facts[$"town:event:day:{state.Calendar.Day}:{intentId}"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "npc_command"
+        };
+
+        state.Telemetry.Daily.WorldMutations += 1;
+        var outcome = $"town_event:{kind}";
+        return NpcIntentResolveResult.Applied(intentId, "record_town_event", outcome, fallbackUsed: false, proposal: null);
+    }
+
+    private static NpcIntentResolveResult ResolveAdjustTownSentiment(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (!args.TryGetProperty("axis", out var axisEl) || axisEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("adjust_town_sentiment missing axis", "E_SENTIMENT_AXIS_INVALID");
+        if (!args.TryGetProperty("delta", out var deltaEl) || deltaEl.ValueKind != JsonValueKind.Number || !deltaEl.TryGetInt32(out var delta))
+            return NpcIntentResolveResult.Rejected("adjust_town_sentiment missing integer delta", "E_SENTIMENT_DELTA_RANGE");
+        if (HasUnexpectedArgs(args, "axis", "delta", "reason"))
+            return NpcIntentResolveResult.Rejected("adjust_town_sentiment contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
+
+        var axis = (axisEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+        if (axis is not ("economy" or "community" or "environment"))
+            return NpcIntentResolveResult.Rejected($"invalid axis '{axis}'", "E_SENTIMENT_AXIS_INVALID");
+
+        if (delta < -5 || delta > 5)
+            return NpcIntentResolveResult.Rejected("adjust_town_sentiment delta out of range (-5..5)", "E_SENTIMENT_DELTA_RANGE");
+
+        if (args.TryGetProperty("reason", out var reasonEl))
+        {
+            if (reasonEl.ValueKind != JsonValueKind.String)
+                return NpcIntentResolveResult.Rejected("adjust_town_sentiment reason must be a string", "E_SENTIMENT_REASON_INVALID");
+            var reason = (reasonEl.GetString() ?? string.Empty).Trim();
+            if (reason.Length > 120)
+                return NpcIntentResolveResult.Rejected("adjust_town_sentiment reason length exceeds 120", "E_SENTIMENT_REASON_INVALID");
+        }
+
+        var day = state.Calendar.Day;
+        var npcAxisPrefix = $"sentiment:npc-axis:{day}:{npcId}:{axis}:";
+        var npcAxisAlreadyAppliedToday = HasFactKeyWithPrefix(state, npcAxisPrefix);
+        if (npcAxisAlreadyAppliedToday)
+            return NpcIntentResolveResult.Rejected("adjust_town_sentiment npc-axis daily cap reached (1)", "E_SENTIMENT_NPC_AXIS_CAP");
+
+        var axisDeltaPrefix = $"sentiment:axis:{day}:{axis}:delta:";
+        var runningNet = SumSignedDeltaFacts(state, axisDeltaPrefix);
+
+        var proposedNet = runningNet + delta;
+        if (Math.Abs(proposedNet) > 10)
+            return NpcIntentResolveResult.Rejected("adjust_town_sentiment daily axis cap exceeded (abs net > 10)", "E_SENTIMENT_DAILY_AXIS_CAP");
+
+        switch (axis)
+        {
+            case "economy":
+                state.Social.TownSentiment.Economy = Math.Clamp(state.Social.TownSentiment.Economy + delta, -100, 100);
+                break;
+            case "community":
+                state.Social.TownSentiment.Community = Math.Clamp(state.Social.TownSentiment.Community + delta, -100, 100);
+                break;
+            case "environment":
+                state.Social.TownSentiment.Environment = Math.Clamp(state.Social.TownSentiment.Environment + delta, -100, 100);
+                break;
+        }
+
+        MarkIntentProcessed(state, intentId, npcId, "adjust_town_sentiment");
+        state.Facts.Facts[$"sentiment:axis:{day}:{axis}:delta:{delta}:{intentId}"] = new FactValue
+        {
+            Value = true,
+            SetDay = day,
+            Source = "npc_command"
+        };
+        state.Facts.Facts[$"sentiment:npc-axis:{day}:{npcId}:{axis}:{intentId}"] = new FactValue
+        {
+            Value = true,
+            SetDay = day,
+            Source = "npc_command"
+        };
+
+        state.Telemetry.Daily.WorldMutations += 1;
+        return NpcIntentResolveResult.Applied(intentId, "adjust_town_sentiment", axis, fallbackUsed: false, proposal: null);
+    }
+
     private static bool HasUnexpectedArgs(JsonElement args, params string[] allowedKeys)
     {
         var set = new HashSet<string>(allowedKeys, StringComparer.OrdinalIgnoreCase);
@@ -374,6 +609,34 @@ public sealed class NpcIntentResolver
         }
 
         return false;
+    }
+
+    private static int CountFactKeysWithPrefix(SaveState state, string prefix)
+    {
+        return state.Facts.Facts.Keys.Count(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool HasFactKeyWithPrefix(SaveState state, string prefix)
+    {
+        return state.Facts.Facts.Keys.Any(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static int SumSignedDeltaFacts(SaveState state, string prefix)
+    {
+        var net = 0;
+        foreach (var key in state.Facts.Facts.Keys)
+        {
+            if (!key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var rest = key[prefix.Length..];
+            var firstColon = rest.IndexOf(':');
+            var deltaToken = firstColon < 0 ? rest : rest[..firstColon];
+            if (int.TryParse(deltaToken, out var existingDelta))
+                net += existingDelta;
+        }
+
+        return net;
     }
 
     private bool TryResolveEmbeddedMessageQuestPayload(SaveState state, JsonElement root, out NpcIntentResolveResult result)

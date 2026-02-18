@@ -10,6 +10,15 @@
   - `shift_interest_influence`
   - `apply_market_modifier`
   - `publish_rumor`
+  - `publish_article`
+  - `record_memory_fact`
+  - `record_town_event`
+  - `adjust_town_sentiment`
+- Deterministic NPC ask gate service for manual relationship/interest/market asks with `accept|defer|reject` outcomes.
+- Automatic command exposure hooks for:
+  - quest lifecycle -> `adjust_reputation`
+  - daily town simulation -> `shift_interest_influence`
+  - market anomaly checks -> `apply_market_modifier`
 - Player2 stream auto-reconnect with exponential backoff.
 - Player2 diagnostics commands:
   - `slrpg_p2_status`
@@ -39,7 +48,9 @@
 - Legacy `quest_*` template IDs can be repaired (unless strict mode enabled).
 - Resolver now emits structured reject reason codes (`E_*`).
 - Telemetry expanded for NPC intents (applied/rejected/duplicate/per-command).
+- Telemetry expanded with intent lanes (`auto`/`manual`) and ask-gate outcomes.
 - Anchor event flow hardened with cooldown/lifecycle fact locks and visible follow-up effects.
+- NPC spawn command descriptors and prompt contracts now expose non-quest mutation commands with stricter usage rules.
 
 ### Fixed
 - Prevented hanging behavior in Player2 one-off read flow.
