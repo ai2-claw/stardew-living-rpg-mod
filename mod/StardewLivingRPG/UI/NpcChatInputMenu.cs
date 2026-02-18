@@ -49,7 +49,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
         Action<string> onSend,
         Func<string?>? pollIncoming = null,
         Func<bool>? isThinking = null,
-        int heartLevel = 0)
+        int heartLevel = 0,
+        string? initialPlayerMessage = null,
+        bool autoSendInitialPlayerMessage = false)
         : base(
             Game1.uiViewport.Width / 2 - (MenuWidth / 2),
             Game1.uiViewport.Height / 2 - (MenuHeight / 2),
@@ -92,6 +94,16 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
         RecalculateLayout();
         SetInputFocus(true);
+
+        if (!string.IsNullOrWhiteSpace(initialPlayerMessage))
+        {
+            var initial = initialPlayerMessage.Trim();
+            _lastPlayerMessage = initial;
+            _lastNpcMessage = null;
+
+            if (autoSendInitialPlayerMessage)
+                _onSend(initial);
+        }
     }
 
     public override void gameWindowSizeChanged(Rectangle oldBounds, Rectangle newBounds)

@@ -28,6 +28,7 @@ public sealed class ModEntry : Mod
     private const int NpcPublishMinimumIntervalMinutes = 120;
     private const double DefaultMsPerNpcChatClockStep = 7000d;
     private const double NpcChatClockSlowdownMultiplier = 2d;
+    private const string InitialNpcChatPrompt = "Got a minute to chat?";
 
     private static readonly MethodInfo? PerformTenMinuteClockUpdateMethod = typeof(Game1).GetMethod(
         "performTenMinuteClockUpdate",
@@ -538,7 +539,7 @@ public sealed class ModEntry : Mod
 
                 if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
                 {
-                    OpenNpcChatMenu(npc);
+                    OpenNpcChatMenu(npc, initialPlayerMessage: InitialNpcChatPrompt, autoSendInitialPlayerMessage: true);
                     return;
                 }
             },
@@ -547,7 +548,10 @@ public sealed class ModEntry : Mod
         return true;
     }
 
-    private void OpenNpcChatMenu(NPC npc)
+    private void OpenNpcChatMenu(
+        NPC npc,
+        string? initialPlayerMessage = null,
+        bool autoSendInitialPlayerMessage = false)
     {
         var npcName = npc.Name ?? npc.displayName;
         var heartLevel = GetNpcHeartLevel(npcName);
@@ -566,7 +570,9 @@ public sealed class ModEntry : Mod
             },
             () => string.IsNullOrWhiteSpace(npcIdForChat) ? null : DequeueNpcUiMessage(npcIdForChat),
             () => !string.IsNullOrWhiteSpace(npcIdForChat) && IsNpcThinking(npcIdForChat),
-            heartLevel);
+            heartLevel,
+            initialPlayerMessage,
+            autoSendInitialPlayerMessage);
     }
 
     private bool HasPendingQuestForNpc(string npcName)
@@ -636,42 +642,42 @@ public sealed class ModEntry : Mod
 
         if (!isReserved && TryBuildMemoryGreeting(npcName, heartLevel, out var memoryGreeting))
             greetings.Add(memoryGreeting);
-        if (TryBuildTownPulseGreeting(out var townGreeting))
+        if (!isReserved && TryBuildTownPulseGreeting(out var townGreeting))
             greetings.Add(townGreeting);
-        if (TryBuildEconomySignalGreeting(out var economyGreeting))
+        if (!isReserved && TryBuildEconomySignalGreeting(out var economyGreeting))
             greetings.Add(economyGreeting);
 
         var baseGreeting = profile switch
         {
             NpcVerbalProfile.Professional => isReserved
-                ? $"Good {dayPeriod}. Is there something specific you needed?"
+                ? $"Good {dayPeriod}. What is it?"
                 : $"Good {dayPeriod}. Keeping things steady around town today.",
             NpcVerbalProfile.Intellectual => isReserved
-                ? $"Good {dayPeriod}. Have you come by for something specific?"
+                ? $"Good {dayPeriod}. What is your question?"
                 : $"Good {dayPeriod}. I have been making a few observations around town.",
             NpcVerbalProfile.Enthusiast => isReserved
-                ? $"Good {dayPeriod}. Need anything around town?"
+                ? $"Good {dayPeriod}. Need something?"
                 : $"Hey! Good {dayPeriod}! The town feels lively today.",
             NpcVerbalProfile.Recluse => isReserved
                 ? $"...{dayPeriod}. What do you need?"
                 : $"...{dayPeriod} then. Town is quieter than usual.",
             _ => isReserved
-                ? $"Good {dayPeriod}, {playerAddress}. What can I do for you?"
+                ? $"Good {dayPeriod}. What do you need?"
                 : $"Good {dayPeriod}, {playerAddress}. How are things on your side?"
         };
         greetings.Add(baseGreeting);
 
+        if (isReserved)
+            return baseGreeting;
+
         if (weather == "rain")
         {
-            if (isReserved)
-                greetings.Add("Rain's coming down steadily today.");
-            else
-                greetings.Add(profile switch
-                {
-                    NpcVerbalProfile.Professional => "Rain's slowing everyone down a little, but we'll manage.",
-                    NpcVerbalProfile.Recluse => "Rain again... keeps people indoors.",
-                    _ => "Rain's settled in over town today."
-                });
+            greetings.Add(profile switch
+            {
+                NpcVerbalProfile.Professional => "Rain's slowing everyone down a little, but we'll manage.",
+                NpcVerbalProfile.Recluse => "Rain again... keeps people indoors.",
+                _ => "Rain's settled in over town today."
+            });
         }
         else if (weather == "snow")
         {
@@ -1443,7 +1449,7 @@ public sealed class ModEntry : Mod
                 }
 
                 if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
-                    OpenNpcChatMenu(npc);
+                    OpenNpcChatMenu(npc, initialPlayerMessage: InitialNpcChatPrompt, autoSendInitialPlayerMessage: true);
             },
             npc);
     }
@@ -3787,7 +3793,8 @@ public sealed class ModEntry : Mod
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
             speechStyleBlock,
-            "RELATIONSHIP_RULE: Match familiarity to STATE: RelationshipHearts. At 0-2 hearts, keep distance and avoid affectionate language.",
+            "RELATIONSHIP_RULE: Match familiarity to STATE: RelationshipHearts. At 0-2 hearts, keep distance, be concise, and avoid affectionate language.",
+            "RELATIONSHIP_RULE: At 0-1 hearts, avoid warm enthusiasm and long monologues; answer briefly and cautiously unless the player asks follow-up details.",
             "TRUST_RULE: Use STATE: NpcReputation as reliability/trust for commitments only; do not use it to override warmth from hearts.",
             "TRUST_RULE: If hearts are high but reputation is low, remain warm in tone but cautious on promises, favors, and high-stakes requests.",
             "PLAYER_NAME_RULE: Use PLAYER_KNOWLEDGE to decide how to address the player. If NpcHasMetPlayer is false, do not call the player by name.",

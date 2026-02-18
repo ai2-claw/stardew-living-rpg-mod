@@ -83,7 +83,7 @@ public sealed class NpcSpeechStyleService
 
         var relationshipModifier = heartLevel switch
         {
-            <= 2 => "RELATIONSHIP_RULE: Keep tone reserved and polite. Do not use affectionate, flirty, or over-familiar language. Avoid pet names/endearments.",
+            <= 2 => "RELATIONSHIP_RULE: Keep tone reserved, brief, and slightly guarded. Use at most one short sentence unless the player asks a direct follow-up. Do not use affectionate, flirty, or over-familiar language, excitement, invitations, or pet names/endearments.",
             >= 6 => "RELATIONSHIP_RULE: Warmth is allowed, but stay natural and in-character for this NPC.",
             _ => "RELATIONSHIP_RULE: Keep tone neutral-friendly without intimate language."
         };
