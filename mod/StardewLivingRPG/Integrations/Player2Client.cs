@@ -11,6 +11,7 @@ namespace StardewLivingRPG.Integrations;
 public sealed class Player2Client
 {
     private const int MaxGeneratedArticleCharacters = 80;
+    private const int MaxMarketOutlookLineCharacters = 120;
     private readonly HttpClient _http;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -611,6 +612,73 @@ public sealed class Player2Client
         return new List<NewspaperArticle>();
     }
 
+    public async Task<List<string>> GenerateMarketOutlookHintsAsync(GenerateMarketOutlookRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_apiBaseUrl) || string.IsNullOrWhiteSpace(_p2Key))
+            return new List<string>();
+
+        return await GenerateMarketOutlookHintsAsync(_apiBaseUrl, _p2Key, request, ct);
+    }
+
+    public async Task<List<string>> GenerateMarketOutlookHintsAsync(string apiBaseUrl, string p2Key, GenerateMarketOutlookRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(p2Key))
+            return new List<string>();
+
+        var requestedCount = Math.Clamp(request.Context?.Count ?? 2, 1, 3);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                var npcId = await EnsureHeadlineEditorNpcIdAsync(apiBaseUrl, p2Key, ct);
+                var previousHistoryMessage = await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
+
+                var prompt = BuildMarketOutlookPrompt(request, requestedCount);
+                var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
+                using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
+                    {
+                        SenderName = "Pelican Times Desk",
+                        SenderMessage = prompt,
+                        GameStateInfo = BuildMarketOutlookStateInfo(request.Context)
+                    }, _jsonOptions), Encoding.UTF8, "application/json")
+                };
+                msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
+                using var res = await _http.SendAsync(msg, ct);
+                var body = await res.Content.ReadAsStringAsync(ct);
+                res.EnsureSuccessStatusCode();
+
+                var immediate = ParseMarketOutlookPayload(body, requestedCount);
+                if (immediate.Count > 0)
+                    return immediate;
+
+                var immediateMessage = TryExtractLatestMessage(body);
+                var immediateFromMessage = ParseMarketOutlookPayload(immediateMessage, requestedCount);
+                if (immediateFromMessage.Count > 0)
+                    return immediateFromMessage;
+
+                var fromHistory = await WaitForFreshHeadlineFromHistoryAsync(apiBaseUrl, p2Key, npcId, previousHistoryMessage, ct);
+                var historyOutlook = ParseMarketOutlookPayload(fromHistory, requestedCount);
+                if (historyOutlook.Count > 0)
+                    return historyOutlook;
+            }
+            catch (HttpRequestException ex) when (attempt == 0 && IsNpcMissing(ex))
+            {
+                _headlineEditorNpcId = null;
+                continue;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Player2Client] GenerateMarketOutlookHintsAsync EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+                break;
+            }
+        }
+
+        return new List<string>();
+    }
+
     private static string BuildArticleGenerationPrompt(GenerateArticlesRequest request, int count)
     {
         var season = request.Context?.Season ?? "spring";
@@ -638,6 +706,34 @@ public sealed class Player2Client
         return $"article_generation: season={context.Season}, day={context.Day}, year={context.Year}";
     }
 
+    private static string BuildMarketOutlookPrompt(GenerateMarketOutlookRequest request, int count)
+    {
+        var context = request.Context ?? new MarketOutlookContext();
+        var movers = context.MarketMovers.Count == 0 ? "(none)" : string.Join("; ", context.MarketMovers.Take(8));
+        var eventsList = context.ActiveEvents.Count == 0 ? "(none)" : string.Join("; ", context.ActiveEvents.Take(6));
+        var scarcity = string.IsNullOrWhiteSpace(context.ScarcityLead) ? "(none)" : context.ScarcityLead;
+        var season = string.IsNullOrWhiteSpace(context.Season) ? "spring" : context.Season;
+        var mode = string.IsNullOrWhiteSpace(context.Mode) ? "cozy_canon" : context.Mode;
+
+        return
+            "You are the Pelican Times editor writing the Market Outlook section for Stardew Valley. " +
+            $"Generate {count} concise outlook lines grounded in current game signals. " +
+            $"Season={season}, Day={context.Day}, Year={context.Year}, Mode={mode}. " +
+            $"Market movers: {movers}. Scarcity signal: {scarcity}. Active events: {eventsList}. " +
+            "Focus on near-term guidance for tomorrow's market. Keep each line under 95 characters. " +
+            "Return STRICT JSON only with schema: {\"outlook\":[\"line 1\",\"line 2\"]}. " +
+            "No markdown, no prose outside JSON.";
+    }
+
+    private static string BuildMarketOutlookStateInfo(MarketOutlookContext? context)
+    {
+        if (context is null)
+            return "market_outlook_generation";
+
+        var mode = string.IsNullOrWhiteSpace(context.Mode) ? "cozy_canon" : context.Mode;
+        return $"market_outlook_generation: season={context.Season}, day={context.Day}, year={context.Year}, mode={mode}";
+    }
+
     private List<NewspaperArticle> ParseGeneratedArticlesPayload(string? payload, int maxCount)
     {
         if (string.IsNullOrWhiteSpace(payload))
@@ -654,6 +750,24 @@ public sealed class Player2Client
         }
 
         return new List<NewspaperArticle>();
+    }
+
+    private List<string> ParseMarketOutlookPayload(string? payload, int maxCount)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            return new List<string>();
+
+        var candidates = BuildJsonCandidates(payload);
+        foreach (var candidate in candidates)
+        {
+            if (!TryParseMarketOutlookJson(candidate, maxCount, out var hints))
+                continue;
+
+            if (hints.Count > 0)
+                return hints;
+        }
+
+        return ParseMarketOutlookPlainText(payload, maxCount);
     }
 
     private static List<string> BuildJsonCandidates(string payload)
@@ -696,6 +810,41 @@ public sealed class Player2Client
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Distinct(StringComparer.Ordinal)
             .ToList();
+    }
+
+    private bool TryParseMarketOutlookJson(string json, int maxCount, out List<string> hints)
+    {
+        hints = new List<string>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (TryGetPropertyCaseInsensitive(root, "outlook", out var outlookProp))
+                    AppendMarketOutlookItems(outlookProp, hints, maxCount);
+                else if (TryGetPropertyCaseInsensitive(root, "hints", out var hintsProp))
+                    AppendMarketOutlookItems(hintsProp, hints, maxCount);
+                else if (TryGetPropertyCaseInsensitive(root, "lines", out var linesProp))
+                    AppendMarketOutlookItems(linesProp, hints, maxCount);
+                else if (TryGetPropertyCaseInsensitive(root, "message", out var messageProp) && messageProp.ValueKind == JsonValueKind.String)
+                    hints.AddRange(ParseMarketOutlookPlainText(messageProp.GetString(), maxCount));
+            }
+            else if (root.ValueKind == JsonValueKind.Array)
+            {
+                AppendMarketOutlookItems(root, hints, maxCount);
+            }
+
+            if (hints.Count > maxCount)
+                hints = hints.Take(maxCount).ToList();
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private bool TryParseGeneratedArticlesJson(string json, int maxCount, out List<NewspaperArticle> articles)
@@ -761,6 +910,100 @@ public sealed class Player2Client
         {
             return false;
         }
+    }
+
+    private static void AppendMarketOutlookItems(JsonElement source, List<string> output, int maxCount)
+    {
+        if (output.Count >= maxCount)
+            return;
+
+        if (source.ValueKind == JsonValueKind.String)
+        {
+            var line = SanitizeMarketOutlookLine(source.GetString());
+            if (!string.IsNullOrWhiteSpace(line) && !output.Contains(line, StringComparer.OrdinalIgnoreCase))
+                output.Add(line);
+            return;
+        }
+
+        if (source.ValueKind != JsonValueKind.Array)
+            return;
+
+        foreach (var item in source.EnumerateArray())
+        {
+            if (output.Count >= maxCount)
+                break;
+
+            var line = item.ValueKind == JsonValueKind.String
+                ? SanitizeMarketOutlookLine(item.GetString())
+                : null;
+
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            if (output.Contains(line, StringComparer.OrdinalIgnoreCase))
+                continue;
+
+            output.Add(line);
+        }
+    }
+
+    private static List<string> ParseMarketOutlookPlainText(string? payload, int maxCount)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            return new List<string>();
+
+        var normalized = payload.Replace("\r", "\n", StringComparison.Ordinal);
+        var parts = normalized.Split(new[] { '\n', ';', '|' }, StringSplitOptions.RemoveEmptyEntries);
+        var hints = new List<string>();
+
+        foreach (var part in parts)
+        {
+            if (hints.Count >= maxCount)
+                break;
+
+            var line = SanitizeMarketOutlookLine(part);
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            if (hints.Contains(line, StringComparer.OrdinalIgnoreCase))
+                continue;
+
+            hints.Add(line);
+        }
+
+        if (hints.Count == 0)
+        {
+            var single = SanitizeMarketOutlookLine(payload);
+            if (!string.IsNullOrWhiteSpace(single))
+                hints.Add(single);
+        }
+
+        return hints.Take(maxCount).ToList();
+    }
+
+    private static string? SanitizeMarketOutlookLine(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        var line = raw
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim()
+            .Trim('"')
+            .Trim('\'')
+            .Trim();
+
+        if (line.StartsWith("- ", StringComparison.Ordinal))
+            line = line[2..].Trim();
+
+        if (line.Length > MaxMarketOutlookLineCharacters)
+            line = line[..(MaxMarketOutlookLineCharacters - 3)].TrimEnd() + "...";
+
+        if (!line.Any(char.IsLetter))
+            return null;
+
+        return string.IsNullOrWhiteSpace(line) ? null : line;
     }
 
     private static bool TryClampGeneratedArticle(string title, string content, out string clampedTitle, out string clampedContent)
@@ -1097,6 +1340,54 @@ public sealed class GenerateArticlesResponse
 {
     [JsonPropertyName("articles")]
     public List<NewspaperArticle> Articles { get; set; } = new();
+}
+
+public sealed class GenerateMarketOutlookRequest
+{
+    [JsonPropertyName("short_name")]
+    public string ShortName { get; set; } = "Editor";
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "Pelican Times Editor";
+
+    [JsonPropertyName("character_description")]
+    public string CharacterDescription { get; set; } = "You write concise market outlook notes grounded in live town economy data.";
+
+    [JsonPropertyName("system_prompt")]
+    public string SystemPrompt { get; set; } = "Generate short market outlook lines for the town newspaper based only on the provided state.";
+
+    [JsonPropertyName("keep_game_state")]
+    public bool KeepGameState { get; set; } = false;
+
+    [JsonPropertyName("context")]
+    public MarketOutlookContext? Context { get; set; }
+}
+
+public sealed class MarketOutlookContext
+{
+    [JsonPropertyName("season")]
+    public string Season { get; set; } = "spring";
+
+    [JsonPropertyName("day")]
+    public int Day { get; set; }
+
+    [JsonPropertyName("year")]
+    public int Year { get; set; } = 1;
+
+    [JsonPropertyName("mode")]
+    public string Mode { get; set; } = "cozy_canon";
+
+    [JsonPropertyName("market_movers")]
+    public List<string> MarketMovers { get; set; } = new();
+
+    [JsonPropertyName("scarcity_lead")]
+    public string ScarcityLead { get; set; } = string.Empty;
+
+    [JsonPropertyName("active_events")]
+    public List<string> ActiveEvents { get; set; } = new();
+
+    [JsonPropertyName("count")]
+    public int Count { get; set; } = 2;
 }
 
 public sealed class GeneratedArticle
