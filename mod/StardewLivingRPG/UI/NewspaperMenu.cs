@@ -20,9 +20,10 @@ public sealed class NewspaperMenu : IClickableMenu
     public NewspaperMenu(NewspaperIssue? issue)
         : base(
             Game1.uiViewport.Width / 2 - 320,
-            Game1.uiViewport.Height / 2 - 391,
+            Game1.uiViewport.Height / 2 - 411
+        ,
             640,
-            782,
+            822,
             true)
     {
         _issue = issue;
@@ -106,44 +107,16 @@ public sealed class NewspaperMenu : IClickableMenu
         b.DrawString(Game1.smallFont, "Community News", new Vector2(paperRect.X + 30, y), new Color(50, 30, 20));
         y += 50; // Extra spacing for portrait (portrait is 40px tall, category badge is ~14px)
 
-        var useSingleColumn = _issue.Articles.Any(a => a.IsNpcPublished);
-        if (useSingleColumn)
+        var singleColumnX = paperRect.X + 30;
+        var singleColumnWidth = paperRect.Width - 60;
+        var singleColumnY = y;
+        foreach (var article in _issue.Articles)
         {
-            var singleColumnX = paperRect.X + 30;
-            var singleColumnWidth = paperRect.Width - 60;
-            var singleColumnY = y;
-            foreach (var article in _issue.Articles)
-            {
-                DrawArticle(b, article, singleColumnX, ref singleColumnY, singleColumnWidth);
-                singleColumnY += 16;
-            }
-
-            return singleColumnY;
+            DrawArticle(b, article, singleColumnX, ref singleColumnY, singleColumnWidth);
+            singleColumnY += 16;
         }
 
-        // Two-column layout
-        var columnGap = 30;
-        var sideMargin = 30;
-        var columnWidth = (paperRect.Width - sideMargin * 2 - columnGap) / 2;
-        var leftColumnX = paperRect.X + sideMargin;
-        var rightColumnX = leftColumnX + columnWidth + columnGap;
-
-        var leftColumnY = y;
-        var rightColumnY = y;
-
-        for (int i = 0; i < _issue.Articles.Count; i++)
-        {
-            var article = _issue.Articles[i];
-            var isLeftColumn = i % 2 == 0;
-            var columnX = isLeftColumn ? leftColumnX : rightColumnX;
-            var columnY = isLeftColumn ? ref leftColumnY : ref rightColumnY;
-
-            DrawArticle(b, article, columnX, ref columnY, columnWidth);
-            columnY += 12; // Spacing after article
-        }
-
-        // Return the height of the taller column
-        return Math.Max(leftColumnY, rightColumnY);
+        return singleColumnY;
     }
 
     private void DrawArticle(SpriteBatch b, NewspaperArticle article, int x, ref int y, int maxWidth)

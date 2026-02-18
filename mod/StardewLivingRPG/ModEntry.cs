@@ -29,6 +29,7 @@ public sealed class ModEntry : Mod
     private const double DefaultMsPerNpcChatClockStep = 7000d;
     private const double NpcChatClockSlowdownMultiplier = 2d;
     private const string InitialNpcChatPrompt = "Got a minute to chat?";
+    private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
 
     private static readonly MethodInfo? PerformTenMinuteClockUpdateMethod = typeof(Game1).GetMethod(
         "performTenMinuteClockUpdate",
@@ -142,6 +143,8 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, ConcurrentQueue<string>> _npcUiMessagesById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ConcurrentQueue<bool>> _npcResponseRoutingById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _npcLastReceivedMessageById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _npcLastNonPlayerMessageById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _npcLastNonPlayerMessageUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerChatRequestUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _npcLastPlayerPromptById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _npcLastContextTagById = new(StringComparer.OrdinalIgnoreCase);
@@ -260,6 +263,7 @@ public sealed class ModEntry : Mod
     {
         _state = StateStore.LoadOrCreate(Helper, Monitor);
         _state.ApplyConfig(_config);
+        SyncCalendarSeasonFromWorld();
         _economyService?.EnsureInitialized(_state.Economy);
         Monitor.Log($"State loaded (version={_state.Version}, mode={_state.Config.Mode}).", LogLevel.Info);
 
@@ -282,6 +286,7 @@ public sealed class ModEntry : Mod
         if (_dailyTickService is null)
             return;
 
+        SyncCalendarSeasonFromWorld();
         _pendingDayStartStreamRecycleDay = -1;
         TryCapturePendingLateNightPassOut();
         _lastNpcPublishAppliedDay = -1;
@@ -903,6 +908,7 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
+        SyncCalendarSeasonFromWorld();
         TryAdvanceClockWhileNpcChatOpen();
         TrackLateNightPassOutWindow();
         TryCaptureTownIncidents();
@@ -1084,27 +1090,6 @@ public sealed class ModEntry : Mod
             }
         }
 
-        while (_pendingPlayer2ChatLines.TryDequeue(out var line))
-        {
-            if (line.StartsWith("__ERR__", StringComparison.Ordinal))
-            {
-                Monitor.Log($"Player2 chat read failed: {line[7..]}", LogLevel.Error);
-                continue;
-            }
-
-            if (line == "__EMPTY__")
-            {
-                Monitor.Log("No player chat response line received (timeout/empty).", LogLevel.Warn);
-                continue;
-            }
-
-            Monitor.Log($"Player2 chat line: {line}", LogLevel.Info);
-            CaptureNpcUiMessage(line, allowPlayerChatRouting: true);
-            var appliedNpcCommand = TryApplyNpcCommandFromLine(line);
-            if (!appliedNpcCommand)
-                TryApplyFallbackQuestFromPlayerChatLine(line);
-        }
-
         while (_pendingPlayer2Lines.TryDequeue(out var line))
         {
             if (line.StartsWith("__ERR__", StringComparison.Ordinal))
@@ -1147,6 +1132,27 @@ public sealed class ModEntry : Mod
             _player2WatchdogRecoveries = 0;
             _player2WatchdogWindowStartUtc = default;
             TryApplyNpcCommandFromLine(line);
+        }
+
+        while (_pendingPlayer2ChatLines.TryDequeue(out var line))
+        {
+            if (line.StartsWith("__ERR__", StringComparison.Ordinal))
+            {
+                Monitor.Log($"Player2 chat read failed: {line[7..]}", LogLevel.Error);
+                continue;
+            }
+
+            if (line == "__EMPTY__")
+            {
+                Monitor.Log("No player chat response line received (timeout/empty).", LogLevel.Warn);
+                continue;
+            }
+
+            Monitor.Log($"Player2 chat line: {line}", LogLevel.Info);
+            CaptureNpcUiMessage(line, allowPlayerChatRouting: true);
+            var appliedNpcCommand = TryApplyNpcCommandFromLine(line);
+            if (!appliedNpcCommand)
+                TryApplyFallbackQuestFromPlayerChatLine(line);
         }
     }
 
@@ -1747,12 +1753,14 @@ public sealed class ModEntry : Mod
         if (_marketBoardService is null)
             return;
 
+        SyncCalendarSeasonFromWorld();
         Game1.activeClickableMenu = new MarketBoardMenu(_state);
         _state.Telemetry.Daily.MarketBoardOpens += 1;
     }
 
     private void OpenNewspaper()
     {
+        SyncCalendarSeasonFromWorld();
         TryApplyCompletedNewspaperIssues();
         TryRefreshPendingNewspaperIssue("open-newspaper");
 
@@ -1765,6 +1773,7 @@ public sealed class ModEntry : Mod
         if (_rumorBoardService is null)
             return;
 
+        SyncCalendarSeasonFromWorld();
         Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor, () => OnUiAskMayorForWork(), () => _player2UiStatus);
     }
 
@@ -1792,11 +1801,12 @@ public sealed class ModEntry : Mod
         if (_marketBoardService is null)
             return;
 
-        Monitor.Log($"=== Pierre's Market Board — Day {_state.Calendar.Day} ({_state.Calendar.Season}) ===", LogLevel.Info);
+        SyncCalendarSeasonFromWorld();
+        Monitor.Log($"=== Pierre's Market Board - Day {_state.Calendar.Day} ({_state.Calendar.Season}) ===", LogLevel.Info);
 
         foreach (var (crop, entry) in _state.Economy.Crops.OrderByDescending(kv => kv.Value.TrendEma).Take(8))
         {
-            var arrow = entry.PriceToday > entry.PriceYesterday ? "↑" : entry.PriceToday < entry.PriceYesterday ? "↓" : "→";
+            var arrow = entry.PriceToday > entry.PriceYesterday ? "^" : entry.PriceToday < entry.PriceYesterday ? "v" : "->";
             Monitor.Log($"{crop,-12} {entry.PriceToday,4}g {arrow} (demand {entry.DemandFactor:F2}, supply {entry.SupplyPressureFactor:F2}, scarcity+ {entry.ScarcityBonus:P0})", LogLevel.Info);
         }
     }
@@ -3520,33 +3530,54 @@ public sealed class ModEntry : Mod
             if (string.IsNullOrWhiteSpace(npcId))
                 return false;
 
-            var routeToPlayerChat = allowPlayerChatRouting
-                && _npcUiPendingById.TryGetValue(npcId, out var pending)
+            var hasPendingPlayerUi = _npcUiPendingById.TryGetValue(npcId, out var pending)
                 && pending > 0;
+            var routeToPlayerChat = allowPlayerChatRouting && hasPendingPlayerUi;
             if (_npcResponseRoutingById.TryGetValue(npcId, out var routingQueue) && routingQueue.TryDequeue(out var routed))
-                routeToPlayerChat = allowPlayerChatRouting && routed;
+                routeToPlayerChat = allowPlayerChatRouting && routed && hasPendingPlayerUi;
+
+            if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
+            {
+                if (routeToPlayerChat)
+                    _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+                return routeToPlayerChat;
+            }
+
+            var msg = msgEl.GetString();
+            if (string.IsNullOrWhiteSpace(msg))
+            {
+                if (routeToPlayerChat)
+                    _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+                return routeToPlayerChat;
+            }
+            var rawMessage = msg.Trim();
+            var now = DateTime.UtcNow;
+            if (routeToPlayerChat
+                && _npcLastNonPlayerMessageById.TryGetValue(npcId, out var lastNonPlayerMessage)
+                && _npcLastNonPlayerMessageUtcById.TryGetValue(npcId, out var lastNonPlayerUtc)
+                && now - lastNonPlayerUtc <= TimeSpan.FromSeconds(12)
+                && string.Equals(lastNonPlayerMessage, rawMessage, StringComparison.Ordinal))
+            {
+                routeToPlayerChat = false;
+            }
+
+            _npcLastReceivedMessageById[npcId] = rawMessage;
+
+            var playerFacingMsg = NormalizePlayerFacingNpcMessage(msg);
+            if (string.IsNullOrWhiteSpace(playerFacingMsg))
+                playerFacingMsg = rawMessage;
 
             if (routeToPlayerChat)
             {
                 _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
-            }
-
-            if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
-                return routeToPlayerChat;
-
-            var msg = msgEl.GetString();
-            if (string.IsNullOrWhiteSpace(msg))
-                return routeToPlayerChat;
-            var playerFacingMsg = NormalizePlayerFacingNpcMessage(msg);
-            if (string.IsNullOrWhiteSpace(playerFacingMsg))
-                playerFacingMsg = msg.Trim();
-
-            if (routeToPlayerChat)
-            {
                 playerFacingMsg = NormalizeNpcTimeReply(npcId, playerFacingMsg);
                 var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
                 q.Enqueue(playerFacingMsg);
-                _npcLastReceivedMessageById[npcId] = msg;
+            }
+            else
+            {
+                _npcLastNonPlayerMessageById[npcId] = rawMessage;
+                _npcLastNonPlayerMessageUtcById[npcId] = now;
             }
 
             if (_npcMemoryService is not null && routeToPlayerChat)
@@ -3711,6 +3742,8 @@ public sealed class ModEntry : Mod
 
     private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null, string? contextTag = null)
     {
+        SyncCalendarSeasonFromWorld();
+        var currentSeason = GetCurrentSeasonLabel();
         var weather = GetCurrentWeatherLabel();
         var dayOfWeek = GetCurrentDayOfWeekLabel();
         var timeOfDay = GetCurrentTimeOfDayLabel(out var hour24, out var minute);
@@ -3817,7 +3850,7 @@ public sealed class ModEntry : Mod
             "MARKET_RULE: For market questions, mention at least one live signal from MARKET_SIGNALS.",
             "REWARD_RULE: Never promise arbitrary gold numbers; follow REWARD_RULES bands.",
             "REWARD_RULES: Rewards are dynamic from target value x count with urgency bands (low=modest, medium=solid, high=premium). Social visits stay in a small fixed band.",
-            $"STATE: CurrentSeason {_state.Calendar.Season}.",
+            $"STATE: CurrentSeason {currentSeason}.",
             $"STATE: CurrentWeather {weather}.",
             $"STATE: CurrentDayOfWeek {dayOfWeek}.",
             $"STATE: CurrentTimeOfDay {timeOfDay}.",
@@ -3828,7 +3861,7 @@ public sealed class ModEntry : Mod
             $"STATE: ParsnipCrisis {parsnipCrisis}.",
             $"PLAYER_KNOWLEDGE: PlayerName='{playerName}' NpcHasMetPlayer={npcHasMetPlayer} PreferredAddress='{preferredAddress}'.",
             $"STATE: PlayerStats Charisma={charismaStat} Social={socialStat}.",
-            $"STATE: Day {_state.Calendar.Day} {_state.Calendar.Season}.",
+            $"STATE: Day {_state.Calendar.Day} {currentSeason}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
             $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}.",
             newsContext,
@@ -3997,6 +4030,77 @@ public sealed class ModEntry : Mod
         if (Game1.isSnowing)
             return "snow";
         return "clear";
+    }
+
+    private static string GetCurrentSeasonLabel()
+    {
+        var season = (Game1.currentSeason ?? string.Empty).Trim().ToLowerInvariant();
+        return string.IsNullOrWhiteSpace(season) ? "spring" : season;
+    }
+
+    private static int GetCurrentSeasonIndex()
+    {
+        return GetCurrentSeasonLabel() switch
+        {
+            "spring" => 0,
+            "summer" => 1,
+            "fall" => 2,
+            "winter" => 3,
+            _ => 0
+        };
+    }
+
+    private static int GetCurrentWorldAbsoluteDay()
+    {
+        var year = Math.Max(1, Game1.year);
+        var seasonIndex = GetCurrentSeasonIndex();
+        var dayOfMonth = Math.Clamp(Game1.dayOfMonth, 1, 28);
+        return ((year - 1) * 112) + (seasonIndex * 28) + dayOfMonth;
+    }
+
+    private void SyncCalendarSeasonFromWorld()
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        var worldSeason = GetCurrentSeasonLabel();
+        var worldYear = Math.Max(1, Game1.year);
+        var worldAbsoluteDay = GetCurrentWorldAbsoluteDay();
+
+        _state.Calendar.Season = worldSeason;
+        _state.Calendar.Year = worldYear;
+
+        if (TryReadFactSourceInt(CalendarLastWorldAbsoluteDayFactKey, out var previousWorldAbsoluteDay))
+        {
+            var delta = worldAbsoluteDay - previousWorldAbsoluteDay;
+            if (delta != 0)
+                _state.Calendar.Day = Math.Max(1, _state.Calendar.Day + delta);
+        }
+        else if (_state.Calendar.Day <= 0)
+        {
+            _state.Calendar.Day = worldAbsoluteDay;
+        }
+
+        WriteFactSourceInt(CalendarLastWorldAbsoluteDayFactKey, worldAbsoluteDay);
+    }
+
+    private bool TryReadFactSourceInt(string key, out int value)
+    {
+        value = 0;
+        if (!_state.Facts.Facts.TryGetValue(key, out var fact))
+            return false;
+
+        return int.TryParse(fact.Source ?? string.Empty, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+    }
+
+    private void WriteFactSourceInt(string key, int value)
+    {
+        _state.Facts.Facts[key] = new FactValue
+        {
+            Value = true,
+            SetDay = _state.Calendar.Day,
+            Source = value.ToString(CultureInfo.InvariantCulture)
+        };
     }
 
     private static string GetCurrentDayOfWeekLabel()
@@ -4964,6 +5068,8 @@ public sealed class ModEntry : Mod
         _npcResponseRoutingById.Clear();
         _npcUiPendingById.Clear();
         _npcLastReceivedMessageById.Clear();
+        _npcLastNonPlayerMessageById.Clear();
+        _npcLastNonPlayerMessageUtcById.Clear();
         _npcLastPlayerPromptById.Clear();
         _npcLastContextTagById.Clear();
     }
@@ -4985,6 +5091,14 @@ public sealed class ModEntry : Mod
                 using var totalCts = new CancellationTokenSource(TimeSpan.FromSeconds(18));
                 while (!totalCts.Token.IsCancellationRequested)
                 {
+                    if (_npcResponseRoutingById.TryGetValue(npcId, out var routingQueue)
+                        && routingQueue.TryPeek(out var nextRoute)
+                        && !nextRoute)
+                    {
+                        await Task.Delay(250, totalCts.Token);
+                        continue;
+                    }
+
                     var snapshot = await client.TryGetLatestNpcHistorySnapshotAsync(apiBaseUrl, p2Key, npcId, totalCts.Token);
                     var latest = snapshot?.LatestMessage?.Trim();
                     if (!string.IsNullOrWhiteSpace(latest))

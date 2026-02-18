@@ -7,7 +7,7 @@ namespace StardewLivingRPG.Systems;
 
 public sealed class NewspaperService
 {
-    private const int MinDailyArticles = 2;
+    private const int MinDailyArticles = 1;
     private const int MaxDailyArticles = 5;
     private const int MaxEventArticleCombinedCharacters = 100;
     private const string TownReporterByline = "Town Reporter";
@@ -152,7 +152,7 @@ public sealed class NewspaperService
 
     /// <summary>
     /// Generate event articles from town memory (yesterday's events).
-    /// Max 2 event articles per day.
+    /// Max 1 event article per day.
     /// </summary>
     private static List<NewspaperArticle> GenerateEventArticles(SaveState state, int yesterday)
     {
@@ -162,7 +162,7 @@ public sealed class NewspaperService
         var yesterdayEvents = state.TownMemory.Events
             .Where(e => e.Day == yesterday)
             .OrderByDescending(e => e.Severity)
-            .Take(2)
+            .Take(1)
             .ToList();
 
         foreach (var ev in yesterdayEvents)
@@ -217,7 +217,7 @@ public sealed class NewspaperService
                 _ => null
             };
 
-            if (article is not null && articles.Count < 2)
+            if (article is not null && articles.Count < 1)
             {
                 ClampArticleCombinedLengthInPlace(article, MaxEventArticleCombinedCharacters);
                 articles.Add(article);
