@@ -46,11 +46,11 @@ public static class CropSpriteHelper
         var borderRect = new Rectangle((int)position.X - 2, (int)position.Y - 2, (int)size + 4, (int)size + 4);
 
         // Draw border
-        b.Draw(Game1.staminaRect, borderRect, new Color(60, 40, 20));
+        b.Draw(Game1.staminaRect, borderRect, new Color(120, 65, 34));
 
         // Draw inner background
         var innerRect = new Rectangle(borderRect.X + 1, borderRect.Y + 1, borderRect.Width - 2, borderRect.Height - 2);
-        b.Draw(Game1.staminaRect, innerRect, new Color(250, 228, 187));
+        b.Draw(Game1.staminaRect, innerRect, new Color(170, 116, 70));
 
         // Draw sprite
         var spritePos = new Vector2(position.X, position.Y);

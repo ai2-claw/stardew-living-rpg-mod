@@ -22,6 +22,12 @@ public sealed class MarketBoardMenu : IClickableMenu
     private const int ColumnGap = 20;
     private const int RowGap = 16;
 
+    // Stardew-ish UI colors for the small "cause" icon (the square with "?")
+    private static readonly Color CauseIconBackgroundColor = new(220, 123, 5);
+    private static readonly Color CauseIconBorderColor = new(133, 54, 5);
+    private static readonly Color CauseIconMarkerColor = new(225, 228, 161);
+    private const float CauseIconMarkerYOffset = 3f; // move the "?" down a few pixels
+
     public MarketBoardMenu(SaveState state)
         : base(
             Game1.uiViewport.Width / 2 - 320,
@@ -157,12 +163,12 @@ public sealed class MarketBoardMenu : IClickableMenu
 
         // Trend arrows
         var trendArrow = GetTrendArrow(entry);
-        b.DrawString(Game1.smallFont, trendArrow, new Vector2(textX + 70, nameY + 30), GetTrendColor(entry));
+        b.DrawString(Game1.smallFont, trendArrow, new Vector2(textX + 100, nameY + 30), GetTrendColor(entry));
 
         // Mini bar chart (7-day price history)
         var chartX = textX;
         var chartWidth = 100;
-        var chartHeight = 18;
+        var chartHeight = 22;
         var priceHeight = (int)Game1.dialogueFont.MeasureString(priceText).Y;
         var chartY = priceY + priceHeight + 6;
         var maxChartY = bounds.Bottom - chartHeight - 6;
@@ -172,13 +178,13 @@ public sealed class MarketBoardMenu : IClickableMenu
 
         // Compact cause marker; explanation is shown on hover tooltip.
         var causeText = BuildPublicMarketCause(cropName, entry);
-        const int causeIconSize = 18;
+        const int causeIconSize = 22;
         var iconRect = new Rectangle(chartX + chartWidth + 8, chartY, causeIconSize, causeIconSize);
-        b.Draw(Game1.staminaRect, iconRect, new Color(236, 220, 184));
-        b.Draw(Game1.staminaRect, new Rectangle(iconRect.X, iconRect.Y, iconRect.Width, 1), new Color(90, 70, 50));
-        b.Draw(Game1.staminaRect, new Rectangle(iconRect.X, iconRect.Bottom - 1, iconRect.Width, 1), new Color(90, 70, 50));
-        b.Draw(Game1.staminaRect, new Rectangle(iconRect.X, iconRect.Y, 1, iconRect.Height), new Color(90, 70, 50));
-        b.Draw(Game1.staminaRect, new Rectangle(iconRect.Right - 1, iconRect.Y, 1, iconRect.Height), new Color(90, 70, 50));
+        b.Draw(Game1.staminaRect, iconRect, CauseIconBackgroundColor);
+        b.Draw(Game1.staminaRect, new Rectangle(iconRect.X, iconRect.Y, iconRect.Width, 1), CauseIconBorderColor);
+        b.Draw(Game1.staminaRect, new Rectangle(iconRect.X, iconRect.Bottom - 1, iconRect.Width, 1), CauseIconBorderColor);
+        b.Draw(Game1.staminaRect, new Rectangle(iconRect.X, iconRect.Y, 1, iconRect.Height), CauseIconBorderColor);
+        b.Draw(Game1.staminaRect, new Rectangle(iconRect.Right - 1, iconRect.Y, 1, iconRect.Height), CauseIconBorderColor);
 
         var marker = "?";
         const float markerScale = 0.85f;
@@ -188,8 +194,8 @@ public sealed class MarketBoardMenu : IClickableMenu
             marker,
             new Vector2(
                 iconRect.X + (iconRect.Width - markerSize.X) / 2f,
-                iconRect.Y + (iconRect.Height - markerSize.Y) / 2f - 0.5f),
-            new Color(70, 55, 40),
+                iconRect.Y + (iconRect.Height - markerSize.Y) / 2f - 0.5f + CauseIconMarkerYOffset),
+            CauseIconMarkerColor,
             0f,
             Vector2.Zero,
             markerScale,

@@ -104,7 +104,7 @@ public sealed class NewspaperMenu : IClickableMenu
         y += 15;
 
         // Section header (smaller)
-        b.DrawString(Game1.smallFont, "Community News", new Vector2(paperRect.X + 30, y), new Color(50, 30, 20));
+        b.DrawString(Game1.smallFont, "Community News", new Vector2(paperRect.X + 30, y), new Color(63, 78, 111));
         y += 50; // Extra spacing for portrait (portrait is 40px tall, category badge is ~14px)
 
         var singleColumnX = paperRect.X + 30;
@@ -290,7 +290,7 @@ public sealed class NewspaperMenu : IClickableMenu
         // --- FORECAST / OUTLOOK ---
         if (_issue.PredictiveHints != null && _issue.PredictiveHints.Any())
         {
-            b.DrawString(Game1.smallFont, "Market Outlook:", new Vector2(x, y), new Color(50, 30, 20));
+            b.DrawString(Game1.smallFont, "Market Outlook", new Vector2(x, y), new Color(200, 74, 67));
             y += 30;
 
             foreach (var hint in _issue.PredictiveHints)
