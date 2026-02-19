@@ -1,121 +1,71 @@
 # Stardew Living RPG
 
-Stardew Living RPG adds a "living simulation" layer to Stardew Valley while keeping the base game cozy and readable. NPCs react to changing town conditions, economy signals shift over time, and requests/news evolve daily through in-world menus.
+What if Pelican Town felt a little more alive every day?
 
-## Unique Selling Proposition (USP)
+Stardew Living RPG keeps the cozy vanilla feeling, but adds a living world layer. Villagers react more naturally, requests change over time, market prices move with town activity, and the newspaper reflects what is happening around you.
 
-- **Stardew, but alive**: dynamic systems with visible, in-world consequences.
-- **Additive, not replacive**: vanilla dialogue stays intact; mod dialogue appears as follow-up.
-- **AI with guardrails**: Player2-driven NPC behavior goes through deterministic validation and bounded mutations, so world changes stay stable and lore-friendly.
+## Why Players Like It
+
+- Feels like Stardew, not a total genre swap.
+- Vanilla dialogue flow stays intact, with extra follow-up chat.
+- The town responds to your play in gentle, readable ways.
+- Core features are accessed through in-game menus, not the console.
 
 ## Features
 
-### 1) Living economy and market gameplay
+### Living NPC Conversations
 
-- Dynamic pricing from demand, supply pressure, scarcity, and sentiment.
-- Sales ingestion from your shipping bin affects next-day market movement.
-- Market Board menu with trend indicators, spark bars, and item icons.
-- Expanded market catalog support (crops + multiple produce/resource item classes).
-- Safe economy clamps and anti-chaos floors for cozy play.
+- NPCs feel more personal and context-aware.
+- Relationship level matters: low-heart chats are more reserved, higher-heart chats feel warmer.
+- NPC chat menu shows portrait and heart display for quick relationship read.
 
-### 2) In-world newspaper and town news loop
+### Dynamic Market Board (`K`)
 
-- Daily newspaper generation with market and community context.
-- NPC-driven publishing via `publish_article` and `publish_rumor`.
-- Dynamic headline updates and replacement of same-day issue content when new publish events land.
-- HUD toasts for notable publish events.
-- Day-start edition supports editor content and simulation state summaries.
+- Daily price movement with clear trend indicators.
+- Uses a broad item pool, not just a tiny crop list.
+- Includes crops plus other goods like fruits, eggs, milk, and more.
 
-### 3) Town Request Board (Rumor Board)
+### Pelican Times Newspaper (`J`)
 
-- In-world request board UI with Available and Active sections.
-- Accept and Complete actions directly in menu.
-- Quest rewards paid on completion; required item quests consume items from inventory.
-- Expiry handling for overdue requests.
-- New Postings action with cooldown/daily cap/outstanding-request guardrails.
-- HUD toast when a new request is posted.
+- Daily town paper with community stories and market outlook.
+- Headlines and stories can update as the world changes.
+- Keeps the "small town bulletin" feel instead of a modern UI feed.
 
-### 4) Quest variety and progression
+### Town Request Board (`L`)
 
-- Quest templates:
-  - `gather_crop`
-  - `deliver_item`
-  - `mine_resource`
-  - `social_visit`
-- Target diversity using expanded supply/resource pools.
-- Reward calculation tied to value and bounded by deterministic rules.
-- Relationship-aware social visit tracking.
+- Browse Available and Active requests in one place.
+- Accept/complete directly from the board menu.
+- Better reward balance and clearer posting feedback.
+- New request notifications appear via HUD toast.
 
-### 5) NPC chat and social simulation
+### Cozy Quality-of-Life
 
-- Additive NPC follow-up interaction after vanilla dialogue.
-- Persistent NPC chat UI with portrait, NPC name, and 10-heart visual meter.
-- NPC tone adapts to relationship hearts and speech profile (warmth scales naturally).
-- NPC context awareness includes:
-  - current season
-  - weather
-  - day of week
-  - time of day
-  - market signals
-  - memory context
-- Full vanilla roster support for Player2 NPC sessions.
-
-### 6) Memory and ambient world behavior
-
-- Per-NPC memory persistence.
-- Shared town memory event tracking.
-- Ambient NPC-to-NPC conversation hooks.
-- Automatic command exposure hooks for reputation, interest influence, and market modifiers.
-
-### 7) Deterministic safety layer
-
-- NPC command schema validation with intent resolver gates.
-- Supported command families include:
-  - `propose_quest`
-  - `adjust_reputation`
-  - `shift_interest_influence`
-  - `apply_market_modifier`
-  - `publish_article`
-  - `publish_rumor`
-  - `record_memory_fact`
-  - `record_town_event`
-- Idempotency and duplicate-intent protection.
-- Context/lane-aware policy controls and telemetry.
-
-### 8) UI and UX polish
-
-- Hotkey-toggle menus (press key again to close):
-  - `K` Market Board
-  - `J` Newspaper
-  - `L` Town Request Board
-- Local Insight HUD indicator (active/dormant) with hover tooltip.
-- NPC chat keeps time progression active with slowed pacing for readability.
-- In-world feedback via toasts and board/newspaper updates.
+- Press `J`, `K`, or `L` again to close each menu.
+- Helpful HUD cues for major updates.
+- Designed to stay readable and immersive for relaxed play.
 
 ## Requirements
 
 - Stardew Valley 1.6+
 - SMAPI 4.0+
-- Player2 app/account access (required)
+- Player2 connection (required for this mod)
 
 ## Installation
 
-1. Install SMAPI for Stardew Valley.
-2. Download this mod archive.
-3. Extract and place the `StardewLivingRPG` folder into your `Stardew Valley/Mods` directory.
-4. Launch the game once via SMAPI so config files are generated.
-5. Ensure Player2 desktop app is installed/running and logged in.
-6. Start game through SMAPI.
+1. Install SMAPI.
+2. Download this mod.
+3. Extract `StardewLivingRPG` into your `Stardew Valley/Mods` folder.
+4. Launch the game through SMAPI.
+5. If prompted, connect Player2 in-game (open browser + enter code).
+6. Load your save and play.
 
-## Player2 configuration note
+## First-Time Quick Start
 
-- Player2 is mandatory for this mod's core features.
-- This release uses a fixed `Player2GameClientId` tied to the mod creator.
-- Do not replace the game client ID in config; requests are intended to credit the creator account.
+1. Press `K` to open the Market Board.
+2. Press `J` to read today's newspaper.
+3. Press `L` to check Town Requests.
+4. Talk to villagers and choose the follow-up chat option after vanilla dialogue.
 
-## Recommended first run
+## Compatibility Note
 
-1. Open Market Board (`K`) to confirm economy UI is active.
-2. Open Newspaper (`J`) to check day-start issue generation.
-3. Open Town Request Board (`L`) and test `New Postings`.
-4. Talk to an NPC, finish vanilla dialogue, then use the follow-up chat option.
+- This mod is additive and aims to preserve vanilla Stardew tone and pacing.
