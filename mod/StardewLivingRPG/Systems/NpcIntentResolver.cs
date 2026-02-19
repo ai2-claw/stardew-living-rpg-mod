@@ -138,6 +138,16 @@ public sealed class NpcIntentResolver
         var rawTemplateId = tEl.GetString() ?? string.Empty;
         var target = tarEl.GetString() ?? string.Empty;
         var urgency = uEl.GetString() ?? string.Empty;
+        int? requestedCount = null;
+        if (args.TryGetProperty("count", out var cEl))
+        {
+            if (cEl.ValueKind != JsonValueKind.Number || !cEl.TryGetInt32(out var parsedCount))
+                return NpcIntentResolveResult.Rejected("propose_quest count must be an integer", "E_COUNT_INVALID");
+            if (parsedCount < 1 || parsedCount > 99)
+                return NpcIntentResolveResult.Rejected("propose_quest count out of range (1..99)", "E_COUNT_RANGE");
+
+            requestedCount = parsedCount;
+        }
 
         var templateId = (!_strictTemplateValidation && TryRepairTemplateId(rawTemplateId, out var repairedTemplate))
             ? repairedTemplate
@@ -147,10 +157,10 @@ public sealed class NpcIntentResolver
             return NpcIntentResolveResult.Rejected($"invalid template_id '{rawTemplateId}'", "E_TEMPLATE_INVALID");
         if (!AllowedUrgency.Contains(urgency))
             return NpcIntentResolveResult.Rejected($"invalid urgency '{urgency}'", "E_URGENCY_INVALID");
-        if (HasUnexpectedArgs(args, "template_id", "target", "urgency", "reward_hint"))
+        if (HasUnexpectedArgs(args, "template_id", "target", "urgency", "reward_hint", "count"))
             return NpcIntentResolveResult.Rejected("propose_quest contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
 
-        var result = _rumorBoardService.CreateQuestFromNpcProposal(state, npcId, templateId, target, urgency, intentId);
+        var result = _rumorBoardService.CreateQuestFromNpcProposal(state, npcId, templateId, target, urgency, intentId, requestedCount);
         if (result.IsDuplicate || string.IsNullOrWhiteSpace(result.CreatedQuestId))
             return NpcIntentResolveResult.Duplicate(intentId);
 

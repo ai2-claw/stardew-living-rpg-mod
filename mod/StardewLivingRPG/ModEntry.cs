@@ -3326,7 +3326,8 @@ public sealed class ModEntry : Mod
                             {
                                 template_id = new { type = "string", @enum = new[] { "gather_crop", "deliver_item", "mine_resource", "social_visit" } },
                                 target = new { type = "string", description = "gather/deliver=item_or_crop, mine=resource, social_visit=npc_name" },
-                                urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } }
+                                urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } },
+                                count = new { type = "integer", minimum = 1, maximum = 99, description = "optional explicit quantity when the request names an exact amount" }
                             },
                             required = new[] { "template_id", "target", "urgency" },
                             additionalProperties = false
@@ -3503,7 +3504,8 @@ public sealed class ModEntry : Mod
                                 {
                                     template_id = new { type = "string", @enum = new[] { "gather_crop", "deliver_item", "mine_resource", "social_visit" } },
                                     target = new { type = "string" },
-                                    urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } }
+                                    urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } },
+                                    count = new { type = "integer", minimum = 1, maximum = 99 }
                                 },
                                 required = new[] { "template_id", "target", "urgency" },
                                 additionalProperties = false
@@ -4782,6 +4784,7 @@ public sealed class ModEntry : Mod
             "TIME_RULE: If asked for time, answer with hour and minute plus AM/PM (for example: 6:30 AM). Never answer with minutes only.",
             "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
             "QUEST_RULE: Never give text-only task offers without propose_quest.",
+            "QUEST_RULE: If your request includes an exact amount, set propose_quest.count to that number and keep target as only the item/resource/NPC name.",
             "QUEST_RULE: If no suitable request exists, explicitly say none is available in-character.",
             "QUEST_RULE: Do not proactively offer a new quest during normal small talk. Offer quests only when the player asks for work/request or explicitly agrees to help.",
             "EVENT_QUALITY_RULE: record_town_event requires kind, summary, location, severity(1-5), visibility(local/public), and concise tags.",
@@ -6519,30 +6522,40 @@ public sealed class ModEntry : Mod
         if (LooksLikeQuestDecline(message))
             return;
 
-        if (!TryInferQuestProposalFromMessage(npcId, message, out var templateId, out var target, out var urgency))
+        if (!TryInferQuestProposalFromMessage(npcId, message, out var templateId, out var target, out var urgency, out var requestedCount))
             return;
 
         var intentId = BuildSyntheticQuestIntentId(npcId, templateId, target, _state.Calendar.Day);
         if (_state.Facts.ProcessedIntents.ContainsKey(intentId))
             return;
 
+        object arguments = requestedCount > 0
+            ? new
+            {
+                template_id = templateId,
+                target,
+                urgency,
+                count = requestedCount
+            }
+            : new
+            {
+                template_id = templateId,
+                target,
+                urgency
+            };
+
         var payload = JsonSerializer.Serialize(new
         {
             intent_id = intentId,
             npc_id = npcId,
             command = "propose_quest",
-            arguments = new
-            {
-                template_id = templateId,
-                target,
-                urgency
-            }
+            arguments
         });
 
         if (TryApplyNpcCommandFromLine(payload))
         {
             Monitor.Log(
-                $"Applied fallback propose_quest from plain chat text: template={templateId} target={target} urgency={urgency}.",
+                $"Applied fallback propose_quest from plain chat text: template={templateId} target={target} urgency={urgency} count={(requestedCount > 0 ? requestedCount.ToString(CultureInfo.InvariantCulture) : "default")}.",
                 LogLevel.Warn);
         }
     }
@@ -6649,11 +6662,12 @@ public sealed class ModEntry : Mod
             || text.Contains("i will take it", StringComparison.Ordinal);
     }
 
-    private bool TryInferQuestProposalFromMessage(string npcId, string message, out string templateId, out string target, out string urgency)
+    private bool TryInferQuestProposalFromMessage(string npcId, string message, out string templateId, out string target, out string urgency, out int requestedCount)
     {
         templateId = string.Empty;
         target = string.Empty;
         urgency = "low";
+        requestedCount = 0;
 
         var text = message.ToLowerInvariant();
         if (ContainsAny(text, "visit", "talk to", "speak with", "check on", "check in with", "stop by", "drop by", "swing by", "go see", "see if"))
@@ -6661,6 +6675,7 @@ public sealed class ModEntry : Mod
             templateId = "social_visit";
             target = TryFindNpcTargetInText(text) ?? GetFallbackVisitTargetForInference(npcId);
             urgency = InferUrgency(text);
+            requestedCount = 1;
             return true;
         }
 
@@ -6669,6 +6684,7 @@ public sealed class ModEntry : Mod
             templateId = "mine_resource";
             target = TryFindResourceTargetInText(text) ?? "copper_ore";
             urgency = InferUrgency(text);
+            requestedCount = TryFindRequestedQuestCountInText(text) ?? 0;
             return true;
         }
 
@@ -6677,6 +6693,7 @@ public sealed class ModEntry : Mod
             templateId = "deliver_item";
             target = TryFindCropTargetInText(text) ?? GetFallbackQuestCropTargetForInference($"{npcId}:{text}");
             urgency = InferUrgency(text);
+            requestedCount = TryFindRequestedQuestCountInText(text) ?? 0;
             return true;
         }
 
@@ -6685,6 +6702,7 @@ public sealed class ModEntry : Mod
             templateId = "gather_crop";
             target = TryFindCropTargetInText(text) ?? GetFallbackQuestCropTargetForInference($"{npcId}:{text}");
             urgency = InferUrgency(text);
+            requestedCount = TryFindRequestedQuestCountInText(text) ?? 0;
             return true;
         }
 
@@ -6717,7 +6735,7 @@ public sealed class ModEntry : Mod
 
         var match = Regex.Match(
             text,
-            @"\b(?:gather|gathering|collect|collecting|harvest|harvesting|pick|deliver|delivering|bring|supply|supplying)\s+(?:some\s+|a\s+|an\s+)?([a-z_]+)",
+            @"\b(?:gather|gathering|collect|collecting|harvest|harvesting|pick|deliver|delivering|bring|supply|supplying)\s+(?:some\s+|a\s+|an\s+)?(?:x?\s*\d+\s+)?([a-z_]+)(?:\s*x?\s*\d+)?\b",
             RegexOptions.CultureInvariant);
         if (!match.Success)
             return null;
@@ -6774,7 +6792,10 @@ public sealed class ModEntry : Mod
         if (string.IsNullOrWhiteSpace(normalizedTarget))
             return false;
 
-        var pattern = $@"\b{Regex.Escape(normalizedTarget)}s?\b";
+        var escaped = Regex.Escape(normalizedTarget);
+        var pattern = normalizedTarget.EndsWith("y", StringComparison.Ordinal) && normalizedTarget.Length > 1
+            ? $@"\b(?:{Regex.Escape(normalizedTarget[..^1] + "y")}|{Regex.Escape(normalizedTarget[..^1] + "ies")})\b"
+            : $@"\b{escaped}s?\b";
         return Regex.IsMatch(text, pattern, RegexOptions.CultureInvariant);
     }
 
@@ -6785,7 +6806,9 @@ public sealed class ModEntry : Mod
 
         var t = raw.Trim().ToLowerInvariant().Replace(" ", "_", StringComparison.Ordinal);
         t = Regex.Replace(t, @"[^a-z0-9_]+", string.Empty, RegexOptions.CultureInvariant);
-        if (t.EndsWith("s", StringComparison.Ordinal) && t.Length > 3)
+        if (t.EndsWith("ies", StringComparison.Ordinal) && t.Length > 3)
+            t = t[..^3] + "y";
+        else if (t.EndsWith("s", StringComparison.Ordinal) && t.Length > 3)
             t = t[..^1];
         return t;
     }
@@ -6893,6 +6916,32 @@ public sealed class ModEntry : Mod
         return parsnip.DemandFactor >= 1.04f
             && parsnip.ScarcityBonus >= 0.04f
             && scarcityLead >= 0.01f;
+    }
+
+    private static int? TryFindRequestedQuestCountInText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var matches = Regex.Matches(
+            text,
+            @"\b(?:x\s*)?(\d{1,3})(?:\s*x)?\b",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        foreach (Match match in matches)
+        {
+            if (!match.Success)
+                continue;
+            if (!int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                continue;
+            if (parsed <= 0)
+                continue;
+            if (parsed > 30)
+                continue;
+
+            return parsed;
+        }
+
+        return null;
     }
 
     private static string InferUrgency(string text)

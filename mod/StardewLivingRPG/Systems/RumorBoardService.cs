@@ -1,6 +1,7 @@
 using StardewLivingRPG.State;
 using StardewLivingRPG.Utils;
 using StardewValley;
+using System.Text.RegularExpressions;
 
 namespace StardewLivingRPG.Systems;
 
@@ -367,7 +368,8 @@ public sealed class RumorBoardService
         string templateId,
         string target,
         string urgency,
-        string intentKey)
+        string intentKey,
+        int? requestedCount = null)
     {
         if (state.Facts.ProcessedIntents.ContainsKey(intentKey))
             return QuestProposalResult.Duplicate;
@@ -375,8 +377,11 @@ public sealed class RumorBoardService
         var safeTemplate = NormalizeTemplate(templateId);
         var safeTarget = NormalizeTargetForTemplate(state, safeTemplate, target, intentKey);
         var safeUrgency = NormalizeUrgency(urgency);
+        var explicitRequestedCount = requestedCount ?? TryExtractRequestedCount(target);
 
         var (count, minRewardGold, expiresDelta) = BoundsForTemplateAndUrgency(safeTemplate, safeUrgency);
+        if (explicitRequestedCount.HasValue)
+            count = ResolveRequestedCountForTemplate(safeTemplate, explicitRequestedCount.Value, count);
         var rewardGold = ComputeRewardGold(state, safeTemplate, safeTarget, safeUrgency, count, minRewardGold);
 
         var suffix = Math.Abs(intentKey.GetHashCode()) % 100000;
@@ -681,9 +686,8 @@ public sealed class RumorBoardService
 
     private static string NormalizeCropCandidate(string? rawTarget)
     {
-        var t = (rawTarget ?? string.Empty)
-            .Trim()
-            .ToLowerInvariant()
+        var cleaned = StripRequestedCountTokens(rawTarget);
+        var t = cleaned
             .Replace(" ", "_", StringComparison.Ordinal)
             .Trim('"', '\'', '.', ',', '!', '?', ';', ':');
 
@@ -914,10 +918,11 @@ public sealed class RumorBoardService
 
     private static string NormalizeNpcTarget(string? rawTarget)
     {
-        if (string.IsNullOrWhiteSpace(rawTarget))
+        var cleaned = StripRequestedCountTokens(rawTarget);
+        if (string.IsNullOrWhiteSpace(cleaned))
             return string.Empty;
 
-        var normalized = rawTarget
+        var normalized = cleaned
             .Trim()
             .ToLowerInvariant()
             .Replace(" ", "_", StringComparison.Ordinal)
@@ -934,6 +939,63 @@ public sealed class RumorBoardService
             normalized = normalized[3..];
 
         return normalized;
+    }
+
+    private static int? TryExtractRequestedCount(string? rawTarget)
+    {
+        if (string.IsNullOrWhiteSpace(rawTarget))
+            return null;
+
+        var match = Regex.Match(
+            rawTarget,
+            @"(?:^|[\s_])(?:x\s*)?(\d{1,3})(?:\s*x)?(?:$|[\s_])",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        if (!match.Success)
+            return null;
+        if (!int.TryParse(match.Groups[1].Value, out var parsed))
+            return null;
+        if (parsed <= 0)
+            return null;
+
+        return Math.Min(parsed, 99);
+    }
+
+    private static int ResolveRequestedCountForTemplate(string templateId, int requestedCount, int fallbackCount)
+    {
+        var clampedRequested = Math.Clamp(requestedCount, 1, 99);
+        return templateId switch
+        {
+            "social_visit" => 1,
+            "mine_resource" => Math.Clamp(clampedRequested, 5, 30),
+            "deliver_item" => Math.Clamp(clampedRequested, 3, 25),
+            "gather_crop" => Math.Clamp(clampedRequested, 5, 30),
+            _ => fallbackCount
+        };
+    }
+
+    private static string StripRequestedCountTokens(string? rawTarget)
+    {
+        if (string.IsNullOrWhiteSpace(rawTarget))
+            return string.Empty;
+
+        var cleaned = rawTarget
+            .Trim()
+            .ToLowerInvariant()
+            .Replace("_", " ", StringComparison.Ordinal)
+            .Replace("-", " ", StringComparison.Ordinal);
+
+        cleaned = Regex.Replace(
+            cleaned,
+            @"(?:^|[\s])(x\s*)?\d{1,3}(\s*x)?(?=$|[\s])",
+            " ",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(
+            cleaned,
+            @"\b(?:about|around|roughly|approx|approximately|some|few|several|a|an|the|of|qty|quantity|amount|items?)\b",
+            " ",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+        return cleaned;
     }
 
     private static string GetSeasonalFallbackCrop(string? season, bool allowParsnip)
