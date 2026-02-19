@@ -42,7 +42,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private Rectangle _askWorkButton;
     private readonly ClickableTextureComponent _closeButton;
 
-    private const int VisibleQuestRows = 7;
+    private const int VisibleQuestRows = 4;
     private const int SectionLeftMargin = 36;
     private const int SectionTopY = 116;
     private const int SectionWidth = 460;

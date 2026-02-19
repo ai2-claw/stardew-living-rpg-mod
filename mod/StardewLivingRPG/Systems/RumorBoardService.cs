@@ -6,6 +6,8 @@ namespace StardewLivingRPG.Systems;
 
 public sealed class RumorBoardService
 {
+    private const int MaxAvailableBoardQuests = 4;
+    private const int MaxActiveBoardQuests = 4;
     private const string TownHallStatusTriggered = "anchor:town_hall_crisis:status:triggered";
     private const string TownHallStatusResolved = "anchor:town_hall_crisis:status:resolved";
 
@@ -102,6 +104,8 @@ public sealed class RumorBoardService
             TargetCount = 1,
             RewardGold = 250
         });
+
+        TrimAvailableQuestsToBoardCapacity(state);
     }
 
     public void ExpireOverdueQuests(SaveState state)
@@ -109,6 +113,12 @@ public sealed class RumorBoardService
         var currentDay = ResolveEffectiveCurrentDay(state);
         if (currentDay > state.Calendar.Day)
             state.Calendar.Day = currentDay;
+
+        var overdueAvailable = state.Quests.Available
+            .Where(q => q.ExpiresDay > 0 && currentDay > q.ExpiresDay)
+            .ToList();
+        foreach (var quest in overdueAvailable)
+            state.Quests.Available.Remove(quest);
 
         var overdue = state.Quests.Active
             .Where(q => q.ExpiresDay > 0 && currentDay > q.ExpiresDay)
@@ -137,6 +147,8 @@ public sealed class RumorBoardService
 
             state.Telemetry.Daily.WorldMutations += 1;
         }
+
+        TrimAvailableQuestsToBoardCapacity(state);
     }
 
     private static int ResolveEffectiveCurrentDay(SaveState state)
@@ -172,6 +184,10 @@ public sealed class RumorBoardService
 
     public bool AcceptQuest(SaveState state, string questId)
     {
+        ExpireOverdueQuests(state);
+        if (state.Quests.Active.Count >= MaxActiveBoardQuests)
+            return false;
+
         var quest = state.Quests.Available.FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
         if (quest is null)
             return false;
@@ -386,6 +402,7 @@ public sealed class RumorBoardService
         };
 
         state.Quests.Available.Add(quest);
+        TrimAvailableQuestsToBoardCapacity(state);
         state.Facts.ProcessedIntents[intentKey] = new ProcessedIntentValue
         {
             Day = state.Calendar.Day,
@@ -416,6 +433,12 @@ public sealed class RumorBoardService
             RewardGold = rewardGold,
             ExpiresDelta = expiresDelta
         };
+    }
+
+    private static void TrimAvailableQuestsToBoardCapacity(SaveState state)
+    {
+        while (state.Quests.Available.Count > MaxAvailableBoardQuests)
+            state.Quests.Available.RemoveAt(0);
     }
 
     private static void CompleteQuestInternal(SaveState state, QuestEntry quest)
