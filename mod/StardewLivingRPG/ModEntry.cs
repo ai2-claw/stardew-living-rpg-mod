@@ -4796,6 +4796,8 @@ public sealed class ModEntry : Mod
                 ? "QUEST_CONTEXT: Player explicitly asked for work/request now. You must either emit propose_quest or decline clearly; no text-only task offers."
                 : string.Empty,
             "NEWS_RULE: If asked about news, rumors, or recent events, answer using NEWS_CONTEXT and RECENT_EVENTS first.",
+            "EVENT_TIME_RULE: Treat UPCOMING_EVENTS as future-only and use future tense. Never describe UPCOMING_EVENTS as already happened.",
+            "EVENT_TIME_RULE: RECENT_EVENTS are already observed and can be described in past/present tense.",
             "RULE: For publish_article/publish_rumor commands, keep title+content within 100 characters total.",
             "MARKET_RULE: For market questions, mention at least one live signal from MARKET_SIGNALS.",
             "REWARD_RULE: Never promise arbitrary gold numbers; follow REWARD_RULES bands.",
@@ -4919,11 +4921,12 @@ public sealed class ModEntry : Mod
     private string BuildRecentEventAwarenessBlock(string? playerText = null)
     {
         var day = _state.Calendar.Day;
+        var currentTimeOfDay = Game1.timeOfDay;
         var focusTokens = ExtractContextFocusTokens(playerText);
         var recent = _state.TownMemory.Events
             .Where(ev =>
-                ev.Day <= day
-                && ev.Day >= day - 3
+                ev.Day >= day - 3
+                && ev.Day <= day + 2
                 && !string.IsNullOrWhiteSpace(ev.Summary))
             .ToList();
 
@@ -4932,21 +4935,30 @@ public sealed class ModEntry : Mod
             .ToList();
         var source = publicRecent.Count > 0 ? publicRecent : recent;
 
-        var events = source
+        var ranked = source
             .OrderByDescending(ev =>
             {
                 var visibilityBoost = string.Equals(ev.Visibility, "public", StringComparison.OrdinalIgnoreCase) ? 6 : 0;
                 var relevanceBoost = CountEventFocusMatches(ev, focusTokens) * 3;
-                var recencyBoost = Math.Max(0, 3 - (day - ev.Day));
+                var recencyBoost = Math.Max(0, 3 - Math.Abs(day - ev.Day));
                 return (ev.Severity * 4) + visibilityBoost + relevanceBoost + recencyBoost;
             })
             .ThenByDescending(ev => ev.Day)
             .ThenByDescending(ev => ev.Severity)
+            .ToList();
+
+        var recentEvents = ranked
+            .Where(ev => !TownEventTemporalHelper.IsUpcoming(ev, day, currentTimeOfDay))
             .Take(3)
-            .Select(ev => $"{ev.Kind}:{TrimForContext(ev.Summary, 44, "event")}")
+            .Select(ev => $"{TownEventTemporalHelper.BuildTemporalLabel(ev, day, currentTimeOfDay)}:{ev.Kind}:{TrimForContext(ev.Summary, 44, "event")}")
+            .ToArray();
+        var upcomingEvents = ranked
+            .Where(ev => TownEventTemporalHelper.IsUpcoming(ev, day, currentTimeOfDay))
+            .Take(2)
+            .Select(ev => $"{TownEventTemporalHelper.BuildTemporalLabel(ev, day, currentTimeOfDay)}:{ev.Kind}:{TrimForContext(ev.Summary, 44, "event")}")
             .ToArray();
 
-        return $"RECENT_EVENTS: [{JoinContextItems(events)}].";
+        return $"RECENT_EVENTS: [{JoinContextItems(recentEvents)}]. UPCOMING_EVENTS: [{JoinContextItems(upcomingEvents)}].";
     }
 
     private static HashSet<string> ExtractContextFocusTokens(string? playerText)

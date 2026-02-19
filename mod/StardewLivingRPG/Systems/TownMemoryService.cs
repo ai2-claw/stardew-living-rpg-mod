@@ -1,4 +1,6 @@
 using StardewLivingRPG.State;
+using StardewLivingRPG.Utils;
+using StardewValley;
 
 namespace StardewLivingRPG.Systems;
 
@@ -58,6 +60,7 @@ public sealed class TownMemoryService
             return string.Empty;
 
         var tags = ExtractTags(playerText).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var currentTimeOfDay = Game1.timeOfDay;
 
         var candidates = new List<(TownMemoryEvent Ev, TownKnowledgeEntry K, int Score)>();
         foreach (var ev in state.TownMemory.Events)
@@ -68,8 +71,14 @@ public sealed class TownMemoryService
                 continue;
             if (day - k.LastMentionDay < 2 && k.LastMentionDay > 0)
                 continue;
+            if (ev.Day > day + 2)
+                continue;
 
-            var score = ev.Severity * 6 + Math.Max(0, 10 - (day - ev.Day));
+            var dayDistance = Math.Abs(day - ev.Day);
+            var recencyScore = Math.Max(0, 10 - dayDistance);
+            var score = ev.Severity * 6 + recencyScore;
+            if (TownEventTemporalHelper.IsUpcoming(ev, day, currentTimeOfDay))
+                score -= 2;
             foreach (var tag in tags)
             {
                 if (ev.Summary.Contains(tag, StringComparison.OrdinalIgnoreCase) || ev.Tags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase)))
@@ -89,7 +98,11 @@ public sealed class TownMemoryService
             t.K.LastMentionDay = day;
         }
 
-        var body = string.Join(" ", top.Select(t => $"{t.Ev.Summary} (known to {npcName}; {t.K.Angle})."));
+        var body = string.Join(" ", top.Select(t =>
+        {
+            var temporalLabel = TownEventTemporalHelper.BuildTemporalLabel(t.Ev, day, currentTimeOfDay);
+            return $"[{temporalLabel}] {t.Ev.Summary} (known to {npcName}; {t.K.Angle}).";
+        }));
         var block = $"TOWN_MEMORY_FOR_{npcName.ToUpperInvariant()}: {body}";
         return block.Length > maxChars ? block[..maxChars] : block;
     }
