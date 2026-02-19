@@ -105,7 +105,7 @@ public sealed class NewspaperMenu : IClickableMenu
 
         // Section header (smaller)
         b.DrawString(Game1.smallFont, "Community News", new Vector2(paperRect.X + 30, y), new Color(63, 78, 111));
-        y += 50; // Extra spacing for portrait (portrait is 40px tall, category badge is ~14px)
+        y += 40; // Tightened spacing under section label by 10px.
 
         var singleColumnX = paperRect.X + 30;
         var singleColumnWidth = paperRect.Width - 60;

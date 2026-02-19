@@ -23,7 +23,6 @@ namespace StardewLivingRPG;
 
 public sealed class ModEntry : Mod
 {
-    private const int MaxNpcPublishCombinedCharacters = 100;
     private const int NpcPublishAfternoonStartTime = 1300;
     private const int NpcPublishMinimumIntervalMinutes = 120;
     private const int AmbientLaneDebugSnapshotLimit = 20;
@@ -45,6 +44,7 @@ public sealed class ModEntry : Mod
     private static readonly TimeSpan PendingFallbackQuestOfferMaxAge = TimeSpan.FromMinutes(2);
     private const string InitialNpcChatPrompt = "Got a minute to chat?";
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
+    private const string CreatorPlayer2GameClientId = "019c4693-2a12-7ef5-bae2-ff29ee9fa674";
 
     private static readonly MethodInfo? PerformTenMinuteClockUpdateMethod = typeof(Game1).GetMethod(
         "performTenMinuteClockUpdate",
@@ -165,6 +165,7 @@ public sealed class ModEntry : Mod
     };
 
     private ModConfig _config = new();
+    private string _legacyPlayer2GameClientId = string.Empty;
     private SaveState _state = SaveState.CreateDefault();
     private DailyTickService? _dailyTickService;
     private EconomyService? _economyService;
@@ -282,10 +283,21 @@ public sealed class ModEntry : Mod
     private bool _npcChatClockMethodMissingLogged;
     private bool _npcChatVisualRefreshFailedLogged;
     private bool _npcChatLocationUpdateFailedLogged;
+    private bool _player2AutoConnectSuppressedByUser;
+
+    private readonly object _player2DeviceAuthUiLock = new();
+    private bool _player2DeviceAuthUiActive;
+    private string _player2DeviceAuthVerificationUrl = string.Empty;
+    private string _player2DeviceAuthUserCode = string.Empty;
+    private string _player2DeviceAuthStatus = string.Empty;
+    private DateTime _player2DeviceAuthExpiresUtc;
+    private CancellationTokenSource? _player2DeviceAuthCts;
 
     public override void Entry(IModHelper helper)
     {
         _config = helper.ReadConfig<ModConfig>();
+        TryMigrateLegacyPlayer2Config(helper);
+        EnsureRequiredPlayer2Enabled(helper);
         _dailyTickService = new DailyTickService(Monitor, _config);
         _economyService = new EconomyService();
         _marketBoardService = new MarketBoardService();
@@ -328,7 +340,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_town_memory_dump", "Dump town-memory event count.", OnTownMemoryDumpCommand);
         helper.ConsoleCommands.Add("slrpg_town_memory_npc", "Dump town-memory knowledge for npc: slrpg_town_memory_npc <npc>", OnTownMemoryNpcCommand);
 
-        helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using configured game client id.", OnPlayer2LoginCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using built-in game client id.", OnPlayer2LoginCommand);
         helper.ConsoleCommands.Add("slrpg_p2_spawn", "Spawn one Player2 NPC session.", OnPlayer2SpawnNpcCommand);
         helper.ConsoleCommands.Add("slrpg_p2_chat", "Send chat to active Player2 NPC: slrpg_p2_chat <message>", OnPlayer2ChatCommand);
         helper.ConsoleCommands.Add("slrpg_p2_read_once", "Read one line from /npcs/responses stream.", OnPlayer2ReadOnceCommand);
@@ -348,6 +360,81 @@ public sealed class ModEntry : Mod
         helper.Events.Input.ButtonPressed += OnButtonPressed;
 
         Monitor.Log("Stardew Living RPG loaded.", LogLevel.Info);
+    }
+
+    private void TryMigrateLegacyPlayer2Config(IModHelper helper)
+    {
+        var configPath = Path.Combine(helper.DirectoryPath, "config.json");
+        if (!File.Exists(configPath))
+            return;
+
+        var hasLegacyKey = false;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(configPath));
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return;
+
+            if (doc.RootElement.TryGetProperty("Player2GameClientId", out var legacyIdEl))
+            {
+                hasLegacyKey = true;
+                if (legacyIdEl.ValueKind == JsonValueKind.String)
+                    _legacyPlayer2GameClientId = (legacyIdEl.GetString() ?? string.Empty).Trim();
+            }
+        }
+        catch
+        {
+            return;
+        }
+
+        if (!hasLegacyKey)
+            return;
+
+        try
+        {
+            helper.WriteConfig(_config);
+            Monitor.Log("Migrated config: removed deprecated Player2GameClientId key.", LogLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Config migration skipped: {ex.Message}", LogLevel.Warn);
+        }
+
+        if (!HasBuiltInPlayer2GameClientId() && !string.IsNullOrWhiteSpace(_legacyPlayer2GameClientId))
+        {
+            Monitor.Log("Using legacy Player2GameClientId fallback from previous config for this build.", LogLevel.Warn);
+        }
+    }
+
+    private void EnsureRequiredPlayer2Enabled(IModHelper helper)
+    {
+        if (_config.EnablePlayer2)
+            return;
+
+        _config.EnablePlayer2 = true;
+        try
+        {
+            helper.WriteConfig(_config);
+            Monitor.Log("Updated config: EnablePlayer2 is required and has been set to true.", LogLevel.Info);
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Could not persist EnablePlayer2=true migration: {ex.Message}", LogLevel.Warn);
+        }
+    }
+
+    private string ResolvePlayer2GameClientId()
+    {
+        return HasBuiltInPlayer2GameClientId()
+            ? CreatorPlayer2GameClientId.Trim()
+            : _legacyPlayer2GameClientId;
+    }
+
+    private static bool HasBuiltInPlayer2GameClientId()
+    {
+        var value = (CreatorPlayer2GameClientId ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(value)
+            && !value.Equals("REPLACE_WITH_CREATOR_PLAYER2_GAME_CLIENT_ID", StringComparison.Ordinal);
     }
 
     private void OnSaveLoaded(object? sender, SaveLoadedEventArgs e)
@@ -458,7 +545,7 @@ public sealed class ModEntry : Mod
         if (e.Button == SButton.MouseLeft)
         {
             var point = new Point(Game1.getMouseX(), Game1.getMouseY());
-            if (GetPlayer2HudRect().Contains(point))
+            if (GetPlayer2HudRect().Contains(point) && !IsLocalInsightHudActive())
                 StartPlayer2AutoConnect("hud-button", force: true);
         }
     }
@@ -1001,6 +1088,7 @@ public sealed class ModEntry : Mod
             return;
 
         SyncCalendarSeasonFromWorld();
+        SyncPlayer2DeviceAuthModal();
         TryAdvanceClockWhileNpcChatOpen();
         TrackLateNightPassOutWindow();
         TryCaptureTownIncidents();
@@ -1663,7 +1751,7 @@ public sealed class ModEntry : Mod
         var point = new Point(Game1.getMouseX(), Game1.getMouseY());
         if (rect.Contains(point))
         {
-            var tooltip = connected ? "Local Insight: Active" : "Local Insight: Dormant";
+            var tooltip = connected ? "Local Insight: Active" : "Local Insight: Dormant (click to connect)";
             IClickableMenu.drawHoverText(e.SpriteBatch, tooltip, Game1.smallFont);
         }
     }
@@ -1691,9 +1779,18 @@ public sealed class ModEntry : Mod
         if (!_config.EnablePlayer2 || _player2Client is null)
             return;
 
-        if (string.IsNullOrWhiteSpace(_config.Player2GameClientId))
+        if (string.Equals(reason, "hud-button", StringComparison.OrdinalIgnoreCase))
         {
-            _player2UiStatus = "Player2 disabled: missing game client id.";
+            _player2AutoConnectSuppressedByUser = false;
+        }
+        else if (_player2AutoConnectSuppressedByUser)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(ResolvePlayer2GameClientId()))
+        {
+            _player2UiStatus = "Player2 disabled: missing built-in game client id.";
             if (_uiBoardSearchAwaitingResult)
                 ClearUiBoardSearchAwaitingResult();
             return;
@@ -1749,6 +1846,322 @@ public sealed class ModEntry : Mod
                 Interlocked.Exchange(ref _player2ConnectInFlight, 0);
             }
         });
+    }
+
+    private void BeginPlayer2DeviceAuthUi(string verificationUrl, string userCode, int expiresInSeconds, CancellationTokenSource authCts)
+    {
+        var boundedSeconds = Math.Max(30, expiresInSeconds);
+        lock (_player2DeviceAuthUiLock)
+        {
+            _player2DeviceAuthUiActive = true;
+            _player2DeviceAuthVerificationUrl = verificationUrl ?? string.Empty;
+            _player2DeviceAuthUserCode = userCode ?? string.Empty;
+            _player2DeviceAuthStatus = "Waiting for authorization...";
+            _player2DeviceAuthExpiresUtc = DateTime.UtcNow.AddSeconds(boundedSeconds);
+            _player2DeviceAuthCts = authCts;
+        }
+    }
+
+    private void UpdatePlayer2DeviceAuthUiStatus(string status)
+    {
+        lock (_player2DeviceAuthUiLock)
+        {
+            if (!_player2DeviceAuthUiActive)
+                return;
+
+            _player2DeviceAuthStatus = status ?? string.Empty;
+        }
+    }
+
+    private void EndPlayer2DeviceAuthUi(string status)
+    {
+        lock (_player2DeviceAuthUiLock)
+        {
+            _player2DeviceAuthStatus = status ?? string.Empty;
+            _player2DeviceAuthUiActive = false;
+            _player2DeviceAuthCts = null;
+        }
+    }
+
+    private void CancelPlayer2DeviceAuthFromUi()
+    {
+        CancellationTokenSource? authCts;
+        lock (_player2DeviceAuthUiLock)
+        {
+            authCts = _player2DeviceAuthCts;
+            _player2DeviceAuthStatus = "Authorization canceled.";
+            _player2DeviceAuthUiActive = false;
+        }
+
+        _player2AutoConnectSuppressedByUser = true;
+        _player2UiStatus = "Local Insight dormant. Click HUD square to connect.";
+        authCts?.Cancel();
+    }
+
+    private void OpenPlayer2DeviceAuthBrowser()
+    {
+        string url;
+        lock (_player2DeviceAuthUiLock)
+            url = _player2DeviceAuthVerificationUrl;
+
+        if (string.IsNullOrWhiteSpace(url))
+            return;
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Could not open browser for device auth: {ex.Message}", LogLevel.Warn);
+        }
+    }
+
+    private void CopyPlayer2DeviceAuthCodeToClipboard()
+    {
+        var code = GetPlayer2DeviceAuthUserCode();
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            UpdatePlayer2DeviceAuthUiStatus("No code available to copy.");
+            return;
+        }
+
+        if (TryCopyToClipboard(code.Trim()))
+        {
+            UpdatePlayer2DeviceAuthUiStatus("Code copied. Paste it into the approval page.");
+            Game1.addHUDMessage(new HUDMessage("Copied Player2 code to clipboard.", HUDMessage.newQuest_type));
+        }
+        else
+        {
+            UpdatePlayer2DeviceAuthUiStatus("Clipboard unavailable. Copy code manually.");
+            Game1.addHUDMessage(new HUDMessage("Could not access clipboard.", HUDMessage.newQuest_type));
+        }
+    }
+
+    private static bool TryCopyToClipboard(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        if (TryCopyViaType("StardewValley.BellsAndWhistles.DesktopClipboard", text))
+            return true;
+
+        if (TryCopyViaType("StardewValley.DesktopClipboard", text))
+            return true;
+
+        if (TryCopyViaPlatformInstance(text))
+            return true;
+
+        if (OperatingSystem.IsWindows())
+            return TryCopyViaWindowsClipboard(text);
+
+        if (OperatingSystem.IsMacOS())
+            return TryRunClipboardCommand("pbcopy", string.Empty, text);
+
+        // Linux/SteamDeck fallbacks.
+        return TryRunClipboardCommand("wl-copy", string.Empty, text)
+            || TryRunClipboardCommand("xclip", "-selection clipboard", text)
+            || TryRunClipboardCommand("xsel", "--clipboard --input", text);
+    }
+
+    private static bool TryCopyViaType(string fullTypeName, string text)
+    {
+        var type = Type.GetType($"{fullTypeName}, Stardew Valley");
+        if (type is null)
+            return false;
+
+        var method = type
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .FirstOrDefault(m =>
+            {
+                if (m.ReturnType != typeof(void))
+                    return false;
+
+                var parameters = m.GetParameters();
+                if (parameters.Length != 1 || parameters[0].ParameterType != typeof(string))
+                    return false;
+
+                return m.Name is "SetText" or "SetClipboard" or "SetClipboardString";
+            });
+
+        if (method is null)
+            return false;
+
+        try
+        {
+            method.Invoke(null, new object[] { text });
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryCopyViaPlatformInstance(string text)
+    {
+        var gameInstance = Game1.game1;
+        if (gameInstance is null)
+            return false;
+
+        var gameType = gameInstance.GetType();
+        var platform = gameType.GetField("platform", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(gameInstance)
+            ?? gameType.GetProperty("platform", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(gameInstance);
+        if (platform is null)
+            return false;
+
+        var method = platform.GetType()
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .FirstOrDefault(m =>
+            {
+                if (m.ReturnType != typeof(void))
+                    return false;
+
+                var parameters = m.GetParameters();
+                if (parameters.Length != 1 || parameters[0].ParameterType != typeof(string))
+                    return false;
+
+                return m.Name is "SetClipboard" or "SetClipboardString" or "SetText";
+            });
+
+        if (method is null)
+            return false;
+
+        try
+        {
+            method.Invoke(platform, new object[] { text });
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryCopyViaWindowsClipboard(string text)
+    {
+        return TryCopyViaWindowsClipExe(text) || TryCopyViaWindowsPowerShellClipboard(text);
+    }
+
+    private static bool TryCopyViaWindowsClipExe(string text)
+    {
+        try
+        {
+            var windowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            var clipExe = string.IsNullOrWhiteSpace(windowsDir)
+                ? "clip.exe"
+                : Path.Combine(windowsDir, "System32", "clip.exe");
+
+            return TryRunClipboardCommand(clipExe, string.Empty, text)
+                || TryRunClipboardCommand("cmd.exe", "/c clip", text);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryCopyViaWindowsPowerShellClipboard(string text)
+    {
+        try
+        {
+            var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+            var command = "$t=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('" + base64 + "')); Set-Clipboard -Value $t";
+            var args = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" + command + "\"";
+            return TryRunClipboardCommand("powershell.exe", args, string.Empty);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryRunClipboardCommand(string fileName, string arguments, string stdinText)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                CreateNoWindow = true
+            });
+
+            if (process is null)
+                return false;
+
+            if (!string.IsNullOrEmpty(stdinText))
+                process.StandardInput.Write(stdinText);
+            process.StandardInput.Close();
+            process.WaitForExit(2500);
+            return process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string GetPlayer2DeviceAuthVerificationUrl()
+    {
+        lock (_player2DeviceAuthUiLock)
+            return _player2DeviceAuthVerificationUrl;
+    }
+
+    private string GetPlayer2DeviceAuthUserCode()
+    {
+        lock (_player2DeviceAuthUiLock)
+            return _player2DeviceAuthUserCode;
+    }
+
+    private string GetPlayer2DeviceAuthStatus()
+    {
+        lock (_player2DeviceAuthUiLock)
+        {
+            var status = _player2DeviceAuthStatus;
+            if (_player2DeviceAuthUiActive && _player2DeviceAuthExpiresUtc > DateTime.UtcNow)
+            {
+                var remaining = Math.Max(0, (int)Math.Ceiling((_player2DeviceAuthExpiresUtc - DateTime.UtcNow).TotalSeconds));
+                status = $"{status} ({remaining}s)";
+            }
+
+            return status;
+        }
+    }
+
+    private bool IsPlayer2DeviceAuthUiActive()
+    {
+        lock (_player2DeviceAuthUiLock)
+            return _player2DeviceAuthUiActive;
+    }
+
+    private void SyncPlayer2DeviceAuthModal()
+    {
+        var isActive = IsPlayer2DeviceAuthUiActive();
+        if (isActive)
+        {
+            if (Game1.activeClickableMenu is null)
+            {
+                Game1.activeClickableMenu = new Player2DeviceAuthMenu(
+                    GetPlayer2DeviceAuthVerificationUrl,
+                    GetPlayer2DeviceAuthUserCode,
+                    GetPlayer2DeviceAuthStatus,
+                    OpenPlayer2DeviceAuthBrowser,
+                    CopyPlayer2DeviceAuthCodeToClipboard,
+                    CancelPlayer2DeviceAuthFromUi);
+            }
+
+            return;
+        }
+
+        if (Game1.activeClickableMenu is Player2DeviceAuthMenu)
+            Game1.activeClickableMenu.exitThisMenuNoSound();
     }
 
     private void CollectShippingBinSales()
@@ -3237,15 +3650,22 @@ public sealed class ModEntry : Mod
         if (_player2Client is null)
             return;
 
+        if (IsPlayer2DeviceAuthUiActive())
+        {
+            Monitor.Log("Player2 device authorization already in progress.", LogLevel.Info);
+            return;
+        }
+
         if (!_config.EnablePlayer2)
         {
             Monitor.Log("Player2 integration disabled. Set EnablePlayer2=true in config.json.", LogLevel.Warn);
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_config.Player2GameClientId))
+        var gameClientId = ResolvePlayer2GameClientId();
+        if (string.IsNullOrWhiteSpace(gameClientId))
         {
-            Monitor.Log("Missing Player2GameClientId in config.json.", LogLevel.Warn);
+            Monitor.Log("Missing built-in Player2 game client id. Set CreatorPlayer2GameClientId in ModEntry.cs.", LogLevel.Warn);
             return;
         }
 
@@ -3253,13 +3673,14 @@ public sealed class ModEntry : Mod
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             _player2Key = _player2Client
-                .LoginViaLocalAppAsync(_config.Player2LocalAuthBaseUrl, _config.Player2GameClientId, cts.Token)
+                .LoginViaLocalAppAsync(_config.Player2LocalAuthBaseUrl, gameClientId, cts.Token)
                 .GetAwaiter().GetResult();
 
             // CRITICAL: SetCredentials on Player2Client and store authenticated client
             _player2Client.SetCredentials(_config.Player2LocalAuthBaseUrl, _player2Key);
             _authenticatedPlayer2Client = _player2Client;
             Monitor.Log("Player2 login successful (local app).", LogLevel.Info);
+            ShowPlayer2AuthorizedToast();
 
             // Recreate NewspaperService with authenticated client (prefer authenticated, fallback to unauthenticated)
             var clientForService = _authenticatedPlayer2Client ?? _player2Client;
@@ -3275,60 +3696,105 @@ public sealed class ModEntry : Mod
         try
         {
             var timeoutSec = Math.Max(30, _config.Player2DeviceAuthTimeoutSeconds);
-            using var authCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
-
-            var start = _player2Client
-                .StartDeviceAuthAsync(_config.Player2DeviceAuthBaseUrl, _config.Player2GameClientId, authCts.Token)
-                .GetAwaiter().GetResult();
-
-            var verifyUrl = start.GetVerificationUrlOrFallback();
-            var intervalSec = Math.Clamp(start.IntervalSeconds <= 0 ? 5 : start.IntervalSeconds, 2, 15);
-
-            Monitor.Log($"Player2 device login started. Open: {verifyUrl}", LogLevel.Info);
-            Monitor.Log($"Enter code: {start.UserCode} (expires in ~{start.ExpiresIn}s).", LogLevel.Info);
-            Monitor.Log("Waiting for device authorization…", LogLevel.Info);
-
-            while (!authCts.IsCancellationRequested)
+            var authCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+            try
             {
-                Thread.Sleep(TimeSpan.FromSeconds(intervalSec));
-
-                var poll = _player2Client
-                    .PollDeviceAuthTokenAsync(_config.Player2DeviceAuthBaseUrl, start.DeviceCode, authCts.Token)
+                var start = _player2Client
+                    .StartDeviceAuthAsync(_config.Player2DeviceAuthBaseUrl, gameClientId, authCts.Token)
                     .GetAwaiter().GetResult();
 
-                if (poll.IsAuthorized && !string.IsNullOrWhiteSpace(poll.P2Key))
+                var verifyUrl = start.GetVerificationUrlOrFallback();
+                var intervalSec = Math.Clamp(start.IntervalSeconds <= 0 ? 5 : start.IntervalSeconds, 2, 15);
+                var expiresInSec = Math.Max(30, Math.Min(timeoutSec, start.ExpiresIn <= 0 ? timeoutSec : start.ExpiresIn));
+                var expiresUtc = DateTime.UtcNow.AddSeconds(expiresInSec);
+
+                BeginPlayer2DeviceAuthUi(verifyUrl, start.UserCode, expiresInSec, authCts);
+                Monitor.Log($"Player2 device login started. Open: {verifyUrl}", LogLevel.Info);
+                Monitor.Log($"Enter code: {start.UserCode} (expires in ~{expiresInSec}s).", LogLevel.Info);
+                Monitor.Log("Waiting for device authorization...", LogLevel.Info);
+                var lastPollDiagnostic = string.Empty;
+
+                while (!authCts.IsCancellationRequested)
                 {
-                    _player2Key = poll.P2Key;
+                    Thread.Sleep(TimeSpan.FromSeconds(intervalSec));
+                    if (authCts.IsCancellationRequested)
+                        break;
 
-                    // CRITICAL: SetCredentials on Player2Client and store authenticated client
-                    _player2Client.SetCredentials(_config.Player2DeviceAuthBaseUrl, _player2Key);
-                    _authenticatedPlayer2Client = _player2Client;
-                    Monitor.Log("Player2 login successful (device flow).", LogLevel.Info);
+                    var poll = _player2Client
+                        .PollDeviceAuthTokenAsync(_config.Player2DeviceAuthBaseUrl, start.DeviceCode, authCts.Token, gameClientId, start.UserCode)
+                        .GetAwaiter().GetResult();
+                    var diagnostic = $"{poll.Status}|{poll.ErrorMessage}";
+                    if (!string.Equals(diagnostic, lastPollDiagnostic, StringComparison.Ordinal))
+                    {
+                        lastPollDiagnostic = diagnostic;
+                        if (!string.Equals(poll.Status, "pending", StringComparison.OrdinalIgnoreCase)
+                            || !string.IsNullOrWhiteSpace(poll.ErrorMessage))
+                        {
+                            Monitor.Log($"Player2 device auth poll: status={poll.Status} message={poll.ErrorMessage}".Trim(), LogLevel.Info);
+                        }
+                    }
 
-                    // Recreate NewspaperService ONLY if authenticated client is available
-                    if (_authenticatedPlayer2Client != null)
+                    if (poll.IsAuthorized && !string.IsNullOrWhiteSpace(poll.P2Key))
                     {
-                        _newspaperService = new NewspaperService(Monitor, _authenticatedPlayer2Client);
-                        Monitor.Log("NewspaperService recreated after Player2 device login", LogLevel.Info);
+                        _player2Key = poll.P2Key;
+                        EndPlayer2DeviceAuthUi("Authorization approved.");
+
+                        // CRITICAL: SetCredentials on Player2Client and store authenticated client
+                        _player2Client.SetCredentials(_config.Player2DeviceAuthBaseUrl, _player2Key);
+                        _authenticatedPlayer2Client = _player2Client;
+                        Monitor.Log("Player2 login successful (device flow).", LogLevel.Info);
+                        ShowPlayer2AuthorizedToast();
+
+                        // Recreate NewspaperService ONLY if authenticated client is available
+                        if (_authenticatedPlayer2Client != null)
+                        {
+                            _newspaperService = new NewspaperService(Monitor, _authenticatedPlayer2Client);
+                            Monitor.Log("NewspaperService recreated after Player2 device login", LogLevel.Info);
+                        }
+                        else
+                        {
+                            Monitor.Log("Skipping NewspaperService recreation - authenticated client not available yet", LogLevel.Warn);
+                        }
+                        return;
                     }
-                    else
+
+                    if (poll.IsTerminalFailure)
                     {
-                        Monitor.Log("Skipping NewspaperService recreation - authenticated client not available yet", LogLevel.Warn);
+                        EndPlayer2DeviceAuthUi("Authorization failed.");
+                        Monitor.Log($"Player2 device login failed: {poll.Status} {poll.ErrorMessage}".Trim(), LogLevel.Error);
+                        return;
                     }
-                    return;
+
+                    var secondsLeft = Math.Max(0, (int)Math.Ceiling((expiresUtc - DateTime.UtcNow).TotalSeconds));
+                    UpdatePlayer2DeviceAuthUiStatus($"Waiting for authorization... {secondsLeft}s left");
                 }
 
-                if (poll.IsTerminalFailure)
+                var timedOut = DateTime.UtcNow >= expiresUtc;
+                if (timedOut)
                 {
-                    Monitor.Log($"Player2 device login failed: {poll.Status} {poll.ErrorMessage}".Trim(), LogLevel.Error);
-                    return;
+                    EndPlayer2DeviceAuthUi("Authorization timed out.");
+                    Monitor.Log("Player2 device login timed out waiting for authorization.", LogLevel.Error);
+                }
+                else
+                {
+                    EndPlayer2DeviceAuthUi("Authorization canceled.");
+                    Monitor.Log("Player2 device login canceled before authorization.", LogLevel.Warn);
                 }
             }
+            finally
+            {
+                lock (_player2DeviceAuthUiLock)
+                {
+                    if (ReferenceEquals(_player2DeviceAuthCts, authCts))
+                        _player2DeviceAuthCts = null;
+                }
 
-            Monitor.Log("Player2 device login timed out waiting for authorization.", LogLevel.Error);
+                authCts.Dispose();
+            }
         }
         catch (Exception ex)
         {
+            EndPlayer2DeviceAuthUi("Authorization failed.");
             Monitor.Log($"Player2 device login failed: {ex.Message}", LogLevel.Error);
         }
     }
@@ -4070,7 +4536,7 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        Monitor.Log("Reading one Player2 stream line in background…", LogLevel.Info);
+        Monitor.Log("Reading one Player2 stream line in background...", LogLevel.Info);
         _player2ReadStartedUtc = DateTime.UtcNow;
         _player2ReadCts?.Cancel();
         _player2ReadCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
@@ -4338,6 +4804,14 @@ public sealed class ModEntry : Mod
         var headline = TrimForHud(issue.Headline, 30);
         var message = $"Morning edition ready: {headline}";
         Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
+    }
+
+    private void ShowPlayer2AuthorizedToast()
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        Game1.addHUDMessage(new HUDMessage("Player2 authorized. Local Insight is now active.", HUDMessage.newQuest_type));
     }
 
     private void TryShowSimulationMutationToast(NpcIntentResolveResult result, string intentLane, bool isAmbientContext)
@@ -4698,7 +5172,7 @@ public sealed class ModEntry : Mod
         _player2StreamCts = new CancellationTokenSource();
         var ct = _player2StreamCts.Token;
 
-        Monitor.Log($"Starting Player2 stream listener… (backoff={_player2StreamBackoffSec}s)", LogLevel.Info);
+        Monitor.Log($"Starting Player2 stream listener... (backoff={_player2StreamBackoffSec}s)", LogLevel.Info);
 
         _ = Task.Run(async () =>
         {
@@ -5666,7 +6140,6 @@ public sealed class ModEntry : Mod
             {
                 var outcomeId = result.OutcomeId;
                 TryApplyNpcPublishSourceName(result.Command, outcomeId, sourceNpcId);
-                outcomeId = TryClampNpcPublishArticleAsLastResort(result.Command, outcomeId, sourceNpcId);
                 UpsertPendingNpcPublishUpdate(new NpcPublishHeadlineUpdate
                 {
                     Day = _state.Calendar.Day,
@@ -7774,67 +8247,6 @@ public sealed class ModEntry : Mod
         return headline;
     }
 
-    private string TryClampNpcPublishArticleAsLastResort(string command, string outcomeId, string? sourceNpcId)
-    {
-        var article = FindNpcPublishedArticleForOutcome(command, outcomeId, sourceNpcId);
-        if (article is null)
-            return outcomeId;
-
-        if (!TryClampNpcPublishArticleInPlace(article))
-            return article.Title;
-
-        Monitor.Log(
-            $"Applied fallback clamp for {command} to keep title+content <= {MaxNpcPublishCombinedCharacters}: '{article.Title}'",
-            LogLevel.Trace);
-
-        return article.Title;
-    }
-
-    private static bool TryClampNpcPublishArticleInPlace(NewspaperArticle article)
-    {
-        var title = (article.Title ?? string.Empty).Trim();
-        var content = (article.Content ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
-            return false;
-
-        if (title.Length + content.Length <= MaxNpcPublishCombinedCharacters)
-        {
-            article.Title = title;
-            article.Content = content;
-            return false;
-        }
-
-        var maxTitleLength = Math.Max(1, MaxNpcPublishCombinedCharacters - 1);
-        if (title.Length > maxTitleLength)
-            title = title[..maxTitleLength].TrimEnd();
-
-        if (string.IsNullOrWhiteSpace(title))
-            return false;
-
-        var maxContentLength = MaxNpcPublishCombinedCharacters - title.Length;
-        if (maxContentLength <= 0)
-        {
-            title = title[..Math.Max(1, MaxNpcPublishCombinedCharacters - 1)].TrimEnd();
-            maxContentLength = MaxNpcPublishCombinedCharacters - title.Length;
-        }
-
-        if (maxContentLength <= 0)
-            return false;
-
-        if (content.Length > maxContentLength)
-            content = content[..maxContentLength].TrimEnd();
-
-        if (string.IsNullOrWhiteSpace(content))
-            return false;
-
-        var changed = !string.Equals(article.Title, title, StringComparison.Ordinal)
-            || !string.Equals(article.Content, content, StringComparison.Ordinal);
-
-        article.Title = title;
-        article.Content = content;
-        return changed;
-    }
-
     private bool TryReplaceTodayIssueWithNpcArticle(string command, string outcomeId, string? headlineOverride = null)
     {
         if (string.IsNullOrWhiteSpace(outcomeId))
@@ -7906,3 +8318,4 @@ public sealed class ModEntry : Mod
         return value[..Math.Max(1, maxLength - 3)] + "...";
     }
 }
+

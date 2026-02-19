@@ -10,7 +10,6 @@ namespace StardewLivingRPG.Integrations;
 
 public sealed class Player2Client
 {
-    private const int MaxGeneratedArticleCharacters = 80;
     private const int MaxMarketOutlookLineCharacters = 120;
     private readonly HttpClient _http;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
@@ -51,11 +50,448 @@ public sealed class Player2Client
     public async Task<DeviceAuthStartResponse> StartDeviceAuthAsync(string authBaseUrl, string gameClientId, CancellationToken ct)
     {
         var url = $"{authBaseUrl.TrimEnd('/')}/login/device/new";
-        var payload = new Dictionary<string, string>
+        var payloadAttempts = new[]
         {
-            ["game_client_id"] = gameClientId
+            new Dictionary<string, string> { ["game_client_id"] = gameClientId },
+            new Dictionary<string, string> { ["client_id"] = gameClientId }
         };
 
+        DeviceAuthStartAttemptResult? lastFailure = null;
+        for (var i = 0; i < payloadAttempts.Length; i++)
+        {
+            var attempt = await TryStartDeviceAuthAsync(url, payloadAttempts[i], ct);
+            if (attempt.IsSuccessStatusCode)
+            {
+                var data = ParseDeviceAuthStartResponse(attempt.Body);
+                if (string.IsNullOrWhiteSpace(data.DeviceCode))
+                    throw new InvalidOperationException($"Player2 device auth start missing device_code. Response: {TrimForLog(attempt.Body)}");
+
+                return data;
+            }
+
+            lastFailure = attempt;
+            var canRetryWithAlternatePayload = i == 0
+                && (attempt.StatusCode == HttpStatusCode.BadRequest || attempt.StatusCode == HttpStatusCode.UnprocessableEntity);
+            if (!canRetryWithAlternatePayload)
+                break;
+        }
+
+        if (lastFailure is null)
+            throw new HttpRequestException("Player2 device auth start failed.", null, HttpStatusCode.BadRequest);
+
+        var error = BuildDeviceAuthStartErrorMessage(lastFailure);
+        throw new HttpRequestException(error, null, lastFailure.StatusCode);
+    }
+
+    public async Task<DeviceAuthTokenPollResult> PollDeviceAuthTokenAsync(
+        string authBaseUrl,
+        string deviceCode,
+        CancellationToken ct,
+        string? gameClientId = null,
+        string? userCode = null)
+    {
+        var url = $"{authBaseUrl.TrimEnd('/')}/login/device/token";
+        var payloadAttempts = BuildDeviceAuthTokenPayloadAttempts(deviceCode, gameClientId, userCode);
+        if (payloadAttempts.Count == 0)
+        {
+            payloadAttempts.Add(new Dictionary<string, string>
+            {
+                ["device_code"] = deviceCode
+            });
+        }
+
+        DeviceAuthTokenPollResult? bestPending = null;
+        for (var i = 0; i < payloadAttempts.Count; i++)
+        {
+            var payload = payloadAttempts[i];
+            for (var asFormUrlEncoded = 0; asFormUrlEncoded < 2; asFormUrlEncoded++)
+            {
+                var attempt = await TryPollDeviceAuthTokenAsync(url, payload, ct, useFormUrlEncoded: asFormUrlEncoded == 1);
+                var parsed = ParseDeviceAuthTokenPollResult(attempt);
+
+                if (parsed.IsAuthorized)
+                    return parsed;
+
+                if (parsed.IsTerminalFailure)
+                    return parsed;
+
+                if (bestPending is null || !string.IsNullOrWhiteSpace(parsed.ErrorMessage))
+                    bestPending = parsed;
+            }
+        }
+
+        return bestPending ?? new DeviceAuthTokenPollResult
+        {
+            Status = "pending"
+        };
+    }
+
+    private static List<Dictionary<string, string>> BuildDeviceAuthTokenPayloadAttempts(string deviceCode, string? gameClientId, string? userCode)
+    {
+        var attempts = new List<Dictionary<string, string>>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddAttempt(params (string Key, string? Value)[] entries)
+        {
+            var payload = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (key, value) in entries)
+            {
+                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+                    continue;
+
+                payload[key] = value.Trim();
+            }
+
+            if (payload.Count == 0)
+                return;
+
+            var signature = string.Join("|", payload.OrderBy(p => p.Key, StringComparer.Ordinal)
+                .Select(p => $"{p.Key}={p.Value}"));
+            if (seen.Add(signature))
+                attempts.Add(payload);
+        }
+
+        AddAttempt(("device_code", deviceCode));
+        AddAttempt(("deviceCode", deviceCode));
+        AddAttempt(("device_code", deviceCode), ("client_id", gameClientId));
+        AddAttempt(("device_code", deviceCode), ("game_client_id", gameClientId));
+        AddAttempt(("deviceCode", deviceCode), ("clientId", gameClientId));
+        AddAttempt(("deviceCode", deviceCode), ("gameClientId", gameClientId));
+        AddAttempt(("grant_type", "urn:ietf:params:oauth:grant-type:device_code"), ("device_code", deviceCode), ("client_id", gameClientId));
+        AddAttempt(("grant_type", "urn:ietf:params:oauth:grant-type:device_code"), ("device_code", deviceCode), ("game_client_id", gameClientId));
+        AddAttempt(("grantType", "urn:ietf:params:oauth:grant-type:device_code"), ("deviceCode", deviceCode), ("clientId", gameClientId));
+        AddAttempt(("device_code", deviceCode), ("user_code", userCode), ("client_id", gameClientId));
+        AddAttempt(("deviceCode", deviceCode), ("userCode", userCode), ("clientId", gameClientId));
+
+        return attempts;
+    }
+
+    private async Task<DeviceAuthTokenPollAttemptResult> TryPollDeviceAuthTokenAsync(string url, Dictionary<string, string> payload, CancellationToken ct, bool useFormUrlEncoded)
+    {
+        using var msg = new HttpRequestMessage(HttpMethod.Post, url);
+        if (useFormUrlEncoded)
+        {
+            msg.Content = new FormUrlEncodedContent(payload);
+        }
+        else
+        {
+            msg.Content = new StringContent(JsonSerializer.Serialize(payload, _jsonOptions), Encoding.UTF8, "application/json");
+        }
+
+        using var res = await _http.SendAsync(msg, ct);
+        var body = await res.Content.ReadAsStringAsync(ct);
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var header in res.Headers)
+        {
+            var value = header.Value.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(value))
+                headers[header.Key] = value;
+        }
+
+        foreach (var header in res.Content.Headers)
+        {
+            var value = header.Value.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(value))
+                headers[header.Key] = value;
+        }
+
+        return new DeviceAuthTokenPollAttemptResult
+        {
+            IsSuccessStatusCode = res.IsSuccessStatusCode,
+            StatusCode = res.StatusCode,
+            Body = body,
+            Headers = headers
+        };
+    }
+
+    private DeviceAuthTokenPollResult ParseDeviceAuthTokenPollResult(DeviceAuthTokenPollAttemptResult attempt)
+    {
+        var token = TryExtractDeviceAuthTokenKey(attempt.Body);
+        if (string.IsNullOrWhiteSpace(token))
+            token = TryExtractDeviceAuthTokenFromHeaders(attempt.Headers);
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            return new DeviceAuthTokenPollResult
+            {
+                Status = "authorized",
+                P2Key = token
+            };
+        }
+
+        var status = ParseDeviceAuthStatus(attempt.Body, attempt.StatusCode);
+        var message = ParseDeviceAuthMessage(attempt.Body);
+
+        if (string.Equals(status, "authorized", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DeviceAuthTokenPollResult
+            {
+                Status = "authorized",
+                P2Key = token,
+                ErrorMessage = message
+            };
+        }
+
+        if (IsTerminalStatus(status))
+        {
+            return new DeviceAuthTokenPollResult
+            {
+                Status = status,
+                ErrorMessage = string.IsNullOrWhiteSpace(message)
+                    ? $"HTTP {(int)attempt.StatusCode} ({attempt.StatusCode})"
+                    : message
+            };
+        }
+
+        // Many OAuth-style device flows return HTTP 400 while still pending authorization.
+        // Keep waiting unless status is explicitly terminal.
+        if ((int)attempt.StatusCode >= 400 && IsPendingStatus(status))
+        {
+            return new DeviceAuthTokenPollResult
+            {
+                Status = "pending",
+                ErrorMessage = message
+            };
+        }
+
+        return new DeviceAuthTokenPollResult
+        {
+            Status = status,
+            ErrorMessage = message
+        };
+    }
+
+    private static string TryExtractDeviceAuthTokenFromHeaders(IReadOnlyDictionary<string, string> headers)
+    {
+        if (headers is null || headers.Count == 0)
+            return string.Empty;
+
+        var keys = new[]
+        {
+            "x-p2key",
+            "x-p2-key",
+            "x-player2-key",
+            "p2key",
+            "authorization"
+        };
+
+        for (var i = 0; i < keys.Length; i++)
+        {
+            if (!headers.TryGetValue(keys[i], out var value) || string.IsNullOrWhiteSpace(value))
+                continue;
+
+            var trimmed = value.Trim();
+            if (trimmed.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                trimmed = trimmed[7..].Trim();
+
+            if (!string.IsNullOrWhiteSpace(trimmed))
+                return trimmed;
+        }
+
+        return string.Empty;
+    }
+
+    private static string ParseDeviceAuthStatus(string body, HttpStatusCode statusCode)
+    {
+        var fallback = "pending";
+        if (string.IsNullOrWhiteSpace(body))
+            return fallback;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return fallback;
+
+            var rawStatus = TryGetStringByAliases(root, "status", "state", "result", "error");
+            if (string.IsNullOrWhiteSpace(rawStatus))
+                rawStatus = TryExtractDeviceAuthStatusFromElement(root);
+            if (string.IsNullOrWhiteSpace(rawStatus))
+            {
+                if (TryGetPropertyCaseInsensitive(root, "authorized", out var authorizedEl)
+                    && authorizedEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                {
+                    rawStatus = authorizedEl.GetBoolean() ? "authorized" : fallback;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(rawStatus))
+                return fallback;
+
+            var normalized = rawStatus.Trim().ToLowerInvariant();
+            return normalized switch
+            {
+                "approved" => "authorized",
+                "authorized" => "authorized",
+                "success" => "authorized",
+                "ok" => "authorized",
+                "authorization_pending" => "pending",
+                "authorizationpending" => "pending",
+                "pending" => "pending",
+                "waiting" => "pending",
+                "slow_down" => "pending",
+                "slowdown" => "pending",
+                "expired_token" => "expired",
+                "access_denied" => "denied",
+                "accessdenied" => "denied",
+                "invalid_client" => "invalid",
+                "invalidclient" => "invalid",
+                "unauthorized_client" => "invalid",
+                "unauthorizedclient" => "invalid",
+                "invalid_request" => "pending",
+                "invalidrequest" => "pending",
+                "bad_request" => "pending",
+                "badrequest" => "pending",
+                _ => normalized
+            };
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private static string TryExtractDeviceAuthStatusFromElement(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+            {
+                var direct = TryGetStringByAliases(element, "status", "state", "result", "error");
+                if (!string.IsNullOrWhiteSpace(direct))
+                    return direct;
+
+                foreach (var prop in element.EnumerateObject())
+                {
+                    var nested = TryExtractDeviceAuthStatusFromElement(prop.Value);
+                    if (!string.IsNullOrWhiteSpace(nested))
+                        return nested;
+                }
+
+                return string.Empty;
+            }
+            case JsonValueKind.Array:
+            {
+                foreach (var item in element.EnumerateArray())
+                {
+                    var nested = TryExtractDeviceAuthStatusFromElement(item);
+                    if (!string.IsNullOrWhiteSpace(nested))
+                        return nested;
+                }
+
+                return string.Empty;
+            }
+            default:
+                return string.Empty;
+        }
+    }
+
+    private static string? ParseDeviceAuthMessage(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return TrimForLog(body);
+
+            var msg = TryGetStringByAliases(root, "message", "detail", "error_description", "description");
+            return string.IsNullOrWhiteSpace(msg) ? null : msg;
+        }
+        catch
+        {
+            return TrimForLog(body);
+        }
+    }
+
+    private static bool IsPendingStatus(string status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is "pending" or "authorization_pending" or "waiting" or "slow_down";
+    }
+
+    private static bool IsTerminalStatus(string status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is "expired"
+            or "denied"
+            or "invalid"
+            or "error"
+            or "access_denied"
+            or "accessdenied"
+            or "expired_token"
+            or "expiredtoken"
+            or "invalid_client"
+            or "invalidclient"
+            or "unauthorized_client"
+            or "unauthorizedclient";
+    }
+
+    private static string TryExtractDeviceAuthTokenKey(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return string.Empty;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return TryExtractDeviceAuthTokenFromElement(doc.RootElement);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string TryExtractDeviceAuthTokenFromElement(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+            {
+                var direct = TryGetStringByAliases(
+                    element,
+                    "p2key",
+                    "p2Key",
+                    "p2_key",
+                    "access_token",
+                    "accessToken",
+                    "auth_token",
+                    "authToken",
+                    "token");
+                if (!string.IsNullOrWhiteSpace(direct))
+                    return direct;
+
+                foreach (var prop in element.EnumerateObject())
+                {
+                    var nested = TryExtractDeviceAuthTokenFromElement(prop.Value);
+                    if (!string.IsNullOrWhiteSpace(nested))
+                        return nested;
+                }
+
+                return string.Empty;
+            }
+            case JsonValueKind.Array:
+            {
+                foreach (var item in element.EnumerateArray())
+                {
+                    var nested = TryExtractDeviceAuthTokenFromElement(item);
+                    if (!string.IsNullOrWhiteSpace(nested))
+                        return nested;
+                }
+
+                return string.Empty;
+            }
+            default:
+                return string.Empty;
+        }
+    }
+
+    private async Task<DeviceAuthStartAttemptResult> TryStartDeviceAuthAsync(string url, Dictionary<string, string> payload, CancellationToken ct)
+    {
         using var msg = new HttpRequestMessage(HttpMethod.Post, url)
         {
             Content = new StringContent(JsonSerializer.Serialize(payload, _jsonOptions), Encoding.UTF8, "application/json")
@@ -63,51 +499,137 @@ public sealed class Player2Client
 
         using var res = await _http.SendAsync(msg, ct);
         var body = await res.Content.ReadAsStringAsync(ct);
-        res.EnsureSuccessStatusCode();
+        return new DeviceAuthStartAttemptResult
+        {
+            IsSuccessStatusCode = res.IsSuccessStatusCode,
+            StatusCode = res.StatusCode,
+            Body = body
+        };
+    }
 
-        var data = JsonSerializer.Deserialize<DeviceAuthStartResponse>(body, _jsonOptions) ?? new DeviceAuthStartResponse();
-        if (string.IsNullOrWhiteSpace(data.DeviceCode))
-            throw new InvalidOperationException("Player2 device auth start missing device_code.");
+    private static string BuildDeviceAuthStartErrorMessage(DeviceAuthStartAttemptResult attempt)
+    {
+        var baseMessage = $"Player2 device auth start failed: {(int)attempt.StatusCode} ({attempt.StatusCode}).";
+        var detail = TryExtractApiErrorMessage(attempt.Body);
+        if (string.IsNullOrWhiteSpace(detail))
+            return baseMessage;
+
+        return $"{baseMessage} {detail}";
+    }
+
+    private static string TryExtractApiErrorMessage(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return string.Empty;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return TrimForLog(body);
+
+            if (TryGetPropertyCaseInsensitive(root, "message", out var messageProp) && messageProp.ValueKind == JsonValueKind.String)
+                return TrimForLog(messageProp.GetString());
+
+            if (TryGetPropertyCaseInsensitive(root, "error_description", out var descriptionProp) && descriptionProp.ValueKind == JsonValueKind.String)
+                return TrimForLog(descriptionProp.GetString());
+
+            if (TryGetPropertyCaseInsensitive(root, "error", out var errorProp) && errorProp.ValueKind == JsonValueKind.String)
+                return TrimForLog(errorProp.GetString());
+
+            if (TryGetPropertyCaseInsensitive(root, "detail", out var detailProp) && detailProp.ValueKind == JsonValueKind.String)
+                return TrimForLog(detailProp.GetString());
+        }
+        catch
+        {
+            // Fall through to plain-text logging.
+        }
+
+        return TrimForLog(body);
+    }
+
+    private static DeviceAuthStartResponse ParseDeviceAuthStartResponse(string body)
+    {
+        var data = JsonSerializer.Deserialize<DeviceAuthStartResponse>(body) ?? new DeviceAuthStartResponse();
+        if (string.IsNullOrWhiteSpace(body))
+            return data;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return data;
+
+            data.DeviceCode = FirstNonEmpty(data.DeviceCode, TryGetStringByAliases(root, "device_code", "deviceCode"));
+            data.UserCode = FirstNonEmpty(data.UserCode, TryGetStringByAliases(root, "user_code", "userCode"));
+            data.VerificationUri = FirstNonEmpty(data.VerificationUri, TryGetStringByAliases(root, "verification_uri", "verificationUri"));
+            data.VerificationUrl = FirstNonEmpty(
+                data.VerificationUrl,
+                TryGetStringByAliases(root, "verification_url", "verificationUrl", "verification_uri_complete", "verificationUriComplete"));
+            data.ExpiresIn = FirstNonDefault(data.ExpiresIn, TryGetIntByAliases(root, "expires_in", "expiresIn"));
+            data.IntervalSeconds = FirstNonDefault(data.IntervalSeconds, TryGetIntByAliases(root, "interval", "interval_seconds", "intervalSeconds"));
+        }
+        catch
+        {
+            // Keep already-deserialized values.
+        }
 
         return data;
     }
 
-    public async Task<DeviceAuthTokenPollResult> PollDeviceAuthTokenAsync(string authBaseUrl, string deviceCode, CancellationToken ct)
+    private static string FirstNonEmpty(string current, string candidate)
     {
-        var url = $"{authBaseUrl.TrimEnd('/')}/login/device/token";
-        var payload = new Dictionary<string, string>
+        return string.IsNullOrWhiteSpace(current) && !string.IsNullOrWhiteSpace(candidate)
+            ? candidate
+            : current;
+    }
+
+    private static int FirstNonDefault(int current, int candidate)
+    {
+        return current > 0 ? current : candidate;
+    }
+
+    private static string TryGetStringByAliases(JsonElement root, params string[] aliases)
+    {
+        for (var i = 0; i < aliases.Length; i++)
         {
-            ["device_code"] = deviceCode
-        };
-
-        using var msg = new HttpRequestMessage(HttpMethod.Post, url)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(payload, _jsonOptions), Encoding.UTF8, "application/json")
-        };
-
-        using var res = await _http.SendAsync(msg, ct);
-        var body = await res.Content.ReadAsStringAsync(ct);
-
-        if (res.IsSuccessStatusCode)
-        {
-            var ok = JsonSerializer.Deserialize<DeviceAuthTokenSuccessResponse>(body, _jsonOptions);
-            if (string.IsNullOrWhiteSpace(ok?.P2Key))
-                return new DeviceAuthTokenPollResult { Status = "pending" };
-
-            return new DeviceAuthTokenPollResult
+            if (TryGetPropertyCaseInsensitive(root, aliases[i], out var prop) && prop.ValueKind == JsonValueKind.String)
             {
-                Status = "authorized",
-                P2Key = ok.P2Key
-            };
+                var value = prop.GetString();
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value.Trim();
+            }
         }
 
-        var err = JsonSerializer.Deserialize<DeviceAuthTokenErrorResponse>(body, _jsonOptions);
-        var status = (err?.Status ?? err?.Error ?? "pending").Trim().ToLowerInvariant();
-        return new DeviceAuthTokenPollResult
+        return string.Empty;
+    }
+
+    private static int TryGetIntByAliases(JsonElement root, params string[] aliases)
+    {
+        for (var i = 0; i < aliases.Length; i++)
         {
-            Status = status,
-            ErrorMessage = err?.Message
-        };
+            if (!TryGetPropertyCaseInsensitive(root, aliases[i], out var prop))
+                continue;
+
+            if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out var intVal))
+                return intVal;
+
+            if (prop.ValueKind == JsonValueKind.String && int.TryParse(prop.GetString(), out var parsed))
+                return parsed;
+        }
+
+        return 0;
+    }
+
+    private static string TrimForLog(string? text)
+    {
+        var value = (text ?? string.Empty).Trim();
+        if (value.Length <= 180)
+            return value;
+
+        return value[..177] + "...";
     }
 
     public async Task<string> SpawnNpcAsync(string apiBaseUrl, string p2Key, SpawnNpcRequest req, CancellationToken ct)
@@ -883,10 +1405,12 @@ public sealed class Player2Client
                 if (!TryGetStringProperty(item, "content", out var content) || string.IsNullOrWhiteSpace(content))
                     continue;
 
-                if (!TryClampGeneratedArticle(title, content, out var clampedTitle, out var clampedContent))
+                var cleanTitle = (title ?? string.Empty).Trim();
+                var cleanContent = (content ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(cleanTitle) || string.IsNullOrWhiteSpace(cleanContent))
                     continue;
 
-                if (!seenTitles.Add(clampedTitle))
+                if (!seenTitles.Add(cleanTitle))
                     continue;
 
                 var category = TryGetStringProperty(item, "category", out var categoryValue)
@@ -895,8 +1419,8 @@ public sealed class Player2Client
 
                 articles.Add(new NewspaperArticle
                 {
-                    Title = clampedTitle,
-                    Content = clampedContent,
+                    Title = cleanTitle,
+                    Content = cleanContent,
                     Category = category
                 });
 
@@ -1004,31 +1528,6 @@ public sealed class Player2Client
             return null;
 
         return string.IsNullOrWhiteSpace(line) ? null : line;
-    }
-
-    private static bool TryClampGeneratedArticle(string title, string content, out string clampedTitle, out string clampedContent)
-    {
-        clampedTitle = (title ?? string.Empty).Trim();
-        clampedContent = (content ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(clampedTitle) || string.IsNullOrWhiteSpace(clampedContent))
-            return false;
-
-        // Reserve at least one character for content while enforcing title+content <= 80.
-        var maxTitleLength = Math.Max(1, MaxGeneratedArticleCharacters - 1);
-        if (clampedTitle.Length > maxTitleLength)
-            clampedTitle = clampedTitle[..maxTitleLength].Trim();
-
-        if (string.IsNullOrWhiteSpace(clampedTitle))
-            return false;
-
-        var maxContentLength = MaxGeneratedArticleCharacters - clampedTitle.Length;
-        if (maxContentLength <= 0)
-            return false;
-
-        if (clampedContent.Length > maxContentLength)
-            clampedContent = clampedContent[..maxContentLength].Trim();
-
-        return !string.IsNullOrWhiteSpace(clampedContent);
     }
 
     private static bool TryGetStringProperty(JsonElement obj, string propertyName, out string value)
@@ -1146,6 +1645,21 @@ public sealed class Player2Client
         public string P2Key { get; set; } = "";
     }
 
+    private sealed class DeviceAuthStartAttemptResult
+    {
+        public bool IsSuccessStatusCode { get; set; }
+        public HttpStatusCode StatusCode { get; set; }
+        public string Body { get; set; } = string.Empty;
+    }
+
+    private sealed class DeviceAuthTokenPollAttemptResult
+    {
+        public bool IsSuccessStatusCode { get; set; }
+        public HttpStatusCode StatusCode { get; set; }
+        public string Body { get; set; } = string.Empty;
+        public IReadOnlyDictionary<string, string> Headers { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    }
+
     private sealed class DeviceAuthTokenErrorResponse
     {
         [JsonPropertyName("status")]
@@ -1203,7 +1717,10 @@ public sealed class DeviceAuthTokenPollResult
     public bool IsTerminalFailure => string.Equals(Status, "expired", StringComparison.OrdinalIgnoreCase)
                                   || string.Equals(Status, "denied", StringComparison.OrdinalIgnoreCase)
                                   || string.Equals(Status, "invalid", StringComparison.OrdinalIgnoreCase)
-                                  || string.Equals(Status, "error", StringComparison.OrdinalIgnoreCase);
+                                  || string.Equals(Status, "error", StringComparison.OrdinalIgnoreCase)
+                                  || string.Equals(Status, "unauthorized_client", StringComparison.OrdinalIgnoreCase)
+                                  || string.Equals(Status, "access_denied", StringComparison.OrdinalIgnoreCase)
+                                  || string.Equals(Status, "expired_token", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class SpawnNpcRequest

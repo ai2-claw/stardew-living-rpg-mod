@@ -10,7 +10,6 @@ public sealed class NewspaperService
 {
     private const int MinDailyArticles = 1;
     private const int MaxDailyArticles = 5;
-    private const int MaxEventArticleCombinedCharacters = 100;
     private const string TownReporterByline = "Town Reporter";
     private const string LegacyTownReporterByline = "Town Report";
     private Player2Client? _player2;
@@ -258,7 +257,6 @@ public sealed class NewspaperService
 
             if (article is not null && articles.Count < 1)
             {
-                ClampArticleCombinedLengthInPlace(article, MaxEventArticleCombinedCharacters);
                 articles.Add(article);
             }
         }
@@ -529,47 +527,6 @@ public sealed class NewspaperService
 
         return string.Equals(sourceNpc, TownReporterByline, StringComparison.OrdinalIgnoreCase)
             || string.Equals(sourceNpc, LegacyTownReporterByline, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static void ClampArticleCombinedLengthInPlace(NewspaperArticle article, int maxCombinedCharacters)
-    {
-        var title = (article.Title ?? string.Empty).Trim();
-        var content = (article.Content ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
-            return;
-
-        if (title.Length + content.Length <= maxCombinedCharacters)
-        {
-            article.Title = title;
-            article.Content = content;
-            return;
-        }
-
-        var maxTitleLength = Math.Max(1, maxCombinedCharacters - 1);
-        if (title.Length > maxTitleLength)
-            title = title[..maxTitleLength].TrimEnd();
-
-        if (string.IsNullOrWhiteSpace(title))
-            return;
-
-        var maxContentLength = maxCombinedCharacters - title.Length;
-        if (maxContentLength <= 0)
-        {
-            title = title[..Math.Max(1, maxCombinedCharacters - 1)].TrimEnd();
-            maxContentLength = maxCombinedCharacters - title.Length;
-        }
-
-        if (maxContentLength <= 0)
-            return;
-
-        if (content.Length > maxContentLength)
-            content = content[..maxContentLength].TrimEnd();
-
-        if (string.IsNullOrWhiteSpace(content))
-            return;
-
-        article.Title = title;
-        article.Content = content;
     }
 
     private static string Cap(string value) => string.IsNullOrEmpty(value) ? value : char.ToUpper(value[0]) + value.Substring(1);

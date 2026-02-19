@@ -101,8 +101,8 @@ Config knobs:
 ## Player2 setup (M2)
 - In `config.json`, set:
   - `EnablePlayer2: true`
-  - `Player2GameClientId: <your_game_client_id>`
 - Ensure Player2 desktop app is running and logged in.
+- `Player2GameClientId` is built into the mod code (`CreatorPlayer2GameClientId` in `ModEntry.cs`) and is not user-configurable.
 - Run `slrpg_p2_login`, then `slrpg_p2_spawn`.
 - Recommended runtime loop:
   1) `slrpg_p2_stream_start`
