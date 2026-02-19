@@ -26,6 +26,20 @@ public sealed class ModEntry : Mod
     private const int MaxNpcPublishCombinedCharacters = 100;
     private const int NpcPublishAfternoonStartTime = 1300;
     private const int NpcPublishMinimumIntervalMinutes = 120;
+    private const int AmbientLaneDebugSnapshotLimit = 20;
+    private const int AmbientNpcCooldownMinutes = 8;
+    private const int AmbientRecordTownEventDailyCap = 2;
+    private const float AmbientPublishRumorMinConfidence = 0.62f;
+    private const int AutoMarketMinSignals = 2;
+    private const float AutoMarketScarcityThreshold = 0.05f;
+    private const float AutoMarketStrongScarcityThreshold = 0.09f;
+    private const float AutoMarketOversupplyThreshold = 0.90f;
+    private const float AutoMarketDeepOversupplyThreshold = 0.86f;
+    private const int AmbientEventsPerAdditionalAutoMutation = 2;
+    private const int MaxSimulationToastsPerDay = 2;
+    private const int SimulationToastCooldownSeconds = 25;
+    private const double StagedValidationMaxQuestRateDelta = 1.25d;
+    private const double StagedValidationMaxMarketRateDelta = 0.75d;
     private const double DefaultMsPerNpcChatClockStep = 7000d;
     private const double NpcChatClockSlowdownMultiplier = 2d;
     private const string InitialNpcChatPrompt = "Got a minute to chat?";
@@ -72,6 +86,27 @@ public sealed class ModEntry : Mod
         "Pam", "Penny", "Qi", "Sam", "Sandy", "Sebastian", "Shane",
         "Vincent", "Willy", "Wizard"
     };
+    private static readonly HashSet<string> LowInfoAmbientMessages = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ok",
+        "okay",
+        "alright",
+        "all right",
+        "sure",
+        "noted",
+        "understood",
+        "hmm",
+        "...",
+        "nothing new",
+        "no news"
+    };
+    private static readonly Dictionary<string, int> AutoMutationBudgetByAxis = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["social"] = 2,
+        ["interest"] = 1,
+        ["market"] = 2,
+        ["quest"] = 1
+    };
     private static readonly string[] SpringNpcSupplyPool =
     {
         "parsnip", "potato", "cauliflower", "kale", "garlic", "strawberry", "green_bean", "rhubarb"
@@ -105,8 +140,10 @@ public sealed class ModEntry : Mod
     private AnchorEventService? _anchorEventService;
     private NpcMemoryService? _npcMemoryService;
     private TownMemoryService? _townMemoryService;
+    private AmbientConsequenceService? _ambientConsequenceService;
     private NpcSpeechStyleService? _npcSpeechStyleService;
     private NpcAskGateService? _npcAskGateService;
+    private CommandPolicyService? _commandPolicyService;
 
     // Player2 M2 runtime session state
     private Player2Client? _player2Client;
@@ -150,6 +187,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, string> _npcLastContextTagById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerQuestAskUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentQueue<string> _ambientLaneDebugSnapshots = new();
     private int _player2PendingResponseCount;
     private DateTime _player2LastChatSentUtc;
     private DateTime _player2LastStreamRecoveryUtc;
@@ -182,11 +220,15 @@ public sealed class ModEntry : Mod
     private int _lastNpcPublishAppliedTimeOfDay = -1;
     private int _pendingLateNightPassOutDay = -1;
     private string _pendingLateNightPassOutLocation = "Town";
+    private int _simulationToastDay = -1;
+    private int _simulationToastsToday;
+    private DateTime _lastSimulationToastUtc;
     private readonly Random _ambientNpcRandom = new();
     private int _ambientNpcConversationDay = -1;
     private int _ambientNpcConversationsToday;
     private DateTime _nextAmbientNpcConversationUtc;
     private int _ambientNpcConversationInFlight;
+    private readonly ConcurrentDictionary<string, DateTime> _ambientNpcLastConversationUtcByNpcId = new(StringComparer.OrdinalIgnoreCase);
 
     private string? _pendingNpcDialogueHookName;
     private bool _npcDialogueHookArmed;
@@ -209,12 +251,14 @@ public sealed class ModEntry : Mod
         _rumorBoardService = new RumorBoardService();
         _npcMemoryService = new NpcMemoryService();
         _townMemoryService = new TownMemoryService();
+        _ambientConsequenceService = new AmbientConsequenceService();
         _intentResolver = new NpcIntentResolver(_rumorBoardService, _npcMemoryService, _townMemoryService, _config.StrictNpcTemplateValidation);
         _anchorEventService = new AnchorEventService();
         var speechStyleConfig = helper.Data.ReadJsonFile<NpcSpeechStyleConfig>("npc_speech_profiles.json")
             ?? NpcSpeechStyleConfig.CreateDefault();
         _npcSpeechStyleService = new NpcSpeechStyleService(speechStyleConfig);
         _npcAskGateService = new NpcAskGateService();
+        _commandPolicyService = new CommandPolicyService();
         _player2Client = new Player2Client();
 
         helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
@@ -231,7 +275,11 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_intent_inject", "Inject raw NPC intent envelope JSON for resolver QA.", OnIntentInjectCommand);
         helper.ConsoleCommands.Add("slrpg_debug_news_toast", "Inject debug publish_article/publish_rumor intent and trigger HUD toast: slrpg_debug_news_toast <article|rumor> [text]", OnDebugNewsToastCommand);
         helper.ConsoleCommands.Add("slrpg_intent_smoketest", "Run mini automated intent resolver smoke tests.", OnIntentSmokeTestCommand);
+        helper.ConsoleCommands.Add("slrpg_regression_targeted", "Run targeted regression checks (chat routing, pass-out publication, market outlook, ambient command lane).", OnTargetedRegressionCommand);
         helper.ConsoleCommands.Add("slrpg_anchor_smoketest", "Run deterministic anchor trigger/resolution smoke test.", OnAnchorSmokeTestCommand);
+        helper.ConsoleCommands.Add("slrpg_baseline_3day", "Run deterministic 3-day baseline metrics simulation.", OnBaselineThreeDayCommand);
+        helper.ConsoleCommands.Add("slrpg_baseline_7day", "Run deterministic 7-day scenario simulation and compare against 3-day baseline.", OnBaselineSevenDayCommand);
+        helper.ConsoleCommands.Add("slrpg_ambient_pipeline_validate", "Run staged validation for ambient consequence pipeline.", OnAmbientPipelineValidateCommand);
         helper.ConsoleCommands.Add("slrpg_demo_bootstrap", "Seed reproducible vertical-slice scenario.", OnDemoBootstrapCommand);
         helper.ConsoleCommands.Add("slrpg_memory_debug", "Dump NPC memory summary: slrpg_memory_debug <npc>", OnMemoryDebugCommand);
         helper.ConsoleCommands.Add("slrpg_town_memory_dump", "Dump town-memory event count.", OnTownMemoryDumpCommand);
@@ -1118,6 +1166,13 @@ public sealed class ModEntry : Mod
                 }
             }
 
+            if (ShouldIgnoreLowInformationAmbientOutput(line, streamNpcId))
+            {
+                _state.Telemetry.Daily.AmbientLowInfoSuppressed += 1;
+                Monitor.Log($"Ignored low-information ambient stream line for NPC {streamNpcId}.", LogLevel.Trace);
+                continue;
+            }
+
             Monitor.Log($"Player2 stream line: {line}", LogLevel.Info);
             _player2LastLineUtc = DateTime.UtcNow;
             _player2StreamBackoffSec = 1;
@@ -1160,6 +1215,7 @@ public sealed class ModEntry : Mod
     {
         _ambientNpcConversationDay = _state.Calendar.Day;
         _ambientNpcConversationsToday = 0;
+        _ambientNpcLastConversationUtcByNpcId.Clear();
         _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(120, 360));
     }
 
@@ -1193,10 +1249,35 @@ public sealed class ModEntry : Mod
         {
             if (!TryPickAmbientNpcConversationPair(out var speakerShortName, out var speakerNpcId, out var listenerShortName))
                 return;
+            if (IsAmbientNpcConversationCoolingDown(speakerNpcId))
+            {
+                Monitor.Log($"Ambient NPC cooldown active for speaker {speakerShortName}; skipping this tick.", LogLevel.Trace);
+                return;
+            }
+
+            string? listenerNpcId = null;
+            var hasListenerNpcId = !string.IsNullOrWhiteSpace(listenerShortName)
+                && _player2NpcIdsByShortName.TryGetValue(listenerShortName, out listenerNpcId);
+            if (hasListenerNpcId && listenerNpcId is not null && IsAmbientNpcConversationCoolingDown(listenerNpcId))
+            {
+                Monitor.Log($"Ambient NPC cooldown active for listener {listenerShortName}; skipping this tick.", LogLevel.Trace);
+                return;
+            }
+
+            var ambientWeights = _npcSpeechStyleService?.GetAmbientBehaviorWeights(speakerShortName);
+            var ambientArchetypeRule = ambientWeights is null
+                ? string.Empty
+                : $"Archetype={ambientWeights.Archetype} weights(event={ambientWeights.EventWeight}, memory={ambientWeights.MemoryWeight}, publish={ambientWeights.PublishWeight}). Favor higher-weight actions when context supports them. ";
 
             var prompt =
                 $"{speakerShortName}, you had a brief offscreen conversation with {listenerShortName} about today's town happenings. " +
                 "Stay in-character and reply naturally. " +
+                "Ambient policy for this context: prefer record_town_event first and keep command usage sparse. " +
+                "Allowed command set here is record_town_event, record_memory_fact, publish_rumor, publish_article unless policy unlocks additional commands. " +
+                "If anything notable happened, capture it with record_town_event before considering publish commands. " +
+                ambientArchetypeRule +
+                "For record_town_event, provide complete fields: kind, summary, location, severity, visibility, and tags. " +
+                "Use publish commands only when confidence and visibility are strong enough for public sharing. " +
                 "If there is meaningful concrete news, use publish_article with a concise title/content/category (title+content must be <= 100 characters total). " +
                 "If it is gossip-level information, use publish_rumor with topic, optional title/content, confidence, and target_group (title+content must be <= 100 characters total when provided). " +
                 "Do not force a command when nothing notable happened.";
@@ -1209,6 +1290,9 @@ public sealed class ModEntry : Mod
                 contextTag: "npc_to_npc_ambient",
                 captureForPlayerChat: false);
             _ambientNpcConversationsToday += 1;
+            MarkAmbientNpcConversationTimestamp(speakerNpcId);
+            if (hasListenerNpcId)
+                MarkAmbientNpcConversationTimestamp(listenerNpcId!);
             Monitor.Log($"Ambient NPC conversation triggered: {speakerShortName} -> {listenerShortName}.", LogLevel.Trace);
         }
         finally
@@ -1216,6 +1300,25 @@ public sealed class ModEntry : Mod
             Interlocked.Exchange(ref _ambientNpcConversationInFlight, 0);
             _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(180, 480));
         }
+    }
+
+    private bool IsAmbientNpcConversationCoolingDown(string npcId)
+    {
+        if (string.IsNullOrWhiteSpace(npcId))
+            return false;
+
+        if (!_ambientNpcLastConversationUtcByNpcId.TryGetValue(npcId, out var lastUtc))
+            return false;
+
+        return DateTime.UtcNow - lastUtc < TimeSpan.FromMinutes(AmbientNpcCooldownMinutes);
+    }
+
+    private void MarkAmbientNpcConversationTimestamp(string npcId)
+    {
+        if (string.IsNullOrWhiteSpace(npcId))
+            return;
+
+        _ambientNpcLastConversationUtcByNpcId[npcId] = DateTime.UtcNow;
     }
 
     private bool TryPickAmbientNpcConversationPair(out string speakerShortName, out string speakerNpcId, out string listenerShortName)
@@ -1328,7 +1431,13 @@ public sealed class ModEntry : Mod
         if (_townMemoryService is null)
             return;
 
-        if (_pendingLateNightPassOutDay != _state.Calendar.Day)
+        if (_pendingLateNightPassOutDay < 0)
+            return;
+
+        var currentDay = _state.Calendar.Day;
+        var isCurrentDayCapture = _pendingLateNightPassOutDay == currentDay;
+        var isYesterdayCapture = _pendingLateNightPassOutDay == currentDay - 1;
+        if (!isCurrentDayCapture && !isYesterdayCapture)
             return;
 
         var locationName = string.IsNullOrWhiteSpace(_pendingLateNightPassOutLocation)
@@ -1971,6 +2080,7 @@ public sealed class ModEntry : Mod
         Monitor.Log("=== SLRPG State Snapshot ===", LogLevel.Info);
         Monitor.Log($"Day {_state.Calendar.Day} | Season {_state.Calendar.Season} | Year {_state.Calendar.Year}", LogLevel.Info);
         Monitor.Log($"Mode {_state.Config.Mode} | Sentiment E/C/Env: {_state.Social.TownSentiment.Economy}/{_state.Social.TownSentiment.Community}/{_state.Social.TownSentiment.Environment}", LogLevel.Info);
+        Monitor.Log($"Ambient consequence pipeline enabled: {_config.EnableAmbientConsequencePipeline}", LogLevel.Info);
 
         var anchorSeen = _state.Facts.Facts.ContainsKey("anchor:town_hall_crisis:seen");
         Monitor.Log($"Anchor town_hall_crisis seen: {anchorSeen}", LogLevel.Info);
@@ -1999,6 +2109,266 @@ public sealed class ModEntry : Mod
         Monitor.Log($"Telemetry NPC intents | applied: {_state.Telemetry.Daily.NpcIntentsApplied}, rejected: {_state.Telemetry.Daily.NpcIntentsRejected}, duplicate: {_state.Telemetry.Daily.NpcIntentsDuplicate}", LogLevel.Info);
         Monitor.Log($"Telemetry NPC lanes | auto(applied/rejected): {_state.Telemetry.Daily.NpcIntentsAutoApplied}/{_state.Telemetry.Daily.NpcIntentsAutoRejected}, manual(applied/rejected): {_state.Telemetry.Daily.NpcIntentsManualApplied}/{_state.Telemetry.Daily.NpcIntentsManualRejected}", LogLevel.Info);
         Monitor.Log($"Telemetry ask gate | accept: {_state.Telemetry.Daily.NpcAskGateAccepted}, defer: {_state.Telemetry.Daily.NpcAskGateDeferred}, reject: {_state.Telemetry.Daily.NpcAskGateRejected}", LogLevel.Info);
+        Monitor.Log($"Telemetry policy rejects | reasons: {FormatCounterMap(_state.Telemetry.Daily.NpcPolicyRejectByReason)}", LogLevel.Info);
+        Monitor.Log($"Telemetry ambient low-info suppressed: {_state.Telemetry.Daily.AmbientLowInfoSuppressed}", LogLevel.Info);
+        Monitor.Log($"Telemetry ambient cadence skips: {_state.Telemetry.Daily.AmbientCadenceSkips}", LogLevel.Info);
+        Monitor.Log($"Telemetry ambient by type | applied: {FormatCounterMap(_state.Telemetry.Daily.AmbientCommandAppliedByType)}", LogLevel.Info);
+        Monitor.Log($"Telemetry ambient by type | rejected: {FormatCounterMap(_state.Telemetry.Daily.AmbientCommandRejectedByType)}", LogLevel.Info);
+        Monitor.Log($"Telemetry ambient by type | duplicate: {FormatCounterMap(_state.Telemetry.Daily.AmbientCommandDuplicateByType)}", LogLevel.Info);
+
+        var ambientSnapshots = _ambientLaneDebugSnapshots.ToArray();
+        if (ambientSnapshots.Length == 0)
+        {
+            Monitor.Log("Ambient lane snapshots: (none captured yet).", LogLevel.Info);
+        }
+        else
+        {
+            Monitor.Log($"Ambient lane snapshots (latest {ambientSnapshots.Length}):", LogLevel.Info);
+            foreach (var snapshot in ambientSnapshots)
+                Monitor.Log($"- {snapshot}", LogLevel.Info);
+        }
+    }
+
+    private void OnBaselineThreeDayCommand(string name, string[] args)
+    {
+        if (_intentResolver is null)
+        {
+            Monitor.Log("Intent resolver unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        var metrics = RunThreeDayBaselineMetricsSimulation();
+        var questRate = metrics.DaysSimulated <= 0 ? 0d : (double)metrics.QuestCount / metrics.DaysSimulated;
+        var marketModifierRate = metrics.DaysSimulated <= 0 ? 0d : (double)metrics.MarketModifierCount / metrics.DaysSimulated;
+
+        Monitor.Log($"3-day baseline simulation complete | days={metrics.DaysSimulated} intents(applied/rejected/duplicate)={metrics.Applied}/{metrics.Rejected}/{metrics.Duplicate}", LogLevel.Info);
+        Monitor.Log($"3-day baseline command distribution | applied: {FormatCounterMap(metrics.CommandDistribution)}", LogLevel.Info);
+        Monitor.Log($"3-day baseline rates | quest/day={questRate:F2} market_modifier/day={marketModifierRate:F2}", LogLevel.Info);
+    }
+
+    private void OnBaselineSevenDayCommand(string name, string[] args)
+    {
+        if (_intentResolver is null)
+        {
+            Monitor.Log("Intent resolver unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        var baseline = RunThreeDayBaselineMetricsSimulation();
+        var scenario = RunSevenDayScenarioMetricsSimulation();
+        var baselineQuestRate = baseline.DaysSimulated <= 0 ? 0d : (double)baseline.QuestCount / baseline.DaysSimulated;
+        var baselineMarketRate = baseline.DaysSimulated <= 0 ? 0d : (double)baseline.MarketModifierCount / baseline.DaysSimulated;
+        var scenarioQuestRate = scenario.DaysSimulated <= 0 ? 0d : (double)scenario.QuestCount / scenario.DaysSimulated;
+        var scenarioMarketRate = scenario.DaysSimulated <= 0 ? 0d : (double)scenario.MarketModifierCount / scenario.DaysSimulated;
+
+        Monitor.Log($"7-day scenario simulation complete | days={scenario.DaysSimulated} intents(applied/rejected/duplicate)={scenario.Applied}/{scenario.Rejected}/{scenario.Duplicate}", LogLevel.Info);
+        Monitor.Log($"7-day scenario command distribution | applied: {FormatCounterMap(scenario.CommandDistribution)}", LogLevel.Info);
+        Monitor.Log($"7-day scenario rates | quest/day={scenarioQuestRate:F2} market_modifier/day={scenarioMarketRate:F2}", LogLevel.Info);
+        Monitor.Log(
+            $"7-day comparison vs baseline | quest/day {scenarioQuestRate:F2} vs {baselineQuestRate:F2} ({scenarioQuestRate - baselineQuestRate:+0.00;-0.00;0.00}), market_modifier/day {scenarioMarketRate:F2} vs {baselineMarketRate:F2} ({scenarioMarketRate - baselineMarketRate:+0.00;-0.00;0.00})",
+            LogLevel.Info);
+    }
+
+    private void OnAmbientPipelineValidateCommand(string name, string[] args)
+    {
+        if (_intentResolver is null)
+        {
+            Monitor.Log("Intent resolver unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        var baseline = RunThreeDayBaselineMetricsSimulation();
+        var scenario = RunSevenDayScenarioMetricsSimulation();
+        var baselineQuestRate = baseline.DaysSimulated <= 0 ? 0d : (double)baseline.QuestCount / baseline.DaysSimulated;
+        var baselineMarketRate = baseline.DaysSimulated <= 0 ? 0d : (double)baseline.MarketModifierCount / baseline.DaysSimulated;
+        var scenarioQuestRate = scenario.DaysSimulated <= 0 ? 0d : (double)scenario.QuestCount / scenario.DaysSimulated;
+        var scenarioMarketRate = scenario.DaysSimulated <= 0 ? 0d : (double)scenario.MarketModifierCount / scenario.DaysSimulated;
+
+        var liveState = _state;
+        var baselineState = CloneSaveState(liveState);
+        (int Pass, int Fail, int Total) targeted;
+        try
+        {
+            _state = CloneSaveState(baselineState);
+            targeted = RunTargetedRegressionChecks();
+        }
+        finally
+        {
+            _state = liveState;
+        }
+
+        var questDelta = Math.Abs(scenarioQuestRate - baselineQuestRate);
+        var marketDelta = Math.Abs(scenarioMarketRate - baselineMarketRate);
+        var driftOk = questDelta <= StagedValidationMaxQuestRateDelta
+            && marketDelta <= StagedValidationMaxMarketRateDelta;
+        var regressionOk = targeted.Fail == 0;
+        var overallPass = driftOk && regressionOk;
+
+        Monitor.Log(
+            $"Ambient pipeline staged validation | enabled={_config.EnableAmbientConsequencePipeline} regressions={targeted.Pass}/{targeted.Total} quest/day={scenarioQuestRate:F2} (baseline {baselineQuestRate:F2}) market_modifier/day={scenarioMarketRate:F2} (baseline {baselineMarketRate:F2})",
+            LogLevel.Info);
+        Monitor.Log(
+            $"Ambient pipeline staged validation thresholds | quest_delta={questDelta:F2}<= {StagedValidationMaxQuestRateDelta:F2}, market_delta={marketDelta:F2}<= {StagedValidationMaxMarketRateDelta:F2}",
+            driftOk ? LogLevel.Info : LogLevel.Warn);
+        Monitor.Log(
+            overallPass
+                ? "Ambient consequence pipeline validation PASSED. Keep default enabled."
+                : "Ambient consequence pipeline validation needs tuning before release promotion.",
+            overallPass ? LogLevel.Info : LogLevel.Warn);
+    }
+
+    private ThreeDayBaselineMetrics RunThreeDayBaselineMetricsSimulation()
+    {
+        var simState = CloneSaveState(_state);
+        var startDay = Math.Max(1, simState.Calendar.Day);
+        var metrics = new ThreeDayBaselineMetrics { DaysSimulated = 3 };
+
+        for (var dayOffset = 0; dayOffset < metrics.DaysSimulated; dayOffset++)
+        {
+            var simulationDay = dayOffset + 1;
+            simState.Calendar.Day = startDay + dayOffset;
+
+            foreach (var payload in BuildThreeDayBaselinePayloads(simulationDay))
+            {
+                var result = _intentResolver!.ResolveFromStreamLine(simState, payload);
+                if (result.AppliedOk)
+                {
+                    metrics.Applied += 1;
+                    IncrementCounter(metrics.CommandDistribution, result.Command);
+                    if (result.Command.Equals("propose_quest", StringComparison.OrdinalIgnoreCase))
+                        metrics.QuestCount += 1;
+                    else if (result.Command.Equals("apply_market_modifier", StringComparison.OrdinalIgnoreCase))
+                        metrics.MarketModifierCount += 1;
+                }
+                else if (result.IsRejected)
+                {
+                    metrics.Rejected += 1;
+                }
+                else if (result.IsDuplicate)
+                {
+                    metrics.Duplicate += 1;
+                }
+            }
+        }
+
+        return metrics;
+    }
+
+    private SevenDayScenarioMetrics RunSevenDayScenarioMetricsSimulation()
+    {
+        var simState = CloneSaveState(_state);
+        var startDay = Math.Max(1, simState.Calendar.Day);
+        var metrics = new SevenDayScenarioMetrics { DaysSimulated = 7 };
+
+        for (var dayOffset = 0; dayOffset < metrics.DaysSimulated; dayOffset++)
+        {
+            var simulationDay = dayOffset + 1;
+            simState.Calendar.Day = startDay + dayOffset;
+
+            foreach (var payload in BuildSevenDayScenarioPayloads(simulationDay))
+            {
+                var result = _intentResolver!.ResolveFromStreamLine(simState, payload);
+                if (result.AppliedOk)
+                {
+                    metrics.Applied += 1;
+                    IncrementCounter(metrics.CommandDistribution, result.Command);
+                    if (result.Command.Equals("propose_quest", StringComparison.OrdinalIgnoreCase))
+                        metrics.QuestCount += 1;
+                    else if (result.Command.Equals("apply_market_modifier", StringComparison.OrdinalIgnoreCase))
+                        metrics.MarketModifierCount += 1;
+                }
+                else if (result.IsRejected)
+                {
+                    metrics.Rejected += 1;
+                }
+                else if (result.IsDuplicate)
+                {
+                    metrics.Duplicate += 1;
+                }
+            }
+        }
+
+        return metrics;
+    }
+
+    private static IEnumerable<string> BuildThreeDayBaselinePayloads(int simulationDay)
+    {
+        switch (simulationDay)
+        {
+            case 1:
+                yield return "{\"intent_id\":\"baseline_d1_evt\",\"npc_id\":\"ambient_baseline_lewis\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"community\",\"summary\":\"Shops coordinated a short cleanup around the square before lunch.\",\"location\":\"Town Square\",\"severity\":2,\"visibility\":\"public\",\"tags\":[\"community\",\"cleanup\"]}}";
+                yield return "{\"intent_id\":\"baseline_d1_rumor\",\"npc_id\":\"ambient_baseline_pierre\",\"command\":\"publish_rumor\",\"arguments\":{\"topic\":\"Folks noticed extra foot traffic near Pierre's this morning.\",\"confidence\":0.62,\"target_group\":\"shopkeepers_guild\"}}";
+                yield return "{\"intent_id\":\"baseline_d1_quest\",\"npc_id\":\"ambient_baseline_robin\",\"command\":\"propose_quest\",\"arguments\":{\"template_id\":\"gather_crop\",\"target\":\"potato\",\"urgency\":\"medium\"}}";
+                yield break;
+            case 2:
+                yield return "{\"intent_id\":\"baseline_d2_memory\",\"npc_id\":\"ambient_baseline_caroline\",\"command\":\"record_memory_fact\",\"arguments\":{\"category\":\"event\",\"text\":\"The farmer helped restock seed shelves before noon.\",\"weight\":2}}";
+                yield return "{\"intent_id\":\"baseline_d2_market\",\"npc_id\":\"ambient_baseline_pierre\",\"command\":\"apply_market_modifier\",\"arguments\":{\"crop\":\"blueberry\",\"delta_pct\":-0.06,\"duration_days\":2,\"reason\":\"noticeable surplus at shipping stalls\"}}";
+                yield return "{\"intent_id\":\"baseline_d2_interest\",\"npc_id\":\"ambient_baseline_lewis\",\"command\":\"shift_interest_influence\",\"arguments\":{\"interest\":\"farmers_circle\",\"delta\":2,\"reason\":\"neighbor chatter favored local growers\"}}";
+                yield break;
+            default:
+                yield return "{\"intent_id\":\"baseline_d3_rep\",\"npc_id\":\"ambient_baseline_haley\",\"command\":\"adjust_reputation\",\"arguments\":{\"target\":\"farmer\",\"delta\":2,\"reason\":\"kept yesterday's board promise\"}}";
+                yield return "{\"intent_id\":\"baseline_d3_article\",\"npc_id\":\"ambient_baseline_lewis\",\"command\":\"publish_article\",\"arguments\":{\"title\":\"Board Update\",\"content\":\"Neighbors posted one shared request and kept chatter focused at the square.\",\"category\":\"community\"}}";
+                yield return "{\"intent_id\":\"baseline_d3_sentiment\",\"npc_id\":\"ambient_baseline_evelyn\",\"command\":\"adjust_town_sentiment\",\"arguments\":{\"axis\":\"community\",\"delta\":2,\"reason\":\"steady volunteer turnout\"}}";
+                yield return "{\"intent_id\":\"baseline_d3_quest\",\"npc_id\":\"ambient_baseline_gus\",\"command\":\"propose_quest\",\"arguments\":{\"template_id\":\"social_visit\",\"target\":\"Linus\",\"urgency\":\"low\"}}";
+                yield break;
+        }
+    }
+
+    private static IEnumerable<string> BuildSevenDayScenarioPayloads(int simulationDay)
+    {
+        switch (simulationDay)
+        {
+            case 1:
+                yield return "{\"intent_id\":\"scenario_d1_evt\",\"npc_id\":\"ambient_scenario_lewis\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"market\",\"summary\":\"Shops flagged a small potato shortage before noon.\",\"location\":\"Town Square\",\"severity\":2,\"visibility\":\"public\",\"tags\":[\"market\",\"potato\",\"scarcity\"]}}";
+                yield return "{\"intent_id\":\"scenario_d1_mem\",\"npc_id\":\"ambient_scenario_robin\",\"command\":\"record_memory_fact\",\"arguments\":{\"category\":\"event\",\"text\":\"Neighbors coordinated produce sorting near the board.\",\"weight\":2}}";
+                yield break;
+            case 2:
+                yield return "{\"intent_id\":\"scenario_d2_evt\",\"npc_id\":\"ambient_scenario_caroline\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"social\",\"summary\":\"Volunteers checked on elders after the morning rain.\",\"location\":\"Pelican Town\",\"severity\":2,\"visibility\":\"public\",\"tags\":[\"community\",\"social\",\"rain\"]}}";
+                yield return "{\"intent_id\":\"scenario_d2_rumor\",\"npc_id\":\"ambient_scenario_gus\",\"command\":\"publish_rumor\",\"arguments\":{\"topic\":\"Folks heard Pierre may restock potatoes by evening.\",\"confidence\":0.72,\"target_group\":\"shopkeepers_guild\"}}";
+                yield break;
+            case 3:
+                yield return "{\"intent_id\":\"scenario_d3_market\",\"npc_id\":\"ambient_scenario_pierre\",\"command\":\"apply_market_modifier\",\"arguments\":{\"crop\":\"potato\",\"delta_pct\":0.06,\"duration_days\":2,\"reason\":\"short-run shortage pressure\"}}";
+                yield return "{\"intent_id\":\"scenario_d3_interest\",\"npc_id\":\"ambient_scenario_lewis\",\"command\":\"shift_interest_influence\",\"arguments\":{\"interest\":\"farmers_circle\",\"delta\":1,\"reason\":\"board chatter focused on staple crops\"}}";
+                yield break;
+            case 4:
+                yield return "{\"intent_id\":\"scenario_d4_evt\",\"npc_id\":\"ambient_scenario_demetrius\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"nature\",\"summary\":\"Cold winds slowed crop growth near the river plots.\",\"location\":\"Riverland\",\"severity\":3,\"visibility\":\"public\",\"tags\":[\"weather\",\"nature\",\"crop\"]}}";
+                yield return "{\"intent_id\":\"scenario_d4_article\",\"npc_id\":\"ambient_scenario_elliott\",\"command\":\"publish_article\",\"arguments\":{\"title\":\"Cold Snap Slows Harvest\",\"content\":\"Growers are adjusting schedules after cooler winds hit riverside plots.\",\"category\":\"nature\"}}";
+                yield break;
+            case 5:
+                yield return "{\"intent_id\":\"scenario_d5_quest\",\"npc_id\":\"ambient_scenario_gus\",\"command\":\"propose_quest\",\"arguments\":{\"template_id\":\"gather_crop\",\"target\":\"potato\",\"urgency\":\"medium\"}}";
+                yield return "{\"intent_id\":\"scenario_d5_rep\",\"npc_id\":\"ambient_scenario_haley\",\"command\":\"adjust_reputation\",\"arguments\":{\"target\":\"farmer\",\"delta\":1,\"reason\":\"kept promises from town requests\"}}";
+                yield break;
+            case 6:
+                yield return "{\"intent_id\":\"scenario_d6_evt\",\"npc_id\":\"ambient_scenario_marnie\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"community\",\"summary\":\"Residents shared food deliveries after late-night repairs.\",\"location\":\"Town\",\"severity\":2,\"visibility\":\"public\",\"tags\":[\"community\",\"support\"]}}";
+                yield return "{\"intent_id\":\"scenario_d6_quest\",\"npc_id\":\"ambient_scenario_lewis\",\"command\":\"propose_quest\",\"arguments\":{\"template_id\":\"social_visit\",\"target\":\"Linus\",\"urgency\":\"low\"}}";
+                yield break;
+            default:
+                yield return "{\"intent_id\":\"scenario_d7_market\",\"npc_id\":\"ambient_scenario_pierre\",\"command\":\"apply_market_modifier\",\"arguments\":{\"crop\":\"cauliflower\",\"delta_pct\":-0.05,\"duration_days\":2,\"reason\":\"short-term surplus after delivery rush\"}}";
+                yield return "{\"intent_id\":\"scenario_d7_sent\",\"npc_id\":\"ambient_scenario_evelyn\",\"command\":\"adjust_town_sentiment\",\"arguments\":{\"axis\":\"community\",\"delta\":1,\"reason\":\"steady turnout for volunteer board requests\"}}";
+                yield break;
+        }
+    }
+
+    private sealed class ThreeDayBaselineMetrics
+    {
+        public int DaysSimulated { get; init; }
+        public int Applied { get; set; }
+        public int Rejected { get; set; }
+        public int Duplicate { get; set; }
+        public int QuestCount { get; set; }
+        public int MarketModifierCount { get; set; }
+        public Dictionary<string, int> CommandDistribution { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class SevenDayScenarioMetrics
+    {
+        public int DaysSimulated { get; init; }
+        public int Applied { get; set; }
+        public int Rejected { get; set; }
+        public int Duplicate { get; set; }
+        public int QuestCount { get; set; }
+        public int MarketModifierCount { get; set; }
+        public Dictionary<string, int> CommandDistribution { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private void OnIntentInjectCommand(string name, string[] args)
@@ -2214,77 +2584,511 @@ public sealed class ModEntry : Mod
 
         var pass = 0;
         var fail = 0;
+        var total = 0;
+        var liveState = _state;
+        var baselineState = CloneSaveState(liveState);
 
         Monitor.Log("Running slrpg_intent_smoketest...", LogLevel.Info);
 
-        foreach (var t in tests)
+        try
         {
-            try
-            {
-                var r = _intentResolver.ResolveFromStreamLine(_state, t.Json);
-                var actual = r.AppliedOk ? "applied" : r.IsDuplicate ? "duplicate" : r.IsRejected ? "rejected" : "none";
+            _state = CloneSaveState(baselineState);
 
-                if (string.Equals(actual, t.Expected, StringComparison.OrdinalIgnoreCase))
+            foreach (var t in tests)
+            {
+                try
+                {
+                    var r = _intentResolver.ResolveFromStreamLine(_state, t.Json);
+                    var actual = r.AppliedOk ? "applied" : r.IsDuplicate ? "duplicate" : r.IsRejected ? "rejected" : "none";
+
+                    if (string.Equals(actual, t.Expected, StringComparison.OrdinalIgnoreCase))
+                    {
+                        pass++;
+                        Monitor.Log($"[PASS] {t.Name} -> {actual}", LogLevel.Info);
+                    }
+                    else
+                    {
+                        fail++;
+                        Monitor.Log($"[FAIL] {t.Name} -> expected {t.Expected}, got {actual}", LogLevel.Warn);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    fail++;
+                    Monitor.Log($"[FAIL] {t.Name} threw: {ex.Message}", LogLevel.Error);
+                }
+            }
+            total += tests.Length;
+
+            if (_npcAskGateService is not null)
+            {
+                var gateReject = _npcAskGateService.Evaluate(
+                    _state,
+                    "Linus",
+                    NpcVerbalProfile.Recluse,
+                    heartLevel: 0,
+                    askTopic: "manual_market",
+                    timeOfDay: 2300,
+                    isRaining: true);
+                if (gateReject.Decision == NpcAskDecision.Reject)
                 {
                     pass++;
-                    Monitor.Log($"[PASS] {t.Name} -> {actual}", LogLevel.Info);
+                    Monitor.Log("[PASS] ask gate reject scenario -> reject", LogLevel.Info);
                 }
                 else
                 {
                     fail++;
-                    Monitor.Log($"[FAIL] {t.Name} -> expected {t.Expected}, got {actual}", LogLevel.Warn);
+                    Monitor.Log($"[FAIL] ask gate reject scenario -> expected reject, got {gateReject.Decision}", LogLevel.Warn);
+                }
+
+                var gateAccept = _npcAskGateService.Evaluate(
+                    _state,
+                    "Lewis",
+                    NpcVerbalProfile.Professional,
+                    heartLevel: 8,
+                    askTopic: "manual_market",
+                    timeOfDay: 1200,
+                    isRaining: false);
+                if (gateAccept.Decision == NpcAskDecision.Accept)
+                {
+                    pass++;
+                    Monitor.Log("[PASS] ask gate accept scenario -> accept", LogLevel.Info);
+                }
+                else
+                {
+                    fail++;
+                    Monitor.Log($"[FAIL] ask gate accept scenario -> expected accept, got {gateAccept.Decision}", LogLevel.Warn);
+                }
+
+                total += 2;
+            }
+
+            _state = CloneSaveState(baselineState);
+            var ambient = RunAmbientIntentSmokeTests();
+            pass += ambient.Pass;
+            fail += ambient.Fail;
+            total += ambient.Total;
+
+            var targeted = RunTargetedRegressionChecks();
+            pass += targeted.Pass;
+            fail += targeted.Fail;
+            total += targeted.Total;
+        }
+        finally
+        {
+            _state = liveState;
+        }
+
+        Monitor.Log($"Intent smoketest complete: pass={pass} fail={fail} total={total}", fail == 0 ? LogLevel.Info : LogLevel.Warn);
+    }
+
+    private void OnTargetedRegressionCommand(string name, string[] args)
+    {
+        var liveState = _state;
+        var baselineState = CloneSaveState(liveState);
+
+        try
+        {
+            _state = CloneSaveState(baselineState);
+            var result = RunTargetedRegressionChecks();
+            Monitor.Log(
+                $"Targeted regression complete: pass={result.Pass} fail={result.Fail} total={result.Total}",
+                result.Fail == 0 ? LogLevel.Info : LogLevel.Warn);
+        }
+        finally
+        {
+            _state = liveState;
+        }
+    }
+
+    private (int Pass, int Fail, int Total) RunTargetedRegressionChecks()
+    {
+        var pass = 0;
+        var fail = 0;
+        var total = 0;
+
+        var routing = RunPlayerChatRoutingRegressionChecks();
+        pass += routing.Pass;
+        fail += routing.Fail;
+        total += routing.Total;
+
+        if (RunPassOutPublicationRegressionCheck())
+            pass++;
+        else
+            fail++;
+        total++;
+
+        if (RunMarketOutlookRegressionCheck())
+            pass++;
+        else
+            fail++;
+        total++;
+
+        var ambientLane = RunAmbientCommandLaneRegressionChecks();
+        pass += ambientLane.Pass;
+        fail += ambientLane.Fail;
+        total += ambientLane.Total;
+
+        return (pass, fail, total);
+    }
+
+    private bool RunPassOutPublicationRegressionCheck()
+    {
+        if (_newspaperService is null)
+        {
+            Monitor.Log("[FAIL] pass-out publication regression -> NewspaperService unavailable", LogLevel.Warn);
+            return false;
+        }
+
+        _state.Calendar.Day = Math.Max(3, _state.Calendar.Day);
+        var yesterday = _state.Calendar.Day - 1;
+        _state.TownMemory.Events.Add(new TownMemoryEvent
+        {
+            EventId = $"regression_passout_{yesterday}",
+            Kind = "pass_out",
+            Summary = "A farmer was found passed out near the bus stop.",
+            Day = yesterday,
+            Location = "Bus Stop",
+            Severity = 2,
+            Visibility = "public",
+            Tags = new[] { "late-night", "pass-out", "rescue" }
+        });
+
+        var issue = _newspaperService.BuildIssue(_state, _config, player2: null, _player2Key: null);
+        var published = issue.Articles.Any(a =>
+            a.Title.Contains("Late-Night Collapse", StringComparison.OrdinalIgnoreCase)
+            || a.Content.Contains("passed out", StringComparison.OrdinalIgnoreCase));
+
+        if (published)
+            Monitor.Log("[PASS] pass-out publication regression includes late-night collapse coverage", LogLevel.Info);
+        else
+            Monitor.Log("[FAIL] pass-out publication regression missing expected pass-out article", LogLevel.Warn);
+
+        return published;
+    }
+
+    private bool RunMarketOutlookRegressionCheck()
+    {
+        if (_newspaperService is null)
+        {
+            Monitor.Log("[FAIL] market outlook regression -> NewspaperService unavailable", LogLevel.Warn);
+            return false;
+        }
+
+        _state.Calendar.Day = Math.Max(4, _state.Calendar.Day);
+        _state.Economy.Crops.Clear();
+        _state.Economy.Crops["potato"] = new CropEconomyEntry
+        {
+            BasePrice = 80,
+            PriceYesterday = 80,
+            PriceToday = 104,
+            DemandFactor = 1.06f,
+            SupplyPressureFactor = 0.95f,
+            ScarcityBonus = 0.04f
+        };
+        _state.Economy.Crops["cauliflower"] = new CropEconomyEntry
+        {
+            BasePrice = 175,
+            PriceYesterday = 175,
+            PriceToday = 142,
+            DemandFactor = 0.97f,
+            SupplyPressureFactor = 1.07f,
+            ScarcityBonus = 0.0f
+        };
+
+        var issue = _newspaperService.BuildIssue(_state, _config, player2: null, _player2Key: null);
+        var hints = issue.PredictiveHints
+            .Where(h => !string.IsNullOrWhiteSpace(h))
+            .ToList();
+        var hasLiveCropReference = hints.Any(h =>
+            h.Contains("Potato", StringComparison.OrdinalIgnoreCase)
+            || h.Contains("Cauliflower", StringComparison.OrdinalIgnoreCase));
+
+        var passed = hints.Count > 0 && hasLiveCropReference;
+        if (passed)
+            Monitor.Log("[PASS] market outlook regression uses live movers in printed hints", LogLevel.Info);
+        else
+            Monitor.Log("[FAIL] market outlook regression did not surface live mover data", LogLevel.Warn);
+
+        return passed;
+    }
+
+    private (int Pass, int Fail, int Total) RunAmbientCommandLaneRegressionChecks()
+    {
+        const string npcId = "ambient_lane_regression_npc";
+        const string blockedCommand = "propose_quest";
+        const string allowedCommand = "record_town_event";
+        const string blockedPayload = "{\"intent_id\":\"ambient_lane_block_001\",\"npc_id\":\"ambient_lane_regression_npc\",\"command\":\"propose_quest\",\"arguments\":{\"template_id\":\"gather_crop\",\"target\":\"potato\",\"urgency\":\"low\"}}";
+        const string allowedPayload = "{\"intent_id\":\"ambient_lane_allow_001\",\"npc_id\":\"ambient_lane_regression_npc\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"community\",\"summary\":\"Neighbors shared notes near the board this afternoon.\",\"location\":\"Town Square\",\"severity\":2,\"visibility\":\"public\",\"tags\":[\"community\",\"board\"]}}";
+
+        var pass = 0;
+        var fail = 0;
+        var previousContext = _npcLastContextTagById.TryGetValue(npcId, out var contextTag) ? contextTag : null;
+        var hadShortName = _player2NpcShortNameById.TryGetValue(npcId, out var previousShortName);
+
+        try
+        {
+            _npcLastContextTagById[npcId] = "npc_to_npc_ambient";
+            _player2NpcShortNameById[npcId] = "AmbientRegression";
+
+            _state.Telemetry.Daily.AmbientCommandRejectedByType.TryGetValue(blockedCommand, out var rejectBefore);
+            var blockedApplied = TryApplyNpcCommandFromLine(blockedPayload);
+            _state.Telemetry.Daily.AmbientCommandRejectedByType.TryGetValue(blockedCommand, out var rejectAfter);
+            if (!blockedApplied && rejectAfter == rejectBefore + 1)
+            {
+                pass++;
+                Monitor.Log("[PASS] ambient command lane regression blocks propose_quest by policy", LogLevel.Info);
+            }
+            else
+            {
+                fail++;
+                Monitor.Log($"[FAIL] ambient command lane regression expected blocked propose_quest, got applied={blockedApplied} rejectedBefore={rejectBefore} rejectedAfter={rejectAfter}", LogLevel.Warn);
+            }
+
+            _state.Telemetry.Daily.AmbientCommandAppliedByType.TryGetValue(allowedCommand, out var appliedBefore);
+            var allowedApplied = TryApplyNpcCommandFromLine(allowedPayload);
+            _state.Telemetry.Daily.AmbientCommandAppliedByType.TryGetValue(allowedCommand, out var appliedAfter);
+            if (allowedApplied && appliedAfter == appliedBefore + 1)
+            {
+                pass++;
+                Monitor.Log("[PASS] ambient command lane regression allows record_town_event", LogLevel.Info);
+            }
+            else
+            {
+                fail++;
+                Monitor.Log($"[FAIL] ambient command lane regression expected applied record_town_event, got applied={allowedApplied} appliedBefore={appliedBefore} appliedAfter={appliedAfter}", LogLevel.Warn);
+            }
+        }
+        finally
+        {
+            if (previousContext is null)
+                _npcLastContextTagById.TryRemove(npcId, out _);
+            else
+                _npcLastContextTagById[npcId] = previousContext;
+
+            if (hadShortName && previousShortName is not null)
+                _player2NpcShortNameById[npcId] = previousShortName;
+            else
+                _player2NpcShortNameById.Remove(npcId);
+        }
+
+        return (pass, fail, 2);
+    }
+
+    private (int Pass, int Fail, int Total) RunAmbientIntentSmokeTests()
+    {
+        var ambientTests = new (string Name, string Command, string SourceNpcId, string Json, bool ExpectApplied)[]
+        {
+            (
+                "ambient propose_quest",
+                "propose_quest",
+                "ambient_smoke_quest",
+                "{\"intent_id\":\"ambient_smoke_pq_001\",\"npc_id\":\"ambient_smoke_quest\",\"command\":\"propose_quest\",\"arguments\":{\"template_id\":\"gather_crop\",\"target\":\"corn\",\"urgency\":\"medium\"}}",
+                false
+            ),
+            (
+                "ambient adjust_reputation",
+                "adjust_reputation",
+                "ambient_smoke_rep",
+                "{\"intent_id\":\"ambient_smoke_rep_001\",\"npc_id\":\"ambient_smoke_rep\",\"command\":\"adjust_reputation\",\"arguments\":{\"target\":\"haley\",\"delta\":2}}",
+                false
+            ),
+            (
+                "ambient shift_interest_influence",
+                "shift_interest_influence",
+                "ambient_smoke_interest",
+                "{\"intent_id\":\"ambient_smoke_int_001\",\"npc_id\":\"ambient_smoke_interest\",\"command\":\"shift_interest_influence\",\"arguments\":{\"interest\":\"farmers_circle\",\"delta\":1}}",
+                false
+            ),
+            (
+                "ambient apply_market_modifier",
+                "apply_market_modifier",
+                "ambient_smoke_market",
+                "{\"intent_id\":\"ambient_smoke_mkt_001\",\"npc_id\":\"ambient_smoke_market\",\"command\":\"apply_market_modifier\",\"arguments\":{\"crop\":\"corn\",\"delta_pct\":0.05,\"duration_days\":2}}",
+                false
+            ),
+            (
+                "ambient publish_rumor",
+                "publish_rumor",
+                "ambient_smoke_rumor",
+                "{\"intent_id\":\"ambient_smoke_rmr_001\",\"npc_id\":\"ambient_smoke_rumor\",\"command\":\"publish_rumor\",\"arguments\":{\"topic\":\"Bakery line was longer than usual today.\",\"confidence\":0.6,\"target_group\":\"shopkeepers_guild\"}}",
+                false
+            ),
+            (
+                "ambient publish_article",
+                "publish_article",
+                "ambient_smoke_article",
+                "{\"intent_id\":\"ambient_smoke_art_001\",\"npc_id\":\"ambient_smoke_article\",\"command\":\"publish_article\",\"arguments\":{\"title\":\"Square Cleanup\",\"content\":\"Neighbors coordinated a quick cleanup near the fountain before dusk.\",\"category\":\"community\"}}",
+                false
+            ),
+            (
+                "ambient record_memory_fact",
+                "record_memory_fact",
+                "ambient_smoke_memory",
+                "{\"intent_id\":\"ambient_smoke_mem_001\",\"npc_id\":\"ambient_smoke_memory\",\"command\":\"record_memory_fact\",\"arguments\":{\"category\":\"event\",\"text\":\"Noted the farmer helping carry seed bags before noon.\",\"weight\":2}}",
+                true
+            ),
+            (
+                "ambient record_town_event",
+                "record_town_event",
+                "ambient_smoke_event",
+                "{\"intent_id\":\"ambient_smoke_evt_001\",\"npc_id\":\"ambient_smoke_event\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"community\",\"summary\":\"Vendors coordinated a quick cleanup around the board this afternoon.\",\"location\":\"Town Square\",\"severity\":2,\"visibility\":\"public\",\"tags\":[\"community\",\"cleanup\"]}}",
+                true
+            ),
+            (
+                "ambient adjust_town_sentiment",
+                "adjust_town_sentiment",
+                "ambient_smoke_sentiment",
+                "{\"intent_id\":\"ambient_smoke_sent_001\",\"npc_id\":\"ambient_smoke_sentiment\",\"command\":\"adjust_town_sentiment\",\"arguments\":{\"axis\":\"community\",\"delta\":2,\"reason\":\"ambient civic momentum\"}}",
+                false
+            )
+        };
+
+        var pass = 0;
+        var fail = 0;
+        var priorContextByNpcId = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var priorShortNameByNpcId = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            foreach (var test in ambientTests)
+            {
+                if (!priorContextByNpcId.ContainsKey(test.SourceNpcId))
+                    priorContextByNpcId[test.SourceNpcId] = _npcLastContextTagById.TryGetValue(test.SourceNpcId, out var context) ? context : null;
+                if (!priorShortNameByNpcId.ContainsKey(test.SourceNpcId))
+                    priorShortNameByNpcId[test.SourceNpcId] = _player2NpcShortNameById.TryGetValue(test.SourceNpcId, out var shortName) ? shortName : null;
+
+                _npcLastContextTagById[test.SourceNpcId] = "npc_to_npc_ambient";
+                _player2NpcShortNameById[test.SourceNpcId] = test.SourceNpcId;
+
+                _state.Telemetry.Daily.AmbientCommandAppliedByType.TryGetValue(test.Command, out var beforeAppliedCount);
+                _state.Telemetry.Daily.AmbientCommandRejectedByType.TryGetValue(test.Command, out var beforeRejectedCount);
+                var applied = TryApplyNpcCommandFromLine(test.Json);
+                _state.Telemetry.Daily.AmbientCommandAppliedByType.TryGetValue(test.Command, out var afterAppliedCount);
+                _state.Telemetry.Daily.AmbientCommandRejectedByType.TryGetValue(test.Command, out var afterRejectedCount);
+
+                var passed = test.ExpectApplied
+                    ? applied && afterAppliedCount == beforeAppliedCount + 1
+                    : !applied && afterRejectedCount == beforeRejectedCount + 1;
+
+                if (passed)
+                {
+                    pass++;
+                    Monitor.Log($"[PASS] {test.Name} -> {(test.ExpectApplied ? "applied" : "rejected")}", LogLevel.Info);
+                }
+                else
+                {
+                    fail++;
+                    Monitor.Log(
+                        $"[FAIL] {test.Name} -> expected {(test.ExpectApplied ? "applied" : "rejected")} with ambient counter increment, got applied={applied} appliedBefore={beforeAppliedCount} appliedAfter={afterAppliedCount} rejectedBefore={beforeRejectedCount} rejectedAfter={afterRejectedCount}",
+                        LogLevel.Warn);
                 }
             }
-            catch (Exception ex)
-            {
-                fail++;
-                Monitor.Log($"[FAIL] {t.Name} threw: {ex.Message}", LogLevel.Error);
-            }
         }
-
-        if (_npcAskGateService is not null)
+        finally
         {
-            var gateReject = _npcAskGateService.Evaluate(
-                _state,
-                "Linus",
-                NpcVerbalProfile.Recluse,
-                heartLevel: 0,
-                askTopic: "manual_market",
-                timeOfDay: 2300,
-                isRaining: true);
-            if (gateReject.Decision == NpcAskDecision.Reject)
+            foreach (var entry in priorContextByNpcId)
             {
-                pass++;
-                Monitor.Log("[PASS] ask gate reject scenario -> reject", LogLevel.Info);
-            }
-            else
-            {
-                fail++;
-                Monitor.Log($"[FAIL] ask gate reject scenario -> expected reject, got {gateReject.Decision}", LogLevel.Warn);
+                if (entry.Value is null)
+                    _npcLastContextTagById.TryRemove(entry.Key, out _);
+                else
+                    _npcLastContextTagById[entry.Key] = entry.Value;
             }
 
-            var gateAccept = _npcAskGateService.Evaluate(
-                _state,
-                "Lewis",
-                NpcVerbalProfile.Professional,
-                heartLevel: 8,
-                askTopic: "manual_market",
-                timeOfDay: 1200,
-                isRaining: false);
-            if (gateAccept.Decision == NpcAskDecision.Accept)
+            foreach (var entry in priorShortNameByNpcId)
             {
-                pass++;
-                Monitor.Log("[PASS] ask gate accept scenario -> accept", LogLevel.Info);
-            }
-            else
-            {
-                fail++;
-                Monitor.Log($"[FAIL] ask gate accept scenario -> expected accept, got {gateAccept.Decision}", LogLevel.Warn);
+                if (entry.Value is null)
+                    _player2NpcShortNameById.Remove(entry.Key);
+                else
+                    _player2NpcShortNameById[entry.Key] = entry.Value;
             }
         }
 
-        var total = tests.Length + (_npcAskGateService is null ? 0 : 2);
-        Monitor.Log($"Intent smoketest complete: pass={pass} fail={fail} total={total}", fail == 0 ? LogLevel.Info : LogLevel.Warn);
+        return (pass, fail, ambientTests.Length);
+    }
+
+    private (int Pass, int Fail, int Total) RunPlayerChatRoutingRegressionChecks()
+    {
+        const string npcId = "routing_smoke_npc";
+        const string ambientLine = "{\"npc_id\":\"routing_smoke_npc\",\"message\":\"Ambient chatter should not enter player chat.\"}";
+        const string playerReplyLine = "{\"npc_id\":\"routing_smoke_npc\",\"message\":\"Sure, I can chat for a minute.\"}";
+
+        var pass = 0;
+        var fail = 0;
+
+        try
+        {
+            ResetNpcRoutingSmokeState(npcId);
+
+            _npcUiPendingById[npcId] = 1;
+            var streamRoutingQueue = _npcResponseRoutingById.GetOrAdd(npcId, _ => new ConcurrentQueue<bool>());
+            streamRoutingQueue.Enqueue(true);
+            var streamRouted = CaptureNpcUiMessage(ambientLine, allowPlayerChatRouting: false);
+            var streamLeak = DequeueNpcUiMessage(npcId);
+            if (!streamRouted && streamLeak is null)
+            {
+                pass++;
+                Monitor.Log("[PASS] routing regression stream lane blocks ambient line from player chat", LogLevel.Info);
+            }
+            else
+            {
+                fail++;
+                Monitor.Log($"[FAIL] routing regression stream lane expected no route, got routed={streamRouted} leaked='{streamLeak}'", LogLevel.Warn);
+            }
+
+            ResetNpcRoutingSmokeState(npcId);
+
+            _npcUiPendingById[npcId] = 1;
+            var denyQueue = _npcResponseRoutingById.GetOrAdd(npcId, _ => new ConcurrentQueue<bool>());
+            denyQueue.Enqueue(false);
+            var denyRouted = CaptureNpcUiMessage(ambientLine, allowPlayerChatRouting: true);
+            var denyLeak = DequeueNpcUiMessage(npcId);
+            if (!denyRouted && denyLeak is null)
+            {
+                pass++;
+                Monitor.Log("[PASS] routing regression deny token blocks ambient line from player chat", LogLevel.Info);
+            }
+            else
+            {
+                fail++;
+                Monitor.Log($"[FAIL] routing regression deny token expected no route, got routed={denyRouted} leaked='{denyLeak}'", LogLevel.Warn);
+            }
+
+            ResetNpcRoutingSmokeState(npcId);
+
+            _npcUiPendingById[npcId] = 1;
+            var allowQueue = _npcResponseRoutingById.GetOrAdd(npcId, _ => new ConcurrentQueue<bool>());
+            allowQueue.Enqueue(true);
+            var allowRouted = CaptureNpcUiMessage(playerReplyLine, allowPlayerChatRouting: true);
+            var allowMsg = DequeueNpcUiMessage(npcId);
+            if (allowRouted && !string.IsNullOrWhiteSpace(allowMsg))
+            {
+                pass++;
+                Monitor.Log("[PASS] routing regression player lane still delivers intended chat reply", LogLevel.Info);
+            }
+            else
+            {
+                fail++;
+                Monitor.Log($"[FAIL] routing regression player lane expected routed reply, got routed={allowRouted} message='{allowMsg}'", LogLevel.Warn);
+            }
+        }
+        finally
+        {
+            ResetNpcRoutingSmokeState(npcId);
+        }
+
+        return (pass, fail, 3);
+    }
+
+    private void ResetNpcRoutingSmokeState(string npcId)
+    {
+        _npcUiMessagesById.TryRemove(npcId, out _);
+        _npcResponseRoutingById.TryRemove(npcId, out _);
+        _npcUiPendingById.TryRemove(npcId, out _);
+        _npcLastReceivedMessageById.TryRemove(npcId, out _);
+        _npcLastNonPlayerMessageById.TryRemove(npcId, out _);
+        _npcLastNonPlayerMessageUtcById.TryRemove(npcId, out _);
+        _npcLastPlayerPromptById.TryRemove(npcId, out _);
     }
 
     private void OnAnchorSmokeTestCommand(string name, string[] args)
@@ -3402,6 +4206,44 @@ public sealed class ModEntry : Mod
         Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
     }
 
+    private void TryShowSimulationMutationToast(NpcIntentResolveResult result, string intentLane, bool isAmbientContext)
+    {
+        if (!Context.IsWorldReady)
+            return;
+        if (result is null || string.IsNullOrWhiteSpace(result.Command))
+            return;
+        if (!string.Equals(intentLane, "auto", StringComparison.OrdinalIgnoreCase) && !isAmbientContext)
+            return;
+
+        var message = result.Command.ToLowerInvariant() switch
+        {
+            "apply_market_modifier" => $"Market shift: {QuestTextHelper.PrettyName(result.OutcomeId)} prices moved.",
+            "shift_interest_influence" => "Town groups shifted their focus.",
+            "adjust_town_sentiment" => $"Town mood shifted around {result.OutcomeId}.",
+            _ => string.Empty
+        };
+        if (string.IsNullOrWhiteSpace(message))
+            return;
+
+        if (_simulationToastDay != _state.Calendar.Day)
+        {
+            _simulationToastDay = _state.Calendar.Day;
+            _simulationToastsToday = 0;
+        }
+
+        if (_simulationToastsToday >= MaxSimulationToastsPerDay)
+            return;
+        if (_lastSimulationToastUtc != default
+            && DateTime.UtcNow - _lastSimulationToastUtc < TimeSpan.FromSeconds(SimulationToastCooldownSeconds))
+        {
+            return;
+        }
+
+        Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
+        _simulationToastsToday += 1;
+        _lastSimulationToastUtc = DateTime.UtcNow;
+    }
+
     private static SaveState CloneSaveState(SaveState state)
     {
         var json = JsonSerializer.Serialize(state);
@@ -3797,8 +4639,16 @@ public sealed class ModEntry : Mod
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
         var newsContext = BuildNewsAwarenessBlock();
-        var eventsContext = BuildRecentEventAwarenessBlock();
+        var eventsContext = BuildRecentEventAwarenessBlock(playerText);
         var playerAskedForRequest = IsPlayerAskingForQuest(playerText);
+        var effectiveContextTag = string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag!;
+        var commandPolicyRule = _commandPolicyService?.BuildPromptRule(effectiveContextTag) ?? string.Empty;
+        var ambientEventFirstRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
+            ? "AMBIENT_EVENT_RULE: Prefer record_town_event first when anything notable happened; keep command use sparse and skip commands when nothing meaningful occurred."
+            : string.Empty;
+        var ambientFamiliarityRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase) && heartLevel <= 2
+            ? "AMBIENT_TONE_RULE: Low-heart references to the player must stay neutral and guarded; avoid affectionate, over-familiar, or intimate framing."
+            : string.Empty;
         var manualIntentRule = contextTag switch
         {
             "manual_relationship" => "MANUAL_INTENT_RULE: Player explicitly asked a relationship check. If trust is low or context is poor, reject or defer in-character with a brief reason.",
@@ -3819,12 +4669,15 @@ public sealed class ModEntry : Mod
             "CANON_WORLD: Stardew Valley.",
             "CANON_TOWN: Pelican Town.",
             $"CANON_NPCS: [{canonNpcs}].",
-            $"CONTEXT: {(string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag)}.",
+            $"CONTEXT: {effectiveContextTag}.",
             "RULE: Never invent towns, regions, or citizens outside this canon list.",
             $"STYLE: Reply strictly in-character as {(string.IsNullOrWhiteSpace(npcName) ? "the addressed NPC" : npcName)}, concise, natural, no assistant-speak.",
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
+            commandPolicyRule,
+            ambientEventFirstRule,
+            ambientFamiliarityRule,
             speechStyleBlock,
             "RELATIONSHIP_RULE: Match familiarity to STATE: RelationshipHearts. At 0-2 hearts, keep distance, be concise, and avoid affectionate language.",
             "RELATIONSHIP_RULE: At 0-1 hearts, avoid warm enthusiasm and long monologues; answer briefly and cautiously unless the player asks follow-up details.",
@@ -3836,6 +4689,8 @@ public sealed class ModEntry : Mod
             "QUEST_RULE: Never give text-only task offers without propose_quest.",
             "QUEST_RULE: If no suitable request exists, explicitly say none is available in-character.",
             "QUEST_RULE: Do not proactively offer a new quest during normal small talk. Offer quests only when the player asks for work/request or explicitly agrees to help.",
+            "EVENT_QUALITY_RULE: record_town_event requires kind, summary, location, severity(1-5), visibility(local/public), and concise tags.",
+            "EVENT_QUALITY_RULE: Keep summary concrete, location specific, severity proportional, and tags short/non-duplicated.",
             "QUEST_TARGET_RULE: Do not default to parsnip. Use parsnip only when STATE: ParsnipCrisis is true; otherwise choose another valid crop target or decline.",
             "SOCIAL_RULE: Use adjust_reputation only for meaningful interaction outcomes, not routine greetings.",
             "INTEREST_RULE: Use shift_interest_influence only when the conversation clearly concerns town groups or priorities.",
@@ -3966,21 +4821,70 @@ public sealed class ModEntry : Mod
             $"bulletins=[{JoinContextItems(bulletinItems)}].";
     }
 
-    private string BuildRecentEventAwarenessBlock()
+    private string BuildRecentEventAwarenessBlock(string? playerText = null)
     {
         var day = _state.Calendar.Day;
-        var events = _state.TownMemory.Events
+        var focusTokens = ExtractContextFocusTokens(playerText);
+        var recent = _state.TownMemory.Events
             .Where(ev =>
                 ev.Day <= day
                 && ev.Day >= day - 3
                 && !string.IsNullOrWhiteSpace(ev.Summary))
-            .OrderByDescending(ev => ev.Day)
+            .ToList();
+
+        var publicRecent = recent
+            .Where(ev => string.Equals(ev.Visibility, "public", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var source = publicRecent.Count > 0 ? publicRecent : recent;
+
+        var events = source
+            .OrderByDescending(ev =>
+            {
+                var visibilityBoost = string.Equals(ev.Visibility, "public", StringComparison.OrdinalIgnoreCase) ? 6 : 0;
+                var relevanceBoost = CountEventFocusMatches(ev, focusTokens) * 3;
+                var recencyBoost = Math.Max(0, 3 - (day - ev.Day));
+                return (ev.Severity * 4) + visibilityBoost + relevanceBoost + recencyBoost;
+            })
+            .ThenByDescending(ev => ev.Day)
             .ThenByDescending(ev => ev.Severity)
             .Take(3)
             .Select(ev => $"{ev.Kind}:{TrimForContext(ev.Summary, 44, "event")}")
             .ToArray();
 
         return $"RECENT_EVENTS: [{JoinContextItems(events)}].";
+    }
+
+    private static HashSet<string> ExtractContextFocusTokens(string? playerText)
+    {
+        if (string.IsNullOrWhiteSpace(playerText))
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        return playerText
+            .ToLowerInvariant()
+            .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '\'', '"', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries)
+            .Where(token => token.Length >= 4)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(12)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static int CountEventFocusMatches(TownMemoryEvent ev, HashSet<string> focusTokens)
+    {
+        if (focusTokens.Count == 0)
+            return 0;
+
+        var count = 0;
+        foreach (var token in focusTokens)
+        {
+            if (ev.Summary.Contains(token, StringComparison.OrdinalIgnoreCase)
+                || ev.Kind.Contains(token, StringComparison.OrdinalIgnoreCase)
+                || ev.Tags.Any(tag => tag.Contains(token, StringComparison.OrdinalIgnoreCase)))
+            {
+                count += 1;
+            }
+        }
+
+        return count;
     }
 
     private static bool IsEditorNewsSource(string? sourceNpc)
@@ -4285,11 +5189,92 @@ public sealed class ModEntry : Mod
                 // ignore npc_id extraction failure; resolver still handles command parsing.
             }
 
+            var attemptedCommand = TryExtractCommandNameFromLine(line);
+            var extractedIntentId = TryExtractIntentIdFromLine(line);
+            var isAmbientContext = IsAmbientContext(sourceNpcId);
+            if (!string.IsNullOrWhiteSpace(attemptedCommand))
+            {
+                var contextTag = ResolveContextTagForPolicy(sourceNpcId);
+                var policyRejectCode = string.Empty;
+                var policyRejectReason = string.Empty;
+
+                if (_commandPolicyService is not null)
+                {
+                    var policyDecision = _commandPolicyService.Evaluate(contextTag, attemptedCommand);
+                    contextTag = policyDecision.ContextTag;
+                    if (!policyDecision.Allowed)
+                    {
+                        policyRejectCode = policyDecision.ReasonCode;
+                        policyRejectReason = $"command '{attemptedCommand}' denied for context '{contextTag}'";
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(policyRejectCode)
+                    && isAmbientContext
+                    && attemptedCommand.Equals("record_town_event", StringComparison.OrdinalIgnoreCase))
+                {
+                    _state.Telemetry.Daily.AmbientCommandAppliedByType.TryGetValue("record_town_event", out var eventCountToday);
+                    if (eventCountToday >= AmbientRecordTownEventDailyCap)
+                    {
+                        policyRejectCode = "E_POLICY_AMBIENT_EVENT_CAP";
+                        policyRejectReason = $"ambient record_town_event daily cap reached ({AmbientRecordTownEventDailyCap})";
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(policyRejectCode)
+                    && isAmbientContext
+                    && attemptedCommand.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase))
+                {
+                    var confidence = TryExtractNumericArgumentFromLine(line, "confidence");
+                    if (!confidence.HasValue || confidence.Value < AmbientPublishRumorMinConfidence)
+                    {
+                        policyRejectCode = "E_POLICY_PUBLISH_CONFIDENCE_LOW";
+                        policyRejectReason = $"ambient publish_rumor requires confidence >= {AmbientPublishRumorMinConfidence:F2}";
+                    }
+                    else if (!HasRecentVisibleTownEventForPublish(minSeverity: 1, requirePublicVisibility: false))
+                    {
+                        policyRejectCode = "E_POLICY_PUBLISH_VISIBILITY_LOW";
+                        policyRejectReason = "ambient publish_rumor requires a recent visible town event signal";
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(policyRejectCode)
+                    && isAmbientContext
+                    && attemptedCommand.Equals("publish_article", StringComparison.OrdinalIgnoreCase)
+                    && !HasRecentVisibleTownEventForPublish(minSeverity: 2, requirePublicVisibility: true))
+                {
+                    policyRejectCode = "E_POLICY_PUBLISH_VISIBILITY_LOW";
+                    policyRejectReason = "ambient publish_article requires a recent public town event with severity >= 2";
+                }
+
+                if (!string.IsNullOrWhiteSpace(policyRejectCode))
+                {
+                    var policyLane = ResolveIntentLane(extractedIntentId, sourceNpcId);
+                    _state.Telemetry.Daily.NpcIntentsRejected += 1;
+                    if (policyLane == "auto")
+                        _state.Telemetry.Daily.NpcIntentsAutoRejected += 1;
+                    else if (policyLane == "manual")
+                        _state.Telemetry.Daily.NpcIntentsManualRejected += 1;
+
+                    if (isAmbientContext)
+                        IncrementCounter(_state.Telemetry.Daily.AmbientCommandRejectedByType, attemptedCommand);
+                    IncrementCounter(_state.Telemetry.Daily.NpcPolicyRejectByReason, policyRejectCode);
+
+                    var policyResult = NpcIntentResolveResult.Rejected(policyRejectReason, policyRejectCode);
+                    Monitor.Log($"NPC intent policy rejected lane={policyLane} [{policyRejectCode}] context={contextTag} cmd={attemptedCommand} reason={policyRejectReason}", LogLevel.Warn);
+                    TryRecordAmbientLaneSnapshot(sourceNpcId, policyResult, policyLane, attemptedCommand);
+                    return false;
+                }
+            }
+
             var result = _intentResolver.ResolveFromStreamLine(_state, line);
             if (!result.HasIntent)
                 return false;
 
-            var intentLane = ResolveIntentLane(result.IntentId, sourceNpcId);
+            var intentLane = ResolveIntentLane(
+                !string.IsNullOrWhiteSpace(result.IntentId) ? result.IntentId : extractedIntentId,
+                sourceNpcId);
+            var metricCommand = ResolveCommandNameForMetrics(result, attemptedCommand);
 
             if (result.IsRejected)
             {
@@ -4299,14 +5284,21 @@ public sealed class ModEntry : Mod
                 else if (intentLane == "manual")
                     _state.Telemetry.Daily.NpcIntentsManualRejected += 1;
 
+                if (isAmbientContext)
+                    IncrementCounter(_state.Telemetry.Daily.AmbientCommandRejectedByType, metricCommand);
+
                 Monitor.Log($"NPC intent rejected lane={intentLane} [{result.ReasonCode}]: {result.Reason}", LogLevel.Warn);
+                TryRecordAmbientLaneSnapshot(sourceNpcId, result, intentLane, attemptedCommand);
                 return false;
             }
 
             if (result.IsDuplicate)
             {
                 _state.Telemetry.Daily.NpcIntentsDuplicate += 1;
+                if (isAmbientContext)
+                    IncrementCounter(_state.Telemetry.Daily.AmbientCommandDuplicateByType, metricCommand);
                 Monitor.Log($"NPC intent duplicate ignored: {result.IntentId}", LogLevel.Debug);
+                TryRecordAmbientLaneSnapshot(sourceNpcId, result, intentLane, attemptedCommand);
                 return false;
             }
 
@@ -4321,8 +5313,12 @@ public sealed class ModEntry : Mod
 
             _state.Telemetry.Daily.NpcCommandAppliedByType.TryGetValue(result.Command, out var cmdCount);
             _state.Telemetry.Daily.NpcCommandAppliedByType[result.Command] = cmdCount + 1;
+            if (isAmbientContext)
+                IncrementCounter(_state.Telemetry.Daily.AmbientCommandAppliedByType, metricCommand);
 
             Monitor.Log($"Applied NPC command lane={intentLane}: {result.Command} -> outcome {result.OutcomeId} (intent={result.IntentId})", LogLevel.Info);
+            TryRecordAmbientLaneSnapshot(sourceNpcId, result, intentLane, attemptedCommand);
+            TryShowSimulationMutationToast(result, intentLane, isAmbientContext);
 
             if (result.Proposal is not null)
             {
@@ -4387,14 +5383,353 @@ public sealed class ModEntry : Mod
         return "chat";
     }
 
+    private string ResolveContextTagForPolicy(string? sourceNpcId)
+    {
+        if (!string.IsNullOrWhiteSpace(sourceNpcId)
+            && _npcLastContextTagById.TryGetValue(sourceNpcId, out var contextTag)
+            && !string.IsNullOrWhiteSpace(contextTag))
+        {
+            return contextTag;
+        }
+
+        return "player_chat";
+    }
+
+    private bool IsAmbientContext(string? sourceNpcId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceNpcId))
+            return false;
+
+        return _npcLastContextTagById.TryGetValue(sourceNpcId, out var contextTag)
+            && string.Equals(contextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveCommandNameForMetrics(NpcIntentResolveResult result, string attemptedCommand)
+    {
+        if (!string.IsNullOrWhiteSpace(result.Command))
+            return result.Command;
+
+        return string.IsNullOrWhiteSpace(attemptedCommand) ? "(unknown)" : attemptedCommand;
+    }
+
+    private static void IncrementCounter(Dictionary<string, int> counters, string key)
+    {
+        var normalizedKey = string.IsNullOrWhiteSpace(key) ? "(unknown)" : key.Trim().ToLowerInvariant();
+        counters.TryGetValue(normalizedKey, out var count);
+        counters[normalizedKey] = count + 1;
+    }
+
+    private static string FormatCounterMap(Dictionary<string, int> counters)
+    {
+        if (counters is null || counters.Count == 0)
+            return "(none)";
+
+        return string.Join(", ",
+            counters
+                .OrderByDescending(kv => kv.Value)
+                .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Take(6)
+                .Select(kv => $"{kv.Key}:{kv.Value}"));
+    }
+
+    private void TryRecordAmbientLaneSnapshot(string? sourceNpcId, NpcIntentResolveResult result, string intentLane, string attemptedCommand)
+    {
+        if (string.IsNullOrWhiteSpace(sourceNpcId))
+            return;
+
+        if (!_npcLastContextTagById.TryGetValue(sourceNpcId, out var contextTag)
+            || !string.Equals(contextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var sourceLabel = _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
+            ? shortName
+            : sourceNpcId;
+
+        var command = !string.IsNullOrWhiteSpace(result.Command)
+            ? result.Command
+            : (string.IsNullOrWhiteSpace(attemptedCommand) ? "(unknown)" : attemptedCommand);
+
+        string outcome;
+        if (result.IsRejected)
+            outcome = $"rejected[{result.ReasonCode}] {TruncateDebugText(result.Reason, 120)}";
+        else if (result.IsDuplicate)
+            outcome = "duplicate";
+        else if (result.AppliedOk)
+            outcome = $"applied outcome={result.OutcomeId}";
+        else
+            outcome = "no-op";
+
+        var snapshot = $"{DateTime.UtcNow:HH:mm:ss} npc={sourceLabel} context={contextTag} lane={intentLane} cmd={command} {outcome}";
+        _ambientLaneDebugSnapshots.Enqueue(snapshot);
+        while (_ambientLaneDebugSnapshots.Count > AmbientLaneDebugSnapshotLimit && _ambientLaneDebugSnapshots.TryDequeue(out _))
+        {
+        }
+    }
+
+    private bool ShouldIgnoreLowInformationAmbientOutput(string line, string? sourceNpcId)
+    {
+        if (!IsAmbientContext(sourceNpcId))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(TryExtractCommandNameFromLine(line)))
+            return false;
+
+        var message = TryExtractMessageFromLine(line);
+        if (string.IsNullOrWhiteSpace(message))
+            return true;
+
+        var normalized = Regex.Replace(message.Trim().ToLowerInvariant(), @"\s+", " ");
+        if (LowInfoAmbientMessages.Contains(normalized))
+            return true;
+
+        var wordCount = normalized
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Length;
+        if (normalized.Length < 22 && wordCount <= 4)
+            return true;
+
+        if (normalized.StartsWith("nothing to report", StringComparison.Ordinal)
+            || normalized.StartsWith("nothing happened", StringComparison.Ordinal)
+            || normalized.StartsWith("no updates", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string TryExtractMessageFromLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return string.Empty;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
+                return string.Empty;
+
+            return (msgEl.GetString() ?? string.Empty).Trim();
+        }
+        catch
+        {
+        }
+
+        return string.Empty;
+    }
+
+    private bool HasRecentVisibleTownEventForPublish(int minSeverity, bool requirePublicVisibility, int maxAgeDays = 2)
+    {
+        var currentDay = _state.Calendar.Day;
+        foreach (var ev in _state.TownMemory.Events)
+        {
+            var age = currentDay - ev.Day;
+            if (age < 0 || age > maxAgeDays)
+                continue;
+            if (ev.Severity < minSeverity)
+                continue;
+            if (requirePublicVisibility && !string.Equals(ev.Visibility, "public", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (string.IsNullOrWhiteSpace(ev.Summary))
+                continue;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static float? TryExtractNumericArgumentFromLine(string line, string argumentName)
+    {
+        if (string.IsNullOrWhiteSpace(line) || string.IsNullOrWhiteSpace(argumentName))
+            return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (TryReadNumericArgument(root, argumentName, out var directValue))
+                return directValue;
+
+            if (!root.TryGetProperty("command", out var commandEl) || commandEl.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (var commandItem in commandEl.EnumerateArray())
+            {
+                if (TryReadNumericArgument(commandItem, argumentName, out var nestedValue))
+                    return nestedValue;
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
+    }
+
+    private static bool TryReadNumericArgument(JsonElement element, string argumentName, out float value)
+    {
+        value = 0f;
+        if (element.ValueKind != JsonValueKind.Object)
+            return false;
+        if (!element.TryGetProperty("arguments", out var argsEl) || argsEl.ValueKind != JsonValueKind.Object)
+            return false;
+        if (!argsEl.TryGetProperty(argumentName, out var valueEl) || valueEl.ValueKind != JsonValueKind.Number)
+            return false;
+        if (!valueEl.TryGetSingle(out value))
+            return false;
+
+        return true;
+    }
+
+    private static string TryExtractIntentIdFromLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return string.Empty;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("intent_id", out var intentIdEl) || intentIdEl.ValueKind != JsonValueKind.String)
+                return string.Empty;
+
+            return (intentIdEl.GetString() ?? string.Empty).Trim();
+        }
+        catch
+        {
+        }
+
+        return string.Empty;
+    }
+
+    private static string TryExtractCommandNameFromLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return string.Empty;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("command", out var commandEl))
+                return string.Empty;
+
+            if (commandEl.ValueKind == JsonValueKind.String)
+                return (commandEl.GetString() ?? string.Empty).Trim();
+
+            if (commandEl.ValueKind != JsonValueKind.Array)
+                return string.Empty;
+
+            foreach (var cmd in commandEl.EnumerateArray())
+            {
+                if (cmd.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                if (!cmd.TryGetProperty("name", out var nameEl) || nameEl.ValueKind != JsonValueKind.String)
+                    continue;
+
+                return (nameEl.GetString() ?? string.Empty).Trim();
+            }
+        }
+        catch
+        {
+        }
+
+        return string.Empty;
+    }
+
+    private static string TruncateDebugText(string? value, int maxLength)
+    {
+        var text = (value ?? string.Empty).Trim();
+        if (text.Length <= maxLength)
+            return text;
+
+        return text[..Math.Max(1, maxLength - 3)] + "...";
+    }
+
     private void TryRunAutomaticNpcCommandExposureHooks()
     {
         if (!Context.IsWorldReady || _intentResolver is null)
             return;
 
         TryRunAutoQuestLifecycleReputationHooks();
+        if (!_config.EnableAmbientConsequencePipeline)
+            return;
+        if (!HasAmbientCadenceMutationAllowance())
+            return;
+        TryRunAutoSocialReputationFromEvents();
         TryRunAutoMarketModifierHooks();
         TryRunAutoInterestShiftHooks();
+        TryRunAutoQuestFromEventsHooks();
+    }
+
+    private bool HasAmbientCadenceMutationAllowance()
+    {
+        _state.Telemetry.Daily.AmbientCommandAppliedByType.TryGetValue("record_town_event", out var ambientEventsToday);
+        var cadenceKey = $"auto:cadence:check:{_state.Calendar.Day}:{ambientEventsToday}";
+        if (ambientEventsToday <= 0)
+        {
+            RecordAmbientCadenceSkipOnce(cadenceKey);
+            return false;
+        }
+
+        var allowedMutations = 1 + ((ambientEventsToday - 1) / Math.Max(1, AmbientEventsPerAdditionalAutoMutation));
+        var appliedMutations = CountAppliedAmbientConsequenceMutationsToday();
+        if (appliedMutations >= allowedMutations)
+        {
+            RecordAmbientCadenceSkipOnce(cadenceKey);
+            return false;
+        }
+
+        return true;
+    }
+
+    private int CountAppliedAmbientConsequenceMutationsToday()
+    {
+        var today = _state.Calendar.Day;
+        return _state.Facts.ProcessedIntents.Count(entry =>
+            IsAmbientConsequenceAutoMutation(entry.Key, entry.Value, today));
+    }
+
+    private static bool IsAmbientConsequenceAutoMutation(string intentId, ProcessedIntentValue processed, int today)
+    {
+        if (processed is null)
+            return false;
+        if (processed.Day != today)
+            return false;
+        if (!processed.Status.Equals("applied", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (string.IsNullOrWhiteSpace(intentId))
+            return false;
+
+        if (intentId.StartsWith("auto_rep_evt_", StringComparison.OrdinalIgnoreCase))
+            return processed.Command.Equals("adjust_reputation", StringComparison.OrdinalIgnoreCase);
+        if (intentId.StartsWith("auto_interest_", StringComparison.OrdinalIgnoreCase))
+            return processed.Command.Equals("shift_interest_influence", StringComparison.OrdinalIgnoreCase);
+        if (intentId.StartsWith("auto_mkt_", StringComparison.OrdinalIgnoreCase))
+            return processed.Command.Equals("apply_market_modifier", StringComparison.OrdinalIgnoreCase);
+        if (intentId.StartsWith("auto_evt_q_", StringComparison.OrdinalIgnoreCase))
+            return processed.Command.Equals("propose_quest", StringComparison.OrdinalIgnoreCase);
+
+        return false;
+    }
+
+    private void RecordAmbientCadenceSkipOnce(string key)
+    {
+        if (_state.Facts.Facts.ContainsKey(key))
+            return;
+
+        _state.Facts.Facts[key] = new FactValue
+        {
+            Value = true,
+            SetDay = _state.Calendar.Day,
+            Source = "auto_command"
+        };
+        _state.Telemetry.Daily.AmbientCadenceSkips += 1;
     }
 
     private void TryRunAutoQuestLifecycleReputationHooks()
@@ -4438,17 +5773,88 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private void TryRunAutoSocialReputationFromEvents()
+    {
+        if (_ambientConsequenceService is null)
+            return;
+
+        var dayGateKey = $"auto:rep:event:day:{_state.Calendar.Day}";
+        if (_state.Facts.Facts.ContainsKey(dayGateKey))
+            return;
+
+        var recentEvents = _ambientConsequenceService
+            .ReadRecentEvents(_state, maxAgeDays: 1, minSeverity: 2, maxCount: 8)
+            .OrderByDescending(ev => ev.Severity)
+            .ThenByDescending(ev => ev.Day)
+            .ThenBy(ev => ev.EventId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (recentEvents.Count == 0)
+            return;
+
+        foreach (var ev in recentEvents)
+        {
+            var target = ResolveNpcTargetFromTownEvent(ev);
+            if (string.IsNullOrWhiteSpace(target))
+                continue;
+
+            var baseDelta = ev.Kind.Equals("incident", StringComparison.OrdinalIgnoreCase)
+                || ev.Kind.Equals("fainting", StringComparison.OrdinalIgnoreCase)
+                ? -1
+                : 1;
+            if (ev.Severity >= 4)
+                baseDelta *= 2;
+
+            var delta = Math.Clamp(baseDelta, -2, 2);
+            var eventToken = Regex.Replace(ev.EventId ?? "evt", @"[^a-zA-Z0-9_]+", "_");
+            var intentId = $"auto_rep_evt_{_state.Calendar.Day}_{eventToken}_{target}";
+            TryApplyAutoIntentOnce(
+                intentId,
+                "auto_town",
+                "adjust_reputation",
+                new
+                {
+                    target,
+                    delta,
+                    reason = $"auto:event_pattern:{ev.Kind}:{ev.Visibility}"
+                });
+
+            _state.Facts.Facts[dayGateKey] = new FactValue
+            {
+                Value = true,
+                SetDay = _state.Calendar.Day,
+                Source = "auto_command"
+            };
+            break;
+        }
+    }
+
     private void TryRunAutoMarketModifierHooks()
     {
-        if (_state.Economy.Crops.Count == 0)
+        if (_ambientConsequenceService is null || _state.Economy.Crops.Count == 0)
             return;
+
+        var upGateKey = $"auto:market:up:day:{_state.Calendar.Day}";
+        var downGateKey = $"auto:market:down:day:{_state.Calendar.Day}";
+        var snapshot = _ambientConsequenceService.BuildSignalSnapshot(_state, maxAgeDays: 2, minSeverity: 2, maxCount: 20);
+        var marketSignals = GetSignalCount(snapshot.KindCounts, "market")
+            + GetSignalCount(snapshot.TagCounts, "market", "price", "demand", "supply", "scarcity", "shortage", "oversupply", "surplus");
+        if (marketSignals < AutoMarketMinSignals)
+            return;
+
+        var scarcitySignals = GetSignalCount(snapshot.TagCounts, "scarcity", "shortage", "demand", "stockout");
+        var oversupplySignals = GetSignalCount(snapshot.TagCounts, "oversupply", "surplus", "glut", "flooded", "supply");
 
         var scarcityCandidate = _state.Economy.Crops
             .OrderByDescending(kv => kv.Value.ScarcityBonus)
             .ThenByDescending(kv => kv.Value.TrendEma)
             .FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(scarcityCandidate.Key) && scarcityCandidate.Value.ScarcityBonus >= 0.04f)
+        if (!_state.Facts.Facts.ContainsKey(upGateKey)
+            && !string.IsNullOrWhiteSpace(scarcityCandidate.Key)
+            && !WasAutoCommandTargetUsedYesterday("apply_market_modifier", scarcityCandidate.Key)
+            && scarcityCandidate.Value.ScarcityBonus >= AutoMarketScarcityThreshold
+            && (scarcitySignals > 0 || scarcityCandidate.Value.ScarcityBonus >= AutoMarketStrongScarcityThreshold))
         {
+            var deltaUp = scarcitySignals >= 2 ? 0.07f : 0.05f;
             var intentId = $"auto_mkt_up_{_state.Calendar.Day}_{scarcityCandidate.Key}";
             TryApplyAutoIntentOnce(
                 intentId,
@@ -4457,20 +5863,30 @@ public sealed class ModEntry : Mod
                 new
                 {
                     crop = scarcityCandidate.Key,
-                    delta_pct = 0.05f,
+                    delta_pct = deltaUp,
                     duration_days = 2,
-                    reason = "auto:market_scarcity_spike"
+                    reason = "auto:market_scarcity_event_signal"
                 });
+            _state.Facts.Facts[upGateKey] = new FactValue
+            {
+                Value = true,
+                SetDay = _state.Calendar.Day,
+                Source = "auto_command"
+            };
         }
 
         var oversupplyCandidate = _state.Economy.Crops
             .OrderByDescending(kv => kv.Value.RollingSellVolume7D)
             .ThenBy(kv => kv.Value.SupplyPressureFactor)
             .FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(oversupplyCandidate.Key)
+        if (!_state.Facts.Facts.ContainsKey(downGateKey)
+            && !string.IsNullOrWhiteSpace(oversupplyCandidate.Key)
+            && !WasAutoCommandTargetUsedYesterday("apply_market_modifier", oversupplyCandidate.Key)
             && oversupplyCandidate.Value.RollingSellVolume7D > 0
-            && oversupplyCandidate.Value.SupplyPressureFactor <= 0.92f)
+            && oversupplyCandidate.Value.SupplyPressureFactor <= AutoMarketOversupplyThreshold
+            && (oversupplySignals > 0 || oversupplyCandidate.Value.SupplyPressureFactor <= AutoMarketDeepOversupplyThreshold))
         {
+            var deltaDown = oversupplySignals >= 2 ? -0.07f : -0.05f;
             var intentId = $"auto_mkt_down_{_state.Calendar.Day}_{oversupplyCandidate.Key}";
             TryApplyAutoIntentOnce(
                 intentId,
@@ -4479,26 +5895,38 @@ public sealed class ModEntry : Mod
                 new
                 {
                     crop = oversupplyCandidate.Key,
-                    delta_pct = -0.05f,
+                    delta_pct = deltaDown,
                     duration_days = 2,
-                    reason = "auto:market_oversupply_pressure"
+                    reason = "auto:market_oversupply_event_signal"
                 });
+            _state.Facts.Facts[downGateKey] = new FactValue
+            {
+                Value = true,
+                SetDay = _state.Calendar.Day,
+                Source = "auto_command"
+            };
         }
     }
 
     private void TryRunAutoInterestShiftHooks()
     {
-        var todayEvents = _state.TownMemory.Events
-            .Where(ev => ev.Day == _state.Calendar.Day)
-            .ToList();
-        if (todayEvents.Count == 0)
+        if (_ambientConsequenceService is null)
             return;
 
-        var interest = ResolveInterestFromTownEvents(todayEvents);
-        if (string.IsNullOrWhiteSpace(interest))
+        var dayGateKey = $"auto:interest:day:{_state.Calendar.Day}";
+        if (_state.Facts.Facts.ContainsKey(dayGateKey))
             return;
 
-        var intentId = $"auto_interest_{_state.Calendar.Day}_{interest}";
+        var snapshot = _ambientConsequenceService.BuildSignalSnapshot(_state, maxAgeDays: 2, minSeverity: 2, maxCount: 20);
+        if (snapshot.TotalEvents < 2)
+            return;
+        if (!TryResolveInterestFromRepeatedSignals(snapshot, out var interest, out var signalCount))
+            return;
+        if (WasAutoCommandTargetUsedYesterday("shift_interest_influence", interest))
+            return;
+
+        var delta = signalCount >= 4 ? 2 : 1;
+        var intentId = $"auto_interest_{_state.Calendar.Day}_{interest}_{signalCount}";
         TryApplyAutoIntentOnce(
             intentId,
             "auto_town",
@@ -4506,9 +5934,68 @@ public sealed class ModEntry : Mod
             new
             {
                 interest,
-                delta = 1,
-                reason = "auto:daily_town_event_signal"
+                delta,
+                reason = $"auto:repeated_topic_signal:{signalCount}"
             });
+        _state.Facts.Facts[dayGateKey] = new FactValue
+        {
+            Value = true,
+            SetDay = _state.Calendar.Day,
+            Source = "auto_command"
+        };
+    }
+
+    private void TryRunAutoQuestFromEventsHooks()
+    {
+        if (_ambientConsequenceService is null)
+            return;
+
+        var dayGateKey = $"auto:quest:event:day:{_state.Calendar.Day}";
+        if (_state.Facts.Facts.ContainsKey(dayGateKey))
+            return;
+        if (_state.Quests.Available.Count + _state.Quests.Active.Count >= 8)
+            return;
+
+        var recentEvents = _ambientConsequenceService
+            .ReadRecentEvents(_state, maxAgeDays: 1, minSeverity: 2, maxCount: 12)
+            .OrderByDescending(ev => ev.Severity)
+            .ThenByDescending(ev => ev.Day)
+            .ThenBy(ev => ev.EventId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (recentEvents.Count == 0)
+            return;
+
+        foreach (var ev in recentEvents)
+        {
+            if (!TryBuildQuestCandidateFromEvent(ev, out var templateId, out var target, out var urgency))
+                continue;
+            if (!IsQuestCandidateEligible(templateId, target))
+                continue;
+            if (WasAutoQuestMotifUsedYesterday(templateId, target))
+                continue;
+
+            var eventToken = Regex.Replace(ev.EventId ?? "evt", @"[^a-zA-Z0-9_]+", "_");
+            var targetToken = Regex.Replace(target, @"[^a-zA-Z0-9_]+", "_");
+            var intentId = $"auto_evt_q_{_state.Calendar.Day}_{eventToken}_{templateId}_{targetToken}";
+            TryApplyAutoIntentOnce(
+                intentId,
+                "auto_town",
+                "propose_quest",
+                new
+                {
+                    template_id = templateId,
+                    target,
+                    urgency
+                });
+
+            _state.Facts.Facts[dayGateKey] = new FactValue
+            {
+                Value = true,
+                SetDay = _state.Calendar.Day,
+                Source = "auto_command"
+            };
+            break;
+        }
     }
 
     private void TryApplyAutoIntentOnce(string intentId, string npcId, string command, object arguments)
@@ -4516,6 +6003,12 @@ public sealed class ModEntry : Mod
         var attemptKey = $"auto:intent:attempted:{intentId}";
         if (_state.Facts.Facts.ContainsKey(attemptKey))
             return;
+        if (!HasAutoMutationBudgetCapacity(command))
+        {
+            var axis = ResolveMutationAxis(command);
+            Monitor.Log($"Skipped auto intent due daily budget axis={axis} command={command} intent={intentId}", LogLevel.Trace);
+            return;
+        }
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -4525,13 +6018,200 @@ public sealed class ModEntry : Mod
             arguments
         });
 
-        TryApplyNpcCommandFromLine(payload);
+        var applied = TryApplyNpcCommandFromLine(payload);
+        if (applied)
+            RecordAutoMutationBudgetUsage(command, intentId);
         _state.Facts.Facts[attemptKey] = new FactValue
         {
             Value = true,
             SetDay = _state.Calendar.Day,
             Source = "auto_command"
         };
+    }
+
+    private bool HasAutoMutationBudgetCapacity(string command)
+    {
+        var axis = ResolveMutationAxis(command);
+        if (string.IsNullOrWhiteSpace(axis))
+            return true;
+        if (!AutoMutationBudgetByAxis.TryGetValue(axis, out var budget) || budget <= 0)
+            return true;
+
+        var prefix = $"auto:budget:{_state.Calendar.Day}:{axis}:";
+        var used = _state.Facts.Facts.Keys.Count(key => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        return used < budget;
+    }
+
+    private void RecordAutoMutationBudgetUsage(string command, string intentId)
+    {
+        var axis = ResolveMutationAxis(command);
+        if (string.IsNullOrWhiteSpace(axis))
+            return;
+
+        var key = $"auto:budget:{_state.Calendar.Day}:{axis}:{intentId}";
+        _state.Facts.Facts[key] = new FactValue
+        {
+            Value = true,
+            SetDay = _state.Calendar.Day,
+            Source = "auto_command"
+        };
+    }
+
+    private static string ResolveMutationAxis(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command))
+            return string.Empty;
+
+        return command.Trim().ToLowerInvariant() switch
+        {
+            "adjust_reputation" => "social",
+            "shift_interest_influence" => "interest",
+            "apply_market_modifier" => "market",
+            "propose_quest" => "quest",
+            _ => string.Empty
+        };
+    }
+
+    private bool TryBuildQuestCandidateFromEvent(TownMemoryEvent ev, out string templateId, out string target, out string urgency)
+    {
+        templateId = string.Empty;
+        target = string.Empty;
+        urgency = "low";
+
+        var severity = Math.Clamp(ev.Severity, 1, 5);
+        urgency = severity >= 4 ? "high" : severity == 3 ? "medium" : "low";
+
+        var cropTarget = ResolveCropTargetFromTownEvent(ev);
+        if (!string.IsNullOrWhiteSpace(cropTarget)
+            && (ev.Kind.Equals("market", StringComparison.OrdinalIgnoreCase)
+                || ev.Tags.Any(tag => tag.Contains("market", StringComparison.OrdinalIgnoreCase))
+                || ev.Tags.Any(tag => tag.Contains("harvest", StringComparison.OrdinalIgnoreCase))))
+        {
+            templateId = "gather_crop";
+            target = cropTarget;
+            urgency = TuneEventQuestUrgency(templateId, target, urgency);
+            return true;
+        }
+
+        if (ev.Kind.Equals("incident", StringComparison.OrdinalIgnoreCase)
+            || ev.Tags.Any(tag =>
+                tag.Contains("mine", StringComparison.OrdinalIgnoreCase)
+                || tag.Contains("cave", StringComparison.OrdinalIgnoreCase)
+                || tag.Contains("ore", StringComparison.OrdinalIgnoreCase)))
+        {
+            templateId = "mine_resource";
+            target = ev.Tags.Any(tag => tag.Contains("iron", StringComparison.OrdinalIgnoreCase))
+                ? "iron_ore"
+                : "copper_ore";
+            urgency = TuneEventQuestUrgency(templateId, target, urgency);
+            return true;
+        }
+
+        var visitTarget = ResolveNpcTargetFromTownEvent(ev);
+        if (!string.IsNullOrWhiteSpace(visitTarget)
+            && (ev.Kind.Equals("social", StringComparison.OrdinalIgnoreCase)
+                || ev.Kind.Equals("community", StringComparison.OrdinalIgnoreCase)))
+        {
+            templateId = "social_visit";
+            target = CultureInfo.InvariantCulture.TextInfo.ToTitleCase(visitTarget);
+            urgency = TuneEventQuestUrgency(templateId, target, urgency);
+            return true;
+        }
+
+        return false;
+    }
+
+    private string TuneEventQuestUrgency(string templateId, string target, string baseUrgency)
+    {
+        var score = baseUrgency.ToLowerInvariant() switch
+        {
+            "high" => 3,
+            "medium" => 2,
+            _ => 1
+        };
+
+        if (templateId.Equals("gather_crop", StringComparison.OrdinalIgnoreCase)
+            && _state.Economy.Crops.TryGetValue(target, out var crop))
+        {
+            var unitValue = crop.PriceToday > 0 ? crop.PriceToday : crop.BasePrice;
+            if (unitValue >= 220)
+                score = Math.Max(score, 3);
+            else if (unitValue >= 140)
+                score = Math.Max(score, 2);
+        }
+        else if (templateId.Equals("mine_resource", StringComparison.OrdinalIgnoreCase))
+        {
+            if (target.Equals("gold_ore", StringComparison.OrdinalIgnoreCase))
+                score = Math.Max(score, 3);
+            else if (target.Equals("iron_ore", StringComparison.OrdinalIgnoreCase))
+                score = Math.Max(score, 2);
+        }
+
+        return score switch
+        {
+            >= 3 => "high",
+            2 => "medium",
+            _ => "low"
+        };
+    }
+
+    private bool IsQuestCandidateEligible(string templateId, string target)
+    {
+        if (string.IsNullOrWhiteSpace(templateId) || string.IsNullOrWhiteSpace(target))
+            return false;
+
+        return !_state.Quests.Available.Any(q =>
+                   q.TemplateId.Equals(templateId, StringComparison.OrdinalIgnoreCase)
+                   && q.TargetItem.Equals(target, StringComparison.OrdinalIgnoreCase))
+               && !_state.Quests.Active.Any(q =>
+                   q.TemplateId.Equals(templateId, StringComparison.OrdinalIgnoreCase)
+                   && q.TargetItem.Equals(target, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string ResolveCropTargetFromTownEvent(TownMemoryEvent ev)
+    {
+        var cropKeys = _state.Economy.Crops.Keys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(key => key.Trim())
+            .ToList();
+        if (cropKeys.Count == 0)
+            return string.Empty;
+
+        foreach (var tag in ev.Tags ?? Array.Empty<string>())
+        {
+            var match = cropKeys.FirstOrDefault(crop => crop.Equals(tag, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(match))
+                return match.ToLowerInvariant();
+        }
+
+        foreach (var crop in cropKeys)
+        {
+            if (ev.Summary.Contains(crop, StringComparison.OrdinalIgnoreCase))
+                return crop.ToLowerInvariant();
+        }
+
+        return string.Empty;
+    }
+
+    private static string ResolveNpcTargetFromTownEvent(TownMemoryEvent ev)
+    {
+        foreach (var tag in ev.Tags ?? Array.Empty<string>())
+        {
+            var match = VanillaNpcRoster.FirstOrDefault(name => string.Equals(name, tag, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(match))
+                return match.ToLowerInvariant();
+        }
+
+        foreach (var name in VanillaNpcRoster)
+        {
+            if (ev.Summary.Contains(name, StringComparison.OrdinalIgnoreCase)
+                || ev.Location.Contains(name, StringComparison.OrdinalIgnoreCase))
+            {
+                return name.ToLowerInvariant();
+            }
+        }
+
+        return string.Empty;
     }
 
     private string ResolveQuestIssuerById(string questId)
@@ -4566,24 +6246,140 @@ public sealed class ModEntry : Mod
         return !string.IsNullOrWhiteSpace(questId);
     }
 
-    private static string ResolveInterestFromTownEvents(IEnumerable<TownMemoryEvent> events)
+    private bool WasAutoCommandTargetUsedYesterday(string command, string target)
     {
-        var latest = events
-            .OrderByDescending(ev => ev.Severity)
-            .ThenByDescending(ev => ev.Day)
-            .FirstOrDefault();
-        if (latest is null)
+        if (string.IsNullOrWhiteSpace(command) || string.IsNullOrWhiteSpace(target))
+            return false;
+
+        var yesterday = _state.Calendar.Day - 1;
+        if (yesterday < 1)
+            return false;
+
+        var normalizedCommand = command.Trim().ToLowerInvariant();
+        var targetToken = NormalizeAutoTargetToken(target);
+        if (string.IsNullOrWhiteSpace(targetToken))
+            return false;
+
+        foreach (var entry in _state.Facts.ProcessedIntents)
+        {
+            var processed = entry.Value;
+            if (processed is null)
+                continue;
+            if (processed.Day != yesterday)
+                continue;
+            if (!processed.Status.Equals("applied", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!processed.Command.Equals(normalizedCommand, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!entry.Key.StartsWith("auto_", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!entry.Key.Contains(targetToken, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool WasAutoQuestMotifUsedYesterday(string templateId, string target)
+    {
+        if (string.IsNullOrWhiteSpace(templateId) || string.IsNullOrWhiteSpace(target))
+            return false;
+
+        var yesterday = _state.Calendar.Day - 1;
+        if (yesterday < 1)
+            return false;
+
+        var templateToken = NormalizeAutoTargetToken(templateId);
+        var targetToken = NormalizeAutoTargetToken(target);
+        if (string.IsNullOrWhiteSpace(templateToken) || string.IsNullOrWhiteSpace(targetToken))
+            return false;
+
+        foreach (var entry in _state.Facts.ProcessedIntents)
+        {
+            var processed = entry.Value;
+            if (processed is null)
+                continue;
+            if (processed.Day != yesterday)
+                continue;
+            if (!processed.Status.Equals("applied", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!processed.Command.Equals("propose_quest", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!entry.Key.StartsWith("auto_evt_q_", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!entry.Key.Contains(templateToken, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!entry.Key.Contains(targetToken, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string NormalizeAutoTargetToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
             return string.Empty;
 
-        return latest.Kind.Trim().ToLowerInvariant() switch
+        var normalized = Regex.Replace(value.Trim().ToLowerInvariant(), @"[^a-z0-9]+", "_");
+        return normalized.Trim('_');
+    }
+
+    private static bool TryResolveInterestFromRepeatedSignals(AmbientEventSignalSnapshot snapshot, out string interest, out int signalCount)
+    {
+        interest = string.Empty;
+        signalCount = 0;
+        if (snapshot is null || snapshot.TotalEvents <= 0)
+            return false;
+
+        var marketSignals = GetSignalCount(snapshot.KindCounts, "market")
+            + GetSignalCount(snapshot.TagCounts, "market", "shop", "trade", "scarcity", "oversupply");
+        var natureSignals = GetSignalCount(snapshot.KindCounts, "nature")
+            + GetSignalCount(snapshot.TagCounts, "nature", "forest", "river", "wildlife", "forage");
+        var incidentSignals = GetSignalCount(snapshot.KindCounts, "incident")
+            + GetSignalCount(snapshot.TagCounts, "mine", "monster", "danger", "accident", "cave", "skull");
+        var socialSignals = GetSignalCount(snapshot.KindCounts, "social", "community")
+            + GetSignalCount(snapshot.TagCounts, "community", "social", "farm", "harvest", "neighbors", "volunteer");
+
+        var candidates = new (string Interest, int Signals)[]
         {
-            "market" => "shopkeepers_guild",
-            "nature" => "nature_keepers",
-            "incident" => "adventurers_club",
-            "social" => "farmers_circle",
-            "community" => "farmers_circle",
-            _ => "farmers_circle"
+            ("shopkeepers_guild", marketSignals),
+            ("nature_keepers", natureSignals),
+            ("adventurers_club", incidentSignals),
+            ("farmers_circle", socialSignals)
         };
+
+        var best = candidates
+            .OrderByDescending(c => c.Signals)
+            .ThenBy(c => c.Interest, StringComparer.OrdinalIgnoreCase)
+            .First();
+        if (best.Signals < 2)
+            return false;
+
+        interest = best.Interest;
+        signalCount = best.Signals;
+        return true;
+    }
+
+    private static int GetSignalCount(Dictionary<string, int> counters, params string[] keys)
+    {
+        if (counters is null || keys is null || keys.Length == 0)
+            return 0;
+
+        var total = 0;
+        foreach (var key in keys)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                continue;
+            if (counters.TryGetValue(key.Trim().ToLowerInvariant(), out var value))
+                total += value;
+        }
+
+        return total;
     }
 
     private void TryApplyFallbackQuestFromPlayerChatLine(string line)

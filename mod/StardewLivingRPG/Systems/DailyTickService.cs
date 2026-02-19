@@ -17,9 +17,8 @@ public sealed class DailyTickService
 
     public void Run(SaveState state)
     {
-        // M0 scaffold: sync config + advance day counter.
+        // Sync config only; live calendar is sourced from game state in ModEntry.
         state.ApplyConfig(_config);
-        state.Calendar.Day += 1;
 
         // Basic telemetry heartbeat for now.
         state.Telemetry.Daily.WorldMutations += 1;

@@ -51,6 +51,22 @@ public sealed class NpcAskGateService
             _ => 0
         };
 
+        // Personality baseline independent of topic.
+        score += profile switch
+        {
+            NpcVerbalProfile.Traditionalist => 1,
+            NpcVerbalProfile.Enthusiast => 1,
+            NpcVerbalProfile.Recluse => -1,
+            _ => 0
+        };
+
+        // Heart+reputation interaction: trust debt matters more at low hearts,
+        // while strong relationship plus trust slightly improves ask acceptance.
+        if (heartLevel <= 2 && reputation <= -15)
+            score -= 2;
+        else if (heartLevel >= 6 && reputation >= 20)
+            score += 1;
+
         // Topic burden.
         score += topic switch
         {
@@ -86,6 +102,7 @@ public sealed class NpcAskGateService
             score -= 2;
         if (isRaining && topic == "manual_market")
             score -= 1;
+        score += GetDayOfWeekContextScore(state.Calendar.Day, topic, profile);
 
         // Repeated asks reduce willingness.
         if (state.NpcMemory.Profiles.TryGetValue(npcName, out var memory))
@@ -95,6 +112,12 @@ public sealed class NpcAskGateService
                 t.Tags.Any(tag => TopicTagMatches(tag, topic)));
             if (repeatedRecentAsks >= 2)
                 score -= 2;
+
+            var recentInteractionCount = memory.RecentTurns.Count(t => t.Day >= state.Calendar.Day - 3);
+            if (recentInteractionCount >= 4)
+                score += 1;
+            else if (recentInteractionCount == 0 && heartLevel <= 2)
+                score -= 1;
         }
 
         // Forgiveness floor: high-heart NPCs stay warm even when trust is currently low.
@@ -118,7 +141,7 @@ public sealed class NpcAskGateService
             {
                 Decision = NpcAskDecision.Defer,
                 ReasonCode = "DEFER_CONTEXT",
-                PlayerFacingMessage = BuildDeferMessage(profile, topic)
+                PlayerFacingMessage = BuildDeferMessage(profile, topic, npcName, state.Calendar.Day)
             };
         }
 
@@ -126,7 +149,7 @@ public sealed class NpcAskGateService
         {
             Decision = NpcAskDecision.Reject,
             ReasonCode = "REJECT_CONTEXT",
-            PlayerFacingMessage = BuildRejectMessage(profile, topic)
+            PlayerFacingMessage = BuildRejectMessage(profile, topic, npcName, state.Calendar.Day)
         };
     }
 
@@ -178,33 +201,129 @@ public sealed class NpcAskGateService
         };
     }
 
-    private static string BuildRejectMessage(NpcVerbalProfile profile, string topic)
+    private static int GetDayOfWeekContextScore(int day, string topic, NpcVerbalProfile profile)
     {
-        return profile switch
+        var dayOfWeek = ResolveDayOfWeek(day);
+
+        if (topic == "manual_market" && dayOfWeek is "Fri" or "Sat")
+            return -1;
+        if (topic == "manual_relationship" && dayOfWeek is "Sun" or "Mon")
+            return 1;
+        if (profile == NpcVerbalProfile.Recluse && dayOfWeek == "Fri")
+            return -1;
+
+        return 0;
+    }
+
+    private static string ResolveDayOfWeek(int day)
+    {
+        var index = ((Math.Max(1, day) - 1) % 7 + 7) % 7;
+        return index switch
         {
-            NpcVerbalProfile.Professional => "Let's leave that for now. I need to focus on today's work.",
-            NpcVerbalProfile.Traditionalist => "Not right now, friend. Let's pick this up another time.",
-            NpcVerbalProfile.Intellectual => "I do not think this is the right moment for that discussion.",
-            NpcVerbalProfile.Enthusiast => topic == "manual_market"
-                ? "Ah, not now! Too many moving pieces at once."
-                : "Maybe not right this second.",
-            NpcVerbalProfile.Recluse => "...No. Not now.",
-            _ => "Not right now."
+            0 => "Mon",
+            1 => "Tue",
+            2 => "Wed",
+            3 => "Thu",
+            4 => "Fri",
+            5 => "Sat",
+            _ => "Sun"
         };
     }
 
-    private static string BuildDeferMessage(NpcVerbalProfile profile, string topic)
+    private static string BuildRejectMessage(NpcVerbalProfile profile, string topic, string npcName, int day)
     {
-        return profile switch
+        var options = profile switch
+        {
+            NpcVerbalProfile.Professional => new[]
+            {
+                "Let's leave that for now. I need to focus on today's work.",
+                "I cannot take that on right now. Timing is too tight."
+            },
+            NpcVerbalProfile.Traditionalist => new[]
+            {
+                "Not right now, friend. Let's pick this up another time.",
+                "Best leave that be for today, alright?"
+            },
+            NpcVerbalProfile.Intellectual => new[]
+            {
+                "I do not think this is the right moment for that discussion.",
+                "I would prefer not to proceed with that at this time."
+            },
+            NpcVerbalProfile.Enthusiast => topic == "manual_market"
+                ? new[]
+                {
+                    "Ah, not now! Too many moving pieces at once.",
+                    "Not this second. The market is all over the place!"
+                }
+                : new[]
+                {
+                    "Maybe not right this second.",
+                    "I cannot do that right now, sorry!"
+                },
+            NpcVerbalProfile.Recluse => new[]
+            {
+                "...No. Not now.",
+                "Busy. Ask someone else."
+            },
+            _ => new[] { "Not right now." }
+        };
+
+        return SelectTemplate(options, npcName, day, topic);
+    }
+
+    private static string BuildDeferMessage(NpcVerbalProfile profile, string topic, string npcName, int day)
+    {
+        var options = profile switch
         {
             NpcVerbalProfile.Professional => topic == "manual_market"
-                ? "I can review that in a bit. Catch me later today."
-                : "Give me a little time, then ask again.",
-            NpcVerbalProfile.Traditionalist => "Maybe later today, once things settle down.",
-            NpcVerbalProfile.Intellectual => "Let us revisit that shortly, when I can consider it properly.",
-            NpcVerbalProfile.Enthusiast => "Give me a little bit, then ask me again!",
-            NpcVerbalProfile.Recluse => "...Later. Not now.",
-            _ => "Ask again a little later."
+                ? new[]
+                {
+                    "I can review that in a bit. Catch me later today.",
+                    "Give me a little time to check the numbers first."
+                }
+                : new[]
+                {
+                    "Give me a little time, then ask again.",
+                    "Not yet. Come back once I finish this round."
+                },
+            NpcVerbalProfile.Traditionalist => new[]
+            {
+                "Maybe later today, once things settle down.",
+                "Later on, once chores ease up, alright?"
+            },
+            NpcVerbalProfile.Intellectual => new[]
+            {
+                "Let us revisit that shortly, when I can consider it properly.",
+                "Allow me a bit of time to think before we continue."
+            },
+            NpcVerbalProfile.Enthusiast => new[]
+            {
+                "Give me a little bit, then ask me again!",
+                "Soon! I just need a moment to sort things out."
+            },
+            NpcVerbalProfile.Recluse => new[]
+            {
+                "...Later. Not now.",
+                "Later. Maybe."
+            },
+            _ => new[] { "Ask again a little later." }
         };
+
+        return SelectTemplate(options, npcName, day, topic);
+    }
+
+    private static string SelectTemplate(string[] options, string npcName, int day, string topic)
+    {
+        if (options is null || options.Length == 0)
+            return string.Empty;
+        if (options.Length == 1)
+            return options[0];
+
+        var seedText = $"{npcName}|{day}|{topic}";
+        var hash = 17;
+        foreach (var ch in seedText)
+            hash = unchecked((hash * 31) + char.ToLowerInvariant(ch));
+        var index = Math.Abs(hash) % options.Length;
+        return options[index];
     }
 }

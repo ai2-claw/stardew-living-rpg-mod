@@ -29,7 +29,11 @@ M0 + M1 scaffold includes:
 - `slrpg_debug_state`: print compact daily diagnostics snapshot
 - `slrpg_intent_inject <json>`: inject raw intent envelope for deterministic resolver QA
 - `slrpg_intent_smoketest`: run a mini automated resolver smoke suite with pass/fail summary
+- `slrpg_regression_targeted`: run targeted regression checks (chat routing, pass-out publication, market outlook, ambient command lane)
 - `slrpg_anchor_smoketest`: run deterministic anchor trigger/resolution smoke test
+- `slrpg_baseline_3day`: run deterministic 3-day baseline metrics simulation
+- `slrpg_baseline_7day`: run deterministic 7-day scenario metrics simulation and compare with baseline
+- `slrpg_ambient_pipeline_validate`: run staged validation (regressions + rate drift thresholds) for ambient consequence pipeline
 - `slrpg_demo_bootstrap`: seed reproducible vertical-slice scenario
 - `slrpg_p2_login`: local Player2 app auth using configured game client id (auto-fallback to device auth)
 - `slrpg_p2_spawn`: spawn one Player2 NPC session
@@ -87,6 +91,7 @@ Config knobs:
 - `Player2BlockChatWhenLowJoules` (default `true`)
 - `Player2MinJoulesToChat` (default `5`)
 - `StrictNpcTemplateValidation` (default `false`; when `true`, reject `quest_*` template IDs instead of repairing)
+- `EnableAmbientConsequencePipeline` (default `true`; toggles ambient event-to-consequence converters)
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).

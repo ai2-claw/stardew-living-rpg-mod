@@ -9,25 +9,39 @@ public sealed class TownMemoryService
         if (string.IsNullOrWhiteSpace(summary))
             return;
 
+        var normalizedKind = (kind ?? string.Empty).Trim();
+        var normalizedSummary = summary.Trim();
+        var normalizedLocation = string.IsNullOrWhiteSpace(location) ? "Town" : location.Trim();
+        var normalizedTags = tags?
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray() ?? Array.Empty<string>();
+        var incomingSummaryTokens = BuildSemanticTokenSet(normalizedSummary);
+
         var dedupe = state.TownMemory.Events.FirstOrDefault(e =>
-            string.Equals(e.Kind, kind, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(e.Location, location, StringComparison.OrdinalIgnoreCase)
-            && Math.Abs(e.Day - day) <= 1
-            && string.Equals(e.Summary, summary, StringComparison.OrdinalIgnoreCase));
+            IsSemanticallyDuplicateEvent(
+                e,
+                normalizedKind,
+                normalizedSummary,
+                normalizedLocation,
+                day,
+                normalizedTags,
+                incomingSummaryTokens));
 
         if (dedupe is not null)
             return;
 
         var ev = new TownMemoryEvent
         {
-            EventId = $"{kind}:{day}:{Math.Abs((summary + location).GetHashCode()) % 100000}",
-            Kind = kind,
-            Summary = summary,
-            Location = location,
+            EventId = $"{normalizedKind}:{day}:{Math.Abs((normalizedSummary + normalizedLocation).GetHashCode()) % 100000}",
+            Kind = normalizedKind,
+            Summary = normalizedSummary,
+            Location = normalizedLocation,
             Day = day,
             Severity = Math.Clamp(severity, 1, 5),
             Visibility = string.IsNullOrWhiteSpace(visibility) ? "local" : visibility,
-            Tags = tags?.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? Array.Empty<string>(),
+            Tags = normalizedTags,
             MentionBudget = 4
         };
 
@@ -113,6 +127,72 @@ public sealed class TownMemoryService
                 Angle = npc.Equals("Robin", StringComparison.OrdinalIgnoreCase) ? "concerned" : npc.Equals("Lewis", StringComparison.OrdinalIgnoreCase) ? "official" : "town-talk"
             };
         }
+    }
+
+    private static bool IsSemanticallyDuplicateEvent(
+        TownMemoryEvent existing,
+        string kind,
+        string summary,
+        string location,
+        int day,
+        string[] incomingTags,
+        HashSet<string> incomingSummaryTokens)
+    {
+        if (!string.Equals(existing.Kind, kind, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (Math.Abs(existing.Day - day) > 1)
+            return false;
+
+        if (string.Equals(existing.Summary, summary, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(existing.Location, location, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var existingLocationTokens = BuildSemanticTokenSet(existing.Location);
+        var incomingLocationTokens = BuildSemanticTokenSet(location);
+        var locationSimilarity = ComputeJaccardSimilarity(existingLocationTokens, incomingLocationTokens);
+        if (locationSimilarity < 0.5d)
+            return false;
+
+        var existingSummaryTokens = BuildSemanticTokenSet(existing.Summary);
+        var summarySimilarity = ComputeJaccardSimilarity(existingSummaryTokens, incomingSummaryTokens);
+        if (summarySimilarity >= 0.65d)
+            return true;
+
+        var existingTagSet = new HashSet<string>(
+            existing.Tags?.Select(t => (t ?? string.Empty).Trim().ToLowerInvariant()) ?? Enumerable.Empty<string>(),
+            StringComparer.OrdinalIgnoreCase);
+        var incomingTagSet = new HashSet<string>(incomingTags, StringComparer.OrdinalIgnoreCase);
+        var tagSimilarity = ComputeJaccardSimilarity(existingTagSet, incomingTagSet);
+
+        return summarySimilarity >= 0.45d && tagSimilarity >= 0.5d;
+    }
+
+    private static HashSet<string> BuildSemanticTokenSet(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        return value
+            .ToLowerInvariant()
+            .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '\'', '"', '\n', '\r', '\t', '-', '(', ')', '[', ']' }, StringSplitOptions.RemoveEmptyEntries)
+            .Where(token => token.Length >= 3)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static double ComputeJaccardSimilarity(HashSet<string> left, HashSet<string> right)
+    {
+        if (left.Count == 0 || right.Count == 0)
+            return 0d;
+
+        var intersectionCount = left.Count(token => right.Contains(token));
+        var unionCount = left.Count + right.Count - intersectionCount;
+        if (unionCount <= 0)
+            return 0d;
+
+        return intersectionCount / (double)unionCount;
     }
 
     private static IEnumerable<string> ExtractTags(string? text)

@@ -17,7 +17,7 @@ public sealed class MarketBoardMenu : IClickableMenu
     private const int ColumnCount = 2;
     private const int RowCount = 4;
     private const int CropEntryWidth = 270;
-    private const int CropEntryHeight = 100;
+    private const int CropEntryHeight = 112;
     private const int ColumnGap = 20;
     private const int RowGap = 16;
 
@@ -168,17 +168,17 @@ public sealed class MarketBoardMenu : IClickableMenu
         var chartHeight = 18;
         DrawPriceBarChart(b, entry, new Rectangle(chartX, chartY, chartWidth, chartHeight));
 
-        // Stats (small, below chart)
+        // Public cause text (small, below chart) - avoids exposing internal tuning values.
         var statsY = chartY + chartHeight + 4;
-        var statsText = $"d:{entry.DemandFactor:F2} s:{entry.SupplyPressureFactor:F2}";
-        b.DrawString(Game1.smallFont, statsText, new Vector2(chartX, statsY), new Color(100, 80, 70) * 0.8f);
-
-        // Scarcity bonus (if any)
-        if (entry.ScarcityBonus > 0)
+        var causeText = BuildPublicMarketCause(cropName, entry);
+        var wrappedCause = TextWrapHelper.WrapText(Game1.smallFont, causeText, bounds.Width - 68);
+        for (int i = 0; i < Math.Min(2, wrappedCause.Length); i++)
         {
-            var scarcityText = $"sc:+{entry.ScarcityBonus:P0}";
-            var scarcityX = chartX + chartWidth - Game1.smallFont.MeasureString(scarcityText).X;
-            b.DrawString(Game1.smallFont, scarcityText, new Vector2(scarcityX, statsY), new Color(180, 100, 50) * 0.9f);
+            b.DrawString(
+                Game1.smallFont,
+                wrappedCause[i],
+                new Vector2(chartX, statsY + i * 14),
+                new Color(100, 80, 70) * 0.85f);
         }
     }
 
@@ -251,6 +251,44 @@ public sealed class MarketBoardMenu : IClickableMenu
         if (entry.TrendEma < 0f)
             return "v";
         return "->";
+    }
+
+    private string BuildPublicMarketCause(string cropName, CropEconomyEntry entry)
+    {
+        var activeEvent = _state.Economy.MarketEvents
+            .Where(ev =>
+                ev.Crop.Equals(cropName, StringComparison.OrdinalIgnoreCase)
+                && _state.Calendar.Day >= ev.StartDay
+                && _state.Calendar.Day <= ev.EndDay)
+            .OrderByDescending(ev => Math.Abs(ev.DeltaPct))
+            .FirstOrDefault();
+        if (activeEvent is not null)
+            return DescribeMarketEventCause(activeEvent);
+
+        if (entry.PriceToday > entry.PriceYesterday && entry.ScarcityBonus >= 0.03f)
+            return "Cause: short supply raised demand.";
+        if (entry.PriceToday < entry.PriceYesterday && entry.SupplyPressureFactor <= 0.95f)
+            return "Cause: extra stock softened prices.";
+        if (entry.TrendEma > 0.03f)
+            return "Cause: steady local buying.";
+        if (entry.TrendEma < -0.03f)
+            return "Cause: slower buying this week.";
+
+        return "Cause: normal market chatter.";
+    }
+
+    private static string DescribeMarketEventCause(MarketEventEntry marketEvent)
+    {
+        var type = (marketEvent.Type ?? string.Empty).Trim().ToLowerInvariant();
+        return type switch
+        {
+            "npc_market_modifier" => marketEvent.DeltaPct >= 0f
+                ? "Cause: town request boosted demand."
+                : "Cause: oversupply rumor eased prices.",
+            _ => marketEvent.DeltaPct >= 0f
+                ? "Cause: market buzz pushed prices up."
+                : "Cause: market buzz pushed prices down."
+        };
     }
 
     private List<KeyValuePair<string, CropEconomyEntry>> SelectTopBoardEntries()

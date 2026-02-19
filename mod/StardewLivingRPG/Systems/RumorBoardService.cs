@@ -60,8 +60,19 @@ public sealed class RumorBoardService
         // Keep active quests untouched; rotate available list daily.
         state.Quests.Available.Clear();
 
-        var crop = SelectFallbackCropTarget(state, allowParsnip: IsParsnipCrisisActive(state));
-        var visitTarget = SelectFallbackVisitTarget(state, fallbackSeed: $"daily_social_{state.Calendar.Day}");
+        var allowParsnip = IsParsnipCrisisActive(state);
+        var eventCropTarget = TrySelectEventDerivedCropTarget(state);
+        var crop = SelectFreshCropTarget(
+            state,
+            allowParsnip,
+            preferredTarget: eventCropTarget,
+            fallbackSeed: $"daily_crop_{state.Calendar.Day}");
+
+        var eventVisitTarget = TrySelectEventDerivedVisitTarget(state);
+        var visitTarget = SelectFreshVisitTarget(
+            state,
+            preferredTarget: eventVisitTarget,
+            fallbackSeed: $"daily_social_{state.Calendar.Day}");
         var visitName = QuestTextHelper.PrettyName(visitTarget);
 
         state.Quests.Available.Add(new QuestEntry
@@ -636,6 +647,150 @@ public sealed class RumorBoardService
         }
 
         return t;
+    }
+
+    private static string SelectFreshCropTarget(SaveState state, bool allowParsnip, string? preferredTarget, string? fallbackSeed = null)
+    {
+        var candidates = new List<string>();
+        var preferred = NormalizeCropCandidate(preferredTarget);
+        if (ValidCrops.Contains(preferred))
+            candidates.Add(preferred);
+
+        candidates.AddRange(state.Economy.Crops
+            .Where(kv => ValidCrops.Contains(kv.Key))
+            .OrderByDescending(kv => kv.Value.ScarcityBonus)
+            .ThenByDescending(kv => kv.Value.DemandFactor)
+            .ThenByDescending(kv => kv.Value.SupplyPressureFactor)
+            .Select(kv => kv.Key.ToLowerInvariant()));
+
+        candidates.Add(GetSeasonalFallbackCrop(state.Calendar.Season, allowParsnip));
+
+        var ordered = candidates
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Where(c => allowParsnip || !c.Equals("parsnip", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var candidate in ordered)
+        {
+            if (!IsQuestTargetRecentlyUsed(state, "gather_crop", candidate))
+                return candidate;
+        }
+
+        if (ordered.Count > 0)
+        {
+            var topCandidates = ordered.Take(Math.Min(4, ordered.Count)).ToList();
+            var index = GetDiversifiedFallbackIndex(topCandidates.Count, fallbackSeed, state.Calendar.Day);
+            return topCandidates[index];
+        }
+
+        return SelectFallbackCropTarget(state, allowParsnip, fallbackSeed);
+    }
+
+    private static string SelectFreshVisitTarget(SaveState state, string? preferredTarget, string? fallbackSeed = null)
+    {
+        var normalizedPreferred = NormalizeNpcTarget(preferredTarget);
+        var candidates = new List<string>();
+        if (ValidNpcTargets.Contains(normalizedPreferred))
+            candidates.Add(normalizedPreferred);
+
+        candidates.AddRange(ValidNpcTargets.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
+        var ordered = candidates
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var candidate in ordered)
+        {
+            if (!IsQuestTargetRecentlyUsed(state, "social_visit", candidate))
+                return candidate;
+        }
+
+        if (ordered.Count == 0)
+            return "lewis";
+
+        var index = GetDiversifiedFallbackIndex(ordered.Count, fallbackSeed, state.Calendar.Day);
+        return ordered[index];
+    }
+
+    private static string TrySelectEventDerivedCropTarget(SaveState state)
+    {
+        var recentEvents = state.TownMemory.Events
+            .Where(ev => ev.Day >= state.Calendar.Day - 1)
+            .OrderByDescending(ev => ev.Severity)
+            .ThenByDescending(ev => ev.Day)
+            .ToList();
+        if (recentEvents.Count == 0)
+            return string.Empty;
+
+        foreach (var ev in recentEvents)
+        {
+            foreach (var tag in ev.Tags ?? Array.Empty<string>())
+            {
+                var normalizedTag = NormalizeCropCandidate(tag);
+                if (ValidCrops.Contains(normalizedTag))
+                    return normalizedTag;
+            }
+
+            foreach (var crop in ValidCrops)
+            {
+                if (ev.Summary.Contains(crop.Replace("_", " ", StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase)
+                    || ev.Summary.Contains(crop, StringComparison.OrdinalIgnoreCase))
+                {
+                    return crop.ToLowerInvariant();
+                }
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string TrySelectEventDerivedVisitTarget(SaveState state)
+    {
+        var recentEvents = state.TownMemory.Events
+            .Where(ev => ev.Day >= state.Calendar.Day - 1)
+            .OrderByDescending(ev => ev.Severity)
+            .ThenByDescending(ev => ev.Day)
+            .ToList();
+        if (recentEvents.Count == 0)
+            return string.Empty;
+
+        foreach (var ev in recentEvents)
+        {
+            foreach (var tag in ev.Tags ?? Array.Empty<string>())
+            {
+                var normalizedTag = NormalizeNpcTarget(tag);
+                if (ValidNpcTargets.Contains(normalizedTag))
+                    return normalizedTag;
+            }
+
+            foreach (var npc in ValidNpcTargets)
+            {
+                var pretty = QuestTextHelper.PrettyName(npc);
+                if (ev.Summary.Contains(pretty, StringComparison.OrdinalIgnoreCase))
+                    return npc;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static bool IsQuestTargetRecentlyUsed(SaveState state, string templateId, string target)
+    {
+        if (string.IsNullOrWhiteSpace(templateId) || string.IsNullOrWhiteSpace(target))
+            return false;
+
+        var normalizedTemplate = templateId.Trim().ToLowerInvariant();
+        var normalizedTarget = target.Trim().ToLowerInvariant();
+
+        bool Match(QuestEntry quest) =>
+            quest.TemplateId.Equals(normalizedTemplate, StringComparison.OrdinalIgnoreCase)
+            && quest.TargetItem.Equals(normalizedTarget, StringComparison.OrdinalIgnoreCase);
+
+        return state.Quests.Available.Any(Match)
+            || state.Quests.Active.Any(Match)
+            || state.Quests.Completed.TakeLast(8).Any(Match)
+            || state.Quests.Failed.TakeLast(8).Any(Match);
     }
 
     private static string SelectFallbackCropTarget(SaveState state, bool allowParsnip, string? fallbackSeed = null)

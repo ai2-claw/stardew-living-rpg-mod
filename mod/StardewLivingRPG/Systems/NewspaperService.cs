@@ -161,7 +161,9 @@ public sealed class NewspaperService
         // Get yesterday's events from town memory
         var yesterdayEvents = state.TownMemory.Events
             .Where(e => e.Day == yesterday)
-            .OrderByDescending(e => e.Severity)
+            .OrderByDescending(e => string.Equals(e.Kind, "pass_out", StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(e => string.Equals(e.Visibility, "public", StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(e => e.Severity)
             .Take(1)
             .ToList();
 
@@ -210,6 +212,42 @@ public sealed class NewspaperService
                     Title = "Rescue at Mines",
                     Content = $"{ev.Summary}. Town responders assisted with recovery and safety checks.",
                     Category = "community",
+                    SourceNpc = TownReporterByline,
+                    Day = state.Calendar.Day,
+                    ExpirationDay = state.Calendar.Day + 3
+                },
+                "market" => new NewspaperArticle
+                {
+                    Title = "Market Watch",
+                    Content = $"{ev.Summary}. Merchants flagged the shift for today's board outlook.",
+                    Category = "market",
+                    SourceNpc = TownReporterByline,
+                    Day = state.Calendar.Day,
+                    ExpirationDay = state.Calendar.Day + 3
+                },
+                "social" => new NewspaperArticle
+                {
+                    Title = "Town Talk",
+                    Content = $"{ev.Summary}. Residents say the news spread quickly through town.",
+                    Category = "social",
+                    SourceNpc = TownReporterByline,
+                    Day = state.Calendar.Day,
+                    ExpirationDay = state.Calendar.Day + 3
+                },
+                "community" => new NewspaperArticle
+                {
+                    Title = "Town Board Update",
+                    Content = $"{ev.Summary}. Organizers called for steady follow-through today.",
+                    Category = "community",
+                    SourceNpc = TownReporterByline,
+                    Day = state.Calendar.Day,
+                    ExpirationDay = state.Calendar.Day + 3
+                },
+                "nature" => new NewspaperArticle
+                {
+                    Title = "Nature Watch",
+                    Content = $"{ev.Summary}. Locals are adjusting plans around these changes.",
+                    Category = "nature",
                     SourceNpc = TownReporterByline,
                     Day = state.Calendar.Day,
                     ExpirationDay = state.Calendar.Day + 3
@@ -394,7 +432,28 @@ public sealed class NewspaperService
             return headline;
         }
 
-        // Priority 2: Market/nature articles
+        // Priority 2: Any reporter-derived town-memory article (ambient/event-first visibility).
+        var ambientDerivedArticle = articles
+            .FirstOrDefault(a => IsTownReporterSource(a.SourceNpc));
+        if (ambientDerivedArticle is not null)
+        {
+            _monitor.Log($"SelectHeadlineAsync: Reporter-derived ambient article found: {ambientDerivedArticle.Title}", LogLevel.Trace);
+            if (_player2 == null)
+            {
+                _monitor.Log("SelectHeadlineAsync: Player2 is null, using fallback for ambient-derived article", LogLevel.Debug);
+                return FallbackHeadline(ambientDerivedArticle.Title);
+            }
+            _monitor.Log($"SelectHeadlineAsync: Calling Player2.GenerateSensationalHeadlineAsync for: {ambientDerivedArticle.Title}", LogLevel.Trace);
+            var headline = await _player2.GenerateSensationalHeadlineAsync(
+                    ambientDerivedArticle.Title,
+                    ambientDerivedArticle.Category,
+                    ambientDerivedArticle.Content,
+                    default);
+            _monitor.Log($"SelectHeadlineAsync: Got headline: {headline}", LogLevel.Debug);
+            return headline;
+        }
+
+        // Priority 3: Market/nature articles
         var marketOrNatureArticle = articles
             .FirstOrDefault(a => a.Category.Equals("market", StringComparison.OrdinalIgnoreCase)
                 || a.Category.Equals("nature", StringComparison.OrdinalIgnoreCase));
@@ -417,7 +476,7 @@ public sealed class NewspaperService
             return headline;
         }
 
-        // Priority 3: Any article
+        // Priority 4: Any article
         _monitor.Log($"SelectHeadlineAsync: Using first article as fallback: {articles[0].Title}", LogLevel.Trace);
         {
             if (_player2 == null)

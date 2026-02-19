@@ -106,6 +106,50 @@ public sealed class NpcSpeechStyleService
         return ResolveProfile(npcName);
     }
 
+    public NpcAmbientBehaviorWeights GetAmbientBehaviorWeights(string? npcName)
+    {
+        var profile = ResolveProfile(npcName);
+        return profile switch
+        {
+            NpcVerbalProfile.Professional => new NpcAmbientBehaviorWeights
+            {
+                Archetype = "merchant",
+                EventWeight = 3,
+                MemoryWeight = 2,
+                PublishWeight = 3
+            },
+            NpcVerbalProfile.Traditionalist => new NpcAmbientBehaviorWeights
+            {
+                Archetype = "civic",
+                EventWeight = 3,
+                MemoryWeight = 2,
+                PublishWeight = 2
+            },
+            NpcVerbalProfile.Intellectual => new NpcAmbientBehaviorWeights
+            {
+                Archetype = "analyst",
+                EventWeight = 4,
+                MemoryWeight = 2,
+                PublishWeight = 1
+            },
+            NpcVerbalProfile.Enthusiast => new NpcAmbientBehaviorWeights
+            {
+                Archetype = "enthusiast",
+                EventWeight = 2,
+                MemoryWeight = 1,
+                PublishWeight = 4
+            },
+            NpcVerbalProfile.Recluse => new NpcAmbientBehaviorWeights
+            {
+                Archetype = "recluse",
+                EventWeight = 2,
+                MemoryWeight = 3,
+                PublishWeight = 1
+            },
+            _ => new NpcAmbientBehaviorWeights()
+        };
+    }
+
     private NpcVerbalProfile ResolveProfile(string? npcName)
     {
         if (string.IsNullOrWhiteSpace(npcName))
@@ -126,4 +170,12 @@ public sealed class NpcSpeechStyleService
 
         return fallback;
     }
+}
+
+public sealed class NpcAmbientBehaviorWeights
+{
+    public string Archetype { get; init; } = "civic";
+    public int EventWeight { get; init; } = 2;
+    public int MemoryWeight { get; init; } = 2;
+    public int PublishWeight { get; init; } = 2;
 }

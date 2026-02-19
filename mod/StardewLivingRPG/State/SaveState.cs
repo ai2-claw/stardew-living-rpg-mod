@@ -4,7 +4,7 @@ namespace StardewLivingRPG.State;
 
 public sealed class SaveState
 {
-    public string Version { get; set; } = "0.1.0";
+    public string Version { get; set; } = "0.2.0";
     public SaveConfig Config { get; set; } = new();
     public CalendarState Calendar { get; set; } = new();
     public EconomyState Economy { get; set; } = new();

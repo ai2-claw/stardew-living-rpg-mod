@@ -24,4 +24,10 @@ public sealed class DailyTelemetry
     public int NpcAskGateDeferred { get; set; }
     public int NpcAskGateRejected { get; set; }
     public Dictionary<string, int> NpcCommandAppliedByType { get; set; } = new();
+    public Dictionary<string, int> NpcPolicyRejectByReason { get; set; } = new();
+    public Dictionary<string, int> AmbientCommandAppliedByType { get; set; } = new();
+    public Dictionary<string, int> AmbientCommandRejectedByType { get; set; } = new();
+    public Dictionary<string, int> AmbientCommandDuplicateByType { get; set; } = new();
+    public int AmbientLowInfoSuppressed { get; set; }
+    public int AmbientCadenceSkips { get; set; }
 }

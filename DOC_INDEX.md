@@ -12,6 +12,7 @@ Start here for project documentation and implementation flow.
 - [IN_WORLD_UI_ARCHITECTURE.md](./IN_WORLD_UI_ARCHITECTURE.md) — in-world UI/interactions target architecture
 - [DATA_MODEL.md](./DATA_MODEL.md) — authoritative save state schemas
 - [EVENT_RESOLUTION.md](./EVENT_RESOLUTION.md) — deterministic resolver pipeline
+- [AMBIENT_CONSEQUENCE_PIPELINE.md](./AMBIENT_CONSEQUENCE_PIPELINE.md) - ambient event-first policy matrix, converters, and tuning knobs
 - [NPC_COMMAND_SCHEMA.json](./NPC_COMMAND_SCHEMA.json) — strict NPC intent contract
 - [MARKET_BOARD_UI_SPEC.md](./MARKET_BOARD_UI_SPEC.md) — Market Board UX spec
 - [QUEST_TEMPLATE_LIBRARY.md](./QUEST_TEMPLATE_LIBRARY.md) — safe quest templates and reward bounds
