@@ -313,6 +313,7 @@ public sealed class ModEntry : Mod
         _state.ApplyConfig(_config);
         SyncCalendarSeasonFromWorld();
         _economyService?.EnsureInitialized(_state.Economy);
+        _rumorBoardService?.ExpireOverdueQuests(_state);
         Monitor.Log($"State loaded (version={_state.Version}, mode={_state.Config.Mode}).", LogLevel.Info);
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
@@ -1883,6 +1884,7 @@ public sealed class ModEntry : Mod
             return;
 
         SyncCalendarSeasonFromWorld();
+        _rumorBoardService.ExpireOverdueQuests(_state);
         Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor, () => OnUiAskMayorForWork(), () => _player2UiStatus);
     }
 

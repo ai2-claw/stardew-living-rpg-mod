@@ -33,6 +33,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private int _searchStartAvailableCount;
     private int _lastAvailableCount;
     private int _lastActiveCount;
+    private int _lastCalendarDay;
 
     private Rectangle _acceptButton;
     private Rectangle _completeButton;
@@ -69,11 +70,13 @@ public sealed class RumorBoardMenu : IClickableMenu
             4f);
         _lastAvailableCount = _state.Quests.Available.Count;
         _lastActiveCount = _state.Quests.Active.Count;
+        _lastCalendarDay = _state.Calendar.Day;
         BuildLayout();
     }
 
     private void BuildLayout()
     {
+        _rumorBoardService.ExpireOverdueQuests(_state);
         _availableRows.Clear();
         _activeRows.Clear();
         ClampScrollOffsets();
@@ -82,7 +85,11 @@ public sealed class RumorBoardMenu : IClickableMenu
         var topY = yPositionOnScreen + SectionTopY;
 
         var ay = topY + SectionRowsStartOffset;
-        foreach (var q in _state.Quests.Available.Skip(_availableScrollOffset).Take(VisibleQuestRows))
+        foreach (var q in _state.Quests.Available
+                     .Where(q => q.Status.Equals("available", StringComparison.OrdinalIgnoreCase))
+                     .Where(q => q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day)
+                     .Skip(_availableScrollOffset)
+                     .Take(VisibleQuestRows))
         {
             _availableRows.Add((q, new Rectangle(leftX, ay, SectionWidth, SectionRowHeight)));
             ay += SectionRowHeight + SectionRowGap;
@@ -90,7 +97,11 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         var rightX = xPositionOnScreen + width - SectionWidth - SectionLeftMargin;
         var ry = topY + SectionRowsStartOffset;
-        foreach (var q in _state.Quests.Active.Skip(_activeScrollOffset).Take(VisibleQuestRows))
+        foreach (var q in _state.Quests.Active
+                     .Where(q => q.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
+                     .Where(q => q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day)
+                     .Skip(_activeScrollOffset)
+                     .Take(VisibleQuestRows))
         {
             _activeRows.Add((q, new Rectangle(rightX, ry, SectionWidth, SectionRowHeight)));
             ry += SectionRowHeight + SectionRowGap;
@@ -105,8 +116,14 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     private void ClampScrollOffsets()
     {
-        var maxAvailableOffset = Math.Max(0, _state.Quests.Available.Count - VisibleQuestRows);
-        var maxActiveOffset = Math.Max(0, _state.Quests.Active.Count - VisibleQuestRows);
+        var visibleAvailableCount = _state.Quests.Available.Count(q =>
+            q.Status.Equals("available", StringComparison.OrdinalIgnoreCase)
+            && (q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day));
+        var visibleActiveCount = _state.Quests.Active.Count(q =>
+            q.Status.Equals("active", StringComparison.OrdinalIgnoreCase)
+            && (q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day));
+        var maxAvailableOffset = Math.Max(0, visibleAvailableCount - VisibleQuestRows);
+        var maxActiveOffset = Math.Max(0, visibleActiveCount - VisibleQuestRows);
         _availableScrollOffset = Math.Clamp(_availableScrollOffset, 0, maxAvailableOffset);
         _activeScrollOffset = Math.Clamp(_activeScrollOffset, 0, maxActiveOffset);
     }
@@ -265,8 +282,11 @@ public sealed class RumorBoardMenu : IClickableMenu
     {
         SyncDetailMessageFromExternalStatus();
 
-        if (_lastAvailableCount != _state.Quests.Available.Count || _lastActiveCount != _state.Quests.Active.Count)
+        if (_lastCalendarDay != _state.Calendar.Day
+            || _lastAvailableCount != _state.Quests.Available.Count
+            || _lastActiveCount != _state.Quests.Active.Count)
         {
+            _lastCalendarDay = _state.Calendar.Day;
             _lastAvailableCount = _state.Quests.Available.Count;
             _lastActiveCount = _state.Quests.Active.Count;
             BuildLayout();
