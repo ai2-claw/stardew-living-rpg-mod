@@ -380,18 +380,14 @@ public sealed class NpcIntentResolver
 
     private NpcIntentResolveResult ResolveRecordMemoryFact(SaveState state, string npcId, string intentId, JsonElement args)
     {
-        if (!args.TryGetProperty("category", out var categoryEl) || categoryEl.ValueKind != JsonValueKind.String)
-            return NpcIntentResolveResult.Rejected("record_memory_fact missing category", "E_MEMORY_CATEGORY_INVALID");
-        if (!args.TryGetProperty("text", out var textEl) || textEl.ValueKind != JsonValueKind.String)
-            return NpcIntentResolveResult.Rejected("record_memory_fact missing text", "E_MEMORY_TEXT_INVALID");
-        if (HasUnexpectedArgs(args, "category", "text", "weight"))
+        if (HasUnexpectedArgs(args, "category", "text", "weight", "reason", "target", "summary", "message", "note", "context"))
             return NpcIntentResolveResult.Rejected("record_memory_fact contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
 
-        var category = (categoryEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+        var category = ResolveMemoryCategory(args);
         if (!AllowedMemoryCategories.Contains(category))
-            return NpcIntentResolveResult.Rejected($"invalid category '{category}'", "E_MEMORY_CATEGORY_INVALID");
+            return NpcIntentResolveResult.Rejected("record_memory_fact missing category", "E_MEMORY_CATEGORY_INVALID");
 
-        var text = (textEl.GetString() ?? string.Empty).Trim();
+        var text = ResolveMemoryText(args);
         if (text.Length < 8 || text.Length > 140)
             return NpcIntentResolveResult.Rejected("record_memory_fact text length out of range (8..140)", "E_MEMORY_TEXT_INVALID");
 
@@ -434,7 +430,138 @@ public sealed class NpcIntentResolver
 
         state.Telemetry.Daily.WorldMutations += 1;
         var outcome = $"memory:{npcId}:{category}";
-        return NpcIntentResolveResult.Applied(intentId, "record_memory_fact", outcome, fallbackUsed: false, proposal: null);
+        var fallbackUsed = !args.TryGetProperty("category", out var categoryEl)
+            || categoryEl.ValueKind != JsonValueKind.String
+            || !args.TryGetProperty("text", out var textEl)
+            || textEl.ValueKind != JsonValueKind.String;
+        return NpcIntentResolveResult.Applied(intentId, "record_memory_fact", outcome, fallbackUsed, proposal: null);
+    }
+
+    private static string ResolveMemoryCategory(JsonElement args)
+    {
+        if (args.TryGetProperty("category", out var categoryEl) && categoryEl.ValueKind == JsonValueKind.String)
+        {
+            var explicitCategory = NormalizeMemoryCategory(categoryEl.GetString());
+            if (!string.IsNullOrWhiteSpace(explicitCategory))
+                return explicitCategory;
+        }
+
+        var source = BuildMemoryInferenceSource(args);
+        if (ContainsAnyToken(source,
+                "like", "likes", "liked", "love", "loves", "favorite", "favourite", "prefer", "prefers", "enjoy", "enjoys", "dislike", "dislikes", "hate", "hates", "allergic"))
+        {
+            return "preference";
+        }
+
+        if (ContainsAnyToken(source,
+                "promise", "promised", "pledge", "pledged", "swore", "will", "i'll", "ill", "going to", "plan", "planned", "intend", "intends", "agreed", "commit", "committed", "owes", "owe"))
+        {
+            return "promise";
+        }
+
+        if (ContainsAnyToken(source,
+                "friend", "friends", "trust", "trusted", "trusts", "respect", "respects", "upset", "angry", "apologized", "apologised", "forgave", "forgiven", "close", "distant", "relationship", "dispute", "argument"))
+        {
+            return "relationship";
+        }
+
+        return "event";
+    }
+
+    private static string ResolveMemoryText(JsonElement args)
+    {
+        if (TryReadStringArg(args, "text", out var text))
+            return ClampMemoryText(text);
+        if (TryReadStringArg(args, "message", out var message))
+            return ClampMemoryText(message);
+        if (TryReadStringArg(args, "summary", out var summary))
+            return ClampMemoryText(summary);
+        if (TryReadStringArg(args, "note", out var note))
+            return ClampMemoryText(note);
+
+        var hasReason = TryReadStringArg(args, "reason", out var reason);
+        var hasTarget = TryReadStringArg(args, "target", out var target);
+        if (hasReason && hasTarget)
+            return ClampMemoryText($"Regarding {target}: {reason}");
+        if (hasReason)
+            return ClampMemoryText(reason);
+        if (hasTarget)
+            return ClampMemoryText($"Note about {target}");
+
+        return string.Empty;
+    }
+
+    private static string BuildMemoryInferenceSource(JsonElement args)
+    {
+        var parts = new List<string>();
+        if (TryReadStringArg(args, "text", out var text))
+            parts.Add(text);
+        if (TryReadStringArg(args, "message", out var message))
+            parts.Add(message);
+        if (TryReadStringArg(args, "summary", out var summary))
+            parts.Add(summary);
+        if (TryReadStringArg(args, "note", out var note))
+            parts.Add(note);
+        if (TryReadStringArg(args, "reason", out var reason))
+            parts.Add(reason);
+        if (TryReadStringArg(args, "target", out var target))
+            parts.Add(target);
+        if (TryReadStringArg(args, "context", out var context))
+            parts.Add(context);
+
+        return string.Join(' ', parts)
+            .Trim()
+            .ToLowerInvariant();
+    }
+
+    private static string NormalizeMemoryCategory(string? raw)
+    {
+        var value = (raw ?? string.Empty).Trim().ToLowerInvariant();
+        return value switch
+        {
+            "preference" => "preference",
+            "promise" => "promise",
+            "relationship" => "relationship",
+            "event" => "event",
+            "pref" => "preference",
+            "rel" => "relationship",
+            _ => string.Empty
+        };
+    }
+
+    private static bool TryReadStringArg(JsonElement args, string key, out string value)
+    {
+        value = string.Empty;
+        if (!args.TryGetProperty(key, out var element) || element.ValueKind != JsonValueKind.String)
+            return false;
+
+        value = (element.GetString() ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static bool ContainsAnyToken(string text, params string[] tokens)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        foreach (var token in tokens)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                continue;
+            if (text.Contains(token, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string ClampMemoryText(string value)
+    {
+        var text = (value ?? string.Empty).Trim();
+        if (text.Length <= 140)
+            return text;
+
+        return text[..140].TrimEnd();
     }
 
     private NpcIntentResolveResult ResolveRecordTownEvent(SaveState state, string npcId, string intentId, JsonElement args)
