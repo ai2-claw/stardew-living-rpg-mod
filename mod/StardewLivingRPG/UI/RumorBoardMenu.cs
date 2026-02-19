@@ -15,6 +15,8 @@ public sealed class RumorBoardMenu : IClickableMenu
     private const string DefaultDetailMessage = "Select a request to view details.";
     private const string SearchingDetailMessage = "Searching the board for new requests...";
     private const string DailyCapDetailMessage = "No new posting right now. Check back tomorrow.";
+    private const string NoRequestDetailMessage = "No one has a new posting right now.";
+    private const string NoPostingCreatedDetailMessage = "No posting was added from that reply.";
 
     private readonly SaveState _state;
     private readonly RumorBoardService _rumorBoardService;
@@ -219,10 +221,10 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         if (_askWorkButton.Contains(x, y))
         {
+            _searchStartAvailableCount = _state.Quests.Available.Count;
             _onAskMayorForWork();
             _statusMessage = SearchingDetailMessage;
             _awaitingBoardSearchResult = true;
-            _searchStartAvailableCount = _state.Quests.Available.Count;
             _lastAvailableCount = _state.Quests.Available.Count;
             _lastActiveCount = _state.Quests.Active.Count;
             SyncDetailMessageFromExternalStatus();
@@ -435,7 +437,47 @@ public sealed class RumorBoardMenu : IClickableMenu
         {
             _statusMessage = DefaultDetailMessage;
             _awaitingBoardSearchResult = false;
+            return;
         }
+
+        if (!_awaitingBoardSearchResult || string.IsNullOrWhiteSpace(external))
+            return;
+
+        if (external.IndexOf("New posting added to the board", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            _statusMessage = DefaultDetailMessage;
+            _awaitingBoardSearchResult = false;
+            return;
+        }
+
+        if (external.IndexOf("No one has a new posting right now", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            _statusMessage = NoRequestDetailMessage;
+            _awaitingBoardSearchResult = false;
+            return;
+        }
+
+        if (external.IndexOf("No posting was added", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            _statusMessage = NoPostingCreatedDetailMessage;
+            _awaitingBoardSearchResult = false;
+            return;
+        }
+
+        if (IsImmediateBoardGateStatus(external))
+        {
+            _statusMessage = external;
+            _awaitingBoardSearchResult = false;
+        }
+    }
+
+    private static bool IsImmediateBoardGateStatus(string status)
+    {
+        return status.IndexOf("Work request already in progress", StringComparison.OrdinalIgnoreCase) >= 0
+            || status.IndexOf("Please wait ", StringComparison.OrdinalIgnoreCase) >= 0
+            || status.IndexOf("Board is full", StringComparison.OrdinalIgnoreCase) >= 0
+            || status.IndexOf("connect failed", StringComparison.OrdinalIgnoreCase) >= 0
+            || status.IndexOf("disabled: missing game client id", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static void DrawButton(SpriteBatch b, Rectangle rect, string text, bool enabled)

@@ -167,11 +167,17 @@ public sealed class ModEntry : Mod
 
     private int _player2ConnectInFlight;
     private string _player2UiStatus = "Player2: idle";
+    private const string BoardSearchStatusPostingAdded = "New posting added to the board.";
+    private const string BoardSearchStatusNoRequest = "No one has a new posting right now.";
+    private const string BoardSearchStatusNoPostingCreated = "No posting was added from that reply.";
     private DateTime _player2LastAutoConnectAttemptUtc;
     private string? _pendingUiMayorWorkRequest;
     private string? _pendingUiRequesterShortName;
     private string? _lastUiWorkPrompt;
     private string? _lastUiWorkRequesterShortName;
+    private bool _uiBoardSearchAwaitingResult;
+    private string? _uiBoardSearchRequesterShortName;
+    private string? _uiBoardSearchNpcId;
     private DateTime _lastUiWorkRequestUtc;
     private int _uiWorkRequestInFlight;
     private int _uiRequesterRoundRobinIndex;
@@ -1133,9 +1139,15 @@ public sealed class ModEntry : Mod
                 _pendingUiRequesterShortName = null;
 
                 if (!string.IsNullOrWhiteSpace(requester) && _player2NpcIdsByShortName.TryGetValue(requester, out var pendingNpcId))
+                {
+                    _uiBoardSearchNpcId = pendingNpcId;
                     SendPlayer2ChatInternal(req, pendingNpcId, requester, contextTag: "player_request_board", captureForPlayerChat: false);
+                }
                 else
+                {
+                    _uiBoardSearchNpcId = _activeNpcId;
                     SendPlayer2ChatInternal(req, contextTag: "player_request_board", captureForPlayerChat: false);
+                }
             }
         }
 
@@ -1187,7 +1199,8 @@ public sealed class ModEntry : Mod
             }
             _player2WatchdogRecoveries = 0;
             _player2WatchdogWindowStartUtc = default;
-            TryApplyNpcCommandFromLine(line);
+            var appliedNpcCommand = TryApplyNpcCommandFromLine(line);
+            TryResolveUiBoardSearchStatusFromStreamLine(streamNpcId, line, appliedNpcCommand);
         }
 
         while (_pendingPlayer2ChatLines.TryDequeue(out var line))
@@ -1644,6 +1657,8 @@ public sealed class ModEntry : Mod
         if (string.IsNullOrWhiteSpace(_config.Player2GameClientId))
         {
             _player2UiStatus = "Player2 disabled: missing game client id.";
+            if (_uiBoardSearchAwaitingResult)
+                ClearUiBoardSearchAwaitingResult();
             return;
         }
 
@@ -1689,6 +1704,8 @@ public sealed class ModEntry : Mod
             catch (Exception ex)
             {
                 _player2UiStatus = "Player2 connect failed: " + ex.Message;
+                if (_uiBoardSearchAwaitingResult)
+                    ClearUiBoardSearchAwaitingResult();
             }
             finally
             {
@@ -3862,6 +3879,7 @@ public sealed class ModEntry : Mod
             var prompt = $"{requester}, do you have a practical town request for me today? Use propose_quest with a safe template and parameters.";
             _lastUiWorkPrompt = prompt;
             _lastUiWorkRequesterShortName = requester;
+            BeginUiBoardSearchAwaitingResult(requester, requesterNpcId);
 
             var connected = !string.IsNullOrWhiteSpace(_player2Key)
                 && !string.IsNullOrWhiteSpace(_activeNpcId)
@@ -3884,6 +3902,81 @@ public sealed class ModEntry : Mod
         finally
         {
             Interlocked.Exchange(ref _uiWorkRequestInFlight, 0);
+        }
+    }
+
+    private void BeginUiBoardSearchAwaitingResult(string requesterShortName, string? npcId)
+    {
+        _uiBoardSearchAwaitingResult = true;
+        _uiBoardSearchRequesterShortName = string.IsNullOrWhiteSpace(requesterShortName) ? null : requesterShortName.Trim();
+        _uiBoardSearchNpcId = string.IsNullOrWhiteSpace(npcId) ? null : npcId.Trim();
+    }
+
+    private void ClearUiBoardSearchAwaitingResult()
+    {
+        _uiBoardSearchAwaitingResult = false;
+        _uiBoardSearchRequesterShortName = null;
+        _uiBoardSearchNpcId = null;
+    }
+
+    private bool IsUiBoardSearchResponseLine(string? npcId)
+    {
+        if (!_uiBoardSearchAwaitingResult || string.IsNullOrWhiteSpace(npcId))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(_uiBoardSearchNpcId)
+            && string.Equals(_uiBoardSearchNpcId, npcId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_uiBoardSearchRequesterShortName)
+            && _player2NpcIdsByShortName.TryGetValue(_uiBoardSearchRequesterShortName, out var mappedNpcId)
+            && string.Equals(mappedNpcId, npcId, StringComparison.OrdinalIgnoreCase))
+        {
+            _uiBoardSearchNpcId = mappedNpcId;
+            return true;
+        }
+
+        return _npcLastContextTagById.TryGetValue(npcId, out var contextTag)
+            && string.Equals(contextTag, "player_request_board", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void TryResolveUiBoardSearchStatusFromStreamLine(string? npcId, string line, bool appliedNpcCommand)
+    {
+        if (!IsUiBoardSearchResponseLine(npcId))
+            return;
+
+        var attemptedCommand = TryExtractCommandNameFromLine(line);
+        var message = TryExtractMessageFromLine(line);
+
+        if (appliedNpcCommand && attemptedCommand.Equals("propose_quest", StringComparison.OrdinalIgnoreCase))
+        {
+            _player2UiStatus = BoardSearchStatusPostingAdded;
+            ClearUiBoardSearchAwaitingResult();
+            return;
+        }
+
+        if (attemptedCommand.Equals("propose_quest", StringComparison.OrdinalIgnoreCase))
+        {
+            _player2UiStatus = BoardSearchStatusNoPostingCreated;
+            ClearUiBoardSearchAwaitingResult();
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(message))
+        {
+            _player2UiStatus = LooksLikeQuestDecline(message)
+                ? BoardSearchStatusNoRequest
+                : BoardSearchStatusNoPostingCreated;
+            ClearUiBoardSearchAwaitingResult();
+            return;
+        }
+
+        if (appliedNpcCommand)
+        {
+            _player2UiStatus = BoardSearchStatusNoPostingCreated;
+            ClearUiBoardSearchAwaitingResult();
         }
     }
 
