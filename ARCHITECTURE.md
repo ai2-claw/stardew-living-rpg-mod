@@ -1,4 +1,4 @@
-# Stardew Living RPG Architecture (Product + Implementation)
+# The Living Valley Architecture (Product + Implementation)
 
 Related docs: [DOC_INDEX](./DOC_INDEX.md) | [DATA_MODEL](./DATA_MODEL.md) | [EVENT_RESOLUTION](./EVENT_RESOLUTION.md) | [IN_WORLD_UI_ARCHITECTURE](./IN_WORLD_UI_ARCHITECTURE.md)
 

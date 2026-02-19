@@ -359,7 +359,7 @@ public sealed class ModEntry : Mod
         helper.Events.Display.MenuChanged += OnMenuChanged;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
 
-        Monitor.Log("Stardew Living RPG loaded.", LogLevel.Info);
+        Monitor.Log("The Living Valley loaded.", LogLevel.Info);
     }
 
     private void TryMigrateLegacyPlayer2Config(IModHelper helper)

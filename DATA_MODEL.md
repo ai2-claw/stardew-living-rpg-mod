@@ -2,7 +2,7 @@
 
 Related docs: [DOC_INDEX](./DOC_INDEX.md) · [ARCHITECTURE](./ARCHITECTURE.md) · [EVENT_RESOLUTION](./EVENT_RESOLUTION.md) · [NPC_COMMAND_SCHEMA](./NPC_COMMAND_SCHEMA.json)
 
-Authoritative state model for the Stardew Living RPG Mod.
+Authoritative state model for The Living Valley mod.
 
 Design goals:
 - deterministic world simulation

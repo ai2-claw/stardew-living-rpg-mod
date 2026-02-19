@@ -1,6 +1,6 @@
 # RELEASE_CHECKLIST.md
 
-Pre-release checklist for Stardew Living RPG Mod.
+Pre-release checklist for The Living Valley mod.
 
 ## 1) Build & load
 - [ ] Build mod successfully in local game environment (`SMAPI_PATH` set).

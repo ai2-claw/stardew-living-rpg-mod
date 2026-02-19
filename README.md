@@ -1,6 +1,6 @@
-# Stardew Valley Living RPG Mod (Working Title)
+# The Living Valley
 
-Design + implementation docs for a Player2-powered Stardew-style living RPG mod.
+Design + implementation docs for The Living Valley, a Player2-powered Stardew living-world mod.
 
 ## Start here
 - **[DOC_INDEX.md](./DOC_INDEX.md)** — full doc map and reading order

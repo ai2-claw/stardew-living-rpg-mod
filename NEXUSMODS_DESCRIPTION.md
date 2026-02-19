@@ -1,8 +1,8 @@
-# Stardew Living RPG
+# The Living Valley
 
 What if Pelican Town felt a little more alive every day?
 
-Stardew Living RPG keeps the cozy vanilla feeling, but adds a living world layer. Villagers react more naturally, requests change over time, market prices move with town activity, and the newspaper reflects what is happening around you.
+The Living Valley keeps the cozy vanilla feeling, but adds a living world layer. Villagers react more naturally, requests change over time, market prices move with town activity, and the newspaper reflects what is happening around you.
 
 ## Why Players Like It
 
