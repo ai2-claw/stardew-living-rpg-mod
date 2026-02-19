@@ -39,6 +39,10 @@ public sealed class NpcIntentResolver
     {
         "preference", "promise", "event", "relationship"
     };
+    private static readonly HashSet<string> AllowedTownEventKinds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "market", "social", "nature", "incident", "community"
+    };
 
     private readonly RumorBoardService _rumorBoardService;
     private readonly NpcMemoryService _npcMemoryService;
@@ -576,56 +580,63 @@ public sealed class NpcIntentResolver
             return NpcIntentResolveResult.Rejected("record_town_event missing integer severity", "E_TOWN_EVENT_SEVERITY_RANGE");
         if (!args.TryGetProperty("visibility", out var visibilityEl) || visibilityEl.ValueKind != JsonValueKind.String)
             return NpcIntentResolveResult.Rejected("record_town_event missing visibility", "E_TOWN_EVENT_VISIBILITY_INVALID");
-        if (HasUnexpectedArgs(args, "kind", "summary", "location", "severity", "visibility", "tags"))
-            return NpcIntentResolveResult.Rejected("record_town_event contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
-
-        var kind = (kindEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
-        if (kind is not ("market" or "social" or "nature" or "incident" or "community"))
-            return NpcIntentResolveResult.Rejected($"invalid kind '{kind}'", "E_TOWN_EVENT_KIND_INVALID");
 
         var summary = (summaryEl.GetString() ?? string.Empty).Trim();
-        if (summary.Length < 12 || summary.Length > 160)
-            return NpcIntentResolveResult.Rejected("record_town_event summary length out of range (12..160)", "E_TOWN_EVENT_SUMMARY_INVALID");
+        if (summary.Length < 4)
+            return NpcIntentResolveResult.Rejected("record_town_event summary length too short (min 4)", "E_TOWN_EVENT_SUMMARY_INVALID");
+        if (summary.Length > 220)
+            summary = summary[..220].TrimEnd();
 
         var location = (locationEl.GetString() ?? string.Empty).Trim();
-        if (location.Length < 2 || location.Length > 40)
-            return NpcIntentResolveResult.Rejected("record_town_event location length out of range (2..40)", "E_TOWN_EVENT_LOCATION_INVALID");
+        if (location.Length < 1)
+            return NpcIntentResolveResult.Rejected("record_town_event location length too short (min 1)", "E_TOWN_EVENT_LOCATION_INVALID");
+        if (location.Length > 60)
+            location = location[..60].TrimEnd();
 
         if (severity < 1 || severity > 5)
             return NpcIntentResolveResult.Rejected("record_town_event severity out of range (1..5)", "E_TOWN_EVENT_SEVERITY_RANGE");
 
-        var visibility = (visibilityEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+        var tags = Array.Empty<string>();
+        if (args.TryGetProperty("tags", out var tagsEl))
+        {
+            if (tagsEl.ValueKind == JsonValueKind.Array)
+            {
+                var parsed = new List<string>();
+                foreach (var tagEl in tagsEl.EnumerateArray())
+                {
+                    if (tagEl.ValueKind != JsonValueKind.String)
+                        continue;
+
+                    var tag = NormalizeTownEventToken(tagEl.GetString());
+                    if (tag.Length < 2)
+                        continue;
+                    if (tag.Length > 24)
+                        tag = tag[..24].TrimEnd('_');
+
+                    if (!parsed.Contains(tag, StringComparer.OrdinalIgnoreCase))
+                        parsed.Add(tag);
+                    if (parsed.Count >= 5)
+                        break;
+                }
+
+                tags = parsed.ToArray();
+            }
+        }
+
+        var rawKind = (kindEl.GetString() ?? string.Empty).Trim();
+        var kind = ResolveTownEventKind(rawKind, summary, location, tags, out var kindFallbackUsed);
+        if (!AllowedTownEventKinds.Contains(kind))
+            return NpcIntentResolveResult.Rejected($"invalid kind '{rawKind}'", "E_TOWN_EVENT_KIND_INVALID");
+
+        var rawVisibility = (visibilityEl.GetString() ?? string.Empty).Trim();
+        var visibility = ResolveTownEventVisibility(rawVisibility, summary, location, tags, out var visibilityFallbackUsed);
         if (visibility is not ("local" or "public"))
-            return NpcIntentResolveResult.Rejected($"invalid visibility '{visibility}'", "E_TOWN_EVENT_VISIBILITY_INVALID");
+            return NpcIntentResolveResult.Rejected($"invalid visibility '{rawVisibility}'", "E_TOWN_EVENT_VISIBILITY_INVALID");
 
         var townEventDailyPrefix = $"town:event:day:{state.Calendar.Day}:";
         var todayTownEventCount = CountFactKeysWithPrefix(state, townEventDailyPrefix);
         if (todayTownEventCount >= 2)
             return NpcIntentResolveResult.Rejected("record_town_event daily cap reached (2)", "E_TOWN_EVENT_DAILY_CAP");
-
-        var tags = Array.Empty<string>();
-        if (args.TryGetProperty("tags", out var tagsEl))
-        {
-            if (tagsEl.ValueKind != JsonValueKind.Array)
-                return NpcIntentResolveResult.Rejected("record_town_event tags must be an array", "E_TOWN_EVENT_TAGS_INVALID");
-
-            var parsed = new List<string>();
-            foreach (var tagEl in tagsEl.EnumerateArray())
-            {
-                if (tagEl.ValueKind != JsonValueKind.String)
-                    return NpcIntentResolveResult.Rejected("record_town_event tags must be strings", "E_TOWN_EVENT_TAGS_INVALID");
-
-                var tag = (tagEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
-                if (tag.Length < 2 || tag.Length > 24)
-                    return NpcIntentResolveResult.Rejected("record_town_event tag length out of range (2..24)", "E_TOWN_EVENT_TAGS_INVALID");
-
-                parsed.Add(tag);
-                if (parsed.Count > 5)
-                    return NpcIntentResolveResult.Rejected("record_town_event tags maxItems exceeded (5)", "E_TOWN_EVENT_TAGS_INVALID");
-            }
-
-            tags = parsed.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        }
 
         _townMemoryService.RecordEvent(
             state,
@@ -653,7 +664,114 @@ public sealed class NpcIntentResolver
 
         state.Telemetry.Daily.WorldMutations += 1;
         var outcome = $"town_event:{kind}";
-        return NpcIntentResolveResult.Applied(intentId, "record_town_event", outcome, fallbackUsed: false, proposal: null);
+        var fallbackUsed = kindFallbackUsed || visibilityFallbackUsed;
+        return NpcIntentResolveResult.Applied(intentId, "record_town_event", outcome, fallbackUsed, proposal: null);
+    }
+
+    private static string ResolveTownEventKind(
+        string rawKind,
+        string summary,
+        string location,
+        IReadOnlyList<string> tags,
+        out bool fallbackUsed)
+    {
+        var normalizedKind = NormalizeTownEventToken(rawKind);
+        if (AllowedTownEventKinds.Contains(normalizedKind))
+        {
+            fallbackUsed = false;
+            return normalizedKind;
+        }
+
+        var source = BuildTownEventInferenceSource(normalizedKind, summary, location, tags);
+
+        if (ContainsAnyToken(source,
+                "market", "price", "prices", "shop", "shops", "merchant", "merchants", "trade", "supply", "demand", "stock", "scarcity", "shortage", "surplus", "oversupply"))
+        {
+            fallbackUsed = true;
+            return "market";
+        }
+
+        if (ContainsAnyToken(source,
+                "social", "festival", "party", "dance", "celebration", "feast", "fair", "gathering", "meetup", "snowball", "blitz", "luau", "chat"))
+        {
+            fallbackUsed = true;
+            return "social";
+        }
+
+        if (ContainsAnyToken(source,
+                "nature", "weather", "storm", "rain", "snow", "wind", "frost", "heat", "river", "forest", "wildlife", "season"))
+        {
+            fallbackUsed = true;
+            return "nature";
+        }
+
+        if (ContainsAnyToken(source,
+                "incident", "accident", "injury", "danger", "monster", "fire", "faint", "collapse", "panic", "theft", "fight", "outage", "crash"))
+        {
+            fallbackUsed = true;
+            return "incident";
+        }
+
+        if (ContainsAnyToken(source,
+                "community", "town", "square", "board", "cleanup", "volunteer", "meeting", "repair", "support", "project"))
+        {
+            fallbackUsed = true;
+            return "community";
+        }
+
+        fallbackUsed = true;
+        return "community";
+    }
+
+    private static string ResolveTownEventVisibility(
+        string rawVisibility,
+        string summary,
+        string location,
+        IReadOnlyList<string> tags,
+        out bool fallbackUsed)
+    {
+        var normalized = NormalizeTownEventToken(rawVisibility);
+        if (normalized is "public" or "local")
+        {
+            fallbackUsed = false;
+            return normalized;
+        }
+
+        var source = BuildTownEventInferenceSource(normalized, summary, location, tags);
+        if (ContainsAnyToken(source, "public", "town", "square", "crowd", "dozens", "festival", "community", "villagers", "market"))
+        {
+            fallbackUsed = true;
+            return "public";
+        }
+
+        fallbackUsed = true;
+        return "local";
+    }
+
+    private static string BuildTownEventInferenceSource(string seed, string summary, string location, IReadOnlyList<string> tags)
+    {
+        var parts = new List<string> { seed, summary, location };
+        if (tags is not null)
+            parts.AddRange(tags.Where(t => !string.IsNullOrWhiteSpace(t)));
+
+        return string.Join(' ', parts)
+            .Trim()
+            .ToLowerInvariant();
+    }
+
+    private static string NormalizeTownEventToken(string? raw)
+    {
+        var value = (raw ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        value = value
+            .Replace("-", "_", StringComparison.Ordinal)
+            .Replace(" ", "_", StringComparison.Ordinal);
+        while (value.Contains("__", StringComparison.Ordinal))
+            value = value.Replace("__", "_", StringComparison.Ordinal);
+
+        return value.Trim('_');
     }
 
     private static NpcIntentResolveResult ResolveAdjustTownSentiment(SaveState state, string npcId, string intentId, JsonElement args)
