@@ -106,8 +106,12 @@ public sealed class RumorBoardService
 
     public void ExpireOverdueQuests(SaveState state)
     {
+        var currentDay = ResolveEffectiveCurrentDay(state);
+        if (currentDay > state.Calendar.Day)
+            state.Calendar.Day = currentDay;
+
         var overdue = state.Quests.Active
-            .Where(q => q.ExpiresDay > 0 && state.Calendar.Day > q.ExpiresDay)
+            .Where(q => q.ExpiresDay > 0 && currentDay > q.ExpiresDay)
             .ToList();
 
         foreach (var quest in overdue)
@@ -119,7 +123,7 @@ public sealed class RumorBoardService
             state.Facts.Facts[$"quest:{quest.QuestId}:failed"] = new FactValue
             {
                 Value = true,
-                SetDay = state.Calendar.Day,
+                SetDay = currentDay,
                 Source = "system"
             };
 
@@ -133,6 +137,37 @@ public sealed class RumorBoardService
 
             state.Telemetry.Daily.WorldMutations += 1;
         }
+    }
+
+    private static int ResolveEffectiveCurrentDay(SaveState state)
+    {
+        var stateDay = Math.Max(1, state.Calendar.Day);
+        var worldDay = TryGetWorldAbsoluteDayFromGame();
+        if (worldDay <= 0)
+            return stateDay;
+
+        return Math.Max(stateDay, worldDay);
+    }
+
+    private static int TryGetWorldAbsoluteDayFromGame()
+    {
+        var dayOfMonth = Game1.dayOfMonth;
+        var year = Game1.year;
+        var season = Game1.currentSeason;
+        if (year <= 0 || dayOfMonth <= 0 || string.IsNullOrWhiteSpace(season))
+            return 0;
+
+        var seasonIndex = season.Trim().ToLowerInvariant() switch
+        {
+            "spring" => 0,
+            "summer" => 1,
+            "fall" => 2,
+            "winter" => 3,
+            _ => 0
+        };
+
+        var clampedDay = Math.Clamp(dayOfMonth, 1, 28);
+        return ((Math.Max(1, year) - 1) * 112) + (seasonIndex * 28) + clampedDay;
     }
 
     public bool AcceptQuest(SaveState state, string questId)

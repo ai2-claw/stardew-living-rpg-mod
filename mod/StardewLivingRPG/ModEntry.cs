@@ -4982,7 +4982,7 @@ public sealed class ModEntry : Mod
             if (delta != 0)
                 _state.Calendar.Day = Math.Max(1, _state.Calendar.Day + delta);
         }
-        else if (_state.Calendar.Day <= 0)
+        else if (_state.Calendar.Day <= 0 || Math.Abs(worldAbsoluteDay - _state.Calendar.Day) > 1)
         {
             _state.Calendar.Day = worldAbsoluteDay;
         }
