@@ -42,6 +42,7 @@ public sealed class ModEntry : Mod
     private const double StagedValidationMaxMarketRateDelta = 0.75d;
     private const double DefaultMsPerNpcChatClockStep = 7000d;
     private const double NpcChatClockSlowdownMultiplier = 2d;
+    private static readonly TimeSpan PendingFallbackQuestOfferMaxAge = TimeSpan.FromMinutes(2);
     private const string InitialNpcChatPrompt = "Got a minute to chat?";
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
 
@@ -70,6 +71,24 @@ public sealed class ModEntry : Mod
         public string OutcomeId { get; init; } = string.Empty;
         public string? SourceNpcId { get; init; }
         public string Headline { get; init; } = string.Empty;
+    }
+
+    private sealed class PendingFallbackQuestOffer
+    {
+        public PendingFallbackQuestOffer(string templateId, string target, string urgency, int requestedCount, DateTime offeredUtc)
+        {
+            TemplateId = templateId;
+            Target = target;
+            Urgency = urgency;
+            RequestedCount = requestedCount;
+            OfferedUtc = offeredUtc;
+        }
+
+        public string TemplateId { get; }
+        public string Target { get; }
+        public string Urgency { get; }
+        public int RequestedCount { get; }
+        public DateTime OfferedUtc { get; }
     }
 
     private static readonly Dictionary<string, string> PublishSourceNpcFallbackMap = new(StringComparer.OrdinalIgnoreCase)
@@ -209,6 +228,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, string> _npcLastPlayerPromptById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _npcLastContextTagById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerQuestAskUtcById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, PendingFallbackQuestOffer> _npcPendingFallbackQuestOfferById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<string> _ambientLaneDebugSnapshots = new();
     private int _player2PendingResponseCount;
@@ -4364,6 +4384,31 @@ public sealed class ModEntry : Mod
         return JsonSerializer.Deserialize<SaveState>(json) ?? SaveState.CreateDefault();
     }
 
+    private void ShowQuestPostedToast(string questId, string? sourceNpcId)
+    {
+        if (!Context.IsWorldReady || string.IsNullOrWhiteSpace(questId))
+            return;
+
+        var issuer = "A villager";
+        if (!string.IsNullOrWhiteSpace(sourceNpcId)
+            && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
+            && !string.IsNullOrWhiteSpace(shortName))
+        {
+            issuer = shortName.Trim();
+        }
+
+        var quest = _state.Quests.Available
+            .FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
+        if (quest is not null && !string.IsNullOrWhiteSpace(quest.Issuer))
+            issuer = QuestTextHelper.PrettyName(quest.Issuer);
+
+        var title = quest is null
+            ? "New request on the board"
+            : QuestTextHelper.BuildQuestTitle(quest);
+        var message = $"{TrimForHud(issuer, 18)} posted: {TrimForHud(title, 30)}";
+        Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
+    }
+
     private NewspaperIssue BuildAndStoreNewspaperIssue()
     {
         if (_newspaperService is null)
@@ -5606,6 +5651,13 @@ public sealed class ModEntry : Mod
                 }
             }
 
+            if (result.Command.Equals("propose_quest", StringComparison.OrdinalIgnoreCase)
+                && !isAmbientContext
+                && !string.Equals(intentLane, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowQuestPostedToast(result.OutcomeId, sourceNpcId);
+            }
+
             _player2LastCommandApplied = $"{result.Command}:{result.OutcomeId}";
             _player2LastCommandAppliedUtc = DateTime.UtcNow;
 
@@ -6672,6 +6724,19 @@ public sealed class ModEntry : Mod
         if (DateTime.UtcNow - lastPlayerChatUtc > TimeSpan.FromSeconds(45))
             return;
 
+        if (LooksLikeQuestDecline(message))
+        {
+            _npcPendingFallbackQuestOfferById.TryRemove(npcId, out _);
+            return;
+        }
+
+        PendingFallbackQuestOffer? offerFromCurrentLine = null;
+        if (TryBuildPendingQuestOfferFromMessage(npcId, message, out var parsedOffer))
+        {
+            offerFromCurrentLine = parsedOffer;
+            _npcPendingFallbackQuestOfferById[npcId] = parsedOffer;
+        }
+
         var playerAskedForQuestRecently = _npcLastPlayerQuestAskUtcById.TryGetValue(npcId, out var questAskUtc)
             && DateTime.UtcNow - questAskUtc <= TimeSpan.FromSeconds(60);
 
@@ -6682,32 +6747,39 @@ public sealed class ModEntry : Mod
         if (!playerAskedForQuestRecently && !playerAcceptedQuest)
             return;
 
-        if (!LooksLikeQuestOffer(message))
+        PendingFallbackQuestOffer? offerToApply = offerFromCurrentLine;
+        var usedPendingOffer = false;
+        if (offerToApply is null
+            && playerAcceptedQuest
+            && TryGetPendingFallbackQuestOfferForAcceptance(npcId, message, out var pendingOffer))
+        {
+            offerToApply = pendingOffer;
+            usedPendingOffer = true;
+        }
+
+        if (offerToApply is null)
             return;
 
-        if (LooksLikeQuestDecline(message))
-            return;
-
-        if (!TryInferQuestProposalFromMessage(npcId, message, out var templateId, out var target, out var urgency, out var requestedCount))
-            return;
-
-        var intentId = BuildSyntheticQuestIntentId(npcId, templateId, target, _state.Calendar.Day);
+        var intentId = BuildSyntheticQuestIntentId(npcId, offerToApply.TemplateId, offerToApply.Target, _state.Calendar.Day);
         if (_state.Facts.ProcessedIntents.ContainsKey(intentId))
+        {
+            _npcPendingFallbackQuestOfferById.TryRemove(npcId, out _);
             return;
+        }
 
-        object arguments = requestedCount > 0
+        object arguments = offerToApply.RequestedCount > 0
             ? new
             {
-                template_id = templateId,
-                target,
-                urgency,
-                count = requestedCount
+                template_id = offerToApply.TemplateId,
+                target = offerToApply.Target,
+                urgency = offerToApply.Urgency,
+                count = offerToApply.RequestedCount
             }
             : new
             {
-                template_id = templateId,
-                target,
-                urgency
+                template_id = offerToApply.TemplateId,
+                target = offerToApply.Target,
+                urgency = offerToApply.Urgency
             };
 
         var payload = JsonSerializer.Serialize(new
@@ -6720,8 +6792,9 @@ public sealed class ModEntry : Mod
 
         if (TryApplyNpcCommandFromLine(payload))
         {
+            _npcPendingFallbackQuestOfferById.TryRemove(npcId, out _);
             Monitor.Log(
-                $"Applied fallback propose_quest from plain chat text: template={templateId} target={target} urgency={urgency} count={(requestedCount > 0 ? requestedCount.ToString(CultureInfo.InvariantCulture) : "default")}.",
+                $"Applied fallback propose_quest from plain chat text: template={offerToApply.TemplateId} target={offerToApply.Target} urgency={offerToApply.Urgency} count={(offerToApply.RequestedCount > 0 ? offerToApply.RequestedCount.ToString(CultureInfo.InvariantCulture) : "default")} source={(usedPendingOffer ? "pending_offer" : "current_message")}.",
                 LogLevel.Warn);
         }
     }
@@ -6798,6 +6871,35 @@ public sealed class ModEntry : Mod
             return true;
 
         return false;
+    }
+
+    private bool TryBuildPendingQuestOfferFromMessage(string npcId, string message, out PendingFallbackQuestOffer offer)
+    {
+        offer = null!;
+        if (!LooksLikeQuestOffer(message))
+            return false;
+
+        if (!TryInferQuestProposalFromMessage(npcId, message, out var templateId, out var target, out var urgency, out var requestedCount))
+            return false;
+
+        offer = new PendingFallbackQuestOffer(templateId, target, urgency, requestedCount, DateTime.UtcNow);
+        return true;
+    }
+
+    private bool TryGetPendingFallbackQuestOfferForAcceptance(string npcId, string message, out PendingFallbackQuestOffer offer)
+    {
+        offer = null!;
+        if (!_npcPendingFallbackQuestOfferById.TryGetValue(npcId, out var pending))
+            return false;
+
+        if (DateTime.UtcNow - pending.OfferedUtc > PendingFallbackQuestOfferMaxAge)
+        {
+            _npcPendingFallbackQuestOfferById.TryRemove(npcId, out _);
+            return false;
+        }
+
+        offer = pending;
+        return true;
     }
 
     private static bool IsPlayerAcceptingQuest(string? playerText)
@@ -7124,6 +7226,7 @@ public sealed class ModEntry : Mod
         _npcLastNonPlayerMessageUtcById.Clear();
         _npcLastPlayerPromptById.Clear();
         _npcLastContextTagById.Clear();
+        _npcPendingFallbackQuestOfferById.Clear();
     }
 
     private void StartPlayerChatHistoryFallback(string npcId, NpcHistorySnapshot? previousHistorySnapshot, string playerMessage)

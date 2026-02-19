@@ -32,6 +32,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
     // Portrait Data
     private readonly Texture2D? _portraitTexture;
     private readonly Rectangle _portraitSource = new Rectangle(0, 0, 64, 64);
+    private static readonly Rectangle EmptyHeartSource = new Rectangle(218, 428, 7, 6);
+    private static readonly Rectangle FilledHeartSource = new Rectangle(211, 428, 7, 6);
 
     // Layout constants
     private const int MenuWidth = 880;
@@ -41,6 +43,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
     // Regions
     private Rectangle _parchmentRegion;
     private Rectangle _portraitRegion;
+    private Rectangle _heartRowRegion;
     private Rectangle _chatRegion;
     private Rectangle _inputRegion;
 
@@ -165,6 +168,13 @@ public sealed class NpcChatInputMenu : IClickableMenu
 			_parchmentRegion.Y + 32,
 			_parchmentRegion.Right - chatX - 32,
 			_parchmentRegion.Height - 64
+		);
+
+		_heartRowRegion = new Rectangle(
+			_portraitRegion.X,
+			_portraitRegion.Bottom + 12,
+			_portraitRegion.Width,
+			32
 		);
 
 		// Input region below parchment
@@ -309,6 +319,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         // 3. NPC header and portrait
         DrawNpcHeader(b);
         DrawPortrait(b);
+        DrawHeartRow(b);
 
         // 4. Conversation Text
         DrawConversationText(b);
@@ -352,18 +363,41 @@ public sealed class NpcChatInputMenu : IClickableMenu
     private void DrawNpcHeader(SpriteBatch b)
     {
         var nameLabel = string.IsNullOrWhiteSpace(_npcName) ? "Villager" : _npcName;
-        var heartLabel = _heartLevel == 1 ? "Heart" : "Hearts";
-        var header = $"{nameLabel} | {_heartLevel} {heartLabel}";
-        var textSize = Game1.smallFont.MeasureString(header);
+        var textSize = Game1.smallFont.MeasureString(nameLabel);
 
         float x = _portraitRegion.X + (_portraitRegion.Width - textSize.X) / 2f;
         float y = Math.Max(_parchmentRegion.Y + 10f, _portraitRegion.Y - Game1.smallFont.LineSpacing - 12f);
-        Utility.drawTextWithShadow(b, header, Game1.smallFont, new Vector2(x, y), new Color(72, 46, 24));
+        Utility.drawTextWithShadow(b, nameLabel, Game1.smallFont, new Vector2(x, y), new Color(72, 46, 24));
 
         int lineWidth = Math.Max(120, (int)textSize.X + 12);
         int lineX = _portraitRegion.X + (_portraitRegion.Width - lineWidth) / 2;
         int lineY = (int)(y + Game1.smallFont.LineSpacing + 2f);
         b.Draw(Game1.staminaRect, new Rectangle(lineX, lineY, lineWidth, 1), Color.BurlyWood * 0.9f);
+    }
+
+    private void DrawHeartRow(SpriteBatch b)
+    {
+        const int maxHearts = 10;
+        const int scale = 3;
+        const int spacing = 3;
+        int filledHearts = Math.Clamp(_heartLevel, 0, maxHearts);
+
+        int heartWidth = EmptyHeartSource.Width * scale;
+        int heartHeight = EmptyHeartSource.Height * scale;
+        int totalWidth = (heartWidth * maxHearts) + (spacing * (maxHearts - 1));
+
+        int startX = _heartRowRegion.X + (_heartRowRegion.Width - totalWidth) / 2;
+        int y = _heartRowRegion.Y + (_heartRowRegion.Height - heartHeight) / 2;
+
+        for (int i = 0; i < maxHearts; i++)
+        {
+            var source = i < filledHearts ? FilledHeartSource : EmptyHeartSource;
+            b.Draw(
+                Game1.mouseCursors,
+                new Rectangle(startX + ((heartWidth + spacing) * i), y, heartWidth, heartHeight),
+                source,
+                Color.White);
+        }
     }
 
     private void DrawParchment(SpriteBatch b)

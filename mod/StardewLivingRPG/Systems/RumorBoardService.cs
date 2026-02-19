@@ -682,11 +682,12 @@ public sealed class RumorBoardService
 
         var unitValue = ResolveTargetUnitValue(state, templateId, target);
         var marketValue = Math.Max(1, unitValue) * Math.Max(1, count);
+        var marketFloor = RoundUpToStep(marketValue, 25);
         var multiplier = ResolveRewardMultiplier(templateId, urgency);
         var scaledReward = (int)MathF.Round(marketValue * multiplier);
         var roundedReward = RoundToNearest(scaledReward, 25);
 
-        return Math.Clamp(Math.Max(minRewardGold, roundedReward), minRewardGold, 12000);
+        return Math.Clamp(Math.Max(minRewardGold, Math.Max(marketFloor, roundedReward)), minRewardGold, 12000);
     }
 
     private static float ResolveRewardMultiplier(string templateId, string urgency)
@@ -743,6 +744,15 @@ public sealed class RumorBoardService
             return Math.Max(0, value);
 
         return (int)MathF.Round(value / (float)step) * step;
+    }
+
+    private static int RoundUpToStep(int value, int step)
+    {
+        if (step <= 1)
+            return Math.Max(0, value);
+
+        var safeValue = Math.Max(0, value);
+        return ((safeValue + step - 1) / step) * step;
     }
 
     private static string NormalizeTargetForTemplate(SaveState state, string templateId, string rawTarget, string? fallbackSeed = null)
