@@ -9,17 +9,13 @@ public sealed class RumorBoardService
 {
     private const int MaxAvailableBoardQuests = 4;
     private const int MaxActiveBoardQuests = 4;
-    private const string TownHallStatusTriggered = "anchor:town_hall_crisis:status:triggered";
-    private const string TownHallStatusResolved = "anchor:town_hall_crisis:status:resolved";
-
-    private static readonly HashSet<string> ValidCrops = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "parsnip", "potato", "cauliflower", "blueberry", "melon", "pumpkin", "cranberry", "corn", "wheat", "tomato"
-    };
 
     private static readonly HashSet<string> ValidResources = new(StringComparer.OrdinalIgnoreCase)
     {
-        "copper_ore", "iron_ore", "gold_ore", "coal", "quartz", "amethyst", "topaz"
+        "stone", "copper_ore", "iron_ore", "gold_ore", "iridium_ore",
+        "coal", "quartz", "refined_quartz",
+        "earth_crystal", "frozen_tear", "fire_quartz",
+        "amethyst", "topaz", "jade", "aquamarine", "ruby", "emerald", "diamond"
     };
 
     private static readonly HashSet<string> ValidNpcTargets = new(StringComparer.OrdinalIgnoreCase)
@@ -33,7 +29,19 @@ public sealed class RumorBoardService
         "vincent", "willy", "wizard"
     };
 
-    private static readonly Dictionary<string, string> CropAliases = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> SupplementalSupplyItems = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "wild_horseradish", "daffodil", "leek", "dandelion",
+        "salmonberry", "blackberry", "spice_berry", "sweet_pea",
+        "grape", "hazelnut", "common_mushroom", "chanterelle", "morel", "red_mushroom", "purple_mushroom",
+        "winter_root", "crystal_fruit", "snow_yam", "crocus", "holly",
+        "anchovy", "sardine", "herring", "tuna", "salmon", "sunfish", "catfish", "shad",
+        "smallmouth_bass", "largemouth_bass", "carp", "bream", "pike", "red_mullet", "tilapia",
+        "squid", "halibut", "walleye", "eel", "flounder", "chub", "sturgeon", "ghostfish",
+        "wood", "hardwood", "fiber", "sap", "clay"
+    };
+
+    private static readonly Dictionary<string, string> SupplyAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["parsnips"] = "parsnip",
         ["potatoes"] = "potato",
@@ -44,18 +52,95 @@ public sealed class RumorBoardService
         ["cranberries"] = "cranberry",
         ["corns"] = "corn",
         ["wheats"] = "wheat",
-        ["tomatoes"] = "tomato"
+        ["tomatoes"] = "tomato",
+        ["berries"] = "blackberry",
+        ["spice_berries"] = "spice_berry",
+        ["sweet_peas"] = "sweet_pea",
+        ["salmonberries"] = "salmonberry",
+        ["horseradish"] = "wild_horseradish",
+        ["wild_horseradishes"] = "wild_horseradish",
+        ["largemouth_basses"] = "largemouth_bass",
+        ["smallmouth_basses"] = "smallmouth_bass",
+        ["goat_milks"] = "goat_milk",
+        ["large_milks"] = "large_milk",
+        ["large_goat_milks"] = "large_goat_milk",
+        ["large_eggs"] = "large_egg",
+        ["large_brown_eggs"] = "large_brown_egg",
+        ["woods"] = "wood"
     };
 
     private static readonly Dictionary<string, int> ResourceUnitValues = new(StringComparer.OrdinalIgnoreCase)
     {
+        ["stone"] = 2,
         ["copper_ore"] = 75,
         ["iron_ore"] = 150,
         ["gold_ore"] = 250,
+        ["iridium_ore"] = 100,
         ["coal"] = 150,
         ["quartz"] = 50,
+        ["refined_quartz"] = 50,
+        ["earth_crystal"] = 50,
+        ["frozen_tear"] = 75,
+        ["fire_quartz"] = 100,
         ["amethyst"] = 100,
-        ["topaz"] = 80
+        ["topaz"] = 80,
+        ["jade"] = 200,
+        ["aquamarine"] = 180,
+        ["ruby"] = 250,
+        ["emerald"] = 250,
+        ["diamond"] = 750
+    };
+
+    private static readonly Dictionary<string, int> SupplyUnitValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["wild_horseradish"] = 50,
+        ["daffodil"] = 30,
+        ["leek"] = 60,
+        ["dandelion"] = 40,
+        ["salmonberry"] = 5,
+        ["blackberry"] = 25,
+        ["spice_berry"] = 80,
+        ["sweet_pea"] = 50,
+        ["grape"] = 80,
+        ["hazelnut"] = 90,
+        ["common_mushroom"] = 40,
+        ["chanterelle"] = 160,
+        ["morel"] = 150,
+        ["red_mushroom"] = 75,
+        ["purple_mushroom"] = 250,
+        ["winter_root"] = 70,
+        ["crystal_fruit"] = 150,
+        ["snow_yam"] = 100,
+        ["crocus"] = 60,
+        ["holly"] = 80,
+        ["anchovy"] = 30,
+        ["sardine"] = 40,
+        ["herring"] = 30,
+        ["tuna"] = 100,
+        ["salmon"] = 75,
+        ["sunfish"] = 30,
+        ["catfish"] = 200,
+        ["shad"] = 60,
+        ["smallmouth_bass"] = 50,
+        ["largemouth_bass"] = 100,
+        ["carp"] = 30,
+        ["bream"] = 45,
+        ["pike"] = 100,
+        ["red_mullet"] = 75,
+        ["tilapia"] = 75,
+        ["squid"] = 80,
+        ["halibut"] = 80,
+        ["walleye"] = 105,
+        ["eel"] = 85,
+        ["flounder"] = 100,
+        ["chub"] = 50,
+        ["sturgeon"] = 200,
+        ["ghostfish"] = 45,
+        ["wood"] = 2,
+        ["hardwood"] = 15,
+        ["fiber"] = 1,
+        ["sap"] = 2,
+        ["clay"] = 20
     };
 
     public void RefreshDailyRumors(SaveState state)
@@ -63,12 +148,10 @@ public sealed class RumorBoardService
         // Keep active quests untouched; rotate available list daily.
         state.Quests.Available.Clear();
 
-        var allowParsnip = IsParsnipCrisisActive(state);
-        var eventCropTarget = TrySelectEventDerivedCropTarget(state);
-        var crop = SelectFreshCropTarget(
+        var eventSupplyTarget = TrySelectEventDerivedSupplyTarget(state);
+        var crop = SelectFreshSupplyTarget(
             state,
-            allowParsnip,
-            preferredTarget: eventCropTarget,
+            preferredTarget: eventSupplyTarget,
             fallbackSeed: $"daily_crop_{state.Calendar.Day}");
 
         var eventVisitTarget = TrySelectEventDerivedVisitTarget(state);
@@ -644,6 +727,13 @@ public sealed class RumorBoardService
                 return crop.BasePrice;
         }
 
+        var catalog = VanillaCropCatalog.GetEntries();
+        if (catalog.TryGetValue(target, out var catalogEntry) && catalogEntry.BasePrice > 0)
+            return catalogEntry.BasePrice;
+
+        if (SupplyUnitValues.TryGetValue(target, out var supplyUnitValue))
+            return supplyUnitValue;
+
         return 80;
     }
 
@@ -657,79 +747,85 @@ public sealed class RumorBoardService
 
     private static string NormalizeTargetForTemplate(SaveState state, string templateId, string rawTarget, string? fallbackSeed = null)
     {
-        var cropTarget = NormalizeCropCandidate(rawTarget);
+        var itemTarget = NormalizeSupplyCandidate(rawTarget);
         var npcTarget = NormalizeNpcTarget(rawTarget);
-        var allowParsnip = IsParsnipCrisisActive(state);
 
         return templateId switch
         {
-            "gather_crop" => NormalizeCropTargetOrFallback(state, cropTarget, allowParsnip, fallbackSeed),
-            "deliver_item" => NormalizeCropTargetOrFallback(state, cropTarget, allowParsnip, fallbackSeed),
-            "mine_resource" => ValidResources.Contains(cropTarget) ? cropTarget : "copper_ore",
+            "gather_crop" => NormalizeSupplyTargetOrFallback(state, itemTarget, fallbackSeed),
+            "deliver_item" => NormalizeSupplyTargetOrFallback(state, itemTarget, fallbackSeed),
+            "mine_resource" => ValidResources.Contains(itemTarget) ? itemTarget : SelectFallbackMineResourceTarget(state, fallbackSeed),
             "social_visit" => ValidNpcTargets.Contains(npcTarget) ? npcTarget : SelectFallbackVisitTarget(state, fallbackSeed),
-            _ => NormalizeCropTargetOrFallback(state, cropTarget, allowParsnip, fallbackSeed)
+            _ => NormalizeSupplyTargetOrFallback(state, itemTarget, fallbackSeed)
         };
     }
 
-    private static string NormalizeCropTargetOrFallback(SaveState state, string candidate, bool allowParsnip, string? fallbackSeed = null)
+    private static string NormalizeSupplyTargetOrFallback(SaveState state, string candidate, string? fallbackSeed = null)
     {
-        if (ValidCrops.Contains(candidate))
-        {
-            if (candidate.Equals("parsnip", StringComparison.OrdinalIgnoreCase) && !allowParsnip)
-                return SelectFallbackCropTarget(state, allowParsnip: false, fallbackSeed);
-
+        var validSupplyItems = GetValidSupplyItems(state);
+        if (validSupplyItems.Contains(candidate))
             return candidate;
-        }
 
-        return SelectFallbackCropTarget(state, allowParsnip, fallbackSeed);
+        return SelectFallbackSupplyTarget(state, fallbackSeed);
     }
 
-    private static string NormalizeCropCandidate(string? rawTarget)
+    private static string NormalizeSupplyCandidate(string? rawTarget)
     {
         var cleaned = StripRequestedCountTokens(rawTarget);
         var t = cleaned
             .Replace(" ", "_", StringComparison.Ordinal)
             .Trim('"', '\'', '.', ',', '!', '?', ';', ':');
 
-        if (CropAliases.TryGetValue(t, out var alias))
+        if (SupplyAliases.TryGetValue(t, out var alias))
             return alias;
+
+        var catalog = VanillaCropCatalog.GetEntries();
+        if (catalog.ContainsKey(t) || SupplementalSupplyItems.Contains(t) || ValidResources.Contains(t))
+            return t;
 
         if (t.EndsWith("ies", StringComparison.Ordinal) && t.Length > 3)
         {
             var singularY = t[..^3] + "y";
-            if (ValidCrops.Contains(singularY))
+            if (SupplyAliases.TryGetValue(singularY, out var singularAlias))
+                return singularAlias;
+            if (catalog.ContainsKey(singularY) || SupplementalSupplyItems.Contains(singularY) || ValidResources.Contains(singularY))
                 return singularY;
+            return singularY;
         }
 
         if (t.EndsWith("s", StringComparison.Ordinal) && t.Length > 1)
         {
             var singular = t[..^1];
-            if (ValidCrops.Contains(singular))
+            if (SupplyAliases.TryGetValue(singular, out var singularAlias))
+                return singularAlias;
+            if (catalog.ContainsKey(singular) || SupplementalSupplyItems.Contains(singular) || ValidResources.Contains(singular))
                 return singular;
+            return singular;
         }
 
         return t;
     }
 
-    private static string SelectFreshCropTarget(SaveState state, bool allowParsnip, string? preferredTarget, string? fallbackSeed = null)
+    private static string SelectFreshSupplyTarget(SaveState state, string? preferredTarget, string? fallbackSeed = null)
     {
+        var validSupplyItems = GetValidSupplyItems(state);
         var candidates = new List<string>();
-        var preferred = NormalizeCropCandidate(preferredTarget);
-        if (ValidCrops.Contains(preferred))
+        var preferred = NormalizeSupplyCandidate(preferredTarget);
+        if (validSupplyItems.Contains(preferred))
             candidates.Add(preferred);
 
         candidates.AddRange(state.Economy.Crops
-            .Where(kv => ValidCrops.Contains(kv.Key))
+            .Where(kv => validSupplyItems.Contains(kv.Key))
             .OrderByDescending(kv => kv.Value.ScarcityBonus)
             .ThenByDescending(kv => kv.Value.DemandFactor)
             .ThenByDescending(kv => kv.Value.SupplyPressureFactor)
-            .Select(kv => kv.Key.ToLowerInvariant()));
+            .Select(kv => NormalizeSupplyCandidate(kv.Key)));
 
-        candidates.Add(GetSeasonalFallbackCrop(state.Calendar.Season, allowParsnip));
+        candidates.AddRange(GetSeasonalFallbackSupplyItems(state.Calendar.Season));
 
         var ordered = candidates
             .Where(c => !string.IsNullOrWhiteSpace(c))
-            .Where(c => allowParsnip || !c.Equals("parsnip", StringComparison.OrdinalIgnoreCase))
+            .Where(validSupplyItems.Contains)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -741,12 +837,12 @@ public sealed class RumorBoardService
 
         if (ordered.Count > 0)
         {
-            var topCandidates = ordered.Take(Math.Min(4, ordered.Count)).ToList();
+            var topCandidates = ordered.Take(Math.Min(6, ordered.Count)).ToList();
             var index = GetDiversifiedFallbackIndex(topCandidates.Count, fallbackSeed, state.Calendar.Day);
             return topCandidates[index];
         }
 
-        return SelectFallbackCropTarget(state, allowParsnip, fallbackSeed);
+        return SelectFallbackSupplyTarget(state, fallbackSeed);
     }
 
     private static string SelectFreshVisitTarget(SaveState state, string? preferredTarget, string? fallbackSeed = null)
@@ -775,7 +871,7 @@ public sealed class RumorBoardService
         return ordered[index];
     }
 
-    private static string TrySelectEventDerivedCropTarget(SaveState state)
+    private static string TrySelectEventDerivedSupplyTarget(SaveState state)
     {
         var recentEvents = state.TownMemory.Events
             .Where(ev => ev.Day >= state.Calendar.Day - 1)
@@ -785,21 +881,27 @@ public sealed class RumorBoardService
         if (recentEvents.Count == 0)
             return string.Empty;
 
+        var validSupplyItems = GetValidSupplyItems(state);
+        var summaryScanItems = validSupplyItems
+            .OrderByDescending(item => item.Length)
+            .ThenBy(item => item, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         foreach (var ev in recentEvents)
         {
             foreach (var tag in ev.Tags ?? Array.Empty<string>())
             {
-                var normalizedTag = NormalizeCropCandidate(tag);
-                if (ValidCrops.Contains(normalizedTag))
+                var normalizedTag = NormalizeSupplyCandidate(tag);
+                if (validSupplyItems.Contains(normalizedTag))
                     return normalizedTag;
             }
 
-            foreach (var crop in ValidCrops)
+            foreach (var item in summaryScanItems)
             {
-                if (ev.Summary.Contains(crop.Replace("_", " ", StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase)
-                    || ev.Summary.Contains(crop, StringComparison.OrdinalIgnoreCase))
+                if (ev.Summary.Contains(item.Replace("_", " ", StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase)
+                    || ev.Summary.Contains(item, StringComparison.OrdinalIgnoreCase))
                 {
-                    return crop.ToLowerInvariant();
+                    return item;
                 }
             }
         }
@@ -855,28 +957,58 @@ public sealed class RumorBoardService
             || state.Quests.Failed.TakeLast(8).Any(Match);
     }
 
-    private static string SelectFallbackCropTarget(SaveState state, bool allowParsnip, string? fallbackSeed = null)
+    private static string SelectFallbackSupplyTarget(SaveState state, string? fallbackSeed = null)
     {
+        var validSupplyItems = GetValidSupplyItems(state);
         var ordered = state.Economy.Crops
-            .Where(kv => ValidCrops.Contains(kv.Key))
+            .Where(kv => validSupplyItems.Contains(kv.Key))
             .OrderByDescending(kv => kv.Value.ScarcityBonus)
             .ThenByDescending(kv => kv.Value.DemandFactor)
             .ThenByDescending(kv => kv.Value.SupplyPressureFactor)
-            .Select(kv => kv.Key.ToLowerInvariant())
+            .Select(kv => NormalizeSupplyCandidate(kv.Key))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (!allowParsnip)
-            ordered = ordered.Where(c => !c.Equals("parsnip", StringComparison.OrdinalIgnoreCase)).ToList();
+        ordered.AddRange(GetSeasonalFallbackSupplyItems(state.Calendar.Season)
+            .Where(validSupplyItems.Contains));
 
         if (ordered.Count > 0)
         {
-            var topCandidates = ordered.Take(Math.Min(4, ordered.Count)).ToList();
+            var topCandidates = ordered.Take(Math.Min(6, ordered.Count)).ToList();
             var index = GetDiversifiedFallbackIndex(topCandidates.Count, fallbackSeed, state.Calendar.Day);
             return topCandidates[index];
         }
 
-        return GetSeasonalFallbackCrop(state.Calendar.Season, allowParsnip);
+        var canonicalFallback = GetSeasonalFallbackSupplyItems(state.Calendar.Season)
+            .FirstOrDefault(validSupplyItems.Contains);
+        if (!string.IsNullOrWhiteSpace(canonicalFallback))
+            return canonicalFallback;
+
+        var anyValid = validSupplyItems
+            .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        return string.IsNullOrWhiteSpace(anyValid) ? "parsnip" : anyValid;
+    }
+
+    private static string SelectFallbackMineResourceTarget(SaveState state, string? fallbackSeed = null)
+    {
+        var ordered = state.Economy.Crops
+            .Where(kv => ValidResources.Contains(kv.Key))
+            .OrderByDescending(kv => kv.Value.ScarcityBonus)
+            .ThenByDescending(kv => kv.Value.DemandFactor)
+            .ThenByDescending(kv => kv.Value.SupplyPressureFactor)
+            .Select(kv => NormalizeSupplyCandidate(kv.Key))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        ordered.AddRange(ValidResources.OrderBy(v => v, StringComparer.OrdinalIgnoreCase));
+
+        if (ordered.Count == 0)
+            return "copper_ore";
+
+        var topCandidates = ordered.Take(Math.Min(6, ordered.Count)).ToList();
+        var index = GetDiversifiedFallbackIndex(topCandidates.Count, fallbackSeed, state.Calendar.Day);
+        return topCandidates[index];
     }
 
     private static string SelectFallbackVisitTarget(SaveState state, string? fallbackSeed = null)
@@ -998,60 +1130,51 @@ public sealed class RumorBoardService
         return cleaned;
     }
 
-    private static string GetSeasonalFallbackCrop(string? season, bool allowParsnip)
+    private static HashSet<string> GetValidSupplyItems(SaveState state)
     {
-        var s = (season ?? string.Empty).Trim().ToLowerInvariant();
-        if (allowParsnip)
+        var valid = new HashSet<string>(SupplementalSupplyItems, StringComparer.OrdinalIgnoreCase);
+        foreach (var resource in ValidResources)
+            valid.Add(resource);
+
+        foreach (var key in VanillaCropCatalog.GetEntries().Keys)
         {
-            return s switch
-            {
-                "spring" => "parsnip",
-                "summer" => "tomato",
-                "fall" => "pumpkin",
-                _ => "wheat"
-            };
+            var normalized = NormalizeSupplyCandidate(key);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                valid.Add(normalized);
         }
 
-        return s switch
+        foreach (var key in state.Economy.Crops.Keys)
         {
-            "spring" => "potato",
-            "summer" => "tomato",
-            "fall" => "pumpkin",
-            _ => "wheat"
-        };
+            var normalized = NormalizeSupplyCandidate(key);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                valid.Add(normalized);
+        }
+
+        return valid;
     }
 
-    private static bool IsParsnipCrisisActive(SaveState state)
+    private static IEnumerable<string> GetSeasonalFallbackSupplyItems(string? season)
     {
-        if (!state.Facts.Facts.TryGetValue(TownHallStatusTriggered, out var triggered) || !triggered.Value)
-            return false;
-
-        if (state.Facts.Facts.TryGetValue(TownHallStatusResolved, out var resolved) && resolved.Value)
-            return false;
-
-        if (!state.Economy.Crops.TryGetValue("parsnip", out var parsnip))
-            return false;
-
-        var topByScarcity = state.Economy.Crops
-            .Where(kv => ValidCrops.Contains(kv.Key))
-            .OrderByDescending(kv => kv.Value.ScarcityBonus)
-            .ThenByDescending(kv => kv.Value.DemandFactor)
-            .Select(kv => kv.Key)
-            .FirstOrDefault();
-
-        if (!string.Equals(topByScarcity, "parsnip", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var secondScarcity = state.Economy.Crops
-            .Where(kv => ValidCrops.Contains(kv.Key) && !kv.Key.Equals("parsnip", StringComparison.OrdinalIgnoreCase))
-            .Select(kv => kv.Value.ScarcityBonus)
-            .DefaultIfEmpty(0f)
-            .Max();
-
-        var scarcityLead = parsnip.ScarcityBonus - secondScarcity;
-        return parsnip.DemandFactor >= 1.04f
-            && parsnip.ScarcityBonus >= 0.04f
-            && scarcityLead >= 0.01f;
+        var s = (season ?? string.Empty).Trim().ToLowerInvariant();
+        return s switch
+        {
+            "spring" => new[]
+            {
+                "parsnip", "potato", "cauliflower", "wild_horseradish", "daffodil", "leek", "dandelion", "sunfish"
+            },
+            "summer" => new[]
+            {
+                "tomato", "blueberry", "melon", "corn", "spice_berry", "sweet_pea", "tuna", "tilapia"
+            },
+            "fall" => new[]
+            {
+                "pumpkin", "cranberry", "wheat", "yam", "blackberry", "hazelnut", "salmon", "walleye"
+            },
+            _ => new[]
+            {
+                "wheat", "winter_root", "crystal_fruit", "snow_yam", "crocus", "holly", "squid", "tuna"
+            }
+        };
     }
 
     private static void ApplyRewards(SaveState state, QuestEntry quest)

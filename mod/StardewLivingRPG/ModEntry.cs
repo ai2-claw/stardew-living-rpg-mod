@@ -127,6 +127,23 @@ public sealed class ModEntry : Mod
     {
         "apple", "orange", "peach", "pomegranate", "apricot", "cherry"
     };
+    private static readonly string[] ForageNpcSupplyPool =
+    {
+        "wild_horseradish", "daffodil", "leek", "dandelion",
+        "spice_berry", "sweet_pea", "blackberry", "hazelnut",
+        "winter_root", "crystal_fruit", "snow_yam", "crocus"
+    };
+    private static readonly string[] FishingNpcSupplyPool =
+    {
+        "anchovy", "sardine", "herring", "tuna", "salmon", "sunfish", "catfish",
+        "smallmouth_bass", "largemouth_bass", "carp", "bream", "tilapia", "halibut", "walleye", "eel"
+    };
+    private static readonly string[] MiningNpcResourcePool =
+    {
+        "stone", "copper_ore", "iron_ore", "gold_ore", "iridium_ore",
+        "coal", "quartz", "refined_quartz", "earth_crystal", "frozen_tear", "fire_quartz",
+        "amethyst", "topaz", "jade", "aquamarine", "ruby", "emerald", "diamond"
+    };
 
     private ModConfig _config = new();
     private SaveState _state = SaveState.CreateDefault();
@@ -4718,8 +4735,8 @@ public sealed class ModEntry : Mod
             .FirstOrDefault();
 
         var canonNpcs = "Lewis, Robin, Pierre, Linus, Haley, Alex, Demetrius, Wizard";
-        var activeQuestIds = _state.Quests.Active.Take(3).Select(q => q.QuestId).ToArray();
-        var availableQuestIds = _state.Quests.Available.Take(3).Select(q => q.QuestId).ToArray();
+        var activeQuestTemplateCounts = FormatQuestTemplateCounts(_state.Quests.Active);
+        var availableQuestTemplateCounts = FormatQuestTemplateCounts(_state.Quests.Available);
 
         var oversupplyText = oversupply.Key is null
             ? "none"
@@ -4738,6 +4755,7 @@ public sealed class ModEntry : Mod
         var newsContext = BuildNewsAwarenessBlock();
         var eventsContext = BuildRecentEventAwarenessBlock(playerText);
         var playerAskedForRequest = IsPlayerAskingForQuest(playerText);
+        var questDiversityContext = BuildQuestDiversityBlock(npcName, playerAskedForRequest);
         var effectiveContextTag = string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag!;
         var commandPolicyRule = _commandPolicyService?.BuildPromptRule(effectiveContextTag) ?? string.Empty;
         var ambientEventFirstRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
@@ -4753,7 +4771,6 @@ public sealed class ModEntry : Mod
             "manual_market" => "MANUAL_INTENT_RULE: Player explicitly asked market pulse. If no anomaly exists, decline market modifiers and explain briefly in-character.",
             _ => string.Empty
         };
-        var parsnipCrisis = IsParsnipQuestCrisisActive();
         if (!string.IsNullOrWhiteSpace(npcName))
         {
             if (_npcMemoryService is not null)
@@ -4787,9 +4804,11 @@ public sealed class ModEntry : Mod
             "QUEST_RULE: If your request includes an exact amount, set propose_quest.count to that number and keep target as only the item/resource/NPC name.",
             "QUEST_RULE: If no suitable request exists, explicitly say none is available in-character.",
             "QUEST_RULE: Do not proactively offer a new quest during normal small talk. Offer quests only when the player asks for work/request or explicitly agrees to help.",
+            "QUEST_TARGET_RULE: Valid targets include market produce, animal goods, forage items, fish, and mine resources when appropriate to template.",
+            "QUEST_DIVERSITY_RULE: Avoid repeating the same crop request across many NPCs. If recent requests cluster on one target, choose another valid target or another template.",
+            "QUEST_DIVERSITY_RULE: When player asks for work, prioritize PreferredTemplates and PreferredTargets from QUEST_DIVERSITY; repeat a recent target only with a clear market/event reason.",
             "EVENT_QUALITY_RULE: record_town_event requires kind, summary, location, severity(1-5), visibility(local/public), and concise tags.",
             "EVENT_QUALITY_RULE: Keep summary concrete, location specific, severity proportional, and tags short/non-duplicated.",
-            "QUEST_TARGET_RULE: Do not default to parsnip. Use parsnip only when STATE: ParsnipCrisis is true; otherwise choose another valid crop target or decline.",
             "SOCIAL_RULE: Use adjust_reputation only for meaningful interaction outcomes, not routine greetings.",
             "INTEREST_RULE: Use shift_interest_influence only when the conversation clearly concerns town groups or priorities.",
             "MARKET_MOD_RULE: Use apply_market_modifier only when MARKET_SIGNALS show a clear anomaly, and keep changes bounded/temporary.",
@@ -4813,16 +4832,16 @@ public sealed class ModEntry : Mod
             $"STATE: NpcReputation {(string.IsNullOrWhiteSpace(npcName) ? 0 : npcReputation)}.",
             $"STATE: CurrentHour24 {hour24:00}.",
             $"STATE: CurrentMinute {minute:00}.",
-            $"STATE: ParsnipCrisis {parsnipCrisis}.",
             $"PLAYER_KNOWLEDGE: PlayerName='{playerName}' NpcHasMetPlayer={npcHasMetPlayer} PreferredAddress='{preferredAddress}'.",
             $"STATE: PlayerStats Charisma={charismaStat} Social={socialStat}.",
             $"STATE: Day {_state.Calendar.Day} {currentSeason}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
             $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}.",
+            questDiversityContext,
             newsContext,
             eventsContext,
-            $"STATE: AvailableTownRequests {_state.Quests.Available.Count} ids=[{string.Join(",", availableQuestIds)}].",
-            $"STATE: ActiveTownRequests {_state.Quests.Active.Count} ids=[{string.Join(",", activeQuestIds)}].",
+            $"STATE: AvailableTownRequests {_state.Quests.Available.Count} by_template=[{availableQuestTemplateCounts}].",
+            $"STATE: ActiveTownRequests {_state.Quests.Active.Count} by_template=[{activeQuestTemplateCounts}].",
             npcMemory,
             townMemory
         );
@@ -4962,6 +4981,149 @@ public sealed class ModEntry : Mod
             .ToArray();
 
         return $"RECENT_EVENTS: [{JoinContextItems(recentEvents)}]. UPCOMING_EVENTS: [{JoinContextItems(upcomingEvents)}].";
+    }
+
+    private static string FormatQuestTemplateCounts(IEnumerable<QuestEntry> quests)
+    {
+        var counts = quests
+            .Where(q => q is not null)
+            .GroupBy(
+                q => string.IsNullOrWhiteSpace(q.TemplateId) ? "unknown" : q.TemplateId.Trim().ToLowerInvariant(),
+                StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(g => $"{g.Key}:{g.Count()}")
+            .ToArray();
+
+        return counts.Length == 0 ? "none" : string.Join(", ", counts);
+    }
+
+    private string BuildQuestDiversityBlock(string? npcName, bool playerAskedForRequest)
+    {
+        if (!playerAskedForRequest)
+            return "QUEST_DIVERSITY: not_applicable.";
+
+        static bool IsItemOrResourceTemplate(string? templateId)
+        {
+            return string.Equals(templateId, "gather_crop", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(templateId, "deliver_item", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(templateId, "mine_resource", StringComparison.OrdinalIgnoreCase);
+        }
+
+        var recentTargets = _state.Quests.Available
+            .Concat(_state.Quests.Active)
+            .Concat(_state.Quests.Completed.TakeLast(6))
+            .Concat(_state.Quests.Failed.TakeLast(6))
+            .Where(q => IsItemOrResourceTemplate(q.TemplateId))
+            .Select(q => NormalizeTargetToken(q.TargetItem))
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToArray();
+
+        var repeatedTargets = recentTargets
+            .GroupBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() >= 2)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .Select(g => g.Key)
+            .ToArray();
+
+        var preferredTemplates = SelectQuestDiversityTemplates(npcName);
+        var preferredTargets = SelectQuestDiversityTargets(npcName, repeatedTargets);
+
+        return
+            $"QUEST_DIVERSITY: AvoidRepeatTargets [{JoinContextItems(repeatedTargets)}]. " +
+            $"PreferredTemplates [{JoinContextItems(preferredTemplates)}]. " +
+            $"PreferredTargets [{JoinContextItems(preferredTargets)}].";
+    }
+
+    private string[] SelectQuestDiversityTemplates(string? npcName)
+    {
+        var profile = _npcSpeechStyleService?.GetProfile(npcName) ?? NpcVerbalProfile.Traditionalist;
+        var baseOrder = profile switch
+        {
+            NpcVerbalProfile.Professional => new[] { "deliver_item", "gather_crop", "mine_resource", "social_visit" },
+            NpcVerbalProfile.Traditionalist => new[] { "social_visit", "gather_crop", "deliver_item", "mine_resource" },
+            NpcVerbalProfile.Intellectual => new[] { "mine_resource", "deliver_item", "social_visit", "gather_crop" },
+            NpcVerbalProfile.Enthusiast => new[] { "social_visit", "gather_crop", "mine_resource", "deliver_item" },
+            NpcVerbalProfile.Recluse => new[] { "mine_resource", "deliver_item", "gather_crop", "social_visit" },
+            _ => new[] { "gather_crop", "deliver_item", "social_visit", "mine_resource" }
+        };
+
+        var offset = GetQuestDiversitySeedIndex(baseOrder.Length, npcName, "template");
+        return baseOrder
+            .Skip(offset)
+            .Concat(baseOrder.Take(offset))
+            .Take(2)
+            .ToArray();
+    }
+
+    private string[] SelectQuestDiversityTargets(string? npcName, IEnumerable<string> avoidTargets)
+    {
+        var ranked = BuildQuestSupplyCandidateList();
+
+        if (ranked.Count == 0)
+        {
+            ranked = new List<string>
+            {
+                "parsnip", "potato", "cauliflower", "blueberry", "melon", "pumpkin", "corn", "tomato",
+                "milk", "egg", "wild_horseradish", "sunfish", "copper_ore"
+            };
+        }
+
+        var avoid = new HashSet<string>(
+            (avoidTargets ?? Array.Empty<string>()).Where(t => !string.IsNullOrWhiteSpace(t)),
+            StringComparer.OrdinalIgnoreCase);
+        var filtered = ranked.Where(t => !avoid.Contains(t)).ToList();
+        if (filtered.Count == 0)
+            filtered = ranked;
+
+        var offset = GetQuestDiversitySeedIndex(filtered.Count, npcName, "target");
+        return filtered
+            .Skip(offset)
+            .Concat(filtered.Take(offset))
+            .Take(Math.Min(3, filtered.Count))
+            .ToArray();
+    }
+
+    private List<string> BuildQuestSupplyCandidateList()
+    {
+        var ranked = _state.Economy.Crops
+            .Where(kv => !string.IsNullOrWhiteSpace(kv.Key))
+            .OrderByDescending(kv => kv.Value.ScarcityBonus)
+            .ThenByDescending(kv => kv.Value.DemandFactor)
+            .ThenByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
+            .Select(kv => NormalizeTargetToken(kv.Key))
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .ToList();
+
+        ranked.AddRange(VanillaCropCatalog.GetEntries().Keys
+            .Select(NormalizeTargetToken)
+            .Where(k => !string.IsNullOrWhiteSpace(k)));
+
+        ranked.AddRange(GetSeasonalNpcSupplyPool((_state.Calendar.Season ?? "spring").Trim().ToLowerInvariant())
+            .Select(NormalizeTargetToken));
+        ranked.AddRange(OrchardNpcSupplyPool.Select(NormalizeTargetToken));
+        ranked.AddRange(ForageNpcSupplyPool.Select(NormalizeTargetToken));
+        ranked.AddRange(FishingNpcSupplyPool.Select(NormalizeTargetToken));
+        ranked.AddRange(MiningNpcResourcePool.Select(NormalizeTargetToken));
+
+        return ranked
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private int GetQuestDiversitySeedIndex(int count, string? npcName, string axis)
+    {
+        if (count <= 1)
+            return 0;
+
+        var seed = $"{npcName ?? "npc"}|{axis}|{_state.Calendar.Day}|{_state.Calendar.Season}";
+        var hash = 17;
+        foreach (var ch in seed)
+            hash = unchecked((hash * 31) + char.ToLowerInvariant(ch));
+
+        return Math.Abs(hash) % count;
     }
 
     private static HashSet<string> ExtractContextFocusTokens(string? playerText)
@@ -6280,24 +6442,28 @@ public sealed class ModEntry : Mod
 
     private string ResolveCropTargetFromTownEvent(TownMemoryEvent ev)
     {
-        var cropKeys = _state.Economy.Crops.Keys
-            .Where(key => !string.IsNullOrWhiteSpace(key))
-            .Select(key => key.Trim())
+        var supplyKeys = BuildQuestSupplyCandidateList()
+            .OrderByDescending(key => key.Length)
+            .ThenBy(key => key, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        if (cropKeys.Count == 0)
+        if (supplyKeys.Count == 0)
             return string.Empty;
 
         foreach (var tag in ev.Tags ?? Array.Empty<string>())
         {
-            var match = cropKeys.FirstOrDefault(crop => crop.Equals(tag, StringComparison.OrdinalIgnoreCase));
+            var normalizedTag = NormalizeTargetToken(tag);
+            var match = supplyKeys.FirstOrDefault(item => item.Equals(normalizedTag, StringComparison.OrdinalIgnoreCase));
             if (!string.IsNullOrWhiteSpace(match))
-                return match.ToLowerInvariant();
+                return match;
         }
 
-        foreach (var crop in cropKeys)
+        foreach (var item in supplyKeys)
         {
-            if (ev.Summary.Contains(crop, StringComparison.OrdinalIgnoreCase))
-                return crop.ToLowerInvariant();
+            if (ev.Summary.Contains(item.Replace("_", " ", StringComparison.Ordinal), StringComparison.OrdinalIgnoreCase)
+                || ev.Summary.Contains(item, StringComparison.OrdinalIgnoreCase))
+            {
+                return item;
+            }
         }
 
         return string.Empty;
@@ -6722,8 +6888,7 @@ public sealed class ModEntry : Mod
 
     private string? TryFindCropTargetInText(string text)
     {
-        var cropCandidates = _state.Economy.Crops.Keys
-            .Where(k => !string.IsNullOrWhiteSpace(k))
+        var cropCandidates = BuildQuestSupplyCandidateList()
             .OrderByDescending(k => k.Length)
             .ToList();
 
@@ -6745,15 +6910,10 @@ public sealed class ModEntry : Mod
 
     private static string? TryFindResourceTargetInText(string text)
     {
-        var resources = new[]
-        {
-            "copper_ore", "iron_ore", "gold_ore", "coal", "quartz", "stone"
-        };
-
-        foreach (var resource in resources)
+        foreach (var resource in MiningNpcResourcePool)
         {
             if (ContainsTargetToken(text, resource))
-                return resource;
+                return NormalizeTargetToken(resource);
         }
 
         return null;
@@ -6815,45 +6975,17 @@ public sealed class ModEntry : Mod
 
     private string GetFallbackQuestCropTargetForInference(string? seed = null)
     {
-        var allowParsnip = IsParsnipQuestCrisisActive();
-        var ordered = _state.Economy.Crops
-            .Where(kv => !string.IsNullOrWhiteSpace(kv.Key))
-            .OrderByDescending(kv => kv.Value.ScarcityBonus)
-            .ThenByDescending(kv => kv.Value.DemandFactor)
-            .ThenByDescending(kv => kv.Value.SupplyPressureFactor)
-            .Select(kv => kv.Key.Trim().ToLowerInvariant())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        var ordered = BuildQuestSupplyCandidateList()
             .ToList();
-
-        if (!allowParsnip)
-            ordered = ordered.Where(c => !c.Equals("parsnip", StringComparison.OrdinalIgnoreCase)).ToList();
 
         if (ordered.Count > 0)
         {
-            var topCandidates = ordered.Take(Math.Min(4, ordered.Count)).ToList();
+            var topCandidates = ordered.Take(Math.Min(8, ordered.Count)).ToList();
             var index = GetDiversifiedFallbackIndex(topCandidates.Count, seed, _state.Calendar.Day);
             return topCandidates[index];
         }
 
-        var season = (_state.Calendar.Season ?? string.Empty).Trim().ToLowerInvariant();
-        if (allowParsnip)
-        {
-            return season switch
-            {
-                "spring" => "parsnip",
-                "summer" => "tomato",
-                "fall" => "pumpkin",
-                _ => "wheat"
-            };
-        }
-
-        return season switch
-        {
-            "spring" => "potato",
-            "summer" => "tomato",
-            "fall" => "pumpkin",
-            _ => "wheat"
-        };
+        return "parsnip";
     }
 
     private string GetFallbackVisitTargetForInference(string? seed = null)
@@ -6884,38 +7016,6 @@ public sealed class ModEntry : Mod
         }
 
         return Math.Abs(day) % count;
-    }
-
-    private bool IsParsnipQuestCrisisActive()
-    {
-        if (!_state.Facts.Facts.TryGetValue("anchor:town_hall_crisis:status:triggered", out var triggered) || !triggered.Value)
-            return false;
-
-        if (_state.Facts.Facts.TryGetValue("anchor:town_hall_crisis:status:resolved", out var resolved) && resolved.Value)
-            return false;
-
-        if (!_state.Economy.Crops.TryGetValue("parsnip", out var parsnip))
-            return false;
-
-        var topByScarcity = _state.Economy.Crops
-            .OrderByDescending(kv => kv.Value.ScarcityBonus)
-            .ThenByDescending(kv => kv.Value.DemandFactor)
-            .Select(kv => kv.Key)
-            .FirstOrDefault();
-
-        if (!string.Equals(topByScarcity, "parsnip", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var secondScarcity = _state.Economy.Crops
-            .Where(kv => !kv.Key.Equals("parsnip", StringComparison.OrdinalIgnoreCase))
-            .Select(kv => kv.Value.ScarcityBonus)
-            .DefaultIfEmpty(0f)
-            .Max();
-
-        var scarcityLead = parsnip.ScarcityBonus - secondScarcity;
-        return parsnip.DemandFactor >= 1.04f
-            && parsnip.ScarcityBonus >= 0.04f
-            && scarcityLead >= 0.01f;
     }
 
     private static int? TryFindRequestedQuestCountInText(string text)
