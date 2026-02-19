@@ -11,6 +11,7 @@ public sealed class MarketBoardMenu : IClickableMenu
 {
     private readonly SaveState _state;
     private readonly ClickableTextureComponent _closeButton;
+    private readonly List<(Rectangle Rect, string Text)> _causeHintHotspots = new();
 
     // Layout constants
     private const int MastheadHeight = 100;
@@ -73,7 +74,9 @@ public sealed class MarketBoardMenu : IClickableMenu
 
         // 4. Draw Crops Grid
         var contentY = paperRect.Y + MastheadHeight + 20;
+        _causeHintHotspots.Clear();
         DrawCropsGrid(b, paperRect, contentY);
+        DrawCauseHintTooltip(b);
 
         // 5. Draw Close Button
         _closeButton.draw(b);
@@ -155,7 +158,8 @@ public sealed class MarketBoardMenu : IClickableMenu
         // Price with trend indicator
         var priceText = $"{entry.PriceToday}g";
         var priceColor = GetPriceColor(entry);
-        b.DrawString(Game1.dialogueFont, priceText, new Vector2(textX, nameY + 24), priceColor);
+        var priceY = nameY + 24;
+        b.DrawString(Game1.dialogueFont, priceText, new Vector2(textX, priceY), priceColor);
 
         // Trend arrows
         var trendArrow = GetTrendArrow(entry);
@@ -163,22 +167,57 @@ public sealed class MarketBoardMenu : IClickableMenu
 
         // Mini bar chart (7-day price history)
         var chartX = textX;
-        var chartY = nameY + 58;
         var chartWidth = 100;
         var chartHeight = 18;
+        var priceHeight = (int)Game1.dialogueFont.MeasureString(priceText).Y;
+        var chartY = priceY + priceHeight + 6;
+        var maxChartY = bounds.Bottom - chartHeight - 6;
+        if (chartY > maxChartY)
+            chartY = maxChartY;
         DrawPriceBarChart(b, entry, new Rectangle(chartX, chartY, chartWidth, chartHeight));
 
-        // Public cause text (small, below chart) - avoids exposing internal tuning values.
-        var statsY = chartY + chartHeight + 4;
+        // Compact cause marker; explanation is shown on hover tooltip.
         var causeText = BuildPublicMarketCause(cropName, entry);
-        var wrappedCause = TextWrapHelper.WrapText(Game1.smallFont, causeText, bounds.Width - 68);
-        for (int i = 0; i < Math.Min(2, wrappedCause.Length); i++)
+        const int causeIconSize = 18;
+        var iconRect = new Rectangle(chartX + chartWidth + 8, chartY, causeIconSize, causeIconSize);
+        b.Draw(Game1.staminaRect, iconRect, new Color(236, 220, 184));
+        b.Draw(Game1.staminaRect, new Rectangle(iconRect.X, iconRect.Y, iconRect.Width, 1), new Color(90, 70, 50));
+        b.Draw(Game1.staminaRect, new Rectangle(iconRect.X, iconRect.Bottom - 1, iconRect.Width, 1), new Color(90, 70, 50));
+        b.Draw(Game1.staminaRect, new Rectangle(iconRect.X, iconRect.Y, 1, iconRect.Height), new Color(90, 70, 50));
+        b.Draw(Game1.staminaRect, new Rectangle(iconRect.Right - 1, iconRect.Y, 1, iconRect.Height), new Color(90, 70, 50));
+
+        var marker = "?";
+        const float markerScale = 0.85f;
+        var markerSize = Game1.smallFont.MeasureString(marker) * markerScale;
+        b.DrawString(
+            Game1.smallFont,
+            marker,
+            new Vector2(
+                iconRect.X + (iconRect.Width - markerSize.X) / 2f,
+                iconRect.Y + (iconRect.Height - markerSize.Y) / 2f - 0.5f),
+            new Color(70, 55, 40),
+            0f,
+            Vector2.Zero,
+            markerScale,
+            SpriteEffects.None,
+            0f);
+
+        _causeHintHotspots.Add((iconRect, causeText));
+    }
+
+    private void DrawCauseHintTooltip(SpriteBatch b)
+    {
+        var mx = Game1.getMouseX();
+        var my = Game1.getMouseY();
+
+        for (int i = 0; i < _causeHintHotspots.Count; i++)
         {
-            b.DrawString(
-                Game1.smallFont,
-                wrappedCause[i],
-                new Vector2(chartX, statsY + i * 14),
-                new Color(100, 80, 70) * 0.85f);
+            var hotspot = _causeHintHotspots[i];
+            if (!hotspot.Rect.Contains(mx, my))
+                continue;
+
+            IClickableMenu.drawHoverText(b, hotspot.Text, Game1.smallFont);
+            return;
         }
     }
 
