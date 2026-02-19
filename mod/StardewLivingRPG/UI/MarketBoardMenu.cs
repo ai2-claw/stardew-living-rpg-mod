@@ -97,13 +97,7 @@ public sealed class MarketBoardMenu : IClickableMenu
         b.DrawString(Game1.dialogueFont, title, titlePos, new Color(60, 40, 20));
 
         // Subtitle with date
-        string season = Game1.currentSeason;
-        if (!string.IsNullOrEmpty(season))
-            season = char.ToUpper(season[0]) + season.Substring(1);
-        else
-            season = "Spring";
-
-        string dateStr = $"Day {_state.Calendar.Day} ({season}) - Price: Free";
+        string dateStr = $"{CalendarDisplayHelper.FormatSeasonYearWeekdayDay(_state.Calendar.Day)} - Price: Free";
         Vector2 dateSize = Game1.smallFont.MeasureString(dateStr);
         b.DrawString(Game1.smallFont, dateStr, new Vector2(centerX - dateSize.X / 2f, topY + 45), new Color(80, 60, 40));
 

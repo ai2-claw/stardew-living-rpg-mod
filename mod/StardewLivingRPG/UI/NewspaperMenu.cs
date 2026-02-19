@@ -231,18 +231,9 @@ public sealed class NewspaperMenu : IClickableMenu
         b.DrawString(Game1.dialogueFont, title, titlePos + new Vector2(2, 2), new Color(100, 80, 60, 100));
         b.DrawString(Game1.dialogueFont, title, titlePos, new Color(60, 40, 20)); // Dark Brown Ink
 
-        // Subtitle: Date & Season
-        string season = Game1.currentSeason;
-        if (!string.IsNullOrEmpty(season))
-        {
-            season = char.ToUpper(season[0]) + season.Substring(1);
-        }
-        else 
-        {
-            season = "Spring";
-        }
-
-        string dateStr = $"Vol. 1 • {season} {_issue?.Day ?? 1}, Year 1 • Price: Free";
+        // Subtitle: Date
+        var issueDay = _issue?.Day ?? 1;
+        string dateStr = $"Vol. 1 - {CalendarDisplayHelper.FormatSeasonYearWeekdayDay(issueDay)} - Price: Free";
         Vector2 dateSize = Game1.smallFont.MeasureString(dateStr);
         b.DrawString(Game1.smallFont, dateStr, new Vector2(centerX - dateSize.X / 2f, topY + 45), new Color(80, 60, 40));
 

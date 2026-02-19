@@ -1,6 +1,7 @@
 using StardewLivingRPG.Config;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Integrations;
+using StardewLivingRPG.Utils;
 using StardewModdingAPI;
 
 namespace StardewLivingRPG.Systems;
@@ -174,7 +175,7 @@ public sealed class NewspaperService
                 "fainting" => new NewspaperArticle
                 {
                     Title = "Rescue at Mines",
-                    Content = $"A local farmer was found unconscious in mines and was brought to safety by a rescue operation. The incident occurred on day {ev.Day}.",
+                    Content = $"A local farmer was found unconscious in mines and was brought to safety by a rescue operation. The incident occurred on {CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(ev.Day)}.",
                     Category = "community",
                     SourceNpc = TownReporterByline,
                     Day = state.Calendar.Day,
@@ -183,7 +184,7 @@ public sealed class NewspaperService
                 "pass_out" => new NewspaperArticle
                 {
                     Title = "Late-Night Collapse Reported",
-                    Content = $"{ev.Summary} Town responders assisted and escorted the farmer home safely. The incident occurred on day {ev.Day}.",
+                    Content = $"{ev.Summary} Town responders assisted and escorted the farmer home safely. The incident occurred on {CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(ev.Day)}.",
                     Category = "community",
                     SourceNpc = TownReporterByline,
                     Day = state.Calendar.Day,

@@ -43,7 +43,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private const int VisibleQuestRows = 7;
     private const int SectionLeftMargin = 36;
     private const int SectionTopY = 116;
-    private const int SectionWidth = 410;
+    private const int SectionWidth = 460;
     private const int SectionRowHeight = 44;
     private const int SectionRowGap = 8;
     private const int SectionRowsStartOffset = 36;
@@ -52,9 +52,9 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork, Func<string>? getExternalStatus = null)
         : base(
-            Game1.uiViewport.Width / 2 - 480,
+            Game1.uiViewport.Width / 2 - 520,
             Game1.uiViewport.Height / 2 - 300,
-            960,
+            1040,
             600,
             true)
     {
@@ -95,7 +95,7 @@ public sealed class RumorBoardMenu : IClickableMenu
             ay += SectionRowHeight + SectionRowGap;
         }
 
-        var rightX = xPositionOnScreen + width - SectionWidth - SectionLeftMargin;
+        var rightX = xPositionOnScreen + width - SectionWidth - SectionLeftMargin  - 20;
         var ry = topY + SectionRowsStartOffset;
         foreach (var q in _state.Quests.Active
                      .Where(q => q.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
@@ -306,7 +306,12 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     private void DrawSection(SpriteBatch b, string label, List<(QuestEntry Quest, Rectangle Rect)> rows, bool isActiveSection)
     {
-        var labelX = rows.Count > 0 ? rows[0].Rect.X : (isActiveSection ? xPositionOnScreen + width - 454 : xPositionOnScreen + 24);
+        var labelX = rows.Count > 0
+        ? rows[0].Rect.X
+        : (isActiveSection
+            ? xPositionOnScreen + width - SectionWidth - SectionLeftMargin - 20
+            : xPositionOnScreen + SectionLeftMargin);
+
         var labelY = rows.Count > 0 ? rows[0].Rect.Y - 24 : yPositionOnScreen + SectionTopY + 6;
         var labelPos = new Vector2(labelX, labelY);
         const float labelScale = 0.8f;
@@ -343,8 +348,11 @@ public sealed class RumorBoardMenu : IClickableMenu
                 }
 
                 var title = QuestTextHelper.BuildQuestTitle(quest);
+                var dueDateText = quest.ExpiresDay > 0
+                    ? CalendarDisplayHelper.FormatWeekdayDay(quest.ExpiresDay)
+                    : "No deadline";
                 var text = isActiveSection
-                    ? $"{title} (Day {quest.ExpiresDay})"
+                    ? $"{title} ({dueDateText})"
                     : $"{title}  +{quest.RewardGold}g";
 
                 if (isActiveSection)
@@ -381,7 +389,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         var lines = new List<string>
         {
             $"Request: {QuestTextHelper.BuildQuestTitle(q)} ({q.Status})",
-            $"From: {QuestTextHelper.PrettyName(q.Issuer)} | Reward: +{q.RewardGold}g | Expires day {q.ExpiresDay}",
+            $"From: {QuestTextHelper.PrettyName(q.Issuer)} | Reward: +{q.RewardGold}g | Expires {(q.ExpiresDay > 0 ? CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(q.ExpiresDay) : "No deadline")}",
             q.Summary
         };
 
