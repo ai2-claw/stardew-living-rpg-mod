@@ -95,7 +95,7 @@ public sealed class MarketBoardMenu : IClickableMenu
         var topY = paperRect.Y + 20;
 
         // Title
-        string title = "Pelican Market Board";
+        string title = I18n.Get("market_board.title", "Pelican Market Board");
         Vector2 titleSize = Game1.dialogueFont.MeasureString(title);
         Vector2 titlePos = new Vector2(centerX - titleSize.X / 2f, topY);
 
@@ -103,7 +103,11 @@ public sealed class MarketBoardMenu : IClickableMenu
         b.DrawString(Game1.dialogueFont, title, titlePos, new Color(60, 40, 20));
 
         // Subtitle with date
-        string dateStr = $"{CalendarDisplayHelper.FormatSeasonYearWeekdayDay(_state.Calendar.Day)} - Price: Free";
+        var displayDate = CalendarDisplayHelper.FormatSeasonYearWeekdayDay(_state.Calendar.Day);
+        string dateStr = I18n.Get(
+            "market_board.subtitle",
+            $"{displayDate} - Price: Free",
+            new { date = displayDate });
         Vector2 dateSize = Game1.smallFont.MeasureString(dateStr);
         b.DrawString(Game1.smallFont, dateStr, new Vector2(centerX - dateSize.X / 2f, topY + 45), new Color(80, 60, 40));
 
@@ -305,15 +309,15 @@ public sealed class MarketBoardMenu : IClickableMenu
             return DescribeMarketEventCause(activeEvent);
 
         if (entry.PriceToday > entry.PriceYesterday && entry.ScarcityBonus >= 0.03f)
-            return "Cause: short supply raised demand.";
+            return I18n.Get("market_board.cause.short_supply", "Cause: short supply raised demand.");
         if (entry.PriceToday < entry.PriceYesterday && entry.SupplyPressureFactor <= 0.95f)
-            return "Cause: extra stock softened prices.";
+            return I18n.Get("market_board.cause.extra_stock", "Cause: extra stock softened prices.");
         if (entry.TrendEma > 0.03f)
-            return "Cause: steady local buying.";
+            return I18n.Get("market_board.cause.steady_buying", "Cause: steady local buying.");
         if (entry.TrendEma < -0.03f)
-            return "Cause: slower buying this week.";
+            return I18n.Get("market_board.cause.slower_buying", "Cause: slower buying this week.");
 
-        return "Cause: normal market chatter.";
+        return I18n.Get("market_board.cause.normal", "Cause: normal market chatter.");
     }
 
     private static string DescribeMarketEventCause(MarketEventEntry marketEvent)
@@ -322,11 +326,11 @@ public sealed class MarketBoardMenu : IClickableMenu
         return type switch
         {
             "npc_market_modifier" => marketEvent.DeltaPct >= 0f
-                ? "Cause: town request boosted demand."
-                : "Cause: oversupply rumor eased prices.",
+                ? I18n.Get("market_board.cause.event.town_request", "Cause: town request boosted demand.")
+                : I18n.Get("market_board.cause.event.oversupply_rumor", "Cause: oversupply rumor eased prices."),
             _ => marketEvent.DeltaPct >= 0f
-                ? "Cause: market buzz pushed prices up."
-                : "Cause: market buzz pushed prices down."
+                ? I18n.Get("market_board.cause.event.market_up", "Cause: market buzz pushed prices up.")
+                : I18n.Get("market_board.cause.event.market_down", "Cause: market buzz pushed prices down.")
         };
     }
 

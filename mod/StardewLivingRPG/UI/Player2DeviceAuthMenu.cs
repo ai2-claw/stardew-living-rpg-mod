@@ -120,7 +120,7 @@ public sealed class Player2DeviceAuthMenu : IClickableMenu
 
         SpriteText.drawStringWithScrollCenteredAt(
             b,
-            "Local Insight Sign-In",
+            I18n.Get("player2_auth.title", "Local Insight Sign-In"),
             xPositionOnScreen + (width / 2),
             yPositionOnScreen + 18);
 
@@ -128,20 +128,29 @@ public sealed class Player2DeviceAuthMenu : IClickableMenu
         var bodyY = yPositionOnScreen + 98;
         var bodyWidth = width - 112;
 
-        b.DrawString(Game1.smallFont, "Open this page in your browser:", new Vector2(bodyX, bodyY), Game1.textColor);
+        b.DrawString(
+            Game1.smallFont,
+            I18n.Get("player2_auth.instructions.open_browser", "Open this page in your browser:"),
+            new Vector2(bodyX, bodyY),
+            Game1.textColor);
         bodyY += 34;
 
         DrawBoxedLines(b, TextWrapHelper.WrapText(Game1.smallFont, _getVerificationUrl(), bodyWidth - 24), bodyX, bodyY, bodyWidth, 66);
         bodyY += 92;
 
-        b.DrawString(Game1.smallFont, $"Enter code: {_getUserCode()}", new Vector2(bodyX, bodyY), new Color(62, 44, 18));
+        var userCode = _getUserCode();
+        b.DrawString(
+            Game1.smallFont,
+            I18n.Get("player2_auth.instructions.enter_code", $"Enter code: {userCode}", new { code = userCode }),
+            new Vector2(bodyX, bodyY),
+            new Color(62, 44, 18));
         bodyY += 42;
 
         DrawBoxedLines(b, TextWrapHelper.WrapText(Game1.smallFont, _getStatus(), bodyWidth - 24), bodyX, bodyY, bodyWidth, 74);
 
-        DrawButton(b, _openBrowserButton, "Open Browser", _openHovered);
-        DrawButton(b, _copyCodeButton, "Copy Code", _copyHovered);
-        DrawButton(b, _cancelButton, "Cancel", _cancelHovered);
+        DrawButton(b, _openBrowserButton, I18n.Get("player2_auth.button.open_browser", "Open Browser"), _openHovered);
+        DrawButton(b, _copyCodeButton, I18n.Get("player2_auth.button.copy_code", "Copy Code"), _copyHovered);
+        DrawButton(b, _cancelButton, I18n.Get("player2_auth.button.cancel", "Cancel"), _cancelHovered);
         _closeButton.draw(b);
 
         drawMouse(b);

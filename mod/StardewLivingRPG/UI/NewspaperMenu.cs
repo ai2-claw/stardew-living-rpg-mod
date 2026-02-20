@@ -104,7 +104,11 @@ public sealed class NewspaperMenu : IClickableMenu
         y += 15;
 
         // Section header (smaller)
-        b.DrawString(Game1.smallFont, "Community News", new Vector2(paperRect.X + 30, y), new Color(63, 78, 111));
+        b.DrawString(
+            Game1.smallFont,
+            I18n.Get("newspaper.section.community_news", "Community News"),
+            new Vector2(paperRect.X + 30, y),
+            new Color(63, 78, 111));
         y += 40; // Tightened spacing under section label by 10px.
 
         var singleColumnX = paperRect.X + 30;
@@ -135,15 +139,15 @@ public sealed class NewspaperMenu : IClickableMenu
 
         string categoryText;
         if (article.Category.Equals("community", StringComparison.OrdinalIgnoreCase))
-            categoryText = "Community";
+            categoryText = I18n.Get("newspaper.category.community", "Community");
         else if (article.Category.Equals("market", StringComparison.OrdinalIgnoreCase))
-            categoryText = "Market";
+            categoryText = I18n.Get("newspaper.category.market", "Market");
         else if (article.Category.Equals("social", StringComparison.OrdinalIgnoreCase))
-            categoryText = "Social";
+            categoryText = I18n.Get("newspaper.category.social", "Social");
         else if (article.Category.Equals("nature", StringComparison.OrdinalIgnoreCase))
-            categoryText = "Nature";
+            categoryText = I18n.Get("newspaper.category.nature", "Nature");
         else
-            categoryText = "News";
+            categoryText = I18n.Get("newspaper.category.news", "News");
 
         // Portrait and header row
         var portraitSize = 40;
@@ -190,9 +194,9 @@ public sealed class NewspaperMenu : IClickableMenu
         {
             var displayName = article.SourceNpc switch
             {
-                "Debug" => "Anonymous",
-                "Pelican Times Editor" => "Editor",
-                "Town Report" => "Town Reporter",
+                "Debug" => I18n.Get("newspaper.byline.anonymous", "Anonymous"),
+                "Pelican Times Editor" => I18n.Get("newspaper.byline.editor", "Editor"),
+                "Town Report" => I18n.Get("newspaper.byline.town_reporter", "Town Reporter"),
                 _ => article.SourceNpc
             };
             b.DrawString(Game1.smallFont, displayName, new Vector2(textX, y), new Color(40, 20, 10));
@@ -223,7 +227,7 @@ public sealed class NewspaperMenu : IClickableMenu
         var topY = paperRect.Y + 20;
 
         // Title: "The Pelican Times"
-        string title = "The Pelican Times";
+        string title = I18n.Get("newspaper.title", "The Pelican Times");
         Vector2 titleSize = Game1.dialogueFont.MeasureString(title);
         Vector2 titlePos = new Vector2(centerX - titleSize.X / 2f, topY);
         
@@ -233,7 +237,11 @@ public sealed class NewspaperMenu : IClickableMenu
 
         // Subtitle: Date
         var issueDay = _issue?.Day ?? 1;
-        string dateStr = $"Vol. 1 - {CalendarDisplayHelper.FormatSeasonYearWeekdayDay(issueDay)} - Price: Free";
+        var displayDate = CalendarDisplayHelper.FormatSeasonYearWeekdayDay(issueDay);
+        string dateStr = I18n.Get(
+            "newspaper.subtitle",
+            $"Vol. 1 - {displayDate} - Price: Free",
+            new { date = displayDate });
         Vector2 dateSize = Game1.smallFont.MeasureString(dateStr);
         b.DrawString(Game1.smallFont, dateStr, new Vector2(centerX - dateSize.X / 2f, topY + 45), new Color(80, 60, 40));
 
@@ -252,7 +260,7 @@ public sealed class NewspaperMenu : IClickableMenu
         var maxWidth = paperRect.Width - 60; // Margin for text wrapping
 
         // --- HEADLINE ---
-        string headline = _issue.Headline ?? "Breaking News";
+        string headline = _issue.Headline ?? I18n.Get("newspaper.headline.fallback", "Breaking News");
         
         // Use TextWrapHelper for Headline
         var wrappedHeadline = TextWrapHelper.WrapText(Game1.dialogueFont, headline, maxWidth);
@@ -290,7 +298,11 @@ public sealed class NewspaperMenu : IClickableMenu
         // --- FORECAST / OUTLOOK ---
         if (_issue.PredictiveHints != null && _issue.PredictiveHints.Any())
         {
-            b.DrawString(Game1.smallFont, "Market Outlook", new Vector2(x, y), new Color(200, 74, 67));
+            b.DrawString(
+                Game1.smallFont,
+                I18n.Get("newspaper.section.market_outlook", "Market Outlook"),
+                new Vector2(x, y),
+                new Color(200, 74, 67));
             y += 30;
 
             foreach (var hint in _issue.PredictiveHints)
@@ -315,7 +327,7 @@ public sealed class NewspaperMenu : IClickableMenu
 
     private void DrawError(SpriteBatch b, Rectangle paperRect)
     {
-        string text = "No issue available today.";
+        string text = I18n.Get("newspaper.empty.no_issue", "No issue available today.");
         var size = Game1.dialogueFont.MeasureString(text);
         var pos = new Vector2(
             paperRect.Center.X - size.X / 2f,

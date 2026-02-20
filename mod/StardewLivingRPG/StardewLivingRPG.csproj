@@ -46,6 +46,13 @@
     <Copy SourceFiles="$(OutputPath)StardewLivingRPG.dll" DestinationFolder="$(ModsFolder)" />
     <Copy SourceFiles="$(ProjectDir)manifest.json" DestinationFolder="$(ModsFolder)" />
     <Copy SourceFiles="$(ProjectDir)npc_speech_profiles.json" DestinationFolder="$(ModsFolder)" Condition="Exists('$(ProjectDir)npc_speech_profiles.json')" />
+    <MakeDir Directories="$(ModsFolder)\i18n" Condition="!Exists('$(ModsFolder)\i18n')" />
+    <ItemGroup>
+      <I18nFiles Include="$(ProjectDir)i18n\*.json" />
+      <I18nDocs Include="$(ProjectDir)i18n\*.md" />
+    </ItemGroup>
+    <Copy SourceFiles="@(I18nFiles)" DestinationFolder="$(ModsFolder)\i18n" Condition="@(I18nFiles) != ''" />
+    <Copy SourceFiles="@(I18nDocs)" DestinationFolder="$(ModsFolder)\i18n" Condition="@(I18nDocs) != ''" />
 
     <Message Text="Copied mod files to: $(ModsFolder)" Importance="high" />
   </Target>

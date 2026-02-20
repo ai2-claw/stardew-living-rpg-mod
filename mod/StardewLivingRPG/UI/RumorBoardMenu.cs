@@ -12,11 +12,11 @@ namespace StardewLivingRPG.UI;
 
 public sealed class RumorBoardMenu : IClickableMenu
 {
-    private const string DefaultDetailMessage = "Select a request to view details.";
-    private const string SearchingDetailMessage = "Searching the board for new requests...";
-    private const string DailyCapDetailMessage = "No new posting right now. Check back tomorrow.";
-    private const string NoRequestDetailMessage = "No one has a new posting right now.";
-    private const string NoPostingCreatedDetailMessage = "No posting was added from that reply.";
+    private static string DefaultDetailMessage => I18n.Get("rumor_board.detail.default", "Select a request to view details.");
+    private static string SearchingDetailMessage => I18n.Get("rumor_board.detail.searching", "Searching the board for new requests...");
+    private static string DailyCapDetailMessage => I18n.Get("rumor_board.detail.daily_cap", "No new posting right now. Check back tomorrow.");
+    private static string NoRequestDetailMessage => I18n.Get("rumor_board.detail.none_available", "No one has a new posting right now.");
+    private static string NoPostingCreatedDetailMessage => I18n.Get("rumor_board.detail.none_created", "No posting was added from that reply.");
 
     private readonly SaveState _state;
     private readonly RumorBoardService _rumorBoardService;
@@ -30,7 +30,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private int _activeScrollOffset;
 
     private QuestEntry? _selectedQuest;
-    private string _statusMessage = DefaultDetailMessage;
+    private string _statusMessage = string.Empty;
     private bool _awaitingBoardSearchResult;
     private int _searchStartAvailableCount;
     private int _lastAvailableCount;
@@ -73,6 +73,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         _lastAvailableCount = _state.Quests.Available.Count;
         _lastActiveCount = _state.Quests.Active.Count;
         _lastCalendarDay = _state.Calendar.Day;
+        _statusMessage = DefaultDetailMessage;
         BuildLayout();
     }
 
@@ -239,7 +240,9 @@ public sealed class RumorBoardMenu : IClickableMenu
         {
             var title = QuestTextHelper.BuildQuestTitle(_selectedQuest);
             var ok = _rumorBoardService.AcceptQuest(_state, _selectedQuest.QuestId);
-            _statusMessage = ok ? $"Accepted Town Request: {title}" : "Could not accept request.";
+            _statusMessage = ok
+                ? I18n.Get("rumor_board.status.accepted", $"Accepted Town Request: {title}", new { title })
+                : I18n.Get("rumor_board.status.accept_failed", "Could not accept request.");
             if (ok)
             {
                 _monitor.Log(_statusMessage, LogLevel.Info);
@@ -296,10 +299,14 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         b.Draw(Game1.fadeToBlackRect, Game1.graphics.GraphicsDevice.Viewport.Bounds, Color.Black * 0.4f);
         Game1.drawDialogueBox(xPositionOnScreen, yPositionOnScreen, width, height, false, true);
-        SpriteText.drawStringWithScrollCenteredAt(b, "Town Request Board", xPositionOnScreen + (width / 2), yPositionOnScreen + 16);
+        SpriteText.drawStringWithScrollCenteredAt(
+            b,
+            I18n.Get("rumor_board.title", "Town Request Board"),
+            xPositionOnScreen + (width / 2),
+            yPositionOnScreen + 16);
 
-        DrawSection(b, "Available", _availableRows, isActiveSection: false);
-        DrawSection(b, "Active", _activeRows, isActiveSection: true);
+        DrawSection(b, I18n.Get("rumor_board.section.available", "Available"), _availableRows, isActiveSection: false);
+        DrawSection(b, I18n.Get("rumor_board.section.active", "Active"), _activeRows, isActiveSection: true);
         DrawDetailPanel(b);
         _closeButton.draw(b);
 
@@ -352,7 +359,7 @@ public sealed class RumorBoardMenu : IClickableMenu
                 var title = QuestTextHelper.BuildQuestTitle(quest);
                 var dueDateText = quest.ExpiresDay > 0
                     ? CalendarDisplayHelper.FormatWeekdayDay(quest.ExpiresDay)
-                    : "No deadline";
+                    : I18n.Get("rumor_board.deadline.none", "No deadline");
                 var text = isActiveSection
                     ? $"{title} ({dueDateText})"
                     : $"{title}  +{quest.RewardGold}g";
@@ -367,7 +374,9 @@ public sealed class RumorBoardMenu : IClickableMenu
         }
         else
         {
-            var text = isActiveSection ? "No active requests." : "No requests posted today.";
+            var text = isActiveSection
+                ? I18n.Get("rumor_board.empty.active", "No active requests.")
+                : I18n.Get("rumor_board.empty.available", "No requests posted today.");
             b.DrawString(Game1.smallFont, text, new Vector2(labelX, labelY + 45), Game1.textColor * 0.7f);
         }
     }
@@ -381,7 +390,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         {
             var msgSize = Game1.smallFont.MeasureString(_statusMessage);
             b.DrawString(Game1.smallFont, _statusMessage, new Vector2(panel.X + (panel.Width / 2f) - (msgSize.X / 2f), panel.Y + 62), Game1.textColor * 0.5f);
-            DrawButton(b, _askWorkButton, "New Postings", enabled: true);
+            DrawButton(b, _askWorkButton, I18n.Get("rumor_board.button.new_postings", "New Postings"), enabled: true);
             return;
         }
 
@@ -390,15 +399,34 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         var lines = new List<string>
         {
-            $"Request: {QuestTextHelper.BuildQuestTitle(q)} ({q.Status})",
-            $"From: {QuestTextHelper.PrettyName(q.Issuer)} | Reward: +{q.RewardGold}g | Expires {(q.ExpiresDay > 0 ? CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(q.ExpiresDay) : "No deadline")}",
+            I18n.Get(
+                "rumor_board.detail.request_line",
+                $"Request: {QuestTextHelper.BuildQuestTitle(q)} ({q.Status})",
+                new { title = QuestTextHelper.BuildQuestTitle(q), status = q.Status }),
+            I18n.Get(
+                "rumor_board.detail.meta_line",
+                $"From: {QuestTextHelper.PrettyName(q.Issuer)} | Reward: +{q.RewardGold}g | Expires {(q.ExpiresDay > 0 ? CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(q.ExpiresDay) : I18n.Get("rumor_board.deadline.none", "No deadline"))}",
+                new
+                {
+                    issuer = QuestTextHelper.PrettyName(q.Issuer),
+                    reward = q.RewardGold,
+                    expires = q.ExpiresDay > 0
+                        ? CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(q.ExpiresDay)
+                        : I18n.Get("rumor_board.deadline.none", "No deadline")
+                }),
             q.Summary
         };
 
         if (progress.Exists && progress.RequiresItems)
-            lines.Add($"Progress: {progress.HaveCount}/{progress.NeedCount} {q.TargetItem} (ready={progress.IsReadyToComplete})");
+            lines.Add(I18n.Get(
+                "rumor_board.detail.progress_items",
+                $"Progress: {progress.HaveCount}/{progress.NeedCount} {q.TargetItem} (ready={progress.IsReadyToComplete})",
+                new { have = progress.HaveCount, need = progress.NeedCount, item = q.TargetItem, ready = progress.IsReadyToComplete }));
         else if (progress.Exists && q.TemplateId.Equals("social_visit", StringComparison.OrdinalIgnoreCase))
-            lines.Add($"Progress: visit {QuestTextHelper.PrettyName(q.TargetItem)} ({progress.HaveCount}/{progress.NeedCount})");
+            lines.Add(I18n.Get(
+                "rumor_board.detail.progress_visit",
+                $"Progress: visit {QuestTextHelper.PrettyName(q.TargetItem)} ({progress.HaveCount}/{progress.NeedCount})",
+                new { target = QuestTextHelper.PrettyName(q.TargetItem), have = progress.HaveCount, need = progress.NeedCount }));
 
         var y = panel.Y + 16;
         var maxY = _acceptButton.Y - 8;
@@ -418,9 +446,9 @@ public sealed class RumorBoardMenu : IClickableMenu
                 break;
         }
 
-        DrawButton(b, _acceptButton, "Accept", enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
-        DrawButton(b, _completeButton, "Complete", enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
-        DrawButton(b, _askWorkButton, "Refresh", enabled: true);
+        DrawButton(b, _acceptButton, I18n.Get("rumor_board.button.accept", "Accept"), enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
+        DrawButton(b, _completeButton, I18n.Get("rumor_board.button.complete", "Complete"), enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
+        DrawButton(b, _askWorkButton, I18n.Get("rumor_board.button.refresh", "Refresh"), enabled: true);
     }
 
     private void SyncDetailMessageFromExternalStatus()

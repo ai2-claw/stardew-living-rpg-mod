@@ -347,7 +347,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         );
 
         // SEND label (centered, also offset by press)
-        string btnText = "SEND";
+        string btnText = I18n.Get("npc_chat.button.send", "SEND");
         Vector2 textSize = Game1.smallFont.MeasureString(btnText);
         Vector2 textPos = new Vector2(
             _sendButtonBounds.X + press + (_sendButtonBounds.Width - textSize.X) / 2f,
@@ -362,7 +362,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
     private void DrawNpcHeader(SpriteBatch b)
     {
-        var nameLabel = string.IsNullOrWhiteSpace(_npcName) ? "Villager" : _npcName;
+        var nameLabel = string.IsNullOrWhiteSpace(_npcName)
+            ? I18n.Get("npc_chat.npc.fallback_name", "Villager")
+            : _npcName;
         var textSize = Game1.smallFont.MeasureString(nameLabel);
 
         float x = _portraitRegion.X + (_portraitRegion.Width - textSize.X) / 2f;
@@ -452,7 +454,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         // 1. Player Message
         if (_lastPlayerMessage != null)
         {
-            string label = "You: ";
+            string label = I18n.Get("npc_chat.label.you", "You: ");
             Vector2 labelSize = Game1.smallFont.MeasureString(label);
 
             b.DrawString(Game1.smallFont, label, new Vector2(x, y), playerColor);
@@ -488,7 +490,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         else if (IsThinking())
         {
             int dots = (_thinkFrame / 20) % 4;
-            string text = "Thinking" + new string('.', dots);
+            string text = I18n.Get("npc_chat.label.thinking", "Thinking") + new string('.', dots);
             b.DrawString(Game1.smallFont, text, new Vector2(x, y), npcColor * 0.6f);
         }
     }

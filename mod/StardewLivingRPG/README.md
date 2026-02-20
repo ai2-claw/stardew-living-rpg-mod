@@ -116,3 +116,8 @@ Set `SMAPI_PATH` to your game install path containing:
 - Stardew Valley.dll
 
 Then build with `dotnet build`.
+
+## Localization (i18n)
+- Translation files live in `i18n/`.
+- Base English keys are in `i18n/default.json`.
+- Community translators can copy `default.json` to a locale file (for example `fr.json`) and translate values only.

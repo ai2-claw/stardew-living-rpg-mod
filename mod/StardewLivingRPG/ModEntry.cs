@@ -1,4 +1,4 @@
-using Microsoft.Xna.Framework;
+﻿using Microsoft.Xna.Framework;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
@@ -296,6 +296,7 @@ public sealed class ModEntry : Mod
     public override void Entry(IModHelper helper)
     {
         _config = helper.ReadConfig<ModConfig>();
+        I18n.Initialize(helper.Translation);
         TryMigrateLegacyPlayer2Config(helper);
         EnsureRequiredPlayer2Enabled(helper);
         _dailyTickService = new DailyTickService(Monitor, _config);
@@ -1420,10 +1421,13 @@ public sealed class ModEntry : Mod
             var ambientArchetypeRule = ambientWeights is null
                 ? string.Empty
                 : $"Archetype={ambientWeights.Archetype} weights(event={ambientWeights.EventWeight}, memory={ambientWeights.MemoryWeight}, publish={ambientWeights.PublishWeight}). Favor higher-weight actions when context supports them. ";
+            var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
 
             var prompt =
                 $"{speakerShortName}, you had a brief offscreen conversation with {listenerShortName} about today's town happenings. " +
                 "Stay in-character and reply naturally. " +
+                promptLanguageRule + " " +
+                "Keep command names and argument keys in English; localize only message/topic/title/content string values. " +
                 "Ambient policy for this context: prefer record_town_event first and keep command usage sparse. " +
                 "Allowed command set here is record_town_event, record_memory_fact, publish_rumor, publish_article unless policy unlocks additional commands. " +
                 "If anything notable happened, capture it with record_town_event before considering publish commands. " +
@@ -1764,7 +1768,9 @@ public sealed class ModEntry : Mod
         var point = new Point(Game1.getMouseX(), Game1.getMouseY());
         if (rect.Contains(point))
         {
-            var tooltip = connected ? "Local Insight: Active" : "Local Insight: Dormant (click to connect)";
+            var tooltip = connected
+                ? I18n.Get("hud.local_insight.active", "Local Insight: Active")
+                : I18n.Get("hud.local_insight.dormant", "Local Insight: Dormant (click to connect)");
             IClickableMenu.drawHoverText(e.SpriteBatch, tooltip, Game1.smallFont);
         }
     }
@@ -1946,12 +1952,16 @@ public sealed class ModEntry : Mod
         if (TryCopyToClipboard(code.Trim()))
         {
             UpdatePlayer2DeviceAuthUiStatus("Code copied. Paste it into the approval page.");
-            Game1.addHUDMessage(new HUDMessage("Copied Player2 code to clipboard.", HUDMessage.newQuest_type));
+            Game1.addHUDMessage(new HUDMessage(
+                I18n.Get("hud.player2.code_copied", "Copied Player2 code to clipboard."),
+                HUDMessage.newQuest_type));
         }
         else
         {
             UpdatePlayer2DeviceAuthUiStatus("Clipboard unavailable. Copy code manually.");
-            Game1.addHUDMessage(new HUDMessage("Could not access clipboard.", HUDMessage.newQuest_type));
+            Game1.addHUDMessage(new HUDMessage(
+                I18n.Get("hud.player2.clipboard_unavailable", "Could not access clipboard."),
+                HUDMessage.newQuest_type));
         }
     }
 
@@ -3822,12 +3832,13 @@ public sealed class ModEntry : Mod
 
         try
         {
+            var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
             var req = new SpawnNpcRequest
             {
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
                 CharacterDescription = "Mayor Lewis of Pelican Town in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For social outcomes, you may use adjust_reputation sparingly for meaningful shifts only. For town-group dynamics, you may use shift_interest_influence only when discussion clearly concerns a town group priority. For market dynamics, use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band.",
+                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For social outcomes, you may use adjust_reputation sparingly for meaningful shifts only. For town-group dynamics, you may use shift_interest_influence only when discussion clearly concerns a town group priority. For market dynamics, use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -3981,6 +3992,7 @@ public sealed class ModEntry : Mod
             return;
 
         var roster = GetExpandedNpcRoster();
+        var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
 
         foreach (var shortName in roster)
         {
@@ -4005,7 +4017,7 @@ public sealed class ModEntry : Mod
                     ShortName = shortName,
                     Name = shortName,
                     CharacterDescription = $"{shortName} in Pelican Town, practical and grounded.",
-                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total.",
+                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
                     KeepGameState = true,
                     Commands = new List<SpawnNpcCommand>
                     {
@@ -4815,7 +4827,7 @@ public sealed class ModEntry : Mod
             return;
 
         var headline = TrimForHud(issue.Headline, 30);
-        var message = $"Morning edition ready: {headline}";
+        var message = I18n.Get("hud.newspaper.ready", $"Morning edition ready: {headline}", new { headline });
         Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
     }
 
@@ -4824,7 +4836,9 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
-        Game1.addHUDMessage(new HUDMessage("Player2 authorized. Local Insight is now active.", HUDMessage.newQuest_type));
+        Game1.addHUDMessage(new HUDMessage(
+            I18n.Get("hud.player2.authorized", "Player2 authorized. Local Insight is now active."),
+            HUDMessage.newQuest_type));
     }
 
     private void TryShowSimulationMutationToast(NpcIntentResolveResult result, string intentLane, bool isAmbientContext)
@@ -4838,9 +4852,15 @@ public sealed class ModEntry : Mod
 
         var message = result.Command.ToLowerInvariant() switch
         {
-            "apply_market_modifier" => $"Market shift: {QuestTextHelper.PrettyName(result.OutcomeId)} prices moved.",
-            "shift_interest_influence" => "Town groups shifted their focus.",
-            "adjust_town_sentiment" => $"Town mood shifted around {result.OutcomeId}.",
+            "apply_market_modifier" => I18n.Get(
+                "hud.simulation.market_shift",
+                $"Market shift: {QuestTextHelper.PrettyName(result.OutcomeId)} prices moved.",
+                new { target = QuestTextHelper.PrettyName(result.OutcomeId) }),
+            "shift_interest_influence" => I18n.Get("hud.simulation.interest_shift", "Town groups shifted their focus."),
+            "adjust_town_sentiment" => I18n.Get(
+                "hud.simulation.sentiment_shift",
+                $"Town mood shifted around {result.OutcomeId}.",
+                new { axis = result.OutcomeId }),
             _ => string.Empty
         };
         if (string.IsNullOrWhiteSpace(message))
@@ -4876,7 +4896,7 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady || string.IsNullOrWhiteSpace(questId))
             return;
 
-        var issuer = "A villager";
+        var issuer = I18n.Get("hud.rumor.issuer.fallback", "A villager");
         if (!string.IsNullOrWhiteSpace(sourceNpcId)
             && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
             && !string.IsNullOrWhiteSpace(shortName))
@@ -4890,9 +4910,12 @@ public sealed class ModEntry : Mod
             issuer = QuestTextHelper.PrettyName(quest.Issuer);
 
         var title = quest is null
-            ? "New request on the board"
+            ? I18n.Get("hud.rumor.title.fallback", "New request on the board")
             : QuestTextHelper.BuildQuestTitle(quest);
-        var message = $"{TrimForHud(issuer, 18)} posted: {TrimForHud(title, 30)}";
+        var message = I18n.Get(
+            "hud.rumor.posted",
+            $"{TrimForHud(issuer, 18)} posted: {TrimForHud(title, 30)}",
+            new { issuer = TrimForHud(issuer, 18), title = TrimForHud(title, 30) });
         Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
     }
 
@@ -5231,6 +5254,8 @@ public sealed class ModEntry : Mod
     private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null, string? contextTag = null)
     {
         SyncCalendarSeasonFromWorld();
+        var localeCode = I18n.GetCurrentLocaleCode();
+        var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
         var currentSeason = GetCurrentSeasonLabel();
         var weather = GetCurrentWeatherLabel();
         var dayOfWeek = GetCurrentDayOfWeekLabel();
@@ -5320,6 +5345,8 @@ public sealed class ModEntry : Mod
             $"STYLE: Reply strictly in-character as {(string.IsNullOrWhiteSpace(npcName) ? "the addressed NPC" : npcName)}, concise, natural, no assistant-speak.",
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
+            promptLanguageRule,
+            "LANGUAGE_RULE: For structured command outputs, keep command names and argument keys in English; localize only string values.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
             commandPolicyRule,
             ambientEventFirstRule,
@@ -5364,6 +5391,7 @@ public sealed class ModEntry : Mod
             $"STATE: NpcReputation {(string.IsNullOrWhiteSpace(npcName) ? 0 : npcReputation)}.",
             $"STATE: CurrentHour24 {hour24:00}.",
             $"STATE: CurrentMinute {minute:00}.",
+            $"STATE: PlayerLocale {localeCode}.",
             $"PLAYER_KNOWLEDGE: PlayerName='{playerName}' NpcHasMetPlayer={npcHasMetPlayer} PreferredAddress='{preferredAddress}'.",
             $"STATE: PlayerStats Charisma={charismaStat} Social={socialStat}.",
             $"STATE: Day {_state.Calendar.Day} {currentSeason}.",
@@ -5378,7 +5406,6 @@ public sealed class ModEntry : Mod
             townMemory
         );
     }
-
     private static string GetPlayerDisplayNameForContext()
     {
         var raw = Game1.player?.Name ?? string.Empty;
@@ -8294,7 +8321,7 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
-        var sourceName = "Town";
+        var sourceName = I18n.Get("hud.newspaper.source.fallback", "Town");
         if (!string.IsNullOrWhiteSpace(sourceNpcId)
             && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
             && !string.IsNullOrWhiteSpace(shortName))
@@ -8305,11 +8332,18 @@ public sealed class ModEntry : Mod
         string message;
         if (command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase))
         {
-            message = $"{sourceName} spread a rumor. Check today's newspaper.";
+            message = I18n.Get(
+                "hud.newspaper.publish_rumor",
+                $"{sourceName} spread a rumor. Check today's newspaper.",
+                new { source = sourceName });
         }
         else if (command.Equals("publish_article", StringComparison.OrdinalIgnoreCase))
         {
-            message = $"{sourceName} filed a story: {TrimForHud(outcomeId, 28)}";
+            var title = TrimForHud(outcomeId, 28);
+            message = I18n.Get(
+                "hud.newspaper.publish_article",
+                $"{sourceName} filed a story: {title}",
+                new { source = sourceName, title });
         }
         else
         {
@@ -8322,7 +8356,7 @@ public sealed class ModEntry : Mod
     private static string TrimForHud(string text, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(text))
-            return "New article";
+            return I18n.Get("hud.newspaper.title.fallback", "New article");
 
         var value = text.Trim();
         if (value.Length <= maxLength)
@@ -8331,4 +8365,5 @@ public sealed class ModEntry : Mod
         return value[..Math.Max(1, maxLength - 3)] + "...";
     }
 }
+
 

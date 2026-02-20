@@ -269,6 +269,7 @@ public sealed class NewspaperService
         if (_player2 is null || count <= 0)
             return new List<NewspaperArticle>();
 
+        var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
         var recentTitles = state.Newspaper.Issues
             .OrderByDescending(i => i.Day)
             .Take(14)
@@ -289,7 +290,7 @@ public sealed class NewspaperService
             ShortName = "Editor",
             Name = "Pelican Times Editor",
             CharacterDescription = "Generate day-appropriate newspaper stories that reflect current town progression.",
-            SystemPrompt = "Generate concise in-world newspaper stories for Pelican Town. Stay season/day/year grounded.",
+            SystemPrompt = "Generate concise in-world newspaper stories for Pelican Town. Stay season/day/year grounded. " + promptLanguageRule,
             KeepGameState = true,
             Context = new ArticleGenerationContext
             {

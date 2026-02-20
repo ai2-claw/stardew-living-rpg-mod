@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using StardewLivingRPG.State;
+using StardewLivingRPG.Utils;
 
 namespace StardewLivingRPG.Integrations;
 
@@ -776,12 +777,13 @@ public sealed class Player2Client
             if (!string.IsNullOrWhiteSpace(_headlineEditorNpcId))
                 return _headlineEditorNpcId;
 
+            var languageRule = I18n.BuildPromptLanguageInstruction();
             var req = new SpawnNpcRequest
             {
                 ShortName = "Editor",
                 Name = "Pelican Times Editor",
                 CharacterDescription = "Town newspaper editor writing short, dramatic headlines.",
-                SystemPrompt = "Write one sensational newspaper headline per request. Reply with headline text only. Max 30 characters.",
+                SystemPrompt = $"Write one sensational newspaper headline per request. {languageRule} Reply with headline text only. Max 30 characters.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>()
             };
@@ -863,7 +865,8 @@ public sealed class Player2Client
 
     private static string BuildHeadlinePrompt(string articleTitle, string articleCategory, string articleContent)
     {
-        return $"You are a tabloid newspaper editor. Convert this article into a sensational 30-char headline.\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline, max 30 characters. Make it exciting and exaggerated like a small-town tabloid.";
+        var languageRule = I18n.BuildPromptLanguageInstruction();
+        return $"You are a tabloid newspaper editor. Convert this article into a sensational 30-char headline. {languageRule}\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline, max 30 characters. Make it exciting and exaggerated like a small-town tabloid.";
     }
 
     private static bool IsNpcMissing(HttpRequestException ex)
@@ -1208,13 +1211,16 @@ public sealed class Player2Client
         var year = request.Context?.Year ?? 1;
         var existing = request.Context?.ExistingArticles ?? new List<string>();
         var existingList = existing.Count == 0 ? "(none)" : string.Join(", ", existing.Take(20));
+        var languageRule = I18n.BuildPromptLanguageInstruction();
 
         return
             $"You are the Pelican Times editor in Stardew Valley. " +
             $"Generate {count} fresh short newspaper stories for season {season}, day {day}, year {year}. " +
             $"Avoid repeating these recent titles: {existingList}. " +
+            $"{languageRule} " +
             "Stories should feel like town progression for this point in the year. " +
             "Each story must fit within 80 characters total (title + content). " +
+            "For JSON responses, translate only string values. Never translate JSON keys. " +
             "Return STRICT JSON only with this schema: " +
             "{\"articles\":[{\"title\":\"...\",\"content\":\"...\",\"category\":\"community|market|social|nature\"}]}. " +
             "No markdown, no prose outside JSON.";
@@ -1236,13 +1242,16 @@ public sealed class Player2Client
         var scarcity = string.IsNullOrWhiteSpace(context.ScarcityLead) ? "(none)" : context.ScarcityLead;
         var season = string.IsNullOrWhiteSpace(context.Season) ? "spring" : context.Season;
         var mode = string.IsNullOrWhiteSpace(context.Mode) ? "cozy_canon" : context.Mode;
+        var languageRule = I18n.BuildPromptLanguageInstruction();
 
         return
             "You are the Pelican Times editor writing the Market Outlook section for Stardew Valley. " +
             $"Generate {count} concise outlook lines grounded in current game signals. " +
             $"Season={season}, Day={context.Day}, Year={context.Year}, Mode={mode}. " +
             $"Market movers: {movers}. Scarcity signal: {scarcity}. Active events: {eventsList}. " +
+            $"{languageRule} " +
             "Focus on near-term guidance for tomorrow's market. Keep each line under 95 characters. " +
+            "For JSON responses, translate only string values. Never translate JSON keys. " +
             "Return STRICT JSON only with schema: {\"outlook\":[\"line 1\",\"line 2\"]}. " +
             "No markdown, no prose outside JSON.";
     }
