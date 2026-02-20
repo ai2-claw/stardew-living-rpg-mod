@@ -316,11 +316,38 @@ public sealed class ModEntry : Mod
         _commandPolicyService = new CommandPolicyService();
         _player2Client = new Player2Client();
 
-        helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
-        helper.ConsoleCommands.Add("slrpg_board", "Print text market board preview.", OnBoardCommand);
+        RegisterPlayerConsoleCommands(helper);
+        if (_config.ShowDeveloperConsoleCommands)
+        {
+            RegisterDeveloperConsoleCommands(helper);
+            Monitor.Log("Developer console commands enabled (ShowDeveloperConsoleCommands=true).", LogLevel.Debug);
+        }
+
+        helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
+        helper.Events.GameLoop.Saving += OnSaving;
+        helper.Events.GameLoop.DayEnding += OnDayEnding;
+        helper.Events.GameLoop.DayStarted += OnDayStarted;
+        helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
+        helper.Events.Display.RenderedHud += OnRenderedHud;
+        helper.Events.Display.MenuChanged += OnMenuChanged;
+        helper.Events.Input.ButtonPressed += OnButtonPressed;
+
+        Monitor.Log("The Living Valley loaded.", LogLevel.Info);
+    }
+
+    private void RegisterPlayerConsoleCommands(IModHelper helper)
+    {
         helper.ConsoleCommands.Add("slrpg_open_board", "Open Market Board menu.", OnOpenBoardCommand);
         helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using built-in game client id.", OnPlayer2LoginCommand);
+        helper.ConsoleCommands.Add("slrpg_p2_status", "Show Player2 session + joules + stream status.", OnPlayer2StatusCommand);
+    }
+
+    private void RegisterDeveloperConsoleCommands(IModHelper helper)
+    {
+        helper.ConsoleCommands.Add("slrpg_sell", "Record simulated crop sale: slrpg_sell <crop> <count>", OnSellCommand);
+        helper.ConsoleCommands.Add("slrpg_board", "Print text market board preview.", OnBoardCommand);
         helper.ConsoleCommands.Add("slrpg_accept_quest", "Accept rumor quest: slrpg_accept_quest <questId>", OnAcceptQuestCommand);
         helper.ConsoleCommands.Add("slrpg_quest_progress", "Show active quest progress: slrpg_quest_progress <questId>", OnQuestProgressCommand);
         helper.ConsoleCommands.Add("slrpg_quest_progress_all", "Show progress for all active quests.", OnQuestProgressAllCommand);
@@ -339,27 +366,13 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_memory_debug", "Dump NPC memory summary: slrpg_memory_debug <npc>", OnMemoryDebugCommand);
         helper.ConsoleCommands.Add("slrpg_town_memory_dump", "Dump town-memory event count.", OnTownMemoryDumpCommand);
         helper.ConsoleCommands.Add("slrpg_town_memory_npc", "Dump town-memory knowledge for npc: slrpg_town_memory_npc <npc>", OnTownMemoryNpcCommand);
-
-        helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using built-in game client id.", OnPlayer2LoginCommand);
         helper.ConsoleCommands.Add("slrpg_p2_spawn", "Spawn one Player2 NPC session.", OnPlayer2SpawnNpcCommand);
         helper.ConsoleCommands.Add("slrpg_p2_chat", "Send chat to active Player2 NPC: slrpg_p2_chat <message>", OnPlayer2ChatCommand);
         helper.ConsoleCommands.Add("slrpg_p2_read_once", "Read one line from /npcs/responses stream.", OnPlayer2ReadOnceCommand);
         helper.ConsoleCommands.Add("slrpg_p2_read_reset", "Reset/cancel stuck Player2 read_once.", OnPlayer2ReadResetCommand);
         helper.ConsoleCommands.Add("slrpg_p2_stream_start", "Start persistent Player2 response stream listener.", OnPlayer2StreamStartCommand);
         helper.ConsoleCommands.Add("slrpg_p2_stream_stop", "Stop persistent Player2 response stream listener.", OnPlayer2StreamStopCommand);
-        helper.ConsoleCommands.Add("slrpg_p2_status", "Show Player2 session + joules + stream status.", OnPlayer2StatusCommand);
         helper.ConsoleCommands.Add("slrpg_p2_health", "Compact Player2 health summary line.", OnPlayer2HealthCommand);
-
-        helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
-        helper.Events.GameLoop.Saving += OnSaving;
-        helper.Events.GameLoop.DayEnding += OnDayEnding;
-        helper.Events.GameLoop.DayStarted += OnDayStarted;
-        helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
-        helper.Events.Display.RenderedHud += OnRenderedHud;
-        helper.Events.Display.MenuChanged += OnMenuChanged;
-        helper.Events.Input.ButtonPressed += OnButtonPressed;
-
-        Monitor.Log("The Living Valley loaded.", LogLevel.Info);
     }
 
     private void TryMigrateLegacyPlayer2Config(IModHelper helper)
@@ -1286,7 +1299,7 @@ public sealed class ModEntry : Mod
 
             if (line == "__EMPTY__")
             {
-                Monitor.Log("No response line received (timeout/empty).", LogLevel.Warn);
+                Monitor.Log("No response line received (timeout/empty).", LogLevel.Trace);
                 continue;
             }
 
@@ -1311,7 +1324,7 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            Monitor.Log($"Player2 stream line: {line}", LogLevel.Info);
+            Monitor.Log($"Player2 stream line: {line}", LogLevel.Trace);
             _player2LastLineUtc = DateTime.UtcNow;
             _player2StreamBackoffSec = 1;
             var routedToPlayerChat = CaptureNpcUiMessage(line, allowPlayerChatRouting: false);
@@ -1338,11 +1351,11 @@ public sealed class ModEntry : Mod
 
             if (line == "__EMPTY__")
             {
-                Monitor.Log("No player chat response line received (timeout/empty).", LogLevel.Warn);
+                Monitor.Log("No player chat response line received (timeout/empty).", LogLevel.Trace);
                 continue;
             }
 
-            Monitor.Log($"Player2 chat line: {line}", LogLevel.Info);
+            Monitor.Log($"Player2 chat line: {line}", LogLevel.Trace);
             CaptureNpcUiMessage(line, allowPlayerChatRouting: true);
             var appliedNpcCommand = TryApplyNpcCommandFromLine(line);
             if (!appliedNpcCommand)
@@ -4196,7 +4209,7 @@ public sealed class ModEntry : Mod
             _lastStreamChatContextTag = contextTag;
             ClearPendingStreamReplay();
 
-            Monitor.Log($"Sent chat to Player2 NPC ({who}) id={npcId}. Keep stream listener running to receive response lines.", LogLevel.Info);
+            Monitor.Log($"Sent chat to Player2 NPC ({who}) id={npcId}. Keep stream listener running to receive response lines.", LogLevel.Debug);
         }
         catch (Exception ex)
         {
@@ -4330,7 +4343,7 @@ public sealed class ModEntry : Mod
                 StartPlayerChatHistoryFallback(npcId, previousHistorySnapshot, message);
             }
 
-            Monitor.Log($"Sent player chat via per-message flow to Player2 NPC ({who}) id={npcId}.", LogLevel.Info);
+            Monitor.Log($"Sent player chat via per-message flow to Player2 NPC ({who}) id={npcId}.", LogLevel.Trace);
         }
         catch (Exception ex)
         {
@@ -4536,7 +4549,7 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        Monitor.Log("Reading one Player2 stream line in background...", LogLevel.Info);
+        Monitor.Log("Reading one Player2 stream line in background...", LogLevel.Trace);
         _player2ReadStartedUtc = DateTime.UtcNow;
         _player2ReadCts?.Cancel();
         _player2ReadCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
@@ -5172,7 +5185,7 @@ public sealed class ModEntry : Mod
         _player2StreamCts = new CancellationTokenSource();
         var ct = _player2StreamCts.Token;
 
-        Monitor.Log($"Starting Player2 stream listener... (backoff={_player2StreamBackoffSec}s)", LogLevel.Info);
+        Monitor.Log($"Starting Player2 stream listener... (backoff={_player2StreamBackoffSec}s)", LogLevel.Debug);
 
         _ = Task.Run(async () =>
         {
@@ -6107,14 +6120,14 @@ public sealed class ModEntry : Mod
             if (isAmbientContext)
                 IncrementCounter(_state.Telemetry.Daily.AmbientCommandAppliedByType, metricCommand);
 
-            Monitor.Log($"Applied NPC command lane={intentLane}: {result.Command} -> outcome {result.OutcomeId} (intent={result.IntentId})", LogLevel.Info);
+            Monitor.Log($"Applied NPC command lane={intentLane}: {result.Command} -> outcome {result.OutcomeId} (intent={result.IntentId})", LogLevel.Debug);
             TryRecordAmbientLaneSnapshot(sourceNpcId, result, intentLane, attemptedCommand);
             TryShowSimulationMutationToast(result, intentLane, isAmbientContext);
 
             if (result.Proposal is not null)
             {
                 var p = result.Proposal;
-                Monitor.Log($"Quest mapping | requested: template={p.RequestedTemplate}, target={p.RequestedTarget}, urgency={p.RequestedUrgency} | applied: template={p.AppliedTemplate}, target={p.AppliedTarget}, urgency={p.AppliedUrgency}, count={p.Count}, reward={p.RewardGold}, expires+{p.ExpiresDelta}d | fallback={result.FallbackUsed}", LogLevel.Info);
+                Monitor.Log($"Quest mapping | requested: template={p.RequestedTemplate}, target={p.RequestedTarget}, urgency={p.RequestedUrgency} | applied: template={p.AppliedTemplate}, target={p.AppliedTarget}, urgency={p.AppliedUrgency}, count={p.Count}, reward={p.RewardGold}, expires+{p.ExpiresDelta}d | fallback={result.FallbackUsed}", LogLevel.Trace);
 
                 if (!string.IsNullOrWhiteSpace(sourceNpcId)
                     && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var issuerShortName))
@@ -7766,7 +7779,7 @@ public sealed class ModEntry : Mod
                 if (!delivered && _npcUiPendingById.TryGetValue(npcId, out var pending) && pending > 0)
                 {
                     _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
-                    Monitor.Log("Player chat history poll timed out with no fresh NPC response.", LogLevel.Warn);
+                    Monitor.Log("Player chat history poll timed out with no fresh NPC response.", LogLevel.Debug);
                 }
             }
         });

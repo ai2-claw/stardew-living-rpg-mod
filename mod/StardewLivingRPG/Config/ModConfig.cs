@@ -31,6 +31,7 @@ public sealed class ModConfig
 
     // Player-facing auto-connect UX
     public bool AutoConnectPlayer2OnLoad { get; set; } = true;
+    public bool ShowDeveloperConsoleCommands { get; set; } = false;
 
     // In-world work request anti-spam
     public int WorkRequestCooldownSeconds { get; set; } = 5;
