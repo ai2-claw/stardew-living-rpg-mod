@@ -1,7 +1,7 @@
 {
   "Name": "The Living Valley",
-  "Author": "mx_146323",
-  "Version": "0.1.0",
+  "Author": "mariachaaan",
+  "Version": "0.2.0",
   "Description": "A cozy living-world layer for Stardew Valley with dynamic NPCs, requests, and town news.",
   "UniqueID": "mx146323.StardewLivingRPG",
   "EntryDll": "StardewLivingRPG.dll",
