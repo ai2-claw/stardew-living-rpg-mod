@@ -6,5 +6,5 @@
   "UniqueID": "mx146323.StardewLivingRPG",
   "EntryDll": "StardewLivingRPG.dll",
   "MinimumApiVersion": "4.0.0",
-  "UpdateKeys": []
+  "UpdateKeys": [ "GitHub:ai2-claw/stardew-living-rpg-mod" ]
 }
