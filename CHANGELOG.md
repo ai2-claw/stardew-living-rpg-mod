@@ -39,6 +39,9 @@
   - `M2_INTENT_INJECTION_MATRIX.md`
 - Anchor QA tooling:
   - `slrpg_anchor_smoketest`
+- Child-NPC age guardrails for chat:
+  - prompt rule injection for `Jas`/`Vincent`
+  - response normalization fallback when a child NPC claims adult ages
 
 ### Changed
 - NPC quest language shifted toward "town requests".
@@ -51,11 +54,19 @@
 - Telemetry expanded with intent lanes (`auto`/`manual`) and ask-gate outcomes.
 - Anchor event flow hardened with cooldown/lifecycle fact locks and visible follow-up effects.
 - NPC spawn command descriptors and prompt contracts now expose non-quest mutation commands with stricter usage rules.
+- NPC follow-up hook target selection now prioritizes the intended interaction target (facing/action tile), then syncs to the actual opened speaker/menu owner.
+- Shop-menu owner resolution expanded to support reflected owner fields/properties and name-token owner values, with Joja-context fallback to Morris.
+- NPC follow-up interaction/fallback distance thresholds widened for counter/shop interactions.
+- First-follow-up greeting now respects vanilla met-state and suppresses first-time phrasing when follow-up occurs after a vanilla dialogue/menu cycle.
 
 ### Fixed
 - Prevented hanging behavior in Player2 one-off read flow.
 - Added missing UI text wrapping helper used by menu screens.
 - Reduced assistant-like NPC phrasing with stricter in-character instructions.
+- Fixed follow-up chat opening the wrong nearby NPC when multiple NPCs were in similar range.
+- Fixed missing follow-up chat for Morris/Joja shop interactions.
+- Fixed child NPCs (Jas/Vincent) incorrectly claiming adult ages.
+- Fixed first follow-up chat line incorrectly saying "we haven't spoken before" immediately after vanilla dialogue.
 
 ## Notes
 - For release tagging, move "Unreleased" entries under a version header (e.g., `## 0.2.0 - YYYY-MM-DD`).
