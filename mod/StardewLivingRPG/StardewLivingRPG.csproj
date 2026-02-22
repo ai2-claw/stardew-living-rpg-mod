@@ -36,24 +36,34 @@
     Post-build: Copy mod files to Stardew Valley Mods folder
     Requires SMAPI_PATH environment variable to be set
   -->
-  <Target Name="CopyModToStardew" AfterTargets="Build">
+  <Target Name="CopyModToStardew"
+          AfterTargets="Build"
+          Condition="'$(SMAPI_PATH)' != '' and Exists('$(SMAPI_PATH)')">
     <PropertyGroup>
-      <ModsFolder>$(SMAPI_PATH)\Mods\StardewLivingRPG</ModsFolder>
+      <ModsFolder>$([System.IO.Path]::Combine('$(SMAPI_PATH)', 'Mods', 'StardewLivingRPG'))</ModsFolder>
+      <I18nFolder>$([System.IO.Path]::Combine('$(ModsFolder)', 'i18n'))</I18nFolder>
+      <OutputAssembly>$([System.IO.Path]::Combine('$(OutputPath)', '$(AssemblyName).dll'))</OutputAssembly>
     </PropertyGroup>
 
     <MakeDir Directories="$(ModsFolder)" Condition="!Exists('$(ModsFolder)')" />
 
-    <Copy SourceFiles="$(OutputPath)StardewLivingRPG.dll" DestinationFolder="$(ModsFolder)" />
+    <Copy SourceFiles="$(OutputAssembly)" DestinationFolder="$(ModsFolder)" />
     <Copy SourceFiles="$(ProjectDir)manifest.json" DestinationFolder="$(ModsFolder)" />
     <Copy SourceFiles="$(ProjectDir)npc_speech_profiles.json" DestinationFolder="$(ModsFolder)" Condition="Exists('$(ProjectDir)npc_speech_profiles.json')" />
-    <MakeDir Directories="$(ModsFolder)\i18n" Condition="!Exists('$(ModsFolder)\i18n')" />
+    <MakeDir Directories="$(I18nFolder)" Condition="!Exists('$(I18nFolder)')" />
     <ItemGroup>
-      <I18nFiles Include="$(ProjectDir)i18n\*.json" />
-      <I18nDocs Include="$(ProjectDir)i18n\*.md" />
+      <I18nFiles Include="$(ProjectDir)i18n/*.json" />
+      <I18nDocs Include="$(ProjectDir)i18n/*.md" />
     </ItemGroup>
-    <Copy SourceFiles="@(I18nFiles)" DestinationFolder="$(ModsFolder)\i18n" Condition="@(I18nFiles) != ''" />
-    <Copy SourceFiles="@(I18nDocs)" DestinationFolder="$(ModsFolder)\i18n" Condition="@(I18nDocs) != ''" />
+    <Copy SourceFiles="@(I18nFiles)" DestinationFolder="$(I18nFolder)" Condition="@(I18nFiles) != ''" />
+    <Copy SourceFiles="@(I18nDocs)" DestinationFolder="$(I18nFolder)" Condition="@(I18nDocs) != ''" />
 
     <Message Text="Copied mod files to: $(ModsFolder)" Importance="high" />
+  </Target>
+
+  <Target Name="CopyModToStardewSkipped"
+          AfterTargets="Build"
+          Condition="'$(SMAPI_PATH)' == '' or !Exists('$(SMAPI_PATH)')">
+    <Message Text="Skipping mod copy: set SMAPI_PATH to your Stardew/SMAPI folder to enable auto-copy." Importance="high" />
   </Target>
 </Project>
