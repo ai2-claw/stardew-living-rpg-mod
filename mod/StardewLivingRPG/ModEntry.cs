@@ -41,6 +41,8 @@ public sealed class ModEntry : Mod
     private const double StagedValidationMaxMarketRateDelta = 0.75d;
     private const double DefaultMsPerNpcChatClockStep = 7000d;
     private const double NpcChatClockSlowdownMultiplier = 2d;
+    private const float NpcDialogueHookInteractionRadiusTiles = 3.5f;
+    private const float NpcDialogueHookFallbackRadiusTiles = 3.75f;
     private static readonly TimeSpan PendingFallbackQuestOfferMaxAge = TimeSpan.FromMinutes(2);
     private const string InitialNpcChatPrompt = "Got a minute to chat?";
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
@@ -63,6 +65,23 @@ public sealed class ModEntry : Mod
         modifiers: null);
     private static readonly GameTime NpcChatZeroGameTime = new(TimeSpan.Zero, TimeSpan.Zero);
     private static readonly GameTime NpcChatVisualRefreshGameTime = new(TimeSpan.Zero, TimeSpan.FromMilliseconds(16d));
+    private static readonly string[] ShopMenuOwnerMemberCandidates =
+    {
+        "portraitPerson",
+        "potraitPerson",
+        "portraitPersonName",
+        "potraitPersonName",
+        "storeOwner",
+        "storeOwnerName",
+        "owner",
+        "ownerName",
+        "shopOwner",
+        "shopOwnerName",
+        "PortraitPerson",
+        "PortraitPersonName",
+        "StoreOwner",
+        "StoreOwnerName"
+    };
 
     private sealed class NpcPublishHeadlineUpdate
     {
@@ -275,6 +294,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, DateTime> _ambientNpcLastConversationUtcByNpcId = new(StringComparer.OrdinalIgnoreCase);
 
     private string? _pendingNpcDialogueHookName;
+    private NPC? _pendingNpcDialogueHookNpc;
     private bool _npcDialogueHookArmed;
     private bool _npcDialogueHookMenuOpened;
     private DateTime _npcDialogueHookArmedUtc;
@@ -644,24 +664,300 @@ public sealed class ModEntry : Mod
         if (loc is null)
             return false;
 
-        var playerTile = Game1.player.Tile;
-        var nearbyRequester = loc.characters
-            .FirstOrDefault(npc =>
-                npc is not null
-                && !string.IsNullOrWhiteSpace(npc.Name)
-                && IsRosterNpc(npc.Name)
-                && Vector2.Distance(npc.Tile, playerTile) <= 2.25f);
+        var nearbyRequester = TryResolveNpcDialogueHookTarget(loc);
 
         if (nearbyRequester is null)
             return false;
 
         // Additive hook: don't block vanilla interaction.
         // We arm a follow-up question shown after vanilla dialogue/menu closes.
-        _pendingNpcDialogueHookName = nearbyRequester.Name;
+        ArmNpcDialogueHook(nearbyRequester);
+        return false;
+    }
+
+    private NPC? TryResolveNpcDialogueHookTarget(GameLocation location)
+    {
+        var playerTile = Game1.player.Tile;
+        var facingTile = GetPlayerFacingTile(playerTile, Game1.player.FacingDirection);
+        var facingUnit = GetFacingUnitVector(Game1.player.FacingDirection);
+
+        return location.characters
+            .Where(npc => npc is not null && IsRosterNpc(npc))
+            .Select(npc => new
+            {
+                Npc = npc,
+                PlayerDistance = Vector2.Distance(npc.Tile, playerTile),
+                FacingTileDistance = Vector2.Distance(npc.Tile, facingTile),
+                FacingAlignment = GetFacingAlignment(playerTile, npc.Tile, facingUnit)
+            })
+            .Where(x => x.PlayerDistance <= NpcDialogueHookInteractionRadiusTiles)
+            .OrderBy(x => x.FacingTileDistance)
+            .ThenByDescending(x => x.FacingAlignment)
+            .ThenBy(x => x.PlayerDistance)
+            .Select(x => x.Npc)
+            .FirstOrDefault();
+    }
+
+    private static Vector2 GetPlayerFacingTile(Vector2 playerTile, int facingDirection)
+    {
+        return facingDirection switch
+        {
+            0 => new Vector2(playerTile.X, playerTile.Y - 1f),
+            1 => new Vector2(playerTile.X + 1f, playerTile.Y),
+            3 => new Vector2(playerTile.X - 1f, playerTile.Y),
+            _ => new Vector2(playerTile.X, playerTile.Y + 1f)
+        };
+    }
+
+    private static Vector2 GetFacingUnitVector(int facingDirection)
+    {
+        return facingDirection switch
+        {
+            0 => new Vector2(0f, -1f),
+            1 => new Vector2(1f, 0f),
+            3 => new Vector2(-1f, 0f),
+            _ => new Vector2(0f, 1f)
+        };
+    }
+
+    private static float GetFacingAlignment(Vector2 originTile, Vector2 targetTile, Vector2 facingUnit)
+    {
+        var delta = targetTile - originTile;
+        var lenSq = delta.LengthSquared();
+        if (lenSq <= 0.0001f)
+            return float.MinValue;
+
+        delta /= MathF.Sqrt(lenSq);
+        return Vector2.Dot(delta, facingUnit);
+    }
+
+    private void ArmNpcDialogueHook(NPC npc)
+    {
+        if (npc is null || string.IsNullOrWhiteSpace(npc.Name))
+            return;
+
+        SetNpcDialogueHookTarget(npc);
         _npcDialogueHookArmed = true;
         _npcDialogueHookMenuOpened = false;
         _npcDialogueHookArmedUtc = DateTime.UtcNow;
+    }
+
+    private void SetNpcDialogueHookTarget(NPC npc)
+    {
+        if (npc is null || string.IsNullOrWhiteSpace(npc.Name))
+            return;
+
+        _pendingNpcDialogueHookName = npc.Name;
+        _pendingNpcDialogueHookNpc = npc;
+    }
+
+    private void TryArmNpcDialogueHookFromMenu(IClickableMenu? menu)
+    {
+        if (_npcDialogueHookArmed || menu is not ShopMenu shopMenu)
+            return;
+
+        var owner = TryResolveNpcFromOpenedMenu(shopMenu);
+        if (owner is null && Game1.currentLocation is not null)
+            owner = TryResolveNpcDialogueHookTarget(Game1.currentLocation);
+        if (owner is null)
+            owner = ResolveJojaFallbackNpc(shopMenu);
+
+        if (owner is null || !IsRosterNpc(owner))
+            return;
+
+        ArmNpcDialogueHook(owner);
+    }
+
+    private void TrySyncNpcDialogueHookTargetFromMenu(IClickableMenu menu)
+    {
+        if (!_npcDialogueHookArmed)
+            return;
+
+        var target = TryResolveNpcFromOpenedMenu(menu);
+        if (target is null || !IsRosterNpc(target))
+            return;
+
+        SetNpcDialogueHookTarget(target);
+    }
+
+    private NPC? TryResolveNpcFromOpenedMenu(IClickableMenu menu)
+    {
+        if (menu is ShopMenu shopMenu)
+        {
+            var owner = TryResolveShopMenuOwnerNpc(shopMenu);
+            if (owner is not null)
+                return owner;
+
+            var jojaFallback = ResolveJojaFallbackNpc(shopMenu);
+            if (jojaFallback is not null)
+                return jojaFallback;
+        }
+
+        if (Game1.currentSpeaker is not null && !string.IsNullOrWhiteSpace(Game1.currentSpeaker.Name))
+            return Game1.currentSpeaker;
+
+        if (Game1.currentLocation is not null)
+            return TryResolveNpcDialogueHookTarget(Game1.currentLocation);
+
+        return null;
+    }
+
+    private NPC? ResolveJojaFallbackNpc(IClickableMenu menu)
+    {
+        if (!IsLikelyJojaShopContext(menu))
+            return null;
+
+        return ResolveNpcByName("Morris");
+    }
+
+    private static bool IsLikelyJojaShopContext(IClickableMenu menu)
+    {
+        if (Game1.currentLocation?.Name?.Contains("joja", StringComparison.OrdinalIgnoreCase) == true)
+            return true;
+
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var menuType = menu.GetType();
+
+        foreach (var field in menuType.GetFields(Flags))
+        {
+            if (!typeof(string).IsAssignableFrom(field.FieldType))
+                continue;
+
+            if (field.GetValue(menu) is string value
+                && value.Contains("joja", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        foreach (var property in menuType.GetProperties(Flags))
+        {
+            if (!typeof(string).IsAssignableFrom(property.PropertyType) || property.GetIndexParameters().Length > 0)
+                continue;
+
+            try
+            {
+                if (property.GetValue(menu) is string value
+                    && value.Contains("joja", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+        }
+
         return false;
+    }
+
+    private NPC? TryResolveShopMenuOwnerNpc(ShopMenu shopMenu)
+    {
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var menuType = shopMenu.GetType();
+
+        foreach (var memberName in ShopMenuOwnerMemberCandidates)
+        {
+            var field = menuType.GetField(memberName, Flags);
+            if (field is not null)
+            {
+                var fromField = ResolveNpcFromOwnerToken(field.GetValue(shopMenu));
+                if (fromField is not null)
+                    return fromField;
+            }
+
+            var property = menuType.GetProperty(memberName, Flags);
+            if (property is null || property.GetIndexParameters().Length > 0)
+                continue;
+
+            try
+            {
+                var fromProperty = ResolveNpcFromOwnerToken(property.GetValue(shopMenu));
+                if (fromProperty is not null)
+                    return fromProperty;
+            }
+            catch
+            {
+            }
+        }
+
+        foreach (var field in menuType.GetFields(Flags))
+        {
+            var npc = ResolveNpcFromOwnerToken(field.GetValue(shopMenu));
+            if (npc is not null)
+                return npc;
+        }
+
+        foreach (var property in menuType.GetProperties(Flags))
+        {
+            if (property.GetIndexParameters().Length > 0)
+                continue;
+
+            try
+            {
+                var npc = ResolveNpcFromOwnerToken(property.GetValue(shopMenu));
+                if (npc is not null)
+                    return npc;
+            }
+            catch
+            {
+            }
+        }
+
+        return null;
+    }
+
+    private NPC? ResolveNpcFromOwnerToken(object? ownerToken)
+    {
+        if (ownerToken is NPC npc && !string.IsNullOrWhiteSpace(npc.Name))
+            return npc;
+
+        if (ownerToken is string ownerName)
+            return ResolveNpcByName(ownerName);
+
+        return null;
+    }
+
+    private NPC? ResolveNpcByName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+
+        var trimmed = name.Trim();
+        var byInternalName = Game1.getCharacterFromName(trimmed);
+        if (byInternalName is not null)
+            return byInternalName;
+
+        var currentLocationMatch = Game1.currentLocation?.characters
+            ?.FirstOrDefault(c => string.Equals(c?.displayName, trimmed, StringComparison.OrdinalIgnoreCase));
+        if (currentLocationMatch is not null)
+            return currentLocationMatch;
+
+        foreach (var location in Game1.locations)
+        {
+            var locationMatch = location?.characters
+                ?.FirstOrDefault(c => string.Equals(c?.Name, trimmed, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(c?.displayName, trimmed, StringComparison.OrdinalIgnoreCase));
+            if (locationMatch is not null)
+                return locationMatch;
+        }
+
+        return null;
+    }
+
+    private NPC? ResolvePendingNpcDialogueHookNpc(string requesterName, GameLocation? location)
+    {
+        var npc = location?.characters?.FirstOrDefault(c => string.Equals(c?.Name, requesterName, StringComparison.OrdinalIgnoreCase));
+        if (npc is not null)
+            return npc;
+
+        if (_pendingNpcDialogueHookNpc is not null
+            && string.Equals(_pendingNpcDialogueHookNpc.Name, requesterName, StringComparison.OrdinalIgnoreCase))
+        {
+            return _pendingNpcDialogueHookNpc;
+        }
+
+        return null;
     }
 
     private bool IsRosterNpc(string name)
@@ -672,6 +968,17 @@ public sealed class ModEntry : Mod
         var roster = GetExpandedNpcRoster();
 
         return roster.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsRosterNpc(NPC npc)
+    {
+        if (npc is null)
+            return false;
+
+        if (IsRosterNpc(npc.Name))
+            return true;
+
+        return !string.IsNullOrWhiteSpace(npc.displayName) && IsRosterNpc(npc.displayName);
     }
 
     private List<string> GetExpandedNpcRoster()
@@ -1632,6 +1939,12 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
+        if (e.NewMenu is not null)
+        {
+            TryArmNpcDialogueHookFromMenu(e.NewMenu);
+            TrySyncNpcDialogueHookTargetFromMenu(e.NewMenu);
+        }
+
         if (!_npcDialogueHookArmed)
             return;
 
@@ -1650,7 +1963,7 @@ public sealed class ModEntry : Mod
 
         var requesterName = _pendingNpcDialogueHookName;
         var loc = Game1.currentLocation;
-        var npc = loc?.characters?.FirstOrDefault(c => string.Equals(c?.Name, requesterName, StringComparison.OrdinalIgnoreCase));
+        var npc = ResolvePendingNpcDialogueHookNpc(requesterName, loc);
         ClearNpcDialogueHook();
         if (npc is null)
             return;
@@ -1680,8 +1993,8 @@ public sealed class ModEntry : Mod
 
         var requesterName = _pendingNpcDialogueHookName;
         var loc = Game1.currentLocation;
-        var npc = loc?.characters?.FirstOrDefault(c => string.Equals(c?.Name, requesterName, StringComparison.OrdinalIgnoreCase));
-        if (npc is null || Vector2.Distance(npc.Tile, Game1.player.Tile) > 2.5f)
+        var npc = ResolvePendingNpcDialogueHookNpc(requesterName, loc);
+        if (npc is null || Vector2.Distance(npc.Tile, Game1.player.Tile) > NpcDialogueHookFallbackRadiusTiles)
         {
             ClearNpcDialogueHook();
             return;
@@ -1728,6 +2041,7 @@ public sealed class ModEntry : Mod
     private void ClearNpcDialogueHook()
     {
         _pendingNpcDialogueHookName = null;
+        _pendingNpcDialogueHookNpc = null;
         _npcDialogueHookArmed = false;
         _npcDialogueHookMenuOpened = false;
         _npcDialogueHookArmedUtc = default;
