@@ -7,9 +7,9 @@
   "MinimumApiVersion": "4.0.0",
   "ContentPackFor": {
     "UniqueID": "mx146323.StardewLivingRPG",
-    "MinimumVersion": "1.0.0"
+    "MinimumVersion": "0.4.0"
   },
   "TLVPackVersion": "1.0.0",
-  "TLVFrameworkMinVersion": "1.0.0"
+  "TLVFrameworkMinVersion": "0.4.0"
 }
 
