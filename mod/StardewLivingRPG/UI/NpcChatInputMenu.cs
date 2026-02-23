@@ -47,6 +47,15 @@ public sealed class NpcChatInputMenu : IClickableMenu
     private Rectangle _chatRegion;
     private Rectangle _inputRegion;
 
+    // Scroll state
+    private int _chatScrollOffset = 0;
+    private int _chatContentHeight = 0;
+    private Rectangle _scrollTrackRegion;
+    private Rectangle _scrollThumbRegion;
+    private bool _scrollThumbHeld = false;
+    private int _scrollThumbDragOffset = 0;
+    private string? _lastNpcMessageForScroll;
+
     public NpcChatInputMenu(
         string npcName,
         Action<string> onSend,
@@ -161,13 +170,22 @@ public sealed class NpcChatInputMenu : IClickableMenu
 			portraitSize
 		);
 
-		// Chat region (right of portrait)
+		// Chat region (right of portrait, with scrollbar space)
+		int scrollBarWidth = 24;
 		int chatX = _portraitRegion.Right + 32;
 		_chatRegion = new Rectangle(
 			chatX,
 			_parchmentRegion.Y + 32,
-			_parchmentRegion.Right - chatX - 32,
+			_parchmentRegion.Right - chatX - 32 - scrollBarWidth - 8,
 			_parchmentRegion.Height - 64
+		);
+
+		// Scrollbar track region (right of chat region)
+		_scrollTrackRegion = new Rectangle(
+			_chatRegion.Right + 8,
+			_chatRegion.Y,
+			scrollBarWidth,
+			_chatRegion.Height
 		);
 
 		_heartRowRegion = new Rectangle(
@@ -212,6 +230,30 @@ public sealed class NpcChatInputMenu : IClickableMenu
     {
         base.receiveLeftClick(x, y, playSound);
 
+        // Scrollbar thumb drag start
+        if (_scrollThumbRegion.Contains(x, y) && CanScroll())
+        {
+            _scrollThumbHeld = true;
+            _scrollThumbDragOffset = y - _scrollThumbRegion.Y;
+            return;
+        }
+
+        // Scrollbar track click (page up/down)
+        if (_scrollTrackRegion.Contains(x, y) && CanScroll())
+        {
+            if (y < _scrollThumbRegion.Y)
+            {
+                // Click above thumb: page up
+                ScrollBy(-_chatRegion.Height / 2);
+            }
+            else if (y > _scrollThumbRegion.Bottom)
+            {
+                // Click below thumb: page down
+                ScrollBy(_chatRegion.Height / 2);
+            }
+            return;
+        }
+
         if (_sendButtonBounds.Contains(x, y))
         {
             Submit();
@@ -230,6 +272,43 @@ public sealed class NpcChatInputMenu : IClickableMenu
             SetInputFocus(true);
         else
             SetInputFocus(false);
+    }
+
+    public override void leftClickHeld(int x, int y)
+    {
+        base.leftClickHeld(x, y);
+
+        if (_scrollThumbHeld && CanScroll())
+        {
+            int trackHeight = _scrollTrackRegion.Height - _scrollThumbRegion.Height;
+            int newThumbY = Math.Clamp(y - _scrollThumbDragOffset, _scrollTrackRegion.Y, _scrollTrackRegion.Y + trackHeight);
+            float scrollPercent = trackHeight > 0 ? (float)(newThumbY - _scrollTrackRegion.Y) / trackHeight : 0f;
+            int maxScroll = Math.Max(0, _chatContentHeight - _chatRegion.Height);
+            _chatScrollOffset = (int)(scrollPercent * maxScroll);
+        }
+    }
+
+    public override void releaseLeftClick(int x, int y)
+    {
+        base.releaseLeftClick(x, y);
+        _scrollThumbHeld = false;
+    }
+
+    public override void receiveScrollWheelAction(int direction)
+    {
+        base.receiveScrollWheelAction(direction);
+        if (_chatRegion.Contains(Game1.getMouseX(), Game1.getMouseY()) || _scrollTrackRegion.Contains(Game1.getMouseX(), Game1.getMouseY()))
+        {
+            ScrollBy(-direction * Game1.smallFont.LineSpacing * 2);
+        }
+    }
+
+    private bool CanScroll() => _chatContentHeight > _chatRegion.Height;
+
+    private void ScrollBy(int delta)
+    {
+        int maxScroll = Math.Max(0, _chatContentHeight - _chatRegion.Height);
+        _chatScrollOffset = Math.Clamp(_chatScrollOffset + delta, 0, maxScroll);
     }
 
     public override void performHoverAction(int x, int y)
@@ -277,7 +356,13 @@ public sealed class NpcChatInputMenu : IClickableMenu
             if (!string.IsNullOrWhiteSpace(next))
             {
                 var clean = CleanIncomingNpcMessage(next);
-                _lastNpcMessage = clean;
+                if (clean != _lastNpcMessageForScroll)
+                {
+                    _lastNpcMessage = clean;
+                    _lastNpcMessageForScroll = clean;
+                    // Scroll to bottom on new message
+                    _chatScrollOffset = Math.Max(0, _chatContentHeight - _chatRegion.Height);
+                }
             }
         }
     }
@@ -323,6 +408,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
         // 4. Conversation Text
         DrawConversationText(b);
+
+        // 4b. Scrollbar
+        DrawScrollbar(b);
 
         // 5. Input Field
         DrawInputBox(b);
@@ -451,16 +539,30 @@ public sealed class NpcChatInputMenu : IClickableMenu
         Color npcColor = new Color(60, 40, 20);      // Dark Ink
         Color playerColor = new Color(110, 110, 110); // Faded gray for history
 
+        // Calculate wrapped lines and total content height
+        var (playerLines, npcLines) = GetWrappedLines(w, out int separatorSpace);
+        _chatContentHeight = CalculateContentHeight(playerLines, npcLines, separatorSpace);
+
+        // Update scrollbar thumb position
+        UpdateScrollThumbRegion();
+
+        // Apply scroll offset
+        y -= _chatScrollOffset;
+
+        // Begin scissor clipping
+        var oldScissor = Game1.graphics.GraphicsDevice.ScissorRectangle;
+        var rasterizer = new RasterizerState { ScissorTestEnable = true };
+        b.End();
+        b.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, null, rasterizer);
+        Game1.graphics.GraphicsDevice.ScissorRectangle = _chatRegion;
+
         // 1. Player Message
-        if (_lastPlayerMessage != null)
+        if (playerLines != null)
         {
             string label = I18n.Get("npc_chat.label.you", "You: ");
             Vector2 labelSize = Game1.smallFont.MeasureString(label);
 
             b.DrawString(Game1.smallFont, label, new Vector2(x, y), playerColor);
-
-            float contentWidth = w - labelSize.X;
-            var playerLines = TextWrapHelper.WrapText(Game1.smallFont, _lastPlayerMessage, contentWidth);
 
             for (int i = 0; i < playerLines.Length; i++)
             {
@@ -468,19 +570,18 @@ public sealed class NpcChatInputMenu : IClickableMenu
                 b.DrawString(Game1.smallFont, playerLines[i], new Vector2(drawX, y), playerColor);
                 y += Game1.smallFont.LineSpacing;
             }
-            y += 16;
+            y += separatorSpace;
         }
 
         // Separator
-        if (_lastPlayerMessage != null && (_lastNpcMessage != null || IsThinking()))
+        if (playerLines != null && (npcLines != null || IsThinking()))
         {
             b.Draw(Game1.staminaRect, new Rectangle((int)x, (int)y - 8, (int)w, 1), Color.BurlyWood * 0.8f);
         }
 
         // 2. NPC Message
-        if (_lastNpcMessage != null)
+        if (npcLines != null)
         {
-            var npcLines = TextWrapHelper.WrapText(Game1.smallFont, _lastNpcMessage, w);
             foreach (var line in npcLines)
             {
                 b.DrawString(Game1.smallFont, line, new Vector2(x, y), npcColor);
@@ -493,6 +594,89 @@ public sealed class NpcChatInputMenu : IClickableMenu
             string text = I18n.Get("npc_chat.label.thinking", "Thinking") + new string('.', dots);
             b.DrawString(Game1.smallFont, text, new Vector2(x, y), npcColor * 0.6f);
         }
+
+        // End scissor clipping
+        b.End();
+        b.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, null, null);
+        Game1.graphics.GraphicsDevice.ScissorRectangle = oldScissor;
+    }
+
+    private (string[]? playerLines, string[]? npcLines) GetWrappedLines(float width, out int separatorSpace)
+    {
+        separatorSpace = 16;
+        string[]? playerLines = null;
+        string[]? npcLines = null;
+
+        if (_lastPlayerMessage != null)
+        {
+            string label = I18n.Get("npc_chat.label.you", "You: ");
+            Vector2 labelSize = Game1.smallFont.MeasureString(label);
+            playerLines = TextWrapHelper.WrapText(Game1.smallFont, _lastPlayerMessage, width - labelSize.X);
+        }
+
+        if (_lastNpcMessage != null)
+        {
+            npcLines = TextWrapHelper.WrapText(Game1.smallFont, _lastNpcMessage, width);
+        }
+
+        return (playerLines, npcLines);
+    }
+
+    private int CalculateContentHeight(string[]? playerLines, string[]? npcLines, int separatorSpace)
+    {
+        int height = 0;
+
+        if (playerLines != null)
+        {
+            height += playerLines.Length * Game1.smallFont.LineSpacing;
+            height += separatorSpace;
+        }
+
+        if (npcLines != null)
+        {
+            height += npcLines.Length * (Game1.smallFont.LineSpacing + 4);
+        }
+        else if (IsThinking())
+        {
+            height += Game1.smallFont.LineSpacing;
+        }
+
+        return height;
+    }
+
+    private void UpdateScrollThumbRegion()
+    {
+        if (_chatContentHeight <= _chatRegion.Height)
+        {
+            _scrollThumbRegion = Rectangle.Empty;
+            return;
+        }
+
+        int maxScroll = _chatContentHeight - _chatRegion.Height;
+        float thumbRatio = (float)_chatRegion.Height / _chatContentHeight;
+        int thumbHeight = Math.Max(20, (int)(_scrollTrackRegion.Height * thumbRatio));
+        float scrollPercent = maxScroll > 0 ? (float)_chatScrollOffset / maxScroll : 0f;
+        int thumbY = _scrollTrackRegion.Y + (int)((_scrollTrackRegion.Height - thumbHeight) * scrollPercent);
+
+        _scrollThumbRegion = new Rectangle(
+            _scrollTrackRegion.X + 4,
+            thumbY,
+            _scrollTrackRegion.Width - 8,
+            thumbHeight
+        );
+    }
+
+    private void DrawScrollbar(SpriteBatch b)
+    {
+        if (!CanScroll())
+            return;
+
+        // Track background
+        b.Draw(Game1.staminaRect, _scrollTrackRegion, new Color(139, 90, 43) * 0.3f);
+
+        // Thumb
+        Color thumbColor = _scrollThumbHeld ? new Color(221, 148, 25) : new Color(191, 118, 15);
+        b.Draw(Game1.staminaRect, _scrollThumbRegion, thumbColor);
     }
 
     private bool IsThinking()
@@ -557,6 +741,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
         _lastPlayerMessage = text;
         _lastNpcMessage = null;
+        _lastNpcMessageForScroll = null;
+        _chatScrollOffset = 0;
 
         _onSend(text);
         _input.Text = string.Empty;
