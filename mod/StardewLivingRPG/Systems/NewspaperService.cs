@@ -3,6 +3,7 @@ using StardewLivingRPG.State;
 using StardewLivingRPG.Integrations;
 using StardewLivingRPG.Utils;
 using StardewModdingAPI;
+using StardewValley;
 
 namespace StardewLivingRPG.Systems;
 
@@ -21,6 +22,16 @@ public sealed class NewspaperService
         _player2 = player2;
     }
 
+    private static TownProfile ResolveActiveTownProfile()
+    {
+        return TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name);
+    }
+
+    private static string BuildQuietDayHeadline()
+    {
+        return $"Quiet Day in {ResolveActiveTownProfile().CanonTown}";
+    }
+
     public async Task<NewspaperIssue> BuildIssueAsync(SaveState state, string? anchorNote = null)
     {
         _monitor.Log($"BuildIssueAsync: Starting, _player2 is {(_player2 != null ? "NOT null" : "null")}", LogLevel.Trace);
@@ -29,7 +40,7 @@ public sealed class NewspaperService
         var issue = new NewspaperIssue
         {
             Day = state.Calendar.Day,
-            Headline = "Quiet Day at Pelican Town", // Placeholder, will be replaced by SelectHeadline
+            Headline = BuildQuietDayHeadline(), // Placeholder, will be replaced by SelectHeadline
             Sections = new List<string>(),
             PredictiveHints = new List<string>(),
             Articles = new List<NewspaperArticle>()
@@ -142,7 +153,7 @@ public sealed class NewspaperService
             return new NewspaperIssue
             {
                 Day = state.Calendar.Day,
-                Headline = "Quiet Day at Pelican Town",
+                Headline = BuildQuietDayHeadline(),
                 Sections = new List<string>(),
                 PredictiveHints = new List<string>(),
                 Articles = new List<NewspaperArticle>()
@@ -270,6 +281,7 @@ public sealed class NewspaperService
             return new List<NewspaperArticle>();
 
         var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
+        var townProfile = ResolveActiveTownProfile();
         var recentTitles = state.Newspaper.Issues
             .OrderByDescending(i => i.Day)
             .Take(14)
@@ -288,9 +300,9 @@ public sealed class NewspaperService
         var request = new GenerateArticlesRequest
         {
             ShortName = "Editor",
-            Name = "Pelican Times Editor",
+            Name = townProfile.NewspaperEditorName,
             CharacterDescription = "Generate day-appropriate newspaper stories that reflect current town progression.",
-            SystemPrompt = "Generate concise in-world newspaper stories for Pelican Town. Stay season/day/year grounded. " + promptLanguageRule,
+            SystemPrompt = $"Generate concise in-world newspaper stories for {townProfile.CanonTown}. Stay season/day/year grounded. " + promptLanguageRule,
             KeepGameState = true,
             Context = new ArticleGenerationContext
             {
@@ -336,7 +348,7 @@ public sealed class NewspaperService
                 Title = title,
                 Content = content,
                 Category = NormalizeCategory(article.Category),
-                SourceNpc = "Pelican Times Editor",
+                SourceNpc = townProfile.NewspaperEditorName,
                 Day = state.Calendar.Day,
                 ExpirationDay = state.Calendar.Day + 2
             });
@@ -404,7 +416,7 @@ public sealed class NewspaperService
         if (articles.Count == 0)
         {
             _monitor.Log("SelectHeadlineAsync: No articles, using fallback", LogLevel.Trace);
-            return "Quiet Day at Pelican Town";
+            return BuildQuietDayHeadline();
         }
 
         // Priority 1: High-severity incidents
@@ -659,7 +671,7 @@ public sealed class NewspaperService
             new() { Title = "Pierre's Spring Sale", Content = "Pierre's General Store announces seasonal discounts on starting seeds.", Category = "market", Season = "spring" },
             new() { Title = "Fishing Tournament Prep", Content = "Anglers across the valley prepare for the upcoming spring fishing tournament.", Category = "community", Season = "spring" },
             new() { Title = "Foraging Season Opens", Content = "Wild spring onions and other forageables spotted near the southern beach.", Category = "nature", Season = "spring" },
-            new() { Title = "New Farm Faces", Content = "Several new farmers have arrived in Pelican Town this season.", Category = "community", Season = "spring" },
+            new() { Title = "New Farm Faces", Content = "Several new farmers have arrived in town this season.", Category = "community", Season = "spring" },
 
             // Summer (8 templates)
             new() { Title = "Heat Wave Continues", Content = "Unseasonably warm temperatures have crops requiring extra irrigation this week.", Category = "nature", Season = "summer" },
@@ -682,7 +694,7 @@ public sealed class NewspaperService
             new() { Title = "Gift Exchange Season", Content = "Local shops report increased sales as residents prepare gifts.", Category = "community", Season = "fall" },
 
             // Winter (8 templates)
-            new() { Title = "First Snow Falls", Content = "A blanket of white covers Pelican Town as winter officially begins.", Category = "nature", Season = "winter" },
+            new() { Title = "First Snow Falls", Content = "A blanket of white covers the town as winter officially begins.", Category = "nature", Season = "winter" },
             new() { Title = "Winter Seeds Available", Content = "Pierre announces availability of winter seeds and powder for growing indoors.", Category = "market", Season = "winter" },
             new() { Title = "Feast of the Winter Star", Content = "Planning begins for the annual winter feast celebration.", Category = "community", Season = "winter" },
             new() { Title = "Fishing slows in Ice", Content = "Icy conditions make fishing difficult across valley waterways.", Category = "nature", Season = "winter" },

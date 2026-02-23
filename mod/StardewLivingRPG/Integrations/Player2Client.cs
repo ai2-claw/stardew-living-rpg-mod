@@ -4,8 +4,10 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using StardewLivingRPG.Config;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Utils;
+using StardewValley;
 
 namespace StardewLivingRPG.Integrations;
 
@@ -26,6 +28,11 @@ public sealed class Player2Client
     {
         _http = httpClient ?? new HttpClient();
         _http.Timeout = TimeSpan.FromSeconds(20);
+    }
+
+    private static TownProfile ResolveActiveTownProfile()
+    {
+        return TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name);
     }
 
     public void SetCredentials(string apiBaseUrl, string p2Key)
@@ -726,12 +733,13 @@ public sealed class Player2Client
                 var previousHistoryMessage = await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
 
                 var prompt = BuildHeadlinePrompt(articleTitle, articleCategory, articleContent);
+                var townProfile = ResolveActiveTownProfile();
                 var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
                 using var msg = new HttpRequestMessage(HttpMethod.Post, url)
                 {
                     Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
                     {
-                        SenderName = "Pelican Times Desk",
+                        SenderName = townProfile.NewspaperDeskName,
                         SenderMessage = prompt,
                         GameStateInfo = $"headline_request:{articleTitle}"
                     }, _jsonOptions), Encoding.UTF8, "application/json")
@@ -778,10 +786,11 @@ public sealed class Player2Client
                 return _headlineEditorNpcId;
 
             var languageRule = I18n.BuildPromptLanguageInstruction();
+            var townProfile = ResolveActiveTownProfile();
             var req = new SpawnNpcRequest
             {
                 ShortName = "Editor",
-                Name = "Pelican Times Editor",
+                Name = townProfile.NewspaperEditorName,
                 CharacterDescription = "Town newspaper editor writing short, dramatic headlines.",
                 SystemPrompt = $"Write one sensational newspaper headline per request. {languageRule} Reply with headline text only. Max 30 characters.",
                 KeepGameState = true,
@@ -1090,12 +1099,13 @@ public sealed class Player2Client
                 var previousHistoryMessage = await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
 
                 var prompt = BuildArticleGenerationPrompt(request, requestedCount);
+                var townProfile = ResolveActiveTownProfile();
                 var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
                 using var msg = new HttpRequestMessage(HttpMethod.Post, url)
                 {
                     Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
                     {
-                        SenderName = "Pelican Times Desk",
+                        SenderName = townProfile.NewspaperDeskName,
                         SenderMessage = prompt,
                         GameStateInfo = BuildArticleGenerationStateInfo(request.Context)
                     }, _jsonOptions), Encoding.UTF8, "application/json")
@@ -1159,12 +1169,13 @@ public sealed class Player2Client
                 var previousHistoryMessage = await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
 
                 var prompt = BuildMarketOutlookPrompt(request, requestedCount);
+                var townProfile = ResolveActiveTownProfile();
                 var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
                 using var msg = new HttpRequestMessage(HttpMethod.Post, url)
                 {
                     Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
                     {
-                        SenderName = "Pelican Times Desk",
+                        SenderName = townProfile.NewspaperDeskName,
                         SenderMessage = prompt,
                         GameStateInfo = BuildMarketOutlookStateInfo(request.Context)
                     }, _jsonOptions), Encoding.UTF8, "application/json")
@@ -1212,9 +1223,10 @@ public sealed class Player2Client
         var existing = request.Context?.ExistingArticles ?? new List<string>();
         var existingList = existing.Count == 0 ? "(none)" : string.Join(", ", existing.Take(20));
         var languageRule = I18n.BuildPromptLanguageInstruction();
+        var townProfile = ResolveActiveTownProfile();
 
         return
-            $"You are the Pelican Times editor in Stardew Valley. " +
+            $"You are the editor of {townProfile.NewspaperTitle} in Stardew Valley. " +
             $"Generate {count} fresh short newspaper stories for season {season}, day {day}, year {year}. " +
             $"Avoid repeating these recent titles: {existingList}. " +
             $"{languageRule} " +
@@ -1243,9 +1255,10 @@ public sealed class Player2Client
         var season = string.IsNullOrWhiteSpace(context.Season) ? "spring" : context.Season;
         var mode = string.IsNullOrWhiteSpace(context.Mode) ? "cozy_canon" : context.Mode;
         var languageRule = I18n.BuildPromptLanguageInstruction();
+        var townProfile = ResolveActiveTownProfile();
 
         return
-            "You are the Pelican Times editor writing the Market Outlook section for Stardew Valley. " +
+            $"You are the editor of {townProfile.NewspaperTitle} writing the Market Outlook section for Stardew Valley. " +
             $"Generate {count} concise outlook lines grounded in current game signals. " +
             $"Season={season}, Day={context.Day}, Year={context.Year}, Mode={mode}. " +
             $"Market movers: {movers}. Scarcity signal: {scarcity}. Active events: {eventsList}. " +
@@ -1829,7 +1842,7 @@ public sealed class GenerateArticlesRequest
     public string Name { get; set; } = "Newspaper Editor";
 
     [JsonPropertyName("character_description")]
-    public string CharacterDescription { get; set; } = "You are the newspaper editor for the Pelican Times. Generate seasonal filler articles based on game progress.";
+    public string CharacterDescription { get; set; } = "You are the newspaper editor for the town paper. Generate seasonal filler articles based on game progress.";
 
     [JsonPropertyName("system_prompt")]
     public string SystemPrompt { get; set; } = "You are the newspaper editor. Generate 1-2 short newspaper articles (title + 2-3 sentences) based on the current game state.";
@@ -1874,7 +1887,7 @@ public sealed class GenerateMarketOutlookRequest
     public string ShortName { get; set; } = "Editor";
 
     [JsonPropertyName("name")]
-    public string Name { get; set; } = "Pelican Times Editor";
+    public string Name { get; set; } = "Town Editor";
 
     [JsonPropertyName("character_description")]
     public string CharacterDescription { get; set; } = "You write concise market outlook notes grounded in live town economy data.";

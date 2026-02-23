@@ -2,6 +2,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewValley;
 using StardewValley.Menus;
+using StardewLivingRPG.Config;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Utils;
 
@@ -79,7 +80,7 @@ public sealed class NewspaperMenu : IClickableMenu
             return;
         }
 
-        // 3. Draw Masthead ("The Pelican Times")
+        // 3. Draw Masthead (profile-driven newspaper title)
         DrawMasthead(b, paperRect);
 
         // 4. Draw Content
@@ -159,15 +160,8 @@ public sealed class NewspaperMenu : IClickableMenu
         {
             try
             {
-                // Placeholder portrait mappings for non-vanilla bylines.
-                var npcName = article.SourceNpc switch
-                {
-                    "The Pelican Times" => "Lewis",
-                    "Pelican Times Editor" => "Elliott",
-                    "Town Reporter" => "Elliott",
-                    "Town Report" => "Elliott",
-                    _ => article.SourceNpc
-                };
+                var townProfile = TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name);
+                var npcName = ResolveBylinePortraitNpc(article.SourceNpc, townProfile);
                 var npc = Game1.getCharacterFromName(npcName);
                 if (npc?.Portrait != null)
                 {
@@ -192,11 +186,11 @@ public sealed class NewspaperMenu : IClickableMenu
         // NPC name
         if (!string.IsNullOrEmpty(article.SourceNpc))
         {
+            var townProfile = TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name);
             var displayName = article.SourceNpc switch
             {
                 "Debug" => I18n.Get("newspaper.byline.anonymous", "Anonymous"),
-                "Pelican Times Editor" => I18n.Get("newspaper.byline.editor", "Editor"),
-                "Town Report" => I18n.Get("newspaper.byline.town_reporter", "Town Reporter"),
+                _ when IsEditorByline(article.SourceNpc, townProfile) => I18n.Get("newspaper.byline.editor", "Editor"),
                 _ => article.SourceNpc
             };
             b.DrawString(Game1.smallFont, displayName, new Vector2(textX, y), new Color(40, 20, 10));
@@ -226,8 +220,8 @@ public sealed class NewspaperMenu : IClickableMenu
         var centerX = paperRect.Center.X;
         var topY = paperRect.Y + 20;
 
-        // Title: "The Pelican Times"
-        string title = I18n.Get("newspaper.title", "The Pelican Times");
+        var townProfile = TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name);
+        string title = I18n.Get("newspaper.title", townProfile.NewspaperTitle);
         Vector2 titleSize = Game1.dialogueFont.MeasureString(title);
         Vector2 titlePos = new Vector2(centerX - titleSize.X / 2f, topY);
         
@@ -249,6 +243,38 @@ public sealed class NewspaperMenu : IClickableMenu
         int lineY = topY + 80;
         b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, lineY, paperRect.Width - 40, 2), Color.Black * 0.6f);
         b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, lineY + 4, paperRect.Width - 40, 1), Color.Black * 0.4f);
+    }
+
+    private static string ResolveBylinePortraitNpc(string sourceNpc, TownProfile townProfile)
+    {
+        if (string.IsNullOrWhiteSpace(sourceNpc))
+            return sourceNpc;
+
+        if (sourceNpc.Equals(townProfile.NewspaperTitle, StringComparison.OrdinalIgnoreCase)
+            || sourceNpc.Equals(TownProfileResolver.ResolveForLocation("Town").NewspaperTitle, StringComparison.OrdinalIgnoreCase)
+            || sourceNpc.Equals(TownProfileResolver.ResolveForLocation("Custom_Ridgeside_RidgesideVillage").NewspaperTitle, StringComparison.OrdinalIgnoreCase))
+        {
+            return "Lewis";
+        }
+
+        if (townProfile.IsEditorSource(sourceNpc)
+            || TownProfileResolver.ResolveForLocation("Town").IsEditorSource(sourceNpc)
+            || TownProfileResolver.ResolveForLocation("Custom_Ridgeside_RidgesideVillage").IsEditorSource(sourceNpc))
+        {
+            return "Elliott";
+        }
+
+        return sourceNpc;
+    }
+
+    private static bool IsEditorByline(string sourceNpc, TownProfile townProfile)
+    {
+        if (string.IsNullOrWhiteSpace(sourceNpc))
+            return false;
+
+        return townProfile.IsEditorSource(sourceNpc)
+            || TownProfileResolver.ResolveForLocation("Town").IsEditorSource(sourceNpc)
+            || TownProfileResolver.ResolveForLocation("Custom_Ridgeside_RidgesideVillage").IsEditorSource(sourceNpc);
     }
 
     private void DrawContent(SpriteBatch b, Rectangle paperRect, int startY)

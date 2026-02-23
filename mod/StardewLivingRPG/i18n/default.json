@@ -38,7 +38,7 @@
   "rumor_board.detail.progress_items": "Progress: {{have}}/{{need}} {{item}} (ready={{ready}})",
   "rumor_board.detail.progress_visit": "Progress: visit {{target}} ({{have}}/{{need}})",
 
-  "market_board.title": "Pelican Market Board",
+  "market_board.title": "Town Market Board",
   "market_board.subtitle": "{{date}} - Price: Free",
   "market_board.cause.short_supply": "Cause: short supply raised demand.",
   "market_board.cause.extra_stock": "Cause: extra stock softened prices.",
@@ -50,7 +50,7 @@
   "market_board.cause.event.market_up": "Cause: market buzz pushed prices up.",
   "market_board.cause.event.market_down": "Cause: market buzz pushed prices down.",
 
-  "newspaper.title": "The Pelican Times",
+  "newspaper.title": "The Valley Times",
   "newspaper.subtitle": "Vol. 1 - {{date}} - Price: Free",
   "newspaper.headline.fallback": "Breaking News",
   "newspaper.section.market_outlook": "Market Outlook",

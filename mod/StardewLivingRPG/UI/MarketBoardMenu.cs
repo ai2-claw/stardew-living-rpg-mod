@@ -2,6 +2,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewValley;
 using StardewValley.Menus;
+using StardewLivingRPG.Config;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Utils;
 
@@ -95,7 +96,8 @@ public sealed class MarketBoardMenu : IClickableMenu
         var topY = paperRect.Y + 20;
 
         // Title
-        string title = I18n.Get("market_board.title", "Pelican Market Board");
+        var townProfile = TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name);
+        string title = I18n.Get("market_board.title", townProfile.MarketBoardTitle);
         Vector2 titleSize = Game1.dialogueFont.MeasureString(title);
         Vector2 titlePos = new Vector2(centerX - titleSize.X / 2f, topY);
 

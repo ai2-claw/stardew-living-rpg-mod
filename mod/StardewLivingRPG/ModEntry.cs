@@ -339,6 +339,11 @@ public sealed class ModEntry : Mod
     private DateTime _player2DeviceAuthExpiresUtc;
     private CancellationTokenSource? _player2DeviceAuthCts;
 
+    private TownProfile ResolveActiveTownProfile(string? locationName = null)
+    {
+        return TownProfileResolver.ResolveForLocation(locationName ?? Game1.currentLocation?.Name);
+    }
+
     public override void Entry(IModHelper helper)
     {
         _config = helper.ReadConfig<ModConfig>();
@@ -3654,7 +3659,7 @@ public sealed class ModEntry : Mod
                 yield return "{\"intent_id\":\"scenario_d1_mem\",\"npc_id\":\"ambient_scenario_robin\",\"command\":\"record_memory_fact\",\"arguments\":{\"category\":\"event\",\"text\":\"Neighbors coordinated produce sorting near the board.\",\"weight\":2}}";
                 yield break;
             case 2:
-                yield return "{\"intent_id\":\"scenario_d2_evt\",\"npc_id\":\"ambient_scenario_caroline\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"social\",\"summary\":\"Volunteers checked on elders after the morning rain.\",\"location\":\"Pelican Town\",\"severity\":2,\"visibility\":\"public\",\"tags\":[\"community\",\"social\",\"rain\"]}}";
+                yield return "{\"intent_id\":\"scenario_d2_evt\",\"npc_id\":\"ambient_scenario_caroline\",\"command\":\"record_town_event\",\"arguments\":{\"kind\":\"social\",\"summary\":\"Volunteers checked on elders after the morning rain.\",\"location\":\"Town Center\",\"severity\":2,\"visibility\":\"public\",\"tags\":[\"community\",\"social\",\"rain\"]}}";
                 yield return "{\"intent_id\":\"scenario_d2_rumor\",\"npc_id\":\"ambient_scenario_gus\",\"command\":\"publish_rumor\",\"arguments\":{\"topic\":\"Folks heard Pierre may restock potatoes by evening.\",\"confidence\":0.72,\"target_group\":\"shopkeepers_guild\"}}";
                 yield break;
             case 3:
@@ -4698,12 +4703,13 @@ public sealed class ModEntry : Mod
         try
         {
             var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
+            var townProfile = ResolveActiveTownProfile();
             var req = new SpawnNpcRequest
             {
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
-                CharacterDescription = "Mayor Lewis of Pelican Town in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = "You are Mayor Lewis from Stardew Valley (Pelican Town). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For social outcomes, you may use adjust_reputation sparingly for meaningful shifts only. For town-group dynamics, you may use shift_interest_influence only when discussion clearly concerns a town group priority. For market dynamics, use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
+                CharacterDescription = $"Mayor Lewis of {townProfile.CanonTown} in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
+                SystemPrompt = $"You are Mayor Lewis from Stardew Valley ({townProfile.CanonTown}). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For social outcomes, you may use adjust_reputation sparingly for meaningful shifts only. For town-group dynamics, you may use shift_interest_influence only when discussion clearly concerns a town group priority. For market dynamics, use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -4858,6 +4864,8 @@ public sealed class ModEntry : Mod
 
         var roster = GetPlayer2SpawnRoster();
         var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
+        var townProfile = ResolveActiveTownProfile();
+        var townName = townProfile.CanonTown;
 
         foreach (var shortName in roster)
         {
@@ -4871,19 +4879,19 @@ public sealed class ModEntry : Mod
             {
                 var identityPrompt = shortName.ToLowerInvariant() switch
                 {
-                    "robin" => "You are Robin, the carpenter of Pelican Town in Stardew Valley. Never claim to be Lewis or any other NPC.",
-                    "pierre" => "You are Pierre, the shopkeeper of Pelican Town in Stardew Valley. Never claim to be Lewis or any other NPC.",
-                    "lewis" => "You are Mayor Lewis of Pelican Town in Stardew Valley.",
-                    "jas" => "You are Jas, a child living in Pelican Town in Stardew Valley. Never claim to be an adult or in your twenties.",
-                    "vincent" => "You are Vincent, a child living in Pelican Town in Stardew Valley. Never claim to be an adult or in your twenties.",
-                    _ => $"You are {shortName} of Pelican Town in Stardew Valley. Never claim to be another NPC."
+                    "robin" => $"You are Robin, the carpenter of {townName} in Stardew Valley. Never claim to be Lewis or any other NPC.",
+                    "pierre" => $"You are Pierre, the shopkeeper of {townName} in Stardew Valley. Never claim to be Lewis or any other NPC.",
+                    "lewis" => $"You are Mayor Lewis of {townName} in Stardew Valley.",
+                    "jas" => $"You are Jas, a child living in {townName} in Stardew Valley. Never claim to be an adult or in your twenties.",
+                    "vincent" => $"You are Vincent, a child living in {townName} in Stardew Valley. Never claim to be an adult or in your twenties.",
+                    _ => $"You are {shortName} of {townName} in Stardew Valley. Never claim to be another NPC."
                 };
 
                 var req = new SpawnNpcRequest
                 {
                     ShortName = shortName,
                     Name = shortName,
-                    CharacterDescription = $"{shortName} in Pelican Town, practical and grounded.",
+                    CharacterDescription = $"{shortName} in {townName}, practical and grounded.",
                     SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
                     KeepGameState = true,
                     Commands = new List<SpawnNpcCommand>
@@ -5667,7 +5675,7 @@ public sealed class ModEntry : Mod
             && string.Equals(left.SourceNpcId ?? string.Empty, right.SourceNpcId ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IssueContainsEditorArticle(NewspaperIssue issue)
+    private bool IssueContainsEditorArticle(NewspaperIssue issue)
     {
         if (issue?.Articles is null || issue.Articles.Count == 0)
             return false;
@@ -5678,9 +5686,7 @@ public sealed class ModEntry : Mod
             if (string.IsNullOrWhiteSpace(source))
                 continue;
 
-            if (source.Equals("Pelican Times Editor", StringComparison.OrdinalIgnoreCase)
-                || source.Equals("Editor", StringComparison.OrdinalIgnoreCase)
-                || source.Contains("Editor", StringComparison.OrdinalIgnoreCase))
+            if (IsEditorNewsSource(source))
             {
                 return true;
             }
@@ -6030,7 +6036,8 @@ public sealed class ModEntry : Mod
         if (!LooksLikeAdultAgeClaim(message))
             return message;
 
-        return "I'm still a kid in Pelican Town.";
+        var townName = TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name).CanonTown;
+        return $"I'm still a kid in {townName}.";
     }
 
     private static bool LooksLikeAdultAgeClaim(string message)
@@ -6185,6 +6192,7 @@ public sealed class ModEntry : Mod
     private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null, string? contextTag = null)
     {
         SyncCalendarSeasonFromWorld();
+        var townProfile = ResolveActiveTownProfile();
         var localeCode = I18n.GetCurrentLocaleCode();
         var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
         var currentSeason = GetCurrentSeasonLabel();
@@ -6278,7 +6286,7 @@ public sealed class ModEntry : Mod
 
         var basePrompt = string.Join(" ",
             "CANON_WORLD: Stardew Valley.",
-            "CANON_TOWN: Pelican Town.",
+            $"CANON_TOWN: {townProfile.CanonTown}.",
             $"CANON_NPCS: [{canonNpcs}].",
             $"CONTEXT: {effectiveContextTag}.",
             "RULE: Never invent towns, regions, or citizens outside this canon list.",
@@ -6403,12 +6411,13 @@ public sealed class ModEntry : Mod
         return string.Join(", ", merged);
     }
 
-    private static string BuildNpcAgePromptRule(string? npcName)
+    private string BuildNpcAgePromptRule(string? npcName)
     {
         if (!IsChildNpcName(npcName))
             return string.Empty;
 
-        return "AGE_RULE: You are a child in Pelican Town canon. Never claim to be an adult, in your twenties, or older. If asked your age, answer as a kid without adult numeric ages.";
+        var townName = ResolveActiveTownProfile().CanonTown;
+        return $"AGE_RULE: You are a child in {townName} canon. Never claim to be an adult, in your twenties, or older. If asked your age, answer as a kid without adult numeric ages.";
     }
     private static string GetPlayerDisplayNameForContext()
     {
@@ -7333,17 +7342,11 @@ public sealed class ModEntry : Mod
         return count;
     }
 
-    private static bool IsEditorNewsSource(string? sourceNpc)
+    private bool IsEditorNewsSource(string? sourceNpc)
     {
-        var source = (sourceNpc ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(source))
-            return false;
-
-        return source.Equals("Pelican Times Editor", StringComparison.OrdinalIgnoreCase)
-            || source.Equals("Editor", StringComparison.OrdinalIgnoreCase)
-            || source.Contains("Editor", StringComparison.OrdinalIgnoreCase)
-            || source.Equals("Town Reporter", StringComparison.OrdinalIgnoreCase)
-            || source.Equals("Town Report", StringComparison.OrdinalIgnoreCase);
+        return ResolveActiveTownProfile().IsEditorSource(sourceNpc)
+            || TownProfileResolver.ResolveForLocation("Town").IsEditorSource(sourceNpc)
+            || TownProfileResolver.ResolveForLocation("Custom_Ridgeside_RidgesideVillage").IsEditorSource(sourceNpc);
     }
 
     private static string JoinContextItems(IEnumerable<string> values)
