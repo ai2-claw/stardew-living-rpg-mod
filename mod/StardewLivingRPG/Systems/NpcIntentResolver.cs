@@ -57,7 +57,7 @@ public sealed class NpcIntentResolver
         _strictTemplateValidation = strictTemplateValidation;
     }
 
-    public NpcIntentResolveResult ResolveFromStreamLine(SaveState state, string line)
+    public NpcIntentResolveResult ResolveFromStreamLine(SaveState state, string line, string? npcIdOverride = null)
     {
         using var doc = JsonDocument.Parse(line);
         var root = doc.RootElement;
@@ -67,13 +67,15 @@ public sealed class NpcIntentResolver
             && root.TryGetProperty("command", out var commandNameEl)
             && commandNameEl.ValueKind == JsonValueKind.String)
         {
-            return ResolveEnvelope(state, root);
+            return ResolveEnvelope(state, root, npcIdOverride);
         }
 
         // Backward-compatible Player2 command array format
         if (root.TryGetProperty("command", out var commandArray) && commandArray.ValueKind == JsonValueKind.Array)
         {
             var npcId = root.TryGetProperty("npc_id", out var npcIdEl) ? (npcIdEl.GetString() ?? "unknown") : "unknown";
+            if (!string.IsNullOrWhiteSpace(npcIdOverride))
+                npcId = npcIdOverride!;
 
             foreach (var cmd in commandArray.EnumerateArray())
             {
@@ -84,23 +86,25 @@ public sealed class NpcIntentResolver
                     continue;
 
                 var envelope = BuildEnvelopeFromLegacy(npcId, nameEl.GetString() ?? string.Empty, argsEl);
-                return ResolveEnvelope(state, envelope);
+                return ResolveEnvelope(state, envelope, npcIdOverride);
             }
         }
 
-        if (TryResolveEmbeddedMessageQuestPayload(state, root, out var embeddedResult))
+        if (TryResolveEmbeddedMessageQuestPayload(state, root, out var embeddedResult, npcIdOverride))
             return embeddedResult;
 
         return NpcIntentResolveResult.None;
     }
 
-    private NpcIntentResolveResult ResolveEnvelope(SaveState state, JsonElement envelope)
+    private NpcIntentResolveResult ResolveEnvelope(SaveState state, JsonElement envelope, string? npcIdOverride = null)
     {
         var command = envelope.TryGetProperty("command", out var cEl) ? (cEl.GetString() ?? string.Empty) : string.Empty;
         if (!AllowedCommands.Contains(command))
             return NpcIntentResolveResult.Rejected($"unknown command '{command}'", "E_COMMAND_UNKNOWN");
 
-        var npcId = envelope.TryGetProperty("npc_id", out var nEl) ? (nEl.GetString() ?? "unknown") : "unknown";
+        var npcId = !string.IsNullOrWhiteSpace(npcIdOverride)
+            ? npcIdOverride!
+            : envelope.TryGetProperty("npc_id", out var nEl) ? (nEl.GetString() ?? "unknown") : "unknown";
         var intentId = envelope.TryGetProperty("intent_id", out var iEl) ? (iEl.GetString() ?? string.Empty) : string.Empty;
         if (string.IsNullOrWhiteSpace(intentId))
             return NpcIntentResolveResult.Rejected("missing intent_id", "E_INTENT_ID_MISSING");
@@ -656,6 +660,7 @@ public sealed class NpcIntentResolver
             state.Calendar.Day,
             severity,
             visibility,
+            sourceNpc: npcId,
             tags);
 
         MarkIntentProcessed(state, intentId, npcId, "record_town_event");
@@ -894,7 +899,7 @@ public sealed class NpcIntentResolver
         return net;
     }
 
-    private bool TryResolveEmbeddedMessageQuestPayload(SaveState state, JsonElement root, out NpcIntentResolveResult result)
+    private bool TryResolveEmbeddedMessageQuestPayload(SaveState state, JsonElement root, out NpcIntentResolveResult result, string? npcIdOverride = null)
     {
         result = NpcIntentResolveResult.None;
 
@@ -940,7 +945,7 @@ public sealed class NpcIntentResolver
                     ["urgency"] = urgency
                 });
 
-            result = ResolveEnvelope(state, envelope);
+            result = ResolveEnvelope(state, envelope, npcIdOverride);
             return true;
         }
         catch

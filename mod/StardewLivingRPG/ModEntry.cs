@@ -5,6 +5,8 @@ using StardewValley;
 using StardewValley.ItemTypeDefinitions;
 using StardewValley.Menus;
 using StardewLivingRPG.Config;
+using StardewLivingRPG.CustomNpcFramework.Models;
+using StardewLivingRPG.CustomNpcFramework.Services;
 using StardewLivingRPG.Integrations;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Systems;
@@ -27,7 +29,6 @@ public sealed class ModEntry : Mod
     private const int NpcPublishMinimumIntervalMinutes = 120;
     private const int AmbientLaneDebugSnapshotLimit = 20;
     private const int AmbientNpcCooldownMinutes = 8;
-    private const int AmbientRecordTownEventDailyCap = 2;
     private const float AmbientPublishRumorMinConfidence = 0.62f;
     private const int AutoMarketMinSignals = 2;
     private const float AutoMarketScarcityThreshold = 0.05f;
@@ -44,6 +45,8 @@ public sealed class ModEntry : Mod
     private const float NpcDialogueHookInteractionRadiusTiles = 3.5f;
     private const float NpcDialogueHookFallbackRadiusTiles = 3.75f;
     private static readonly TimeSpan PendingFallbackQuestOfferMaxAge = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan VanillaDialogueContextMaxAge = TimeSpan.FromMinutes(12);
+    private const int VanillaDialogueContextSequenceMaxLines = 6;
     private const string InitialNpcChatPrompt = "Got a minute to chat?";
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
     private const string CreatorPlayer2GameClientId = "019c4693-2a12-7ef5-bae2-ff29ee9fa674";
@@ -114,6 +117,17 @@ public sealed class ModEntry : Mod
         public string Urgency { get; }
         public int RequestedCount { get; }
         public DateTime OfferedUtc { get; }
+    }
+
+    private sealed class RecentVanillaDialogueContext
+    {
+        public string NpcName { get; set; } = string.Empty;
+        public string NpcDisplayName { get; set; } = string.Empty;
+        public string LastDialogueLine { get; set; } = string.Empty;
+        public List<string> DialogueSequence { get; } = new();
+        public int Day { get; set; }
+        public int TimeOfDay { get; set; }
+        public DateTime CapturedUtc { get; set; }
     }
 
     private static readonly Dictionary<string, string> PublishSourceNpcFallbackMap = new(StringComparer.OrdinalIgnoreCase)
@@ -206,6 +220,11 @@ public sealed class ModEntry : Mod
     private NpcSpeechStyleService? _npcSpeechStyleService;
     private NpcAskGateService? _npcAskGateService;
     private CommandPolicyService? _commandPolicyService;
+    private CanonBaselineService? _customNpcCanonBaselineService;
+    private NpcRegistry? _customNpcRegistry;
+    private NpcPackLoader? _customNpcPackLoader;
+    private IReadOnlyList<LoadedNpcPack> _customNpcLoadedPacks = Array.Empty<LoadedNpcPack>();
+    private IReadOnlyList<ValidationIssue> _customNpcValidationIssues = Array.Empty<ValidationIssue>();
 
     // Player2 M2 runtime session state
     private Player2Client? _player2Client;
@@ -298,6 +317,7 @@ public sealed class ModEntry : Mod
     private DateTime _nextAmbientNpcConversationUtc;
     private int _ambientNpcConversationInFlight;
     private readonly ConcurrentDictionary<string, DateTime> _ambientNpcLastConversationUtcByNpcId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, RecentVanillaDialogueContext> _recentVanillaDialogueByNpcToken = new(StringComparer.OrdinalIgnoreCase);
 
     private string? _pendingNpcDialogueHookName;
     private NPC? _pendingNpcDialogueHookNpc;
@@ -342,6 +362,7 @@ public sealed class ModEntry : Mod
         _npcAskGateService = new NpcAskGateService();
         _commandPolicyService = new CommandPolicyService();
         _player2Client = new Player2Client();
+        InitializeCustomNpcFramework(helper);
 
         RegisterPlayerConsoleCommands(helper);
         if (_config.ShowDeveloperConsoleCommands)
@@ -369,6 +390,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
         helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using built-in game client id.", OnPlayer2LoginCommand);
         helper.ConsoleCommands.Add("slrpg_p2_status", "Show Player2 session + joules + stream status.", OnPlayer2StatusCommand);
+        helper.ConsoleCommands.Add("slrpg_town_memory_events", "List recent town-memory events: slrpg_town_memory_events [count]", OnTownMemoryEventsCommand);
     }
 
     private void RegisterDeveloperConsoleCommands(IModHelper helper)
@@ -400,6 +422,10 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_p2_stream_start", "Start persistent Player2 response stream listener.", OnPlayer2StreamStartCommand);
         helper.ConsoleCommands.Add("slrpg_p2_stream_stop", "Stop persistent Player2 response stream listener.", OnPlayer2StreamStopCommand);
         helper.ConsoleCommands.Add("slrpg_p2_health", "Compact Player2 health summary line.", OnPlayer2HealthCommand);
+        helper.ConsoleCommands.Add("slrpg_customnpc_validate", "Validate integrated custom-NPC content packs.", OnCustomNpcValidatePacksCommand);
+        helper.ConsoleCommands.Add("slrpg_customnpc_list", "List loaded integrated custom NPCs.", OnCustomNpcListCommand);
+        helper.ConsoleCommands.Add("slrpg_customnpc_dump", "Dump integrated custom NPC lore: slrpg_customnpc_dump <npc>", OnCustomNpcDumpCommand);
+        helper.ConsoleCommands.Add("slrpg_customnpc_reload", "Reload integrated custom-NPC packs.", OnCustomNpcReloadCommand);
     }
 
     private void TryMigrateLegacyPlayer2Config(IModHelper helper)
@@ -481,9 +507,15 @@ public sealed class ModEntry : Mod
     {
         _state = StateStore.LoadOrCreate(Helper, Monitor);
         _state.ApplyConfig(_config);
+        _recentVanillaDialogueByNpcToken.Clear();
         SyncCalendarSeasonFromWorld();
         _economyService?.EnsureInitialized(_state.Economy);
         _rumorBoardService?.ExpireOverdueQuests(_state);
+        if (_config.EnableCustomNpcFramework)
+        {
+            ReloadCustomNpcPacks();
+            InjectCustomNpcTargetsIntoRumorBoard("SaveLoaded");
+        }
         Monitor.Log($"State loaded (version={_state.Version}, mode={_state.Config.Mode}).", LogLevel.Info);
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
@@ -507,6 +539,7 @@ public sealed class ModEntry : Mod
 
         SyncCalendarSeasonFromWorld();
         _pendingDayStartStreamRecycleDay = -1;
+        _recentVanillaDialogueByNpcToken.Clear();
         TryCapturePendingLateNightPassOut();
         _lastNpcPublishAppliedDay = -1;
         _lastNpcPublishAppliedTimeOfDay = -1;
@@ -743,6 +776,7 @@ public sealed class ModEntry : Mod
             return;
 
         SetNpcDialogueHookTarget(npc);
+        BeginVanillaDialogueCaptureSession(npc);
         _npcDialogueHookArmed = true;
         _npcDialogueHookMenuOpened = false;
         _npcDialogueHookArmedUtc = DateTime.UtcNow;
@@ -1009,7 +1043,79 @@ public sealed class ModEntry : Mod
                 merged.Add(shortName);
         }
 
+        if (_config.EnableCustomNpcFramework && _customNpcRegistry is not null)
+        {
+            foreach (var npc in _customNpcRegistry.NpcsByToken.Values)
+            {
+                if (!string.IsNullOrWhiteSpace(npc.DisplayName) && seen.Add(npc.DisplayName))
+                    merged.Add(npc.DisplayName);
+                if (!string.IsNullOrWhiteSpace(npc.NpcId) && seen.Add(npc.NpcId))
+                    merged.Add(npc.NpcId);
+            }
+        }
+
         return merged;
+    }
+
+    private List<string> GetPlayer2SpawnRoster()
+    {
+        var merged = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Prioritize integrated custom NPCs first so they are spawned even if Player2 session limits are reached.
+        if (_config.EnableCustomNpcFramework && _customNpcRegistry is not null)
+        {
+            foreach (var npc in _customNpcRegistry.NpcsByToken.Values.OrderBy(n => n.DisplayName, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(npc.NpcId) && seen.Add(npc.NpcId))
+                    merged.Add(npc.NpcId);
+                else if (!string.IsNullOrWhiteSpace(npc.DisplayName) && seen.Add(npc.DisplayName))
+                    merged.Add(npc.DisplayName);
+            }
+        }
+
+        var configuredRoster = (_config.Player2NpcRosterCsv ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var shortName in configuredRoster)
+        {
+            if (!string.IsNullOrWhiteSpace(shortName) && seen.Add(shortName))
+                merged.Add(shortName);
+        }
+
+        foreach (var shortName in VanillaNpcRoster)
+        {
+            if (seen.Add(shortName))
+                merged.Add(shortName);
+        }
+
+        // Keep compatibility with any additional names injected into expanded roster.
+        foreach (var shortName in GetExpandedNpcRoster())
+        {
+            if (seen.Add(shortName))
+                merged.Add(shortName);
+        }
+
+        return merged;
+    }
+
+    private void RegisterCustomNpcSpawnAliases(string rosterKey, string npcId)
+    {
+        if (!_config.EnableCustomNpcFramework || _customNpcRegistry is null)
+            return;
+
+        if (!_customNpcRegistry.TryGetNpcByName(rosterKey, out var customNpc))
+            return;
+
+        if (!string.IsNullOrWhiteSpace(customNpc.NpcId))
+            _player2NpcIdsByShortName[customNpc.NpcId] = npcId;
+        if (!string.IsNullOrWhiteSpace(customNpc.DisplayName))
+            _player2NpcIdsByShortName[customNpc.DisplayName] = npcId;
+
+        foreach (var alias in customNpc.Aliases)
+        {
+            if (!string.IsNullOrWhiteSpace(alias))
+                _player2NpcIdsByShortName[alias] = npcId;
+        }
     }
 
     private bool TryCreateRosterTalkDialogue(GameLocation loc, NPC npc, bool suppressFirstInteractionGreeting = false)
@@ -1050,7 +1156,11 @@ public sealed class ModEntry : Mod
 
                 if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
                 {
-                    OpenNpcChatMenu(npc, initialPlayerMessage: InitialNpcChatPrompt, autoSendInitialPlayerMessage: true);
+                    OpenNpcChatMenu(
+                        npc,
+                        initialPlayerMessage: InitialNpcChatPrompt,
+                        autoSendInitialPlayerMessage: true,
+                        defaultContextTag: "player_chat_followup");
                     return;
                 }
             },
@@ -1062,7 +1172,8 @@ public sealed class ModEntry : Mod
     private void OpenNpcChatMenu(
         NPC npc,
         string? initialPlayerMessage = null,
-        bool autoSendInitialPlayerMessage = false)
+        bool autoSendInitialPlayerMessage = false,
+        string? defaultContextTag = null)
     {
         var npcName = npc.Name ?? npc.displayName;
         var heartLevel = GetNpcHeartLevel(npcName);
@@ -1075,9 +1186,9 @@ public sealed class ModEntry : Mod
             text =>
             {
                 if (!string.IsNullOrWhiteSpace(npcIdForChat))
-                    SendPlayer2ChatInternal(text, npcIdForChat, npcName);
+                    SendPlayer2ChatInternal(text, npcIdForChat, npcName, contextTag: defaultContextTag);
                 else
-                    SendPlayer2ChatInternal(text);
+                    SendPlayer2ChatInternal(text, contextTag: defaultContextTag);
             },
             () => string.IsNullOrWhiteSpace(npcIdForChat) ? null : DequeueNpcUiMessage(npcIdForChat),
             () => !string.IsNullOrWhiteSpace(npcIdForChat) && IsNpcThinking(npcIdForChat),
@@ -1422,6 +1533,8 @@ public sealed class ModEntry : Mod
         TryAdvanceClockWhileNpcChatOpen();
         TrackLateNightPassOutWindow();
         TryCaptureTownIncidents();
+        TryCaptureLiveWorldEvents();
+        TryCaptureVanillaDialogueContextFromMenu(Game1.activeClickableMenu, _pendingNpcDialogueHookName);
         TryHandleNpcDialogueHookFallback();
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
@@ -1876,6 +1989,401 @@ public sealed class ModEntry : Mod
             "mines", "health", "rescue");
     }
 
+    private void TryCaptureLiveWorldEvents()
+    {
+        if (_townMemoryService is null || !Context.IsWorldReady || !Game1.eventUp || Game1.CurrentEvent is null)
+            return;
+        if (!_config.EnableCustomNpcFramework || _customNpcRegistry is null || _customNpcRegistry.NpcsByToken.Count == 0)
+            return;
+
+        var eventObject = (object)Game1.CurrentEvent;
+        var actorNames = ExtractWorldEventActorNames(eventObject);
+        if (actorNames.Count == 0)
+            return;
+
+        var customActors = actorNames
+            .Where(IsCustomNpcNameOrAlias)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (customActors.Count == 0)
+            customActors = FindCustomNpcNamesInEventCommands(eventObject, maxMatches: 2);
+        if (customActors.Count == 0)
+            return;
+
+        var locationName = Game1.currentLocation?.Name ?? "Town";
+        var identity = BuildWorldEventIdentity(eventObject, locationName, actorNames);
+        if (string.IsNullOrWhiteSpace(identity))
+            return;
+
+        var hash = Math.Abs(identity.GetHashCode()) % 1000000;
+        var factKey = $"town:event:world:{_state.Calendar.Day}:{hash}";
+        if (_state.Facts.Facts.ContainsKey(factKey))
+            return;
+
+        _state.Facts.Facts[factKey] = new FactValue
+        {
+            Value = true,
+            SetDay = _state.Calendar.Day,
+            Source = "world_event"
+        };
+
+        var sourceNpc = ResolvePreferredWorldEventSourceNpc(customActors);
+        var summary = BuildWorldEventSummary(customActors, locationName);
+        var visibility = IsLikelyPublicTownLocation(locationName) ? "public" : "local";
+        var severity = customActors.Count >= 2 ? 3 : 2;
+        var tags = BuildWorldEventTags(customActors, locationName);
+
+        _townMemoryService.RecordEvent(
+            _state,
+            "community",
+            summary,
+            locationName,
+            _state.Calendar.Day,
+            severity,
+            visibility,
+            sourceNpc,
+            tags);
+
+        if (_npcMemoryService is not null && !string.IsNullOrWhiteSpace(sourceNpc))
+            _npcMemoryService.WriteFact(_state, sourceNpc, "event", summary, _state.Calendar.Day, weight: 3);
+    }
+
+    private List<string> FindCustomNpcNamesInEventCommands(object eventObject, int maxMatches)
+    {
+        var found = new List<string>();
+        if (_customNpcRegistry is null || _customNpcRegistry.NpcsByToken.Count == 0)
+            return found;
+        if (!TryGetMemberValue(eventObject, "eventCommands", out var rawCommands) || rawCommands is null)
+            return found;
+
+        var commands = new List<string>();
+        if (rawCommands is IEnumerable<string> typed)
+        {
+            commands.AddRange(typed.Where(c => !string.IsNullOrWhiteSpace(c)).Take(80));
+        }
+        else if (rawCommands is System.Collections.IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                var text = item?.ToString();
+                if (string.IsNullOrWhiteSpace(text))
+                    continue;
+                commands.Add(text);
+                if (commands.Count >= 80)
+                    break;
+            }
+        }
+
+        if (commands.Count == 0)
+            return found;
+
+        var mergedText = string.Join(' ', commands);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var npc in _customNpcRegistry.NpcsByToken.Values)
+        {
+            var mentioned =
+                ContainsTargetToken(mergedText, npc.DisplayName)
+                || ContainsTargetToken(mergedText, npc.NpcId)
+                || npc.Aliases.Any(alias => ContainsTargetToken(mergedText, alias));
+            if (!mentioned)
+                continue;
+
+            var canonicalName = string.IsNullOrWhiteSpace(npc.DisplayName) ? npc.NpcId : npc.DisplayName;
+            if (string.IsNullOrWhiteSpace(canonicalName) || !seen.Add(canonicalName))
+                continue;
+
+            found.Add(canonicalName);
+            if (found.Count >= Math.Max(1, maxMatches))
+                break;
+        }
+
+        return found;
+    }
+
+    private bool IsCustomNpcNameOrAlias(string? rawName)
+    {
+        if (string.IsNullOrWhiteSpace(rawName) || _customNpcRegistry is null)
+            return false;
+
+        return _customNpcRegistry.TryGetNpcByName(rawName, out _);
+    }
+
+    private string ResolvePreferredWorldEventSourceNpc(IReadOnlyList<string> actorNames)
+    {
+        if (_customNpcRegistry is null)
+            return string.Empty;
+
+        foreach (var actor in actorNames)
+        {
+            if (!_customNpcRegistry.TryGetNpcByName(actor, out var npc))
+                continue;
+
+            var display = (npc.DisplayName ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(display))
+                return display;
+        }
+
+        return string.Empty;
+    }
+
+    private static string BuildWorldEventSummary(IReadOnlyList<string> actors, string locationName)
+    {
+        var names = actors
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Select(a => a.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToArray();
+        var location = string.IsNullOrWhiteSpace(locationName) ? "Town" : locationName;
+
+        if (names.Length == 0)
+            return $"A live town event just happened near {location}.";
+        if (names.Length == 1)
+            return $"A live town event involving {names[0]} just happened near {location}.";
+
+        return $"A live town event involving {names[0]} and {names[1]} just happened near {location}.";
+    }
+
+    private static bool IsLikelyPublicTownLocation(string locationName)
+    {
+        if (string.IsNullOrWhiteSpace(locationName))
+            return false;
+
+        var token = locationName.ToLowerInvariant();
+        return token.Contains("town", StringComparison.Ordinal)
+               || token.Contains("saloon", StringComparison.Ordinal)
+               || token.Contains("blacksmith", StringComparison.Ordinal)
+               || token.Contains("museum", StringComparison.Ordinal)
+               || token.Contains("beach", StringComparison.Ordinal)
+               || token.Contains("forest", StringComparison.Ordinal)
+               || token.Contains("mountain", StringComparison.Ordinal)
+               || token.Contains("busstop", StringComparison.Ordinal);
+    }
+
+    private static string[] BuildWorldEventTags(IReadOnlyList<string> actors, string locationName)
+    {
+        var tags = new List<string>
+        {
+            "world_event",
+            "source_mod_event",
+            "custom_npc"
+        };
+
+        tags.Add(NormalizeTargetToken(locationName));
+        foreach (var actor in actors)
+            tags.Add(NormalizeTargetToken(actor));
+
+        return tags
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(8)
+            .ToArray();
+    }
+
+    private static string BuildWorldEventIdentity(object eventObject, string locationName, IReadOnlyList<string> actorNames)
+    {
+        var eventId = TryReadEventMemberAsString(eventObject, "id");
+        if (string.IsNullOrWhiteSpace(eventId))
+            eventId = TryReadEventMemberAsString(eventObject, "eventId");
+        if (string.IsNullOrWhiteSpace(eventId))
+            eventId = BuildWorldEventCommandSignature(eventObject);
+
+        var actorToken = string.Join(
+            ",",
+            actorNames
+                .Where(a => !string.IsNullOrWhiteSpace(a))
+                .Select(NormalizeTargetToken)
+                .Where(a => !string.IsNullOrWhiteSpace(a))
+                .OrderBy(a => a, StringComparer.OrdinalIgnoreCase)
+                .Take(4));
+
+        return $"{NormalizeTargetToken(locationName)}|{eventId}|{actorToken}";
+    }
+
+    private static string BuildWorldEventCommandSignature(object eventObject)
+    {
+        if (!TryGetMemberValue(eventObject, "eventCommands", out var rawCommands) || rawCommands is null)
+            return "runtime";
+
+        var sample = new List<string>();
+
+        if (rawCommands is IEnumerable<string> typedCommands)
+        {
+            sample.AddRange(typedCommands
+                .Where(c => !string.IsNullOrWhiteSpace(c))
+                .Select(c => c.Trim())
+                .Take(4));
+        }
+        else if (rawCommands is System.Collections.IEnumerable rawEnumerable)
+        {
+            foreach (var item in rawEnumerable)
+            {
+                var text = item?.ToString();
+                if (string.IsNullOrWhiteSpace(text))
+                    continue;
+                sample.Add(text.Trim());
+                if (sample.Count >= 4)
+                    break;
+            }
+        }
+
+        if (sample.Count == 0)
+            return "runtime";
+
+        var hash = Math.Abs(string.Join('|', sample).GetHashCode()) % 1000000;
+        return $"cmd_{hash}";
+    }
+
+    private static List<string> ExtractWorldEventActorNames(object eventObject)
+    {
+        var names = new List<string>();
+
+        TryAppendNamesFromMember(eventObject, "actors", names);
+        TryAppendNamesFromMember(eventObject, "actorNames", names);
+        TryAppendNamesFromMember(eventObject, "farmerActors", names);
+
+        return names
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => n.Trim())
+            .Where(n => !n.Equals("farmer", StringComparison.OrdinalIgnoreCase)
+                        && !n.Equals("player", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static void TryAppendNamesFromMember(object source, string memberName, List<string> names)
+    {
+        if (!TryGetMemberValue(source, memberName, out var value) || value is null)
+            return;
+
+        AppendNamesFromUnknownValue(value, names);
+    }
+
+    private static void AppendNamesFromUnknownValue(object rawValue, List<string> names)
+    {
+        switch (rawValue)
+        {
+            case NPC npc:
+                AddName(names, npc.Name);
+                AddName(names, npc.displayName);
+                return;
+            case string text:
+                AddName(names, text);
+                return;
+            case IEnumerable<string> strings:
+                foreach (var s in strings)
+                    AddName(names, s);
+                return;
+            case IEnumerable<NPC> npcs:
+                foreach (var n in npcs)
+                {
+                    AddName(names, n?.Name);
+                    AddName(names, n?.displayName);
+                }
+                return;
+            case System.Collections.IDictionary dictionary:
+                foreach (System.Collections.DictionaryEntry entry in dictionary)
+                {
+                    AddName(names, entry.Key?.ToString());
+                    if (entry.Value is NPC entryNpc)
+                    {
+                        AddName(names, entryNpc.Name);
+                        AddName(names, entryNpc.displayName);
+                    }
+                    else
+                    {
+                        AddName(names, entry.Value?.ToString());
+                    }
+                }
+                return;
+            case System.Collections.IEnumerable enumerable:
+                foreach (var item in enumerable)
+                {
+                    if (item is null)
+                        continue;
+                    if (item is NPC itemNpc)
+                    {
+                        AddName(names, itemNpc.Name);
+                        AddName(names, itemNpc.displayName);
+                        continue;
+                    }
+                    if (item is string itemText)
+                    {
+                        AddName(names, itemText);
+                        continue;
+                    }
+
+                    if (TryReadObjectMemberAsString(item, "Name", out var reflectedName))
+                        AddName(names, reflectedName);
+                    if (TryReadObjectMemberAsString(item, "displayName", out var reflectedDisplay))
+                        AddName(names, reflectedDisplay);
+                }
+                return;
+            default:
+                AddName(names, rawValue.ToString());
+                return;
+        }
+    }
+
+    private static bool TryReadObjectMemberAsString(object source, string memberName, out string value)
+    {
+        value = string.Empty;
+        if (!TryGetMemberValue(source, memberName, out var raw) || raw is null)
+            return false;
+
+        value = (raw.ToString() ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static string TryReadEventMemberAsString(object source, string memberName)
+    {
+        if (!TryGetMemberValue(source, memberName, out var raw) || raw is null)
+            return string.Empty;
+
+        return raw switch
+        {
+            string s => s.Trim(),
+            int i => i.ToString(CultureInfo.InvariantCulture),
+            long l => l.ToString(CultureInfo.InvariantCulture),
+            _ => (raw.ToString() ?? string.Empty).Trim()
+        };
+    }
+
+    private static bool TryGetMemberValue(object source, string memberName, out object? value)
+    {
+        value = null;
+        if (source is null || string.IsNullOrWhiteSpace(memberName))
+            return false;
+
+        const BindingFlags flags =
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+
+        var type = source.GetType();
+        var prop = type.GetProperty(memberName, flags);
+        if (prop is not null)
+        {
+            value = prop.GetValue(source);
+            return true;
+        }
+
+        var field = type.GetField(memberName, flags);
+        if (field is null)
+            return false;
+
+        value = field.GetValue(source);
+        return true;
+    }
+
+    private static void AddName(List<string> names, string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return;
+
+        var value = raw.Trim();
+        if (!string.IsNullOrWhiteSpace(value))
+            names.Add(value);
+    }
+
     private void TrackLateNightPassOutWindow()
     {
         if (_townMemoryService is null || Game1.player is null || Game1.currentLocation is null)
@@ -1961,8 +2469,11 @@ public sealed class ModEntry : Mod
         if (e.NewMenu is not null)
         {
             _npcDialogueHookMenuOpened = true;
+            TryCaptureVanillaDialogueContextFromMenu(e.NewMenu, _pendingNpcDialogueHookName);
             return;
         }
+
+        TryCaptureVanillaDialogueContextFromMenu(e.OldMenu, _pendingNpcDialogueHookName);
 
         if (string.IsNullOrWhiteSpace(_pendingNpcDialogueHookName))
         {
@@ -2043,7 +2554,11 @@ public sealed class ModEntry : Mod
                 }
 
                 if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
-                    OpenNpcChatMenu(npc, initialPlayerMessage: InitialNpcChatPrompt, autoSendInitialPlayerMessage: true);
+                    OpenNpcChatMenu(
+                        npc,
+                        initialPlayerMessage: InitialNpcChatPrompt,
+                        autoSendInitialPlayerMessage: true,
+                        defaultContextTag: "player_chat_followup");
             },
             npc);
     }
@@ -3983,6 +4498,32 @@ public sealed class ModEntry : Mod
         Monitor.Log($"Town memory events: {_state.TownMemory.Events.Count}", LogLevel.Info);
     }
 
+    private void OnTownMemoryEventsCommand(string name, string[] args)
+    {
+        var count = 5;
+        if (args.Length > 0 && int.TryParse(args[0], out var parsed))
+            count = Math.Clamp(parsed, 1, 20);
+
+        var recent = _state.TownMemory.Events
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .Take(count)
+            .ToList();
+        if (recent.Count == 0)
+        {
+            Monitor.Log("Town memory events: none", LogLevel.Info);
+            return;
+        }
+
+        Monitor.Log($"Town memory recent events ({recent.Count}):", LogLevel.Info);
+        foreach (var ev in recent)
+        {
+            Monitor.Log(
+                $"- day={ev.Day} kind={ev.Kind} source={ev.SourceNpc} loc={ev.Location} severity={ev.Severity} summary={ev.Summary}",
+                LogLevel.Info);
+        }
+    }
+
     private void OnTownMemoryNpcCommand(string name, string[] args)
     {
         if (_townMemoryService is null)
@@ -4315,7 +4856,7 @@ public sealed class ModEntry : Mod
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
             return;
 
-        var roster = GetExpandedNpcRoster();
+        var roster = GetPlayer2SpawnRoster();
         var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
 
         foreach (var shortName in roster)
@@ -4462,6 +5003,7 @@ public sealed class ModEntry : Mod
 
                 _player2NpcIdsByShortName[shortName] = npcId;
                 _player2NpcShortNameById[npcId] = shortName;
+                RegisterCustomNpcSpawnAliases(shortName, npcId);
                 Monitor.Log($"Player2 NPC spawned (roster): {shortName} -> {npcId}", LogLevel.Info);
             }
             catch (Exception ex)
@@ -5680,7 +6222,7 @@ public sealed class ModEntry : Mod
             .OrderByDescending(kv => kv.Value.ScarcityBonus - kv.Value.SupplyPressureFactor)
             .FirstOrDefault();
 
-        var canonNpcs = "Lewis, Robin, Pierre, Linus, Haley, Alex, Demetrius, Wizard, Jas, Vincent";
+        var canonNpcs = BuildCompactCanonNpcPromptList();
         var activeQuestTemplateCounts = FormatQuestTemplateCounts(_state.Quests.Active);
         var availableQuestTemplateCounts = FormatQuestTemplateCounts(_state.Quests.Available);
 
@@ -5700,9 +6242,17 @@ public sealed class ModEntry : Mod
         var townMemory = string.Empty;
         var newsContext = BuildNewsAwarenessBlock();
         var eventsContext = BuildRecentEventAwarenessBlock(playerText);
+        var vanillaDialogueContext = BuildRecentVanillaDialogueContextBlock(npcName);
+        var sourceDialogueContext = BuildSourceModDialogueContextBlock(npcName, playerText);
+        var vanillaDialogueFollowUpRule = string.IsNullOrWhiteSpace(vanillaDialogueContext)
+            ? string.Empty
+            : "FOLLOWUP_DIALOGUE_RULE: If player opens with small-talk like 'Got a minute to chat?', continue naturally from VANILLA_DIALOGUE_CONTEXT before switching topics.";
         var playerAskedForRequest = IsPlayerAskingForQuest(playerText);
         var questDiversityContext = BuildQuestDiversityBlock(npcName, playerAskedForRequest);
         var effectiveContextTag = string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag!;
+        var followUpContextRule = string.Equals(effectiveContextTag, "player_chat_followup", StringComparison.OrdinalIgnoreCase)
+            ? "FOLLOWUP_CONTEXT_RULE: This chat started immediately after vanilla NPC dialogue; prioritize continuity with VANILLA_DIALOGUE_CONTEXT."
+            : string.Empty;
         var commandPolicyRule = _commandPolicyService?.BuildPromptRule(effectiveContextTag) ?? string.Empty;
         var ambientEventFirstRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
             ? "AMBIENT_EVENT_RULE: Prefer record_town_event first when anything notable happened; keep command use sparse and skip commands when nothing meaningful occurred."
@@ -5726,7 +6276,7 @@ public sealed class ModEntry : Mod
                 townMemory = _townMemoryService.BuildTownMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
         }
 
-        return string.Join(" ",
+        var basePrompt = string.Join(" ",
             "CANON_WORLD: Stardew Valley.",
             "CANON_TOWN: Pelican Town.",
             $"CANON_NPCS: [{canonNpcs}].",
@@ -5738,6 +6288,8 @@ public sealed class ModEntry : Mod
             promptLanguageRule,
             "LANGUAGE_RULE: For structured command outputs, keep command names and argument keys in English; localize only string values.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
+            vanillaDialogueFollowUpRule,
+            followUpContextRule,
             commandPolicyRule,
             ambientEventFirstRule,
             ambientFamiliarityRule,
@@ -5794,8 +6346,61 @@ public sealed class ModEntry : Mod
             $"STATE: AvailableTownRequests {_state.Quests.Available.Count} by_template=[{availableQuestTemplateCounts}].",
             $"STATE: ActiveTownRequests {_state.Quests.Active.Count} by_template=[{activeQuestTemplateCounts}].",
             npcMemory,
-            townMemory
+            townMemory,
+            vanillaDialogueContext,
+            sourceDialogueContext
         );
+
+        if (_config.EnableCustomNpcFramework
+            && _config.EnableCustomNpcLoreInjection
+            && _customNpcRegistry is not null)
+        {
+            var customLoreBlock = _customNpcRegistry.BuildLorePromptBlock(
+                npcName,
+                Game1.currentLocation?.Name,
+                effectiveContextTag);
+
+            if (!string.IsNullOrWhiteSpace(customLoreBlock))
+            {
+                basePrompt = $"{basePrompt} {customLoreBlock}".Trim();
+                if (_config.LogCustomNpcPromptInjectionPreview)
+                    Monitor.Log($"Injected custom NPC lore block for '{npcName ?? "(none)"}'.", LogLevel.Trace);
+            }
+
+            var referencedNpcLore = _customNpcRegistry.BuildReferencedNpcLorePromptBlock(
+                playerText,
+                speakingNpcName: npcName,
+                maxMatches: 2);
+            if (!string.IsNullOrWhiteSpace(referencedNpcLore))
+            {
+                var awarenessRule = "CUSTOM_NPC_AWARENESS_RULE: Referenced custom NPCs are canonical in this save. Do not claim you have never heard of them; if details are limited, answer with partial knowledge.";
+                basePrompt = $"{basePrompt} {awarenessRule} {referencedNpcLore}".Trim();
+                if (_config.LogCustomNpcPromptInjectionPreview)
+                    Monitor.Log($"Injected referenced custom NPC lore block for context '{effectiveContextTag}'.", LogLevel.Trace);
+            }
+        }
+
+        return basePrompt;
+    }
+
+    private string BuildCompactCanonNpcPromptList()
+    {
+        var merged = new List<string>
+        {
+            "Lewis", "Robin", "Pierre", "Linus", "Haley", "Alex", "Demetrius", "Wizard", "Jas", "Vincent"
+        };
+        var seen = new HashSet<string>(merged, StringComparer.OrdinalIgnoreCase);
+
+        if (_config.EnableCustomNpcFramework && _customNpcRegistry is not null)
+        {
+            foreach (var npc in _customNpcRegistry.GetAllNpcDisplayNames())
+            {
+                if (seen.Add(npc))
+                    merged.Add(npc);
+            }
+        }
+
+        return string.Join(", ", merged);
     }
 
     private static string BuildNpcAgePromptRule(string? npcName)
@@ -5939,6 +6544,617 @@ public sealed class ModEntry : Mod
             .ToArray();
 
         return $"RECENT_EVENTS: [{JoinContextItems(recentEvents)}]. UPCOMING_EVENTS: [{JoinContextItems(upcomingEvents)}].";
+    }
+
+    private string BuildRecentVanillaDialogueContextBlock(string? npcName)
+    {
+        if (!TryGetRecentVanillaDialogueContext(npcName, out var context))
+            return string.Empty;
+        if (string.IsNullOrWhiteSpace(context.LastDialogueLine) && context.DialogueSequence.Count == 0)
+            return string.Empty;
+
+        var npcDisplayName = string.IsNullOrWhiteSpace(context.NpcDisplayName)
+            ? context.NpcName
+            : context.NpcDisplayName;
+        var safeLine = TrimForContext(context.LastDialogueLine, 130, "none").Replace("'", "’", StringComparison.Ordinal);
+        var sequence = context.DialogueSequence
+            .TakeLast(4)
+            .Select(line => TrimForContext(line, 96, "none").Replace("'", "’", StringComparison.Ordinal))
+            .ToArray();
+        return $"VANILLA_DIALOGUE_CONTEXT[{npcDisplayName}]: day={context.Day} time={context.TimeOfDay:0000} last_line='{safeLine}' sequence=[{JoinContextItems(sequence)}].";
+    }
+
+    private bool TryGetRecentVanillaDialogueContext(string? npcName, out RecentVanillaDialogueContext context)
+    {
+        context = null!;
+        if (string.IsNullOrWhiteSpace(npcName) || _recentVanillaDialogueByNpcToken.Count == 0)
+            return false;
+
+        PruneStaleVanillaDialogueContext();
+
+        var lookupTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddLookupToken(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return;
+
+            var token = NormalizeTargetToken(raw);
+            if (!string.IsNullOrWhiteSpace(token))
+                lookupTokens.Add(token);
+        }
+
+        AddLookupToken(npcName);
+        var resolvedNpc = ResolveNpcByName(npcName);
+        AddLookupToken(resolvedNpc?.Name);
+        AddLookupToken(resolvedNpc?.displayName);
+
+        foreach (var token in lookupTokens)
+        {
+            if (_recentVanillaDialogueByNpcToken.TryGetValue(token, out var found))
+            {
+                context = found;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void PruneStaleVanillaDialogueContext()
+    {
+        if (_recentVanillaDialogueByNpcToken.Count == 0)
+            return;
+
+        var nowUtc = DateTime.UtcNow;
+        var staleKeys = _recentVanillaDialogueByNpcToken
+            .Where(kv =>
+                nowUtc - kv.Value.CapturedUtc > VanillaDialogueContextMaxAge
+                || kv.Value.Day < _state.Calendar.Day - 1)
+            .Select(kv => kv.Key)
+            .ToArray();
+
+        foreach (var key in staleKeys)
+            _recentVanillaDialogueByNpcToken.Remove(key);
+    }
+
+    private void BeginVanillaDialogueCaptureSession(NPC npc)
+    {
+        if (!Context.IsWorldReady || npc is null || string.IsNullOrWhiteSpace(npc.Name))
+            return;
+
+        var npcToken = NormalizeTargetToken(npc.Name);
+        if (string.IsNullOrWhiteSpace(npcToken))
+            return;
+
+        var npcDisplayName = string.IsNullOrWhiteSpace(npc.displayName)
+            ? npc.Name
+            : npc.displayName;
+        var session = new RecentVanillaDialogueContext
+        {
+            NpcName = npc.Name,
+            NpcDisplayName = npcDisplayName,
+            Day = _state.Calendar.Day,
+            TimeOfDay = Game1.timeOfDay,
+            CapturedUtc = DateTime.UtcNow
+        };
+
+        _recentVanillaDialogueByNpcToken[npcToken] = session;
+        var displayToken = NormalizeTargetToken(npcDisplayName);
+        if (!string.IsNullOrWhiteSpace(displayToken))
+            _recentVanillaDialogueByNpcToken[displayToken] = session;
+    }
+
+    private void TryCaptureVanillaDialogueContextFromMenu(IClickableMenu? menu, string? fallbackNpcName)
+    {
+        if (!_npcDialogueHookArmed && string.IsNullOrWhiteSpace(fallbackNpcName))
+            return;
+        if (!Context.IsWorldReady || menu is not DialogueBox dialogueBox)
+            return;
+
+        if (!TryExtractDialogueLineFromMenu(dialogueBox, out var rawDialogueLine))
+            return;
+
+        var normalizedLine = NormalizeLiveDialogueLineForContext(rawDialogueLine);
+        if (normalizedLine.Length < 8)
+            return;
+
+        var speaker = ResolveDialogueSpeakerForCapturedContext(dialogueBox, fallbackNpcName);
+        if (speaker is null || string.IsNullOrWhiteSpace(speaker.Name) || !IsRosterNpc(speaker))
+            return;
+
+        AppendVanillaDialogueContextLine(speaker, normalizedLine);
+    }
+
+    private void AppendVanillaDialogueContextLine(NPC speaker, string normalizedLine)
+    {
+        if (speaker is null || string.IsNullOrWhiteSpace(speaker.Name) || string.IsNullOrWhiteSpace(normalizedLine))
+            return;
+
+        var speakerToken = NormalizeTargetToken(speaker.Name);
+        if (string.IsNullOrWhiteSpace(speakerToken))
+            return;
+        var speakerDisplayName = string.IsNullOrWhiteSpace(speaker.displayName)
+            ? speaker.Name
+            : speaker.displayName;
+
+        if (!_recentVanillaDialogueByNpcToken.TryGetValue(speakerToken, out var context))
+        {
+            context = new RecentVanillaDialogueContext();
+            _recentVanillaDialogueByNpcToken[speakerToken] = context;
+        }
+
+        context.NpcName = speaker.Name;
+        context.NpcDisplayName = speakerDisplayName;
+        context.Day = _state.Calendar.Day;
+        context.TimeOfDay = Game1.timeOfDay;
+        context.CapturedUtc = DateTime.UtcNow;
+
+        var effectiveLastLine = normalizedLine;
+        if (context.DialogueSequence.Count == 0)
+        {
+            context.DialogueSequence.Add(normalizedLine);
+        }
+        else
+        {
+            var lastIndex = context.DialogueSequence.Count - 1;
+            var lastLine = context.DialogueSequence[lastIndex];
+            if (string.Equals(lastLine, normalizedLine, StringComparison.OrdinalIgnoreCase))
+            {
+                effectiveLastLine = normalizedLine;
+            }
+            else if (normalizedLine.StartsWith(lastLine, StringComparison.OrdinalIgnoreCase))
+            {
+                // Dialogue text often reveals progressively; keep one evolving line instead of appending fragments.
+                context.DialogueSequence[lastIndex] = normalizedLine;
+                effectiveLastLine = normalizedLine;
+            }
+            else if (lastLine.StartsWith(normalizedLine, StringComparison.OrdinalIgnoreCase))
+            {
+                effectiveLastLine = lastLine;
+            }
+            else
+            {
+                context.DialogueSequence.Add(normalizedLine);
+                effectiveLastLine = normalizedLine;
+            }
+        }
+
+        while (context.DialogueSequence.Count > VanillaDialogueContextSequenceMaxLines)
+            context.DialogueSequence.RemoveAt(0);
+
+        context.LastDialogueLine = effectiveLastLine;
+
+        _recentVanillaDialogueByNpcToken[speakerToken] = context;
+        var displayToken = NormalizeTargetToken(speakerDisplayName);
+        if (!string.IsNullOrWhiteSpace(displayToken))
+            _recentVanillaDialogueByNpcToken[displayToken] = context;
+    }
+
+    private NPC? ResolveDialogueSpeakerForCapturedContext(IClickableMenu sourceMenu, string? fallbackNpcName)
+    {
+        var menuNpc = TryResolveNpcFromOpenedMenu(sourceMenu);
+        if (menuNpc is not null && !string.IsNullOrWhiteSpace(menuNpc.Name))
+            return menuNpc;
+
+        if (!string.IsNullOrWhiteSpace(fallbackNpcName))
+        {
+            var fallbackNpc = ResolveNpcByName(fallbackNpcName);
+            if (fallbackNpc is not null)
+                return fallbackNpc;
+        }
+
+        if (_pendingNpcDialogueHookNpc is not null && !string.IsNullOrWhiteSpace(_pendingNpcDialogueHookNpc.Name))
+            return _pendingNpcDialogueHookNpc;
+
+        if (Game1.currentSpeaker is not null && !string.IsNullOrWhiteSpace(Game1.currentSpeaker.Name))
+            return Game1.currentSpeaker;
+
+        return null;
+    }
+
+    private bool TryExtractDialogueLineFromMenu(IClickableMenu menu, out string dialogueLine)
+    {
+        dialogueLine = string.Empty;
+        if (menu is null)
+            return false;
+
+        if (TryExtractDialogueLineFromMembers(
+            menu,
+            out dialogueLine,
+            "getCurrentString",
+            "GetCurrentString",
+            "currentString",
+            "CurrentString",
+            "displayText",
+            "dialogueText",
+            "message",
+            "Message"))
+        {
+            return true;
+        }
+
+        if (TryExtractDialogueLineFromMembers(
+            menu,
+            out dialogueLine,
+            "characterDialogue",
+            "CharacterDialogue",
+            "currentDialogue",
+            "CurrentDialogue",
+            "dialogue",
+            "Dialogue",
+            "dialogues",
+            "Dialogues"))
+        {
+            return true;
+        }
+
+        if (Game1.currentSpeaker is not null
+            && TryExtractDialogueLineFromMembers(
+                Game1.currentSpeaker,
+                out dialogueLine,
+                "CurrentDialogue",
+                "currentDialogue",
+                "getCurrentDialogue",
+                "GetCurrentDialogue"))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractDialogueLineFromMembers(object source, out string dialogueLine, params string[] memberNames)
+    {
+        dialogueLine = string.Empty;
+
+        foreach (var memberName in memberNames)
+        {
+            if (TryGetParameterlessMethodValue(source, memberName, out var methodValue)
+                && TryExtractDialogueTextFromValue(methodValue, out dialogueLine))
+            {
+                return true;
+            }
+
+            if (TryGetDialogueMemberValue(source, memberName, out var memberValue)
+                && TryExtractDialogueTextFromValue(memberValue, out dialogueLine))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetParameterlessMethodValue(object source, string methodName, out object? value)
+    {
+        value = null;
+        if (source is null || string.IsNullOrWhiteSpace(methodName))
+            return false;
+
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+        try
+        {
+            var method = source.GetType().GetMethod(methodName, Flags, binder: null, types: Type.EmptyTypes, modifiers: null);
+            if (method is null)
+                return false;
+
+            value = method.Invoke(source, null);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetDialogueMemberValue(object source, string memberName, out object? value)
+    {
+        value = null;
+        if (source is null || string.IsNullOrWhiteSpace(memberName))
+            return false;
+
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var type = source.GetType();
+
+        try
+        {
+            var property = type.GetProperty(memberName, Flags);
+            if (property is not null && property.GetIndexParameters().Length == 0)
+            {
+                value = property.GetValue(source);
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            var field = type.GetField(memberName, Flags);
+            if (field is not null)
+            {
+                value = field.GetValue(source);
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractDialogueTextFromValue(object? value, out string dialogueLine, int depth = 0)
+    {
+        dialogueLine = string.Empty;
+        if (value is null || depth > 3)
+            return false;
+
+        if (value is string str)
+        {
+            dialogueLine = str;
+            return !string.IsNullOrWhiteSpace(dialogueLine);
+        }
+
+        if (value is IEnumerable<string> stringItems)
+        {
+            foreach (var item in stringItems)
+            {
+                if (TryExtractDialogueTextFromValue(item, out dialogueLine, depth + 1))
+                    return true;
+            }
+        }
+
+        if (value is System.Collections.IEnumerable enumerable && value is not string)
+        {
+            foreach (var item in enumerable)
+            {
+                if (TryExtractDialogueTextFromValue(item, out dialogueLine, depth + 1))
+                    return true;
+            }
+        }
+
+        var methodCandidates = new[]
+        {
+            "getCurrentDialogue",
+            "GetCurrentDialogue",
+            "getCurrentString",
+            "GetCurrentString",
+            "Peek"
+        };
+        foreach (var methodName in methodCandidates)
+        {
+            if (TryGetParameterlessMethodValue(value, methodName, out var methodValue)
+                && methodValue is not null
+                && !ReferenceEquals(methodValue, value)
+                && TryExtractDialogueTextFromValue(methodValue, out dialogueLine, depth + 1))
+            {
+                return true;
+            }
+        }
+
+        var memberCandidates = new[]
+        {
+            "CurrentDialogue",
+            "currentDialogue",
+            "Dialogue",
+            "dialogue",
+            "Text",
+            "text",
+            "Message",
+            "message",
+            "currentString",
+            "CurrentString"
+        };
+        foreach (var memberName in memberCandidates)
+        {
+            if (TryGetDialogueMemberValue(value, memberName, out var memberValue)
+                && memberValue is not null
+                && !ReferenceEquals(memberValue, value)
+                && TryExtractDialogueTextFromValue(memberValue, out dialogueLine, depth + 1))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private string NormalizeLiveDialogueLineForContext(string rawDialogueLine)
+    {
+        if (string.IsNullOrWhiteSpace(rawDialogueLine))
+            return string.Empty;
+
+        var cleaned = rawDialogueLine
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal);
+        var firstSegment = cleaned
+            .Split(new[] { '#', '^' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(firstSegment))
+            cleaned = firstSegment;
+
+        cleaned = cleaned.Replace("@", GetPlayerDisplayNameForContext(), StringComparison.Ordinal);
+        cleaned = Regex.Replace(cleaned, @"\[[^\]]+\]", " ", RegexOptions.CultureInvariant);
+        cleaned = Regex.Replace(cleaned, @"\$[a-z0-9_]+", " ", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"%[a-z0-9_]+", " ", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+
+        return cleaned;
+    }
+
+    private string BuildSourceModDialogueContextBlock(string? speakerNpcName, string? playerText)
+    {
+        if (!Context.IsWorldReady || string.IsNullOrWhiteSpace(speakerNpcName))
+            return string.Empty;
+
+        var dialogueLines = LoadSourceDialogueLinesForNpc(speakerNpcName);
+        if (dialogueLines.Count == 0)
+            return string.Empty;
+
+        var focusCustomNpcNames = FindCustomNpcNamesInText(playerText, maxMatches: 2);
+        var matchedLines = new List<string>();
+
+        if (focusCustomNpcNames.Count > 0)
+        {
+            foreach (var line in dialogueLines)
+            {
+                if (focusCustomNpcNames.Any(name => ContainsTargetToken(line, name)))
+                    matchedLines.Add(line);
+
+                if (matchedLines.Count >= 2)
+                    break;
+            }
+        }
+
+        if (matchedLines.Count == 0 && IsCustomNpcNameOrAlias(speakerNpcName))
+            matchedLines.AddRange(dialogueLines.Take(2));
+
+        if (matchedLines.Count == 0)
+            return string.Empty;
+
+        var snippets = matchedLines
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .Select(line => TrimForContext(line, 100, "line"))
+            .ToArray();
+        if (snippets.Length == 0)
+            return string.Empty;
+
+        var mentions = focusCustomNpcNames.Count == 0
+            ? "none"
+            : string.Join(", ", focusCustomNpcNames.Take(2));
+
+        return $"SOURCE_MOD_DIALOGUE[{speakerNpcName.Trim()}]: mentions=[{mentions}] lines=[{JoinContextItems(snippets)}].";
+    }
+
+    private List<string> LoadSourceDialogueLinesForNpc(string speakerNpcName)
+    {
+        var candidates = BuildDialogueAssetCandidates(speakerNpcName);
+        foreach (var candidate in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+
+            try
+            {
+                var assetName = $"Characters/Dialogue/{candidate}";
+                var data = Game1.content.Load<Dictionary<string, string>>(assetName);
+                if (data is null || data.Count == 0)
+                    continue;
+
+                var lines = data.Values
+                    .SelectMany(ExtractDialogueSnippets)
+                    .Where(line => !string.IsNullOrWhiteSpace(line))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(40)
+                    .ToList();
+                if (lines.Count > 0)
+                    return lines;
+            }
+            catch
+            {
+                // Ignore missing/invalid dialogue assets and continue with next candidate.
+            }
+        }
+
+        return new List<string>();
+    }
+
+    private IEnumerable<string> BuildDialogueAssetCandidates(string speakerNpcName)
+    {
+        var ordered = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddCandidate(string? raw)
+        {
+            var value = (raw ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(value))
+                return;
+            if (seen.Add(value))
+                ordered.Add(value);
+        }
+
+        AddCandidate(speakerNpcName);
+
+        try
+        {
+            var worldNpc = Game1.getCharacterFromName(speakerNpcName);
+            AddCandidate(worldNpc?.Name);
+            AddCandidate(worldNpc?.displayName);
+        }
+        catch
+        {
+            // Ignore world lookup failures.
+        }
+
+        if (_customNpcRegistry is not null && _customNpcRegistry.TryGetNpcByName(speakerNpcName, out var customNpc))
+        {
+            AddCandidate(customNpc.NpcId);
+            AddCandidate(customNpc.DisplayName);
+            foreach (var alias in customNpc.Aliases)
+                AddCandidate(alias);
+        }
+
+        return ordered;
+    }
+
+    private List<string> FindCustomNpcNamesInText(string? text, int maxMatches)
+    {
+        var found = new List<string>();
+        if (string.IsNullOrWhiteSpace(text) || _customNpcRegistry is null || _customNpcRegistry.NpcsByToken.Count == 0)
+            return found;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var npc in _customNpcRegistry.NpcsByToken.Values)
+        {
+            var mentioned =
+                ContainsTargetToken(text, npc.DisplayName)
+                || ContainsTargetToken(text, npc.NpcId)
+                || npc.Aliases.Any(alias => ContainsTargetToken(text, alias));
+            if (!mentioned)
+                continue;
+
+            var canonicalName = string.IsNullOrWhiteSpace(npc.DisplayName)
+                ? npc.NpcId
+                : npc.DisplayName;
+            if (string.IsNullOrWhiteSpace(canonicalName) || !seen.Add(canonicalName))
+                continue;
+
+            found.Add(canonicalName);
+            if (found.Count >= Math.Max(1, maxMatches))
+                break;
+        }
+
+        return found;
+    }
+
+    private static IEnumerable<string> ExtractDialogueSnippets(string? rawDialogue)
+    {
+        if (string.IsNullOrWhiteSpace(rawDialogue))
+            yield break;
+
+        var flattened = rawDialogue
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal);
+        var segments = flattened.Split(new[] { '#', '^' }, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var segment in segments)
+        {
+            var cleaned = segment;
+            cleaned = Regex.Replace(cleaned, @"\[[^\]]+\]", " ", RegexOptions.CultureInvariant);
+            cleaned = Regex.Replace(cleaned, @"\$[a-z0-9_]+", " ", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+            cleaned = Regex.Replace(cleaned, @"%[a-z0-9_]+", " ", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+            cleaned = cleaned.Replace("@", "Farmer", StringComparison.Ordinal);
+            cleaned = Regex.Replace(cleaned, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+            if (cleaned.Length < 12)
+                continue;
+
+            yield return cleaned;
+        }
     }
 
     private static string FormatQuestTemplateCounts(IEnumerable<QuestEntry> quests)
@@ -6419,6 +7635,14 @@ public sealed class ModEntry : Mod
                 // ignore npc_id extraction failure; resolver still handles command parsing.
             }
 
+            var resolverNpcId = sourceNpcId;
+            if (!string.IsNullOrWhiteSpace(sourceNpcId)
+                && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var mappedSourceShortName)
+                && !string.IsNullOrWhiteSpace(mappedSourceShortName))
+            {
+                resolverNpcId = mappedSourceShortName;
+            }
+
             var attemptedCommand = TryExtractCommandNameFromLine(line);
             var extractedIntentId = TryExtractIntentIdFromLine(line);
             var isAmbientContext = IsAmbientContext(sourceNpcId);
@@ -6443,11 +7667,16 @@ public sealed class ModEntry : Mod
                     && isAmbientContext
                     && attemptedCommand.Equals("record_town_event", StringComparison.OrdinalIgnoreCase))
                 {
-                    _state.Telemetry.Daily.AmbientCommandAppliedByType.TryGetValue("record_town_event", out var eventCountToday);
-                    if (eventCountToday >= AmbientRecordTownEventDailyCap)
+                    var ambientTownEventCap = Math.Max(0, _config.AmbientRecordTownEventDailyCap);
+                    if (ambientTownEventCap > 0)
                     {
-                        policyRejectCode = "E_POLICY_AMBIENT_EVENT_CAP";
-                        policyRejectReason = $"ambient record_town_event daily cap reached ({AmbientRecordTownEventDailyCap})";
+                        var eventCountToday = CountAmbientTownEventsForSourceToday(resolverNpcId);
+                        if (eventCountToday >= ambientTownEventCap)
+                        {
+                            policyRejectCode = "E_POLICY_AMBIENT_EVENT_CAP";
+                            var sourceLabel = string.IsNullOrWhiteSpace(resolverNpcId) ? "unknown" : resolverNpcId;
+                            policyRejectReason = $"ambient record_town_event daily cap reached for '{sourceLabel}' ({ambientTownEventCap})";
+                        }
                     }
                 }
 
@@ -6497,7 +7726,7 @@ public sealed class ModEntry : Mod
                 }
             }
 
-            var result = _intentResolver.ResolveFromStreamLine(_state, line);
+            var result = _intentResolver.ResolveFromStreamLine(_state, line, resolverNpcId);
             if (!result.HasIntent)
                 return false;
 
@@ -6598,6 +7827,16 @@ public sealed class ModEntry : Mod
             Monitor.Log($"NPC command parse skipped: {ex.Message}", LogLevel.Trace);
             return false;
         }
+    }
+
+    private int CountAmbientTownEventsForSourceToday(string? sourceNpcName)
+    {
+        if (string.IsNullOrWhiteSpace(sourceNpcName))
+            return _state.TownMemory.Events.Count(e => e.Day == _state.Calendar.Day);
+
+        return _state.TownMemory.Events.Count(e =>
+            e.Day == _state.Calendar.Day
+            && string.Equals(e.SourceNpc, sourceNpcName, StringComparison.OrdinalIgnoreCase));
     }
 
     private string ResolveIntentLane(string? intentId, string? sourceNpcId)
@@ -7433,7 +8672,7 @@ public sealed class ModEntry : Mod
         return string.Empty;
     }
 
-    private static string ResolveNpcTargetFromTownEvent(TownMemoryEvent ev)
+    private string ResolveNpcTargetFromTownEvent(TownMemoryEvent ev)
     {
         foreach (var tag in ev.Tags ?? Array.Empty<string>())
         {
@@ -7449,6 +8688,13 @@ public sealed class ModEntry : Mod
             {
                 return name.ToLowerInvariant();
             }
+        }
+
+        if (_config.EnableCustomNpcFramework
+            && _customNpcRegistry is not null
+            && _customNpcRegistry.TryResolveNpcTokenFromTownEvent(ev, out var customToken))
+        {
+            return customToken;
         }
 
         return string.Empty;
@@ -7941,6 +9187,13 @@ public sealed class ModEntry : Mod
                 return NormalizeTargetToken(shortName);
         }
 
+        if (_config.EnableCustomNpcFramework
+            && _customNpcRegistry is not null
+            && _customNpcRegistry.TryResolveNpcTokenInText(text, out var customToken))
+        {
+            return customToken;
+        }
+
         var canonNpcTargets = new[]
         {
             "lewis", "pierre", "robin",
@@ -7970,7 +9223,7 @@ public sealed class ModEntry : Mod
         var pattern = normalizedTarget.EndsWith("y", StringComparison.Ordinal) && normalizedTarget.Length > 1
             ? $@"\b(?:{Regex.Escape(normalizedTarget[..^1] + "y")}|{Regex.Escape(normalizedTarget[..^1] + "ies")})\b"
             : $@"\b{escaped}s?\b";
-        return Regex.IsMatch(text, pattern, RegexOptions.CultureInvariant);
+        return Regex.IsMatch(text, pattern, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
     }
 
     private static string NormalizeTargetToken(string raw)
@@ -8762,6 +10015,177 @@ public sealed class ModEntry : Mod
             return value;
 
         return value[..Math.Max(1, maxLength - 3)] + "...";
+    }
+
+    private void InitializeCustomNpcFramework(IModHelper helper)
+    {
+        if (!_config.EnableCustomNpcFramework)
+        {
+            Monitor.Log("Integrated custom-NPC framework is disabled by config.", LogLevel.Info);
+            return;
+        }
+
+        _customNpcCanonBaselineService = new CanonBaselineService(helper, Monitor);
+        _customNpcRegistry = new NpcRegistry();
+        _customNpcCanonBaselineService.Load();
+        ReloadCustomNpcPacks();
+        InjectCustomNpcTargetsIntoRumorBoard("Entry");
+    }
+
+    private void ReloadCustomNpcPacks()
+    {
+        if (!_config.EnableCustomNpcFramework
+            || _customNpcCanonBaselineService is null
+            || _customNpcRegistry is null)
+        {
+            return;
+        }
+
+        _customNpcPackLoader = new NpcPackLoader(
+            Helper,
+            Monitor,
+            ModManifest.Version.ToString(),
+            _customNpcCanonBaselineService,
+            ResolveCustomNpcLocale,
+            _config.EnableStrictCustomNpcCanonValidation);
+
+        _customNpcLoadedPacks = _customNpcPackLoader.Load(out _customNpcValidationIssues);
+        var registryIssues = _customNpcRegistry.BuildFromPacks(_customNpcLoadedPacks);
+        if (registryIssues.Count > 0)
+            _customNpcValidationIssues = _customNpcValidationIssues.Concat(registryIssues).ToArray();
+
+        Monitor.Log(
+            $"Integrated custom-NPC framework loaded packs={_customNpcLoadedPacks.Count}, npcs={_customNpcRegistry.NpcsByToken.Count}.",
+            LogLevel.Info);
+        LogCustomNpcValidationIssues(verbose: false);
+        InjectCustomNpcTargetsIntoRumorBoard("Reload");
+    }
+
+    private void LogCustomNpcValidationIssues(bool verbose)
+    {
+        var errors = _customNpcValidationIssues.Where(i => i.Severity == ValidationSeverity.Error).ToArray();
+        var warnings = _customNpcValidationIssues.Where(i => i.Severity == ValidationSeverity.Warning).ToArray();
+        Monitor.Log(
+            $"Custom-NPC pack validation summary: errors={errors.Length}, warnings={warnings.Length}.",
+            errors.Length > 0 ? LogLevel.Warn : LogLevel.Info);
+
+        if (!verbose)
+        {
+            foreach (var sample in errors.Take(5))
+                Monitor.Log($"[ERROR:{sample.Code}] pack={sample.PackId} npc={sample.NpcId} {sample.Message}", LogLevel.Warn);
+            foreach (var sample in warnings.Take(5))
+                Monitor.Log($"[WARN:{sample.Code}] pack={sample.PackId} npc={sample.NpcId} {sample.Message}", LogLevel.Debug);
+            return;
+        }
+
+        foreach (var issue in _customNpcValidationIssues
+                     .OrderByDescending(i => i.Severity)
+                     .ThenBy(i => i.PackId, StringComparer.OrdinalIgnoreCase))
+        {
+            var level = issue.Severity == ValidationSeverity.Error ? LogLevel.Warn : LogLevel.Info;
+            Monitor.Log(
+                $"[{issue.Severity}:{issue.Code}] pack={issue.PackId} npc={issue.NpcId} file={issue.SourcePath} -> {issue.Message}",
+                level);
+        }
+    }
+
+    private string ResolveCustomNpcLocale()
+    {
+        var overrideLocale = (_config.CustomNpcLoreLocaleOverride ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(overrideLocale))
+            return NormalizeCustomNpcLocaleCode(overrideLocale);
+
+        try
+        {
+            var localeProp = Helper.Translation.GetType().GetProperty("Locale", BindingFlags.Public | BindingFlags.Instance);
+            var locale = localeProp?.GetValue(Helper.Translation)?.ToString();
+            return NormalizeCustomNpcLocaleCode(locale);
+        }
+        catch
+        {
+            return "en";
+        }
+    }
+
+    private static string NormalizeCustomNpcLocaleCode(string? locale)
+    {
+        if (string.IsNullOrWhiteSpace(locale))
+            return "en";
+        return locale.Trim().Replace('_', '-').ToLowerInvariant();
+    }
+
+    private void InjectCustomNpcTargetsIntoRumorBoard(string source)
+    {
+        if (!_config.EnableCustomNpcFramework || _customNpcRegistry is null || _customNpcRegistry.NpcsByToken.Count == 0)
+            return;
+
+        var rumorBoardType = typeof(RumorBoardService);
+        var validNpcTargetsField = rumorBoardType.GetField("ValidNpcTargets", BindingFlags.NonPublic | BindingFlags.Static);
+        if (validNpcTargetsField?.GetValue(null) is not HashSet<string> validTargets)
+            return;
+
+        var added = 0;
+        foreach (var token in _customNpcRegistry.NpcsByToken.Keys)
+        {
+            if (validTargets.Add(token))
+                added++;
+        }
+
+        if (added > 0)
+            Monitor.Log($"[{source}] Added {added} custom NPC targets to RumorBoardService social_visit validation.", LogLevel.Info);
+    }
+
+    private void OnCustomNpcValidatePacksCommand(string command, string[] args)
+    {
+        LogCustomNpcValidationIssues(verbose: true);
+    }
+
+    private void OnCustomNpcListCommand(string command, string[] args)
+    {
+        if (_customNpcRegistry is null || _customNpcRegistry.NpcsByToken.Count == 0)
+        {
+            Monitor.Log("No integrated custom NPCs are currently loaded.", LogLevel.Info);
+            return;
+        }
+
+        Monitor.Log($"Integrated custom NPCs loaded: {_customNpcRegistry.NpcsByToken.Count}", LogLevel.Info);
+        foreach (var npc in _customNpcRegistry.NpcsByToken.Values.OrderBy(n => n.DisplayName, StringComparer.OrdinalIgnoreCase))
+        {
+            Monitor.Log(
+                $"- {npc.DisplayName} [{npc.NpcToken}] pack={npc.PackId} modules(quest={npc.Modules.EnableQuestProposals}, rumors={npc.Modules.EnableRumors}, articles={npc.Modules.EnableArticles}, events={npc.Modules.EnableTownEvents})",
+                LogLevel.Info);
+        }
+    }
+
+    private void OnCustomNpcDumpCommand(string command, string[] args)
+    {
+        if (_customNpcRegistry is null)
+            return;
+
+        if (args.Length == 0)
+        {
+            Monitor.Log("Usage: slrpg_customnpc_dump <npc>", LogLevel.Info);
+            return;
+        }
+
+        var raw = string.Join(" ", args);
+        if (!_customNpcRegistry.TryGetNpcByName(raw, out var npc))
+        {
+            Monitor.Log($"Integrated custom NPC '{raw}' was not found.", LogLevel.Warn);
+            return;
+        }
+
+        Monitor.Log(_customNpcRegistry.BuildLoreDebugDump(npc), LogLevel.Info);
+        Monitor.Log($"KnownLocations: {string.Join(", ", npc.Lore.KnownLocations)}", LogLevel.Info);
+        Monitor.Log($"TimelineAnchors: {string.Join(", ", npc.Lore.TimelineAnchors)}", LogLevel.Info);
+        Monitor.Log($"TiesToNpcs: {string.Join(", ", npc.Lore.TiesToNpcs)}", LogLevel.Info);
+        Monitor.Log($"ForbiddenClaims: {string.Join(", ", npc.Lore.ForbiddenClaims)}", LogLevel.Info);
+    }
+
+    private void OnCustomNpcReloadCommand(string command, string[] args)
+    {
+        ReloadCustomNpcPacks();
+        InjectCustomNpcTargetsIntoRumorBoard("ReloadCommand");
     }
 }
 

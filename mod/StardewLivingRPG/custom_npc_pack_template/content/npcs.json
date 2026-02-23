@@ -1,0 +1,11 @@
+{
+  "Npcs": [
+    {
+      "Id": "silas",
+      "DisplayName": "Silas",
+      "Aliases": [ "Mr. Silas", "Silas Greenfield" ],
+      "HomeRegion": "pelican_town",
+      "Tags": [ "historian", "librarian", "quiet" ]
+    }
+  ]
+}

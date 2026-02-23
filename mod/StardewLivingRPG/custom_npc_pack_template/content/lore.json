@@ -1,0 +1,18 @@
+{
+  "Npcs": {
+    "silas": {
+      "Role": "Town archivist who curates local letters, maps, and old festival records.",
+      "Persona": "Gentle, observant, and patient; he prefers listening before offering opinions.",
+      "Speech": "Measured and warm, with concise phrasing and old-fashioned word choices.",
+      "Ties": "Respectful toward Lewis and Robin, and often collaborates with Gunther on preservation work.",
+      "Boundaries": "Never portray him as reckless, mocking local traditions, or revealing private records casually.",
+      "TimelineAnchors": [ "spring_year1_plus", "post_cc" ],
+      "KnownLocations": [ "pelican_town", "museum" ],
+      "TiesToNpcs": [ "Lewis", "Robin", "Gunther" ],
+      "ForbiddenClaims": [ "Silas founded Pelican Town", "Silas replaced Gunther as museum owner" ]
+    }
+  },
+  "Locations": {
+    "museum": "The museum is Silas' quiet refuge for restoration, cataloging, and careful storytelling."
+  }
+}

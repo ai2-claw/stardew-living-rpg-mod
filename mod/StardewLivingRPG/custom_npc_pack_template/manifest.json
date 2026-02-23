@@ -1,0 +1,15 @@
+{
+  "Name": "TLV Custom NPC Pack - Example",
+  "Author": "modder-name",
+  "Version": "1.0.0",
+  "Description": "Example content pack for The Living Valley NPC Framework.",
+  "UniqueID": "moddername.TlvNpcPackExample",
+  "MinimumApiVersion": "4.0.0",
+  "ContentPackFor": {
+    "UniqueID": "mx146323.StardewLivingRPG",
+    "MinimumVersion": "1.0.0"
+  },
+  "TLVPackVersion": "1.0.0",
+  "TLVFrameworkMinVersion": "1.0.0"
+}
+

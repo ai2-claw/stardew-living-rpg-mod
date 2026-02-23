@@ -1,0 +1,10 @@
+{
+  "Npcs": {
+    "silas": {
+      "EnableQuestProposals": true,
+      "EnableRumors": false,
+      "EnableArticles": true,
+      "EnableTownEvents": true
+    }
+  }
+}

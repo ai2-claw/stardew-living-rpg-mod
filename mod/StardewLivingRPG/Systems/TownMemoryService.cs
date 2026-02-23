@@ -6,7 +6,27 @@ namespace StardewLivingRPG.Systems;
 
 public sealed class TownMemoryService
 {
-    public void RecordEvent(SaveState state, string kind, string summary, string location, int day, int severity, string visibility, params string[] tags)
+    private static readonly string[] DefaultTownNpcRoster =
+    {
+        "Lewis", "Pierre", "Robin",
+        "Abigail", "Alex", "Caroline", "Clint", "Demetrius",
+        "Dwarf", "Elliott", "Emily", "Evelyn", "George", "Gil", "Gunther",
+        "Gus", "Haley", "Harvey", "Jas", "Jodi", "Kent",
+        "Krobus", "Leah", "Leo", "Linus", "Marnie", "Marlon", "Maru", "Morris",
+        "Pam", "Penny", "Qi", "Sam", "Sandy", "Sebastian", "Shane",
+        "Vincent", "Willy", "Wizard"
+    };
+
+    public void RecordEvent(
+        SaveState state,
+        string kind,
+        string summary,
+        string location,
+        int day,
+        int severity,
+        string visibility,
+        string sourceNpc = "",
+        params string[] tags)
     {
         if (string.IsNullOrWhiteSpace(summary))
             return;
@@ -38,6 +58,7 @@ public sealed class TownMemoryService
         {
             EventId = $"{normalizedKind}:{day}:{Math.Abs((normalizedSummary + normalizedLocation).GetHashCode()) % 100000}",
             Kind = normalizedKind,
+            SourceNpc = sourceNpc?.Trim() ?? string.Empty,
             Summary = normalizedSummary,
             Location = normalizedLocation,
             Day = day,
@@ -48,7 +69,7 @@ public sealed class TownMemoryService
         };
 
         state.TownMemory.Events.Add(ev);
-        PropagateEvent(state, ev);
+        PropagateEvent(state, ev, sourceNpc ?? string.Empty);
 
         if (state.TownMemory.Events.Count > 300)
             state.TownMemory.Events = state.TownMemory.Events.TakeLast(300).ToList();
@@ -116,15 +137,20 @@ public sealed class TownMemoryService
         return $"Town memory {npcName}: knownEvents={known}";
     }
 
-    private static void PropagateEvent(SaveState state, TownMemoryEvent ev)
+    private static void PropagateEvent(SaveState state, TownMemoryEvent ev, string sourceNpc)
     {
-        var defaultNpcList = new[] { "Lewis", "Robin", "Pierre", "Demetrius", "Linus", "Haley", "Alex", "Wizard" };
+        var allTargets = BuildPropagationTargetNpcList(state, DefaultTownNpcRoster, sourceNpc);
+        var normalizedSource = NormalizeNpcNameForKnowledge(sourceNpc);
 
-        foreach (var npc in defaultNpcList)
+        foreach (var npc in allTargets)
         {
+            var isSourceNpc = !string.IsNullOrWhiteSpace(normalizedSource)
+                              && string.Equals(npc, normalizedSource, StringComparison.OrdinalIgnoreCase);
             var knows = ev.Visibility.Equals("public", StringComparison.OrdinalIgnoreCase)
+                || isSourceNpc
                 || npc.Equals("Lewis", StringComparison.OrdinalIgnoreCase)
                 || (ev.Tags.Contains("mines") && (npc.Equals("Robin", StringComparison.OrdinalIgnoreCase) || npc.Equals("Linus", StringComparison.OrdinalIgnoreCase)))
+                || EventMentionsNpc(ev, npc)
                 || ev.Severity >= 4;
 
             if (!state.TownMemory.KnowledgeByNpc.TryGetValue(npc, out var perNpc))
@@ -140,6 +166,88 @@ public sealed class TownMemoryService
                 Angle = npc.Equals("Robin", StringComparison.OrdinalIgnoreCase) ? "concerned" : npc.Equals("Lewis", StringComparison.OrdinalIgnoreCase) ? "official" : "town-talk"
             };
         }
+    }
+
+    private static bool EventMentionsNpc(TownMemoryEvent ev, string npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName))
+            return false;
+
+        return ev.Summary.Contains(npcName, StringComparison.OrdinalIgnoreCase)
+               || ev.Location.Contains(npcName, StringComparison.OrdinalIgnoreCase)
+               || ev.Tags.Any(tag => tag.Contains(npcName, StringComparison.OrdinalIgnoreCase)
+                                     || npcName.Contains(tag, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static List<string> BuildPropagationTargetNpcList(SaveState state, IEnumerable<string> baseline, string? sourceNpcName)
+    {
+        var merged = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var npc in baseline)
+            AddNpcName(npc);
+
+        AddNpcName(sourceNpcName);
+
+        foreach (var npc in state.TownMemory.KnowledgeByNpc.Keys)
+            AddNpcName(npc);
+
+        foreach (var npc in state.Social.NpcReputation.Keys)
+            AddNpcName(npc);
+
+        foreach (var issuer in state.Quests.Active.Select(q => q.Issuer))
+            AddNpcName(issuer);
+        foreach (var issuer in state.Quests.Available.Select(q => q.Issuer))
+            AddNpcName(issuer);
+        foreach (var issuer in state.Quests.Completed.Select(q => q.Issuer))
+            AddNpcName(issuer);
+        foreach (var issuer in state.Quests.Failed.Select(q => q.Issuer))
+            AddNpcName(issuer);
+
+        try
+        {
+            foreach (var location in Game1.locations)
+            {
+                if (location?.characters is null)
+                    continue;
+                foreach (var character in location.characters)
+                {
+                    AddNpcName(character?.Name);
+                    AddNpcName(character?.displayName);
+                }
+            }
+        }
+        catch
+        {
+            // Ignore dynamic world read failures and keep baseline fallback.
+        }
+
+        return merged;
+
+        void AddNpcName(string? raw)
+        {
+            var normalized = NormalizeNpcNameForKnowledge(raw);
+            if (string.IsNullOrWhiteSpace(normalized))
+                return;
+            if (seen.Add(normalized))
+                merged.Add(normalized);
+        }
+    }
+
+    private static string NormalizeNpcNameForKnowledge(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
+
+        var value = raw.Trim();
+        if (value.Length == 0)
+            return string.Empty;
+
+        // Ignore opaque transport/session ids; we only keep friendly NPC names in town memory.
+        if (value.Length > 32 && value.Contains('-', StringComparison.Ordinal))
+            return string.Empty;
+
+        return value;
     }
 
     private static bool IsSemanticallyDuplicateEvent(

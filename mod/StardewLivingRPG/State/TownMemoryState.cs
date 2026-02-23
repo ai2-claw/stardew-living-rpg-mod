@@ -11,6 +11,7 @@ public sealed class TownMemoryEvent
 {
     public string EventId { get; set; } = string.Empty;
     public string Kind { get; set; } = "incident";
+    public string SourceNpc { get; set; } = string.Empty;
     public string Summary { get; set; } = string.Empty;
     public int Day { get; set; }
     public string Location { get; set; } = string.Empty;

@@ -28,6 +28,7 @@ public sealed class ModConfig
     public int Player2MinJoulesToChat { get; set; } = 5;
     public bool StrictNpcTemplateValidation { get; set; } = false; // when true, disable legacy quest_* template repair
     public bool EnableAmbientConsequencePipeline { get; set; } = true;
+    public int AmbientRecordTownEventDailyCap { get; set; } = 2; // per-NPC cap in ambient context; <=0 disables cap
 
     // Player-facing auto-connect UX
     public bool AutoConnectPlayer2OnLoad { get; set; } = true;
@@ -40,4 +41,11 @@ public sealed class ModConfig
 
     // Multi-NPC scaffolding (comma-separated short names; first is default requester)
     public string Player2NpcRosterCsv { get; set; } = "Lewis,Pierre,Robin";
+
+    // Integrated custom-NPC framework (content packs targeting mx146323.StardewLivingRPG)
+    public bool EnableCustomNpcFramework { get; set; } = true;
+    public bool EnableCustomNpcLoreInjection { get; set; } = true;
+    public bool EnableStrictCustomNpcCanonValidation { get; set; } = true;
+    public string CustomNpcLoreLocaleOverride { get; set; } = string.Empty;
+    public bool LogCustomNpcPromptInjectionPreview { get; set; } = false;
 }

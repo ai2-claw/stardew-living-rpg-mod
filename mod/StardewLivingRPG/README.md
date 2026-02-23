@@ -44,6 +44,10 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_stream_stop`: stop persistent NPC response listener
 - `slrpg_p2_status`: show login/NPC/stream state + joules balance
 - `slrpg_p2_health`: compact one-line health summary (login/npc/stream/joules/last line/last command)
+- `slrpg_customnpc_validate`: validate installed custom-NPC content packs and print errors/warnings
+- `slrpg_customnpc_list`: list loaded custom-NPC entries from installed packs
+- `slrpg_customnpc_dump <npc>`: dump one custom NPC lore profile by name/token
+- `slrpg_customnpc_reload`: reload custom-NPC packs without restarting the game
 
 Player-facing Player2 UX:
 - auto-connect on save load (config: `AutoConnectPlayer2OnLoad`, default `true`)
@@ -92,6 +96,21 @@ Config knobs:
 - `Player2MinJoulesToChat` (default `5`)
 - `StrictNpcTemplateValidation` (default `false`; when `true`, reject `quest_*` template IDs instead of repairing)
 - `EnableAmbientConsequencePipeline` (default `true`; toggles ambient event-to-consequence converters)
+- `AmbientRecordTownEventDailyCap` (default `2`; per-NPC ambient `record_town_event` cap per day, set `0` to disable)
+- `EnableCustomNpcFramework` (default `true`; enables integrated custom-NPC content pack loading)
+- `EnableCustomNpcLoreInjection` (default `true`; injects custom-NPC lore blocks into prompt context)
+- `EnableStrictCustomNpcCanonValidation` (default `true`; blocks lore/canon conflicts on load)
+- `CustomNpcLoreLocaleOverride` (default empty; optional locale override for custom-NPC lore overlays)
+- `LogCustomNpcPromptInjectionPreview` (default `false`; trace-level logs when lore blocks are appended)
+
+## Custom NPC packs (integrated)
+- Custom NPC packs should be separate folders inside `Mods/` (not inside this mod folder).
+- Pack manifest must use:
+  - `ContentPackFor.UniqueID = "mx146323.StardewLivingRPG"`
+- A starter template is included at:
+  - `custom_npc_pack_template/`
+- Canon baseline rules for strict validation are in:
+  - `assets/tlv-custom-npc-canon-baseline.json`
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).

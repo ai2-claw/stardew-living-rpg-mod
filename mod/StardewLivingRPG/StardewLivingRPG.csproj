@@ -25,6 +25,10 @@
       <HintPath>$(SMAPI_PATH)/xTile.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="SMAPI.Toolkit.CoreInterfaces">
+      <HintPath>$(SMAPI_PATH)/smapi-internal/SMAPI.Toolkit.CoreInterfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- MonoGame Framework provides XNA compatibility -->
@@ -42,6 +46,8 @@
     <PropertyGroup>
       <ModsFolder>$([System.IO.Path]::Combine('$(SMAPI_PATH)', 'Mods', 'StardewLivingRPG'))</ModsFolder>
       <I18nFolder>$([System.IO.Path]::Combine('$(ModsFolder)', 'i18n'))</I18nFolder>
+      <AssetsFolder>$([System.IO.Path]::Combine('$(ModsFolder)', 'assets'))</AssetsFolder>
+      <CustomNpcTemplateFolder>$([System.IO.Path]::Combine('$(ModsFolder)', 'custom_npc_pack_template'))</CustomNpcTemplateFolder>
       <OutputAssembly>$([System.IO.Path]::Combine('$(OutputPath)', '$(AssemblyName).dll'))</OutputAssembly>
     </PropertyGroup>
 
@@ -51,12 +57,18 @@
     <Copy SourceFiles="$(ProjectDir)manifest.json" DestinationFolder="$(ModsFolder)" />
     <Copy SourceFiles="$(ProjectDir)npc_speech_profiles.json" DestinationFolder="$(ModsFolder)" Condition="Exists('$(ProjectDir)npc_speech_profiles.json')" />
     <MakeDir Directories="$(I18nFolder)" Condition="!Exists('$(I18nFolder)')" />
+    <MakeDir Directories="$(AssetsFolder)" Condition="!Exists('$(AssetsFolder)')" />
+    <MakeDir Directories="$(CustomNpcTemplateFolder)" Condition="!Exists('$(CustomNpcTemplateFolder)')" />
     <ItemGroup>
       <I18nFiles Include="$(ProjectDir)i18n/*.json" />
       <I18nDocs Include="$(ProjectDir)i18n/*.md" />
+      <AssetFiles Include="$(ProjectDir)assets\**\*.*" />
+      <CustomNpcTemplateFiles Include="$(ProjectDir)custom_npc_pack_template\**\*.*" />
     </ItemGroup>
     <Copy SourceFiles="@(I18nFiles)" DestinationFolder="$(I18nFolder)" Condition="@(I18nFiles) != ''" />
     <Copy SourceFiles="@(I18nDocs)" DestinationFolder="$(I18nFolder)" Condition="@(I18nDocs) != ''" />
+    <Copy SourceFiles="@(AssetFiles)" DestinationFiles="@(AssetFiles->'$(AssetsFolder)\%(RecursiveDir)%(Filename)%(Extension)')" Condition="@(AssetFiles) != ''" />
+    <Copy SourceFiles="@(CustomNpcTemplateFiles)" DestinationFiles="@(CustomNpcTemplateFiles->'$(CustomNpcTemplateFolder)\%(RecursiveDir)%(Filename)%(Extension)')" Condition="@(CustomNpcTemplateFiles) != ''" />
 
     <Message Text="Copied mod files to: $(ModsFolder)" Importance="high" />
   </Target>
