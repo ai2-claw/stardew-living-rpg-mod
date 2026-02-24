@@ -44,10 +44,17 @@ public sealed class ModEntry : Mod
     private const double NpcChatClockSlowdownMultiplier = 2d;
     private const float NpcDialogueHookInteractionRadiusTiles = 3.5f;
     private const float NpcDialogueHookFallbackRadiusTiles = 3.75f;
+    private const float NpcManualFollowUpActivationRadiusTiles = 1.85f;
+    private static readonly TimeSpan NpcManualFollowUpWindow = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan NpcManualFollowUpSuppressDuration = TimeSpan.FromMilliseconds(160);
+    private static readonly TimeSpan NpcManualFollowUpNoVanillaDelay = TimeSpan.FromMilliseconds(350);
+    private static readonly Rectangle NpcManualFollowUpBubbleSourceRect = new(66, 4, 14, 14);
+    private static readonly Color NpcManualFollowUpBubbleTintFollowUp = new(124, 214, 255);
+    private static readonly Color NpcManualFollowUpBubbleTintDefault = new(156, 224, 183);
     private static readonly TimeSpan PendingFallbackQuestOfferMaxAge = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan VanillaDialogueContextMaxAge = TimeSpan.FromMinutes(12);
     private const int VanillaDialogueContextSequenceMaxLines = 6;
-    private const string InitialNpcChatPrompt = "Got a minute to chat?";
+    private const string InitialNpcChatPrompt = "Let's chat.";
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
     private const string CreatorPlayer2GameClientId = "019c4693-2a12-7ef5-bae2-ff29ee9fa674";
 
@@ -324,6 +331,11 @@ public sealed class ModEntry : Mod
     private bool _npcDialogueHookArmed;
     private bool _npcDialogueHookMenuOpened;
     private DateTime _npcDialogueHookArmedUtc;
+    private string? _manualNpcFollowUpName;
+    private NPC? _manualNpcFollowUpNpc;
+    private string _manualNpcFollowUpContextTag = "player_chat";
+    private DateTime _manualNpcFollowUpReadyUtc;
+    private DateTime _manualNpcFollowUpSuppressUntilUtc;
     private DateTime _npcChatClockLastTickUtc;
     private double _npcChatClockAccumulatorMs;
     private bool _npcChatClockMethodMissingLogged;
@@ -381,6 +393,7 @@ public sealed class ModEntry : Mod
         helper.Events.GameLoop.DayEnding += OnDayEnding;
         helper.Events.GameLoop.DayStarted += OnDayStarted;
         helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
+        helper.Events.Display.RenderedWorld += OnRenderedWorld;
         helper.Events.Display.RenderedHud += OnRenderedHud;
         helper.Events.Display.MenuChanged += OnMenuChanged;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
@@ -513,6 +526,8 @@ public sealed class ModEntry : Mod
         _state = StateStore.LoadOrCreate(Helper, Monitor);
         _state.ApplyConfig(_config);
         _recentVanillaDialogueByNpcToken.Clear();
+        ClearNpcDialogueHook();
+        ClearManualNpcFollowUpState();
         SyncCalendarSeasonFromWorld();
         _economyService?.EnsureInitialized(_state.Economy);
         _rumorBoardService?.ExpireOverdueQuests(_state);
@@ -545,6 +560,8 @@ public sealed class ModEntry : Mod
         SyncCalendarSeasonFromWorld();
         _pendingDayStartStreamRecycleDay = -1;
         _recentVanillaDialogueByNpcToken.Clear();
+        ClearNpcDialogueHook();
+        ClearManualNpcFollowUpState();
         TryCapturePendingLateNightPassOut();
         _lastNpcPublishAppliedDay = -1;
         _lastNpcPublishAppliedTimeOfDay = -1;
@@ -618,7 +635,8 @@ public sealed class ModEntry : Mod
         if (Game1.activeClickableMenu is not null)
             return;
 
-        TryHandleNpcWorkDialogueHook(e);
+        if (TryHandleNpcWorkDialogueHook(e))
+            return;
 
         if (e.Button == SButton.MouseLeft)
         {
@@ -701,6 +719,12 @@ public sealed class ModEntry : Mod
         if (!e.Button.IsActionButton())
             return false;
 
+        if (DateTime.UtcNow < _manualNpcFollowUpSuppressUntilUtc)
+            return true;
+
+        if (TryOpenNpcManualFollowUpFromAction(e))
+            return true;
+
         if (Game1.activeClickableMenu is not null || Game1.dialogueUp)
             return false;
 
@@ -714,9 +738,155 @@ public sealed class ModEntry : Mod
             return false;
 
         // Additive hook: don't block vanilla interaction.
-        // We arm a follow-up question shown after vanilla dialogue/menu closes.
+        // Arm context capture for this interaction. We may open manual chat later,
+        // but never auto-open on dialogue/shop close.
         ArmNpcDialogueHook(nearbyRequester);
         return false;
+    }
+
+    private bool TryOpenNpcManualFollowUpFromAction(ButtonPressedEventArgs e)
+    {
+        if (Game1.currentLocation is null)
+            return false;
+
+        if (!TryResolveActiveManualNpcFollowUp(out var followUpNpc, out var contextTag))
+            return false;
+
+        var hoveredNpc = TryResolveNpcDialogueHookTarget(Game1.currentLocation);
+        if (hoveredNpc is null || !IsSameNpcIdentity(hoveredNpc, followUpNpc))
+            return false;
+
+        if (Vector2.Distance(hoveredNpc.Tile, Game1.player.Tile) > NpcManualFollowUpActivationRadiusTiles)
+            return false;
+
+        ClearNpcDialogueHook();
+        ClearManualNpcFollowUpState();
+        TryRecordSocialVisitProgress(hoveredNpc.Name);
+        Helper.Input.Suppress(e.Button);
+        OpenNpcChatMenu(
+            hoveredNpc,
+            initialPlayerMessage: InitialNpcChatPrompt,
+            autoSendInitialPlayerMessage: true,
+            defaultContextTag: contextTag);
+        _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
+        return true;
+    }
+
+    private bool TryResolveActiveManualNpcFollowUp(out NPC npc, out string contextTag)
+    {
+        npc = null!;
+        contextTag = "player_chat";
+
+        if (string.IsNullOrWhiteSpace(_manualNpcFollowUpName) || _manualNpcFollowUpReadyUtc == default)
+            return false;
+
+        if (DateTime.UtcNow - _manualNpcFollowUpReadyUtc > NpcManualFollowUpWindow)
+        {
+            ClearManualNpcFollowUpState();
+            return false;
+        }
+
+        if (Game1.currentLocation is null)
+            return false;
+
+        npc = Game1.currentLocation.characters.FirstOrDefault(candidate =>
+            candidate is not null
+            && !string.IsNullOrWhiteSpace(candidate.Name)
+            && string.Equals(candidate.Name, _manualNpcFollowUpName, StringComparison.OrdinalIgnoreCase))
+            ?? _manualNpcFollowUpNpc!;
+
+        if (npc is null || !IsRosterNpc(npc))
+        {
+            ClearManualNpcFollowUpState();
+            return false;
+        }
+
+        if (!IsSameNpcName(npc, _manualNpcFollowUpName))
+        {
+            ClearManualNpcFollowUpState();
+            return false;
+        }
+
+        contextTag = string.IsNullOrWhiteSpace(_manualNpcFollowUpContextTag)
+            ? "player_chat"
+            : _manualNpcFollowUpContextTag;
+        return true;
+    }
+
+    private void MarkManualNpcFollowUpReady(NPC npc)
+    {
+        if (npc is null || string.IsNullOrWhiteSpace(npc.Name))
+            return;
+
+        _manualNpcFollowUpName = npc.Name;
+        _manualNpcFollowUpNpc = npc;
+        _manualNpcFollowUpReadyUtc = DateTime.UtcNow;
+        _manualNpcFollowUpContextTag = TryGetRecentVanillaDialogueContext(npc.Name, out _)
+            ? "player_chat_followup"
+            : "player_chat";
+    }
+
+    private void ClearManualNpcFollowUpState()
+    {
+        _manualNpcFollowUpName = null;
+        _manualNpcFollowUpNpc = null;
+        _manualNpcFollowUpContextTag = "player_chat";
+        _manualNpcFollowUpReadyUtc = default;
+    }
+
+    private void TryExpireManualNpcFollowUpState()
+    {
+        if (string.IsNullOrWhiteSpace(_manualNpcFollowUpName))
+            return;
+
+        if (DateTime.UtcNow - _manualNpcFollowUpReadyUtc > NpcManualFollowUpWindow)
+        {
+            ClearManualNpcFollowUpState();
+            return;
+        }
+
+        if (Game1.currentLocation is null)
+        {
+            ClearManualNpcFollowUpState();
+            return;
+        }
+
+        var currentNpc = Game1.currentLocation.characters.FirstOrDefault(candidate =>
+            candidate is not null
+            && !string.IsNullOrWhiteSpace(candidate.Name)
+            && string.Equals(candidate.Name, _manualNpcFollowUpName, StringComparison.OrdinalIgnoreCase));
+        if (currentNpc is null)
+        {
+            ClearManualNpcFollowUpState();
+            return;
+        }
+
+        if (Vector2.Distance(currentNpc.Tile, Game1.player.Tile) > NpcDialogueHookInteractionRadiusTiles)
+            ClearManualNpcFollowUpState();
+    }
+
+    private static bool IsSameNpcIdentity(NPC left, NPC right)
+    {
+        if (left is null || right is null)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(left.Name)
+            && !string.IsNullOrWhiteSpace(right.Name)
+            && string.Equals(left.Name, right.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(left.displayName)
+            && !string.IsNullOrWhiteSpace(right.displayName)
+            && string.Equals(left.displayName, right.displayName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSameNpcName(NPC npc, string? expectedName)
+    {
+        return !string.IsNullOrWhiteSpace(expectedName)
+            && !string.IsNullOrWhiteSpace(npc.Name)
+            && string.Equals(npc.Name, expectedName, StringComparison.OrdinalIgnoreCase);
     }
 
     private NPC? TryResolveNpcDialogueHookTarget(GameLocation location)
@@ -780,6 +950,7 @@ public sealed class ModEntry : Mod
         if (npc is null || string.IsNullOrWhiteSpace(npc.Name))
             return;
 
+        ClearManualNpcFollowUpState();
         SetNpcDialogueHookTarget(npc);
         BeginVanillaDialogueCaptureSession(npc);
         _npcDialogueHookArmed = true;
@@ -1133,7 +1304,7 @@ public sealed class ModEntry : Mod
         var responses = new List<Response>();
         if (HasPendingQuestForNpc(name))
             responses.Add(new Response("town_word", "What's the word around town?"));
-        responses.Add(new Response("talk", "Got a minute to chat?"));
+        responses.Add(new Response("talk", "Let's chat."));
         responses.Add(new Response("later", "Catch you later!"));
 
         loc.createQuestionDialogue(
@@ -1539,6 +1710,7 @@ public sealed class ModEntry : Mod
         TrackLateNightPassOutWindow();
         TryCaptureTownIncidents();
         TryCaptureLiveWorldEvents();
+        TryExpireManualNpcFollowUpState();
         TryCaptureVanillaDialogueContextFromMenu(Game1.activeClickableMenu, _pendingNpcDialogueHookName);
         TryHandleNpcDialogueHookFallback();
 
@@ -2469,6 +2641,9 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
+        if (e.NewMenu is not null && e.NewMenu is not NpcChatInputMenu)
+            ClearManualNpcFollowUpState();
+
         if (e.NewMenu is not null)
         {
             TryArmNpcDialogueHookFromMenu(e.NewMenu);
@@ -2478,7 +2653,7 @@ public sealed class ModEntry : Mod
         if (!_npcDialogueHookArmed)
             return;
 
-        // Wait until dialogue/menu closes, then append our choice as a follow-up question.
+        // Track vanilla menu lifecycle for this interaction.
         if (e.NewMenu is not null)
         {
             _npcDialogueHookMenuOpened = true;
@@ -2497,13 +2672,15 @@ public sealed class ModEntry : Mod
         var requesterName = _pendingNpcDialogueHookName;
         var loc = Game1.currentLocation;
         var npc = ResolvePendingNpcDialogueHookNpc(requesterName, loc);
-        var suppressFirstInteractionGreeting = _npcDialogueHookMenuOpened;
+        var sawVanillaMenu = _npcDialogueHookMenuOpened;
         ClearNpcDialogueHook();
         if (npc is null)
             return;
 
-        TryRecordSocialVisitProgress(npc.Name);
-        OpenNpcFollowUpDialogue(loc!, npc, suppressFirstInteractionGreeting);
+        if (!sawVanillaMenu)
+            return;
+
+        MarkManualNpcFollowUpReady(npc);
     }
 
     private void TryHandleNpcDialogueHookFallback()
@@ -2522,7 +2699,7 @@ public sealed class ModEntry : Mod
 
         // Give vanilla interaction a brief moment to open dialogue/menu first.
         if (_npcDialogueHookArmedUtc != default
-            && DateTime.UtcNow - _npcDialogueHookArmedUtc < TimeSpan.FromMilliseconds(350))
+            && DateTime.UtcNow - _npcDialogueHookArmedUtc < NpcManualFollowUpNoVanillaDelay)
             return;
 
         var requesterName = _pendingNpcDialogueHookName;
@@ -2535,8 +2712,14 @@ public sealed class ModEntry : Mod
         }
 
         ClearNpcDialogueHook();
+        ClearManualNpcFollowUpState();
         TryRecordSocialVisitProgress(npc.Name);
-        OpenNpcFollowUpDialogue(loc!, npc);
+        OpenNpcChatMenu(
+            npc,
+            initialPlayerMessage: InitialNpcChatPrompt,
+            autoSendInitialPlayerMessage: true,
+            defaultContextTag: "player_chat");
+        _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
     }
 
     private void OpenNpcFollowUpDialogue(GameLocation loc, NPC npc, bool suppressFirstInteractionGreeting = false)
@@ -2547,7 +2730,7 @@ public sealed class ModEntry : Mod
         var responses = new List<Response>();
         if (HasPendingQuestForNpc(npc.Name ?? npc.displayName))
             responses.Add(new Response("town_word", "What's the word around town?"));
-        responses.Add(new Response("talk", "Got a minute to chat?"));
+        responses.Add(new Response("talk", "Let's chat."));
         responses.Add(new Response("later", "Catch you later!"));
 
         loc.createQuestionDialogue(
@@ -2593,6 +2776,40 @@ public sealed class ModEntry : Mod
         var completedVisits = _rumorBoardService.RecordSocialVisitProgress(_state, npcName);
         if (completedVisits > 0)
             Monitor.Log($"Social visit progress updated for {npcName} ({completedVisits} request(s)).", LogLevel.Trace);
+    }
+
+    private void OnRenderedWorld(object? sender, RenderedWorldEventArgs e)
+    {
+        if (!Context.IsWorldReady || Game1.eventUp || Game1.activeClickableMenu is not null || Game1.dialogueUp)
+            return;
+
+        if (Game1.currentLocation is null)
+            return;
+
+        if (!TryResolveActiveManualNpcFollowUp(out var followUpNpc, out var contextTag))
+            return;
+
+        var hoveredNpc = TryResolveNpcDialogueHookTarget(Game1.currentLocation);
+        if (hoveredNpc is null || !IsSameNpcIdentity(hoveredNpc, followUpNpc))
+            return;
+
+        var bubbleTint = string.Equals(contextTag, "player_chat_followup", StringComparison.OrdinalIgnoreCase)
+            ? NpcManualFollowUpBubbleTintFollowUp
+            : NpcManualFollowUpBubbleTintDefault;
+
+        var bounds = hoveredNpc.GetBoundingBox();
+        var worldTopCenter = new Vector2(bounds.Center.X, bounds.Top - 28);
+        var localTopCenter = Game1.GlobalToLocal(Game1.viewport, worldTopCenter);
+        var bubbleSize = 28;
+        var bubbleRect = new Rectangle(
+            (int)localTopCenter.X - (bubbleSize / 2),
+            (int)localTopCenter.Y - (bubbleSize / 2),
+            bubbleSize,
+            bubbleSize);
+        var bubbleShadowRect = new Rectangle(bubbleRect.X + 2, bubbleRect.Y + 2, bubbleRect.Width, bubbleRect.Height);
+
+        e.SpriteBatch.Draw(Game1.mouseCursors, bubbleShadowRect, NpcManualFollowUpBubbleSourceRect, Color.Black * 0.35f);
+        e.SpriteBatch.Draw(Game1.mouseCursors, bubbleRect, NpcManualFollowUpBubbleSourceRect, bubbleTint);
     }
 
     private void OnRenderedHud(object? sender, RenderedHudEventArgs e)
@@ -6276,7 +6493,7 @@ public sealed class ModEntry : Mod
         var sourceDialogueContext = BuildSourceModDialogueContextBlock(npcName, playerText);
         var vanillaDialogueFollowUpRule = string.IsNullOrWhiteSpace(vanillaDialogueContext)
             ? string.Empty
-            : "FOLLOWUP_DIALOGUE_RULE: If player opens with small-talk like 'Got a minute to chat?', continue naturally from VANILLA_DIALOGUE_CONTEXT before switching topics.";
+            : "FOLLOWUP_DIALOGUE_RULE: If player opens with small-talk like 'Let's chat.', continue naturally from VANILLA_DIALOGUE_CONTEXT before switching topics.";
         var playerAskedForRequest = IsPlayerAskingForQuest(playerText);
         var questDiversityContext = BuildQuestDiversityBlock(npcName, playerAskedForRequest);
         var effectiveContextTag = string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag!;
