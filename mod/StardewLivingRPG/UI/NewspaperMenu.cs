@@ -11,88 +11,251 @@ namespace StardewLivingRPG.UI;
 public sealed class NewspaperMenu : IClickableMenu
 {
     private readonly NewspaperIssue? _issue;
-    
-    // --- ADDED: Close button component ---
     private readonly ClickableTextureComponent _closeButton;
+    private Rectangle _paperRect;
+    private Rectangle _contentViewport;
+    private Rectangle _scrollTrackRegion;
+    private Rectangle _scrollThumbRegion;
+    private int _contentScrollOffset;
+    private int _contentHeight;
+    private bool _scrollThumbHeld;
+    private int _scrollThumbDragOffset;
 
     // Layout constants
+    private const int MenuWidth = 640;
+    private const int MenuHeight = 822;
     private const int MastheadHeight = 100;
+    private const int PaperInsetX = 32;
+    private const int PaperInsetTop = 96;
+    private const int PaperInsetBottom = 32;
+    private const int ContentHorizontalPadding = 30;
+    private const int ContentBottomPadding = 20;
+    private const int ContentTopSpacingBelowMasthead = 20;
+    private const int ScrollBarWidth = 24;
+    private const int ScrollBarGap = 8;
 
     public NewspaperMenu(NewspaperIssue? issue)
         : base(
-            Game1.uiViewport.Width / 2 - 320,
-            Game1.uiViewport.Height / 2 - 411
-        ,
-            640,
-            822,
+            Game1.uiViewport.Width / 2 - (MenuWidth / 2),
+            Game1.uiViewport.Height / 2 - (MenuHeight / 2),
+            MenuWidth,
+            MenuHeight,
             true)
     {
         _issue = issue;
-
-        // --- ADDED: Initialize the Red X Close Button ---
-        // Positioned top-right, slightly overlapping the border
         _closeButton = new ClickableTextureComponent(
-            new Rectangle(xPositionOnScreen + width - 48, yPositionOnScreen + 68, 48, 48),
+            Rectangle.Empty,
             Game1.mouseCursors,
             new Rectangle(337, 494, 12, 12),
             4f);
+        RecalculateLayout();
     }
 
-    // --- ADDED: Handle Hover Effects ---
+    public override void gameWindowSizeChanged(Rectangle oldBounds, Rectangle newBounds)
+    {
+        base.gameWindowSizeChanged(oldBounds, newBounds);
+        RecalculateLayout();
+    }
+
+    private void RecalculateLayout()
+    {
+        xPositionOnScreen = Game1.uiViewport.Width / 2 - (MenuWidth / 2);
+        yPositionOnScreen = Game1.uiViewport.Height / 2 - (MenuHeight / 2);
+        width = MenuWidth;
+        height = MenuHeight;
+
+        _paperRect = new Rectangle(
+            xPositionOnScreen + PaperInsetX,
+            yPositionOnScreen + PaperInsetTop,
+            width - (PaperInsetX * 2),
+            height - (PaperInsetTop + PaperInsetBottom));
+
+        var contentY = _paperRect.Y + MastheadHeight + ContentTopSpacingBelowMasthead;
+        _contentViewport = new Rectangle(
+            _paperRect.X + ContentHorizontalPadding,
+            contentY,
+            _paperRect.Width - (ContentHorizontalPadding * 2) - ScrollBarGap - ScrollBarWidth,
+            _paperRect.Bottom - contentY - ContentBottomPadding);
+
+        _scrollTrackRegion = new Rectangle(
+            _contentViewport.Right + ScrollBarGap,
+            _contentViewport.Y,
+            ScrollBarWidth,
+            _contentViewport.Height);
+
+        _closeButton.bounds = new Rectangle(
+            xPositionOnScreen + width - 48,
+            yPositionOnScreen + 68,
+            48,
+            48);
+
+        ClampScrollOffset();
+        UpdateScrollThumbRegion();
+    }
+
     public override void performHoverAction(int x, int y)
     {
         base.performHoverAction(x, y);
         _closeButton.tryHover(x, y);
     }
 
-    // --- ADDED: Handle Clicks ---
     public override void receiveLeftClick(int x, int y, bool playSound = true)
     {
         base.receiveLeftClick(x, y, playSound);
 
-        if (_closeButton.containsPoint(x, y))
+        if (_scrollThumbRegion.Contains(x, y) && CanScroll())
         {
-            exitThisMenu(playSound);
+            _scrollThumbHeld = true;
+            _scrollThumbDragOffset = y - _scrollThumbRegion.Y;
+            return;
         }
+
+        if (_scrollTrackRegion.Contains(x, y) && CanScroll())
+        {
+            if (y < _scrollThumbRegion.Y)
+                ScrollBy(-_contentViewport.Height / 2);
+            else if (y > _scrollThumbRegion.Bottom)
+                ScrollBy(_contentViewport.Height / 2);
+            return;
+        }
+
+        if (_closeButton.containsPoint(x, y))
+            exitThisMenu(playSound);
+    }
+
+    public override void leftClickHeld(int x, int y)
+    {
+        base.leftClickHeld(x, y);
+        if (!_scrollThumbHeld || !CanScroll())
+            return;
+
+        var trackHeight = _scrollTrackRegion.Height - _scrollThumbRegion.Height;
+        var newThumbY = Math.Clamp(y - _scrollThumbDragOffset, _scrollTrackRegion.Y, _scrollTrackRegion.Y + trackHeight);
+        var scrollPercent = trackHeight > 0 ? (float)(newThumbY - _scrollTrackRegion.Y) / trackHeight : 0f;
+        var maxScroll = Math.Max(0, _contentHeight - _contentViewport.Height);
+        _contentScrollOffset = (int)(scrollPercent * maxScroll);
+    }
+
+    public override void releaseLeftClick(int x, int y)
+    {
+        base.releaseLeftClick(x, y);
+        _scrollThumbHeld = false;
+    }
+
+    public override void receiveScrollWheelAction(int direction)
+    {
+        base.receiveScrollWheelAction(direction);
+        if (_contentViewport.Contains(Game1.getMouseX(), Game1.getMouseY()) || _scrollTrackRegion.Contains(Game1.getMouseX(), Game1.getMouseY()))
+            ScrollBy(-direction * Game1.smallFont.LineSpacing * 2);
     }
 
     public override void draw(SpriteBatch b)
     {
-        // 1. Draw Standard Menu Background (The outer frame)
         Game1.drawDialogueBox(xPositionOnScreen, yPositionOnScreen, width, height, false, true);
 
-        // 2. Draw "Paper" Background (White/Cream rectangle inside)
-        var paperRect = new Rectangle(
-            xPositionOnScreen + 32, 
-            yPositionOnScreen + 96, 
-            width - 64, 
-            height - 128
-        );
-        b.Draw(Game1.staminaRect, paperRect, new Color(250, 228, 187)); // Cream/Paper white
+        b.Draw(Game1.staminaRect, _paperRect, new Color(250, 228, 187));
 
         if (_issue is null)
         {
-            DrawError(b, paperRect);
-            
-            // Draw close button even if there is an error
+            DrawError(b, _paperRect);
             _closeButton.draw(b);
             drawMouse(b);
             return;
         }
 
-        // 3. Draw Masthead (profile-driven newspaper title)
-        DrawMasthead(b, paperRect);
+        DrawMasthead(b, _paperRect);
 
-        // 4. Draw Content
-        var contentY = paperRect.Y + MastheadHeight + 20;
-        DrawContent(b, paperRect, contentY);
+        var contentStartY = _contentViewport.Y;
+        var contentBottom = DrawContent(
+            b: null,
+            paperRect: _paperRect,
+            contentX: _contentViewport.X,
+            contentMaxWidth: _contentViewport.Width,
+            startY: contentStartY,
+            draw: false);
+        _contentHeight = Math.Max(0, contentBottom - contentStartY);
+        ClampScrollOffset();
+        UpdateScrollThumbRegion();
 
-        // 5. Draw Close Button (Standard upper right)
+        DrawContentClipped(b);
+        DrawScrollbar(b);
+
         _closeButton.draw(b);
         base.drawMouse(b);
     }
 
-    private int DrawArticles(SpriteBatch b, Rectangle paperRect, int startY)
+    private bool CanScroll()
+    {
+        return _contentHeight > _contentViewport.Height;
+    }
+
+    private void ScrollBy(int delta)
+    {
+        var maxScroll = Math.Max(0, _contentHeight - _contentViewport.Height);
+        _contentScrollOffset = Math.Clamp(_contentScrollOffset + delta, 0, maxScroll);
+        UpdateScrollThumbRegion();
+    }
+
+    private void ClampScrollOffset()
+    {
+        var maxScroll = Math.Max(0, _contentHeight - _contentViewport.Height);
+        _contentScrollOffset = Math.Clamp(_contentScrollOffset, 0, maxScroll);
+    }
+
+    private void UpdateScrollThumbRegion()
+    {
+        if (!CanScroll())
+        {
+            _scrollThumbRegion = Rectangle.Empty;
+            return;
+        }
+
+        var maxScroll = _contentHeight - _contentViewport.Height;
+        var thumbRatio = (float)_contentViewport.Height / _contentHeight;
+        var thumbHeight = Math.Max(20, (int)(_scrollTrackRegion.Height * thumbRatio));
+        var scrollPercent = maxScroll > 0 ? (float)_contentScrollOffset / maxScroll : 0f;
+        var thumbY = _scrollTrackRegion.Y + (int)((_scrollTrackRegion.Height - thumbHeight) * scrollPercent);
+
+        _scrollThumbRegion = new Rectangle(
+            _scrollTrackRegion.X + 4,
+            thumbY,
+            _scrollTrackRegion.Width - 8,
+            thumbHeight);
+    }
+
+    private void DrawContentClipped(SpriteBatch b)
+    {
+        var oldScissor = Game1.graphics.GraphicsDevice.ScissorRectangle;
+        var rasterizer = new RasterizerState { ScissorTestEnable = true };
+
+        b.End();
+        b.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, null, rasterizer);
+        Game1.graphics.GraphicsDevice.ScissorRectangle = _contentViewport;
+
+        DrawContent(
+            b,
+            _paperRect,
+            _contentViewport.X,
+            _contentViewport.Width,
+            _contentViewport.Y - _contentScrollOffset,
+            draw: true);
+
+        b.End();
+        b.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, null, null);
+        Game1.graphics.GraphicsDevice.ScissorRectangle = oldScissor;
+    }
+
+    private void DrawScrollbar(SpriteBatch b)
+    {
+        if (!CanScroll())
+            return;
+
+        b.Draw(Game1.staminaRect, _scrollTrackRegion, new Color(139, 90, 43) * 0.3f);
+        var thumbColor = _scrollThumbHeld ? new Color(221, 148, 25) : new Color(191, 118, 15);
+        b.Draw(Game1.staminaRect, _scrollThumbRegion, thumbColor);
+    }
+
+    private int DrawArticles(SpriteBatch? b, Rectangle paperRect, int contentX, int contentWidth, int startY, bool draw)
     {
         if (_issue?.Articles == null || _issue.Articles.Count == 0)
             return startY;
@@ -100,35 +263,32 @@ public sealed class NewspaperMenu : IClickableMenu
         var y = startY;
         y += 10;
 
-        // Horizontal separator line (match Market Outlook separator style)
-        b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, y, paperRect.Width - 40, 1), Color.Black * 0.3f);
+        if (draw && b is not null)
+            b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, y, paperRect.Width - 40, 1), Color.Black * 0.3f);
         y += 15;
 
-        // Section header (smaller)
-        b.DrawString(
-            Game1.smallFont,
-            I18n.Get("newspaper.section.community_news", "Community News"),
-            new Vector2(paperRect.X + 30, y),
-            new Color(63, 78, 111));
-        y += 40; // Tightened spacing under section label by 10px.
+        if (draw && b is not null)
+        {
+            b.DrawString(
+                Game1.smallFont,
+                I18n.Get("newspaper.section.community_news", "Community News"),
+                new Vector2(contentX, y),
+                new Color(63, 78, 111));
+        }
+        y += 40;
 
-        var singleColumnX = paperRect.X + 30;
-        var singleColumnWidth = paperRect.Width - 60;
         var singleColumnY = y;
         foreach (var article in _issue.Articles)
         {
-            DrawArticle(b, article, singleColumnX, ref singleColumnY, singleColumnWidth);
+            DrawArticle(b, article, contentX, ref singleColumnY, contentWidth, draw);
             singleColumnY += 16;
         }
 
         return singleColumnY;
     }
 
-    private void DrawArticle(SpriteBatch b, NewspaperArticle article, int x, ref int y, int maxWidth)
+    private void DrawArticle(SpriteBatch? b, NewspaperArticle article, int x, ref int y, int maxWidth, bool draw)
     {
-        var startY = y;
-
-        // Category badge (smaller)
         var categoryColor = article.Category.ToLowerInvariant() switch
         {
             "community" => new Color(60, 140, 60),
@@ -150,13 +310,11 @@ public sealed class NewspaperMenu : IClickableMenu
         else
             categoryText = I18n.Get("newspaper.category.news", "News");
 
-        // Portrait and header row
         var portraitSize = 40;
         var portraitX = x;
         var portraitY = y + 4;
 
-        // Load and draw NPC portrait if available
-        if (!string.IsNullOrEmpty(article.SourceNpc) && article.SourceNpc != "Debug")
+        if (draw && b is not null && !string.IsNullOrEmpty(article.SourceNpc) && article.SourceNpc != "Debug")
         {
             try
             {
@@ -165,26 +323,21 @@ public sealed class NewspaperMenu : IClickableMenu
                 var npc = Game1.getCharacterFromName(npcName);
                 if (npc?.Portrait != null)
                 {
-                    // NPC portraits are typically 64x64 per frame, draw the default neutral one (frame 0)
                     var sourceRect = new Rectangle(0, 0, 64, 64);
                     b.Draw(npc.Portrait, new Rectangle(portraitX, portraitY, portraitSize, portraitSize), sourceRect, Color.White * 0.9f);
                 }
             }
             catch
             {
-                // Silently fallback if portrait can't be loaded
             }
         }
 
-        // Draw category and name to the right of portrait
         var textX = x + portraitSize + 8;
-        var textMaxWidth = maxWidth - portraitSize - 8;
-
-        b.DrawString(Game1.smallFont, $"[{categoryText}]", new Vector2(textX, y), categoryColor * 0.8f);
+        if (draw && b is not null)
+            b.DrawString(Game1.smallFont, $"[{categoryText}]", new Vector2(textX, y), categoryColor * 0.8f);
         y += 28;
 
-        // NPC name
-        if (!string.IsNullOrEmpty(article.SourceNpc))
+        if (draw && b is not null && !string.IsNullOrEmpty(article.SourceNpc))
         {
             var townProfile = TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name);
             var displayName = article.SourceNpc switch
@@ -195,22 +348,22 @@ public sealed class NewspaperMenu : IClickableMenu
             };
             b.DrawString(Game1.smallFont, displayName, new Vector2(textX, y), new Color(40, 20, 10));
         }
-        y += 30; // Spacing after portrait row
+        y += 30;
 
-        // Title
         var wrappedTitle = TextWrapHelper.WrapText(Game1.smallFont, article.Title, maxWidth);
         foreach (var line in wrappedTitle)
         {
-            b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(40, 20, 10));
+            if (draw && b is not null)
+                b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(40, 20, 10));
             y += 26;
         }
-        y += 8; // Spacing between title and content
+        y += 8;
 
-        // Content
         var wrappedContent = TextWrapHelper.WrapText(Game1.smallFont, article.Content, maxWidth);
         foreach (var line in wrappedContent)
         {
-            b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(60, 50, 40));
+            if (draw && b is not null)
+                b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(60, 50, 40));
             y += 22;
         }
     }
@@ -277,78 +430,77 @@ public sealed class NewspaperMenu : IClickableMenu
             || TownProfileResolver.ResolveForLocation("Custom_Ridgeside_RidgesideVillage").IsEditorSource(sourceNpc);
     }
 
-    private void DrawContent(SpriteBatch b, Rectangle paperRect, int startY)
+    private int DrawContent(
+        SpriteBatch? b,
+        Rectangle paperRect,
+        int contentX,
+        int contentMaxWidth,
+        int startY,
+        bool draw)
     {
-        if (_issue is null) return;
+        if (_issue is null)
+            return startY;
 
-        var x = paperRect.X + 30;
         var y = startY;
-        var maxWidth = paperRect.Width - 60; // Margin for text wrapping
 
-        // --- HEADLINE ---
         string headline = _issue.Headline ?? I18n.Get("newspaper.headline.fallback", "Breaking News");
-        
-        // Use TextWrapHelper for Headline
-        var wrappedHeadline = TextWrapHelper.WrapText(Game1.dialogueFont, headline, maxWidth);
-        
+        var wrappedHeadline = TextWrapHelper.WrapText(Game1.dialogueFont, headline, contentMaxWidth);
         foreach (var line in wrappedHeadline)
         {
-            b.DrawString(Game1.dialogueFont, line, new Vector2(x, y), new Color(40, 20, 10));
+            if (draw && b is not null)
+                b.DrawString(Game1.dialogueFont, line, new Vector2(contentX, y), new Color(40, 20, 10));
             y += 48;
         }
-        
-        y += 10; 
+        y += 10;
 
-        // --- MAIN BODY SECTIONS ---
         if (_issue.Sections != null)
         {
             foreach (var section in _issue.Sections)
             {
-                // Use TextWrapHelper for Body Text
-                var wrappedBody = TextWrapHelper.WrapText(Game1.smallFont, section, maxWidth);
-
+                var wrappedBody = TextWrapHelper.WrapText(Game1.smallFont, section, contentMaxWidth);
                 foreach (var line in wrappedBody)
                 {
-                    b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(60, 50, 40));
+                    if (draw && b is not null)
+                        b.DrawString(Game1.smallFont, line, new Vector2(contentX, y), new Color(60, 50, 40));
                     y += 28;
                 }
-                y += 16; // Paragraph spacing
+                y += 16;
             }
         }
 
-        // --- SEPARATOR ---
         y += 10;
-        b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, y, paperRect.Width - 40, 1), Color.Black * 0.3f);
+        if (draw && b is not null)
+            b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, y, paperRect.Width - 40, 1), Color.Black * 0.3f);
         y += 20;
 
-        // --- FORECAST / OUTLOOK ---
         if (_issue.PredictiveHints != null && _issue.PredictiveHints.Any())
         {
-            b.DrawString(
-                Game1.smallFont,
-                I18n.Get("newspaper.section.market_outlook", "Market Outlook"),
-                new Vector2(x, y),
-                new Color(200, 74, 67));
+            if (draw && b is not null)
+            {
+                b.DrawString(
+                    Game1.smallFont,
+                    I18n.Get("newspaper.section.market_outlook", "Market Outlook"),
+                    new Vector2(contentX, y),
+                    new Color(200, 74, 67));
+            }
             y += 30;
 
             foreach (var hint in _issue.PredictiveHints)
             {
                 var bulletText = $"- {hint}";
-
-                // Use TextWrapHelper for Hints
-                var wrappedHint = TextWrapHelper.WrapText(Game1.smallFont, bulletText, maxWidth);
-
+                var wrappedHint = TextWrapHelper.WrapText(Game1.smallFont, bulletText, contentMaxWidth);
                 foreach (var line in wrappedHint)
                 {
-                    b.DrawString(Game1.smallFont, line, new Vector2(x + 10, y), new Color(70, 60, 50));
+                    if (draw && b is not null)
+                        b.DrawString(Game1.smallFont, line, new Vector2(contentX + 10, y), new Color(70, 60, 50));
                     y += 24;
                 }
                 y += 4;
             }
         }
 
-        // --- AI-GENERATED ARTICLES SECTION ---
-        y = DrawArticles(b, paperRect, y);
+        y = DrawArticles(b, paperRect, contentX, contentMaxWidth, y, draw);
+        return y;
     }
 
     private void DrawError(SpriteBatch b, Rectangle paperRect)
