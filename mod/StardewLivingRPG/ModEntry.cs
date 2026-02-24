@@ -1531,7 +1531,9 @@ public sealed class ModEntry : Mod
             () => !string.IsNullOrWhiteSpace(npcIdForChat) && IsNpcThinking(npcIdForChat),
             heartLevel,
             initialPlayerMessage,
-            autoSendInitialPlayerMessage);
+            autoSendInitialPlayerMessage,
+            portraitAssetName: npcName,
+            resolveLiveNpc: () => ResolveNpcByName(npcName) ?? ResolveNpcByName(npc.displayName) ?? npc);
     }
 
     private bool HasPendingQuestForNpc(string npcName)
@@ -6682,6 +6684,7 @@ public sealed class ModEntry : Mod
             $"STYLE: Reply strictly in-character as {(string.IsNullOrWhiteSpace(npcName) ? "the addressed NPC" : npcName)}, concise, natural, no assistant-speak.",
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
+            "STYLE: Optional portrait cue at start of spoken text: <emotion:neutral|happy|sad|angry|surprised|worried>. Keep at most one tag.",
             promptLanguageRule,
             "LANGUAGE_RULE: For structured command outputs, keep command names and argument keys in English; localize only string values.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",

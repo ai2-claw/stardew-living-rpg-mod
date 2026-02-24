@@ -11,11 +11,47 @@ namespace StardewLivingRPG.UI;
 
 public sealed class NpcChatInputMenu : IClickableMenu
 {
+    private enum PortraitEmotion
+    {
+        Neutral,
+        Happy,
+        Sad,
+        Angry,
+        Surprised,
+        Worried
+    }
+
+    private const int PortraitFrameSize = 64;
+    private static readonly TimeSpan LivePortraitRefreshInterval = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan EmotionNeutralDecay = TimeSpan.FromSeconds(8);
+    private static readonly string[] HappyEmotionTokens =
+    {
+        "happy", "glad", "great", "wonderful", "excited", "delighted", "thanks", "thank you", "haha", "heh"
+    };
+    private static readonly string[] SadEmotionTokens =
+    {
+        "sad", "sorry", "down", "unhappy", "regret", "sigh", "disappointed"
+    };
+    private static readonly string[] AngryEmotionTokens =
+    {
+        "angry", "mad", "furious", "annoyed", "frustrated", "irritated", "grr", "ugh"
+    };
+    private static readonly string[] SurprisedEmotionTokens =
+    {
+        "wow", "whoa", "really", "what", "surprised", "unexpected"
+    };
+    private static readonly string[] WorriedEmotionTokens =
+    {
+        "worried", "concerned", "nervous", "anxious", "unsure", "not sure", "uncertain", "hmm"
+    };
+
     private readonly string _npcName;
+    private readonly string _portraitAssetName;
     private readonly int _heartLevel;
     private readonly Action<string> _onSend;
     private readonly Func<string?>? _pollIncoming;
     private readonly Func<bool>? _isThinking;
+    private readonly Func<NPC?>? _resolveLiveNpc;
 
     private string? _lastNpcMessage;
     private string? _lastPlayerMessage;
@@ -30,8 +66,12 @@ public sealed class NpcChatInputMenu : IClickableMenu
     private readonly ClickableTextureComponent _closeButton;
 
     // Portrait Data
-    private readonly Texture2D? _portraitTexture;
-    private readonly Rectangle _portraitSource = new Rectangle(0, 0, 64, 64);
+    private Texture2D? _fallbackPortraitTexture;
+    private Texture2D? _activePortraitTexture;
+    private Rectangle _portraitSource = new(0, 0, PortraitFrameSize, PortraitFrameSize);
+    private PortraitEmotion _currentPortraitEmotion = PortraitEmotion.Neutral;
+    private DateTime _lastEmotionUpdateUtc = DateTime.UtcNow;
+    private DateTime _nextPortraitRefreshUtc;
     private static readonly Rectangle EmptyHeartSource = new Rectangle(218, 428, 7, 6);
     private static readonly Rectangle FilledHeartSource = new Rectangle(211, 428, 7, 6);
 
@@ -63,7 +103,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
         Func<bool>? isThinking = null,
         int heartLevel = 0,
         string? initialPlayerMessage = null,
-        bool autoSendInitialPlayerMessage = false)
+        bool autoSendInitialPlayerMessage = false,
+        string? portraitAssetName = null,
+        Func<NPC?>? resolveLiveNpc = null)
         : base(
             Game1.uiViewport.Width / 2 - (MenuWidth / 2),
             Game1.uiViewport.Height / 2 - (MenuHeight / 2),
@@ -72,20 +114,25 @@ public sealed class NpcChatInputMenu : IClickableMenu
             true)
     {
         _npcName = npcName;
+        _portraitAssetName = string.IsNullOrWhiteSpace(portraitAssetName) ? npcName : portraitAssetName.Trim();
         _heartLevel = Math.Max(0, heartLevel);
         _onSend = onSend;
         _pollIncoming = pollIncoming;
         _isThinking = isThinking;
+        _resolveLiveNpc = resolveLiveNpc;
+        _nextPortraitRefreshUtc = DateTime.UtcNow;
 
         // --- LOAD PORTRAIT ---
         try
         {
-            _portraitTexture = Game1.content.Load<Texture2D>($"Portraits\\{_npcName}");
+            _fallbackPortraitTexture = Game1.content.Load<Texture2D>($"Portraits\\{_portraitAssetName}");
         }
         catch
         {
-            _portraitTexture = null;
+            _fallbackPortraitTexture = null;
         }
+        _activePortraitTexture = _fallbackPortraitTexture;
+        RefreshPortraitTexture(force: true);
 
         // --- COMPONENTS (created once; positioned in RecalculateLayout) ---
         _input = new TextBox(
@@ -338,6 +385,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
     {
         base.update(time);
         _input.Update();
+        RefreshPortraitTexture();
 
         if (_input.Selected != _inputHasFocus)
             _input.Selected = _inputHasFocus;
@@ -349,13 +397,21 @@ public sealed class NpcChatInputMenu : IClickableMenu
         }
 
         _thinkFrame++;
+        if (_currentPortraitEmotion != PortraitEmotion.Neutral
+            && DateTime.UtcNow - _lastEmotionUpdateUtc >= EmotionNeutralDecay
+            && !IsThinking())
+        {
+            SetPortraitEmotion(PortraitEmotion.Neutral);
+        }
 
         if (_pollIncoming is not null)
         {
             var next = _pollIncoming();
             if (!string.IsNullOrWhiteSpace(next))
             {
-                var clean = CleanIncomingNpcMessage(next);
+                var (clean, explicitEmotion) = ParseIncomingNpcMessage(next);
+                var inferredEmotion = explicitEmotion ?? InferEmotionFromText(clean);
+                SetPortraitEmotion(inferredEmotion);
                 if (clean != _lastNpcMessageForScroll)
                 {
                     _lastNpcMessage = clean;
@@ -367,20 +423,26 @@ public sealed class NpcChatInputMenu : IClickableMenu
         }
     }
 
-    private string CleanIncomingNpcMessage(string raw)
+    private (string Message, PortraitEmotion? ExplicitEmotion) ParseIncomingNpcMessage(string raw)
     {
         var clean = (raw ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(clean))
-            return string.Empty;
+            return (string.Empty, null);
+
+        PortraitEmotion? explicitEmotion = null;
 
         while (true)
         {
-            var tagMatch = Regex.Match(clean, @"^\<[^>]+\>\s*", RegexOptions.CultureInvariant);
+            var tagMatch = Regex.Match(clean, @"^\<(?<tag>[^>]+)\>\s*", RegexOptions.CultureInvariant);
             if (!tagMatch.Success || tagMatch.Length <= 0)
                 break;
+            var tagText = tagMatch.Groups["tag"].Value;
+            if (TryParseEmotionTag(tagText, out var parsedEmotion))
+                explicitEmotion = parsedEmotion;
             clean = clean[tagMatch.Length..].TrimStart();
         }
 
+        clean = StripInlineEmotionTags(clean, ref explicitEmotion);
         if (!string.IsNullOrWhiteSpace(_npcName))
         {
             var label = _npcName.Trim();
@@ -390,7 +452,154 @@ public sealed class NpcChatInputMenu : IClickableMenu
                 clean = clean[(label.Length + 1)..].TrimStart();
             }
         }
-        return clean;
+
+        return (clean, explicitEmotion);
+    }
+
+    private void RefreshPortraitTexture(bool force = false)
+    {
+        var now = DateTime.UtcNow;
+        if (!force && now < _nextPortraitRefreshUtc)
+            return;
+
+        _nextPortraitRefreshUtc = now + LivePortraitRefreshInterval;
+        Texture2D? livePortrait = null;
+        if (_resolveLiveNpc is not null)
+        {
+            try
+            {
+                var liveNpc = _resolveLiveNpc();
+                livePortrait = liveNpc?.Portrait;
+            }
+            catch
+            {
+            }
+        }
+
+        _activePortraitTexture = livePortrait ?? _activePortraitTexture ?? _fallbackPortraitTexture;
+        UpdatePortraitSourceRect();
+    }
+
+    private void SetPortraitEmotion(PortraitEmotion emotion)
+    {
+        if (_currentPortraitEmotion == emotion)
+        {
+            _lastEmotionUpdateUtc = DateTime.UtcNow;
+            return;
+        }
+
+        _currentPortraitEmotion = emotion;
+        _lastEmotionUpdateUtc = DateTime.UtcNow;
+        UpdatePortraitSourceRect();
+    }
+
+    private void UpdatePortraitSourceRect()
+    {
+        var texture = _activePortraitTexture ?? _fallbackPortraitTexture;
+        if (texture is null)
+        {
+            _portraitSource = new Rectangle(0, 0, PortraitFrameSize, PortraitFrameSize);
+            return;
+        }
+
+        var frameCount = Math.Max(1, texture.Width / PortraitFrameSize);
+        var desiredIndex = GetPortraitFrameIndex(_currentPortraitEmotion);
+        var clampedIndex = Math.Clamp(desiredIndex, 0, frameCount - 1);
+        var sourceHeight = Math.Min(PortraitFrameSize, texture.Height);
+        _portraitSource = new Rectangle(clampedIndex * PortraitFrameSize, 0, PortraitFrameSize, sourceHeight);
+    }
+
+    private static int GetPortraitFrameIndex(PortraitEmotion emotion)
+    {
+        return emotion switch
+        {
+            PortraitEmotion.Happy => 1,
+            PortraitEmotion.Sad => 2,
+            PortraitEmotion.Angry => 3,
+            PortraitEmotion.Surprised => 4,
+            PortraitEmotion.Worried => 5,
+            _ => 0
+        };
+    }
+
+    private static bool TryParseEmotionTag(string rawTag, out PortraitEmotion emotion)
+    {
+        emotion = PortraitEmotion.Neutral;
+        if (string.IsNullOrWhiteSpace(rawTag))
+            return false;
+
+        var normalized = rawTag.Trim().ToLowerInvariant();
+        if (normalized.StartsWith("emotion:", StringComparison.Ordinal))
+            normalized = normalized["emotion:".Length..].Trim();
+        else
+            return false;
+
+        normalized = normalized.Replace("_", string.Empty, StringComparison.Ordinal);
+        emotion = normalized switch
+        {
+            "neutral" or "calm" => PortraitEmotion.Neutral,
+            "happy" or "glad" or "cheerful" or "smile" => PortraitEmotion.Happy,
+            "sad" or "down" or "unhappy" => PortraitEmotion.Sad,
+            "angry" or "mad" or "annoyed" or "frustrated" => PortraitEmotion.Angry,
+            "surprised" or "shock" => PortraitEmotion.Surprised,
+            "worried" or "concerned" or "nervous" or "anxious" or "unsure" => PortraitEmotion.Worried,
+            _ => PortraitEmotion.Neutral
+        };
+
+        return true;
+    }
+
+    private static string StripInlineEmotionTags(string raw, ref PortraitEmotion? explicitEmotion)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
+
+        var resolvedEmotion = explicitEmotion;
+        var withoutTags = Regex.Replace(
+            raw,
+            @"<\s*emotion\s*:\s*(?<value>[a-zA-Z_]+)\s*>",
+            match =>
+            {
+                var value = match.Groups["value"].Value;
+                if (TryParseEmotionTag($"emotion:{value}", out var parsed))
+                    resolvedEmotion = parsed;
+                return string.Empty;
+            },
+            RegexOptions.CultureInvariant);
+        explicitEmotion = resolvedEmotion;
+
+        return Regex.Replace(withoutTags, @"\s{2,}", " ", RegexOptions.CultureInvariant).Trim();
+    }
+
+    private static PortraitEmotion InferEmotionFromText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return PortraitEmotion.Neutral;
+
+        var normalized = text.Trim().ToLowerInvariant();
+        if (ContainsAnyToken(normalized, AngryEmotionTokens))
+            return PortraitEmotion.Angry;
+        if (ContainsAnyToken(normalized, SadEmotionTokens))
+            return PortraitEmotion.Sad;
+        if (ContainsAnyToken(normalized, WorriedEmotionTokens))
+            return PortraitEmotion.Worried;
+        if (ContainsAnyToken(normalized, HappyEmotionTokens))
+            return PortraitEmotion.Happy;
+        if (ContainsAnyToken(normalized, SurprisedEmotionTokens) || normalized.Contains("?!", StringComparison.Ordinal))
+            return PortraitEmotion.Surprised;
+
+        return PortraitEmotion.Neutral;
+    }
+
+    private static bool ContainsAnyToken(string normalizedText, string[] tokens)
+    {
+        foreach (var token in tokens)
+        {
+            if (normalizedText.Contains(token, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     public override void draw(SpriteBatch b)
@@ -509,9 +718,10 @@ public sealed class NpcChatInputMenu : IClickableMenu
         // Dark background behind portrait
         b.Draw(Game1.staminaRect, _portraitRegion, new Color(133, 89, 56));
 
-        if (_portraitTexture != null)
+        var portraitTexture = _activePortraitTexture ?? _fallbackPortraitTexture;
+        if (portraitTexture != null)
         {
-            b.Draw(_portraitTexture, _portraitRegion, _portraitSource, Color.White);
+            b.Draw(portraitTexture, _portraitRegion, _portraitSource, Color.White);
         }
 
         // Portrait Frame
