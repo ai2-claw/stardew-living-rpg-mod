@@ -1791,7 +1791,7 @@ public sealed class ModEntry : Mod
             }
 
             Monitor.Log($"Player2 chat line: {line}", LogLevel.Trace);
-            CaptureNpcUiMessage(line, allowPlayerChatRouting: true);
+            CaptureNpcUiMessage(line, allowPlayerChatRouting: true, forcePlayerChatRouting: true);
             var appliedNpcCommand = TryApplyNpcCommandFromLine(line);
             if (!appliedNpcCommand)
                 TryApplyFallbackQuestFromPlayerChatLine(line);
@@ -1825,6 +1825,14 @@ public sealed class ModEntry : Mod
 
         if (!IsPlayer2ReadyForNewspaper())
             return;
+
+        var pendingPlayerResponses = CountPendingPlayerChatResponses();
+        if (pendingPlayerResponses > 0)
+        {
+            Monitor.Log($"Ambient NPC conversation deferred: {pendingPlayerResponses} player chat response(s) pending.", LogLevel.Trace);
+            _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(60, 180));
+            return;
+        }
 
         if (_player2PendingResponseCount > 0 || !string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest))
             return;
@@ -5903,7 +5911,7 @@ public sealed class ModEntry : Mod
         Monitor.Log($"P2 health | login={loggedIn} npc={npc} stream={running}/{_player2StreamDesired} joules={joulesText} pending={_player2PendingResponseCount} lastLineAgo={lineAgo} lastCmd={_player2LastCommandApplied} lastCmdAgo={cmdAgo}", LogLevel.Info);
     }
 
-    private bool CaptureNpcUiMessage(string line, bool allowPlayerChatRouting)
+    private bool CaptureNpcUiMessage(string line, bool allowPlayerChatRouting, bool forcePlayerChatRouting = false)
     {
         try
         {
@@ -5918,7 +5926,9 @@ public sealed class ModEntry : Mod
             var hasPendingPlayerUi = _npcUiPendingById.TryGetValue(npcId, out var pending)
                 && pending > 0;
             var routeToPlayerChat = allowPlayerChatRouting && hasPendingPlayerUi;
-            if (_npcResponseRoutingById.TryGetValue(npcId, out var routingQueue) && routingQueue.TryDequeue(out var routed))
+            if (!forcePlayerChatRouting
+                && _npcResponseRoutingById.TryGetValue(npcId, out var routingQueue)
+                && routingQueue.TryDequeue(out var routed))
                 routeToPlayerChat = allowPlayerChatRouting && routed && hasPendingPlayerUi;
 
             if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
@@ -6111,6 +6121,18 @@ public sealed class ModEntry : Mod
     private bool IsNpcThinking(string npcId)
     {
         return _npcUiPendingById.TryGetValue(npcId, out var c) && c > 0;
+    }
+
+    private int CountPendingPlayerChatResponses()
+    {
+        var pendingTotal = 0;
+        foreach (var entry in _npcUiPendingById)
+        {
+            if (entry.Value > 0)
+                pendingTotal += entry.Value;
+        }
+
+        return pendingTotal;
     }
 
     private int? TryGetJoules(out JoulesResponse? info)
@@ -9409,6 +9431,9 @@ public sealed class ModEntry : Mod
         _ = Task.Run(async () =>
         {
             var delivered = false;
+            var waitedOnRoutingGate = false;
+            var bypassedRoutingGate = false;
+            var routingGateFirstSeenUtc = default(DateTime);
             try
             {
                 using var totalCts = new CancellationTokenSource(TimeSpan.FromSeconds(18));
@@ -9418,8 +9443,25 @@ public sealed class ModEntry : Mod
                         && routingQueue.TryPeek(out var nextRoute)
                         && !nextRoute)
                     {
-                        await Task.Delay(250, totalCts.Token);
-                        continue;
+                        waitedOnRoutingGate = true;
+                        if (routingGateFirstSeenUtc == default)
+                            routingGateFirstSeenUtc = DateTime.UtcNow;
+
+                        if (DateTime.UtcNow - routingGateFirstSeenUtc <= TimeSpan.FromSeconds(2))
+                        {
+                            await Task.Delay(250, totalCts.Token);
+                            continue;
+                        }
+
+                        if (!bypassedRoutingGate)
+                        {
+                            bypassedRoutingGate = true;
+                            Monitor.Log("Player chat history fallback bypassed stale ambient routing gate after 2s.", LogLevel.Trace);
+                        }
+                    }
+                    else
+                    {
+                        routingGateFirstSeenUtc = default;
                     }
 
                     var snapshot = await client.TryGetLatestNpcHistorySnapshotAsync(apiBaseUrl, p2Key, npcId, totalCts.Token);
@@ -9461,7 +9503,12 @@ public sealed class ModEntry : Mod
                 if (!delivered && _npcUiPendingById.TryGetValue(npcId, out var pending) && pending > 0)
                 {
                     _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
-                    Monitor.Log("Player chat history poll timed out with no fresh NPC response.", LogLevel.Debug);
+                    var timeoutReason = bypassedRoutingGate
+                        ? "stale ambient routing gate bypassed"
+                        : waitedOnRoutingGate
+                            ? "ambient routing gate remained pending"
+                            : "no fresh history diff";
+                    Monitor.Log($"Player chat history poll timed out with no fresh NPC response ({timeoutReason}).", LogLevel.Debug);
                 }
             }
         });
