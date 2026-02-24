@@ -58,7 +58,7 @@ Player-facing Player2 UX:
 - in NPC interaction range (roster NPCs), normal action interaction keeps vanilla dialogue; no mod follow-up opens automatically when vanilla dialogue/shop closes
 - policy: never replace original vanilla NPC dialogue; mod prompts must be additive follow-up only
 - if vanilla dialogue/menu opened, a second interaction with the same NPC opens mod chat directly; if no vanilla dialogue/menu opened, mod chat can open on that first interaction
-- hovering the eligible same-NPC follow-up target shows a tinted chat-bubble indicator
+- hovering a roster NPC in interaction range shows the vanilla chat-bubble cursor when vanilla has no contextual bubble of its own
 - opening mod chat uses a direct path (no extra "talk/later" chooser) and opens a persistent in-world chat input box showing recent player/NPC lines
 - persistent NPC memory + town memory context are injected into chat payloads (bounded/capped for low latency)
 - chat UI now shows a lightweight "Thinking..." indicator while awaiting NPC response
