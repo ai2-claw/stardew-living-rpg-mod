@@ -96,6 +96,87 @@ public sealed class ModEntry : Mod
         "Jaz",
         "Vincent"
     };
+    private static readonly Dictionary<string, string> PromptLocationDisplayOverrides = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Town"] = "Pelican Town",
+        ["Farm"] = "The Farm",
+        ["Backwoods"] = "Backwoods",
+        ["Mountain"] = "Mountain",
+        ["Beach"] = "Beach",
+        ["Forest"] = "Cindersap Forest",
+        ["BusStop"] = "Bus Stop",
+        ["Railroad"] = "Railroad",
+        ["Sewer"] = "Sewer",
+        ["JojaMart"] = "JojaMart",
+        ["Saloon"] = "Saloon",
+        ["SeedShop"] = "Pierre's General Store",
+        ["Hospital"] = "Harvey's Clinic",
+        ["Blacksmith"] = "Blacksmith",
+        ["ScienceHouse"] = "Carpenter's Shop",
+        ["FishShop"] = "Fish Shop",
+        ["AdventureGuild"] = "Adventurer's Guild",
+        ["LibraryMuseum"] = "Museum",
+        ["CommunityCenter"] = "Community Center",
+        ["LeahHouse"] = "Leah's Cottage",
+        ["HaleyHouse"] = "Haley and Emily's House",
+        ["JoshHouse"] = "Alex's House",
+        ["SamHouse"] = "Jodi's House",
+        ["Trailer"] = "Pam's Trailer",
+        ["ManorHouse"] = "Mayor's Manor",
+        ["ArchaeologyHouse"] = "Carpenter's Shop",
+        ["WizardHouse"] = "Wizard's Tower"
+    };
+    private static readonly Dictionary<string, (string AreaLabel, Rectangle Bounds)[]> PromptLocationMicroAreaZones = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Town"] = new[]
+        {
+            ("the town square by the fountain", new Rectangle(45, 35, 30, 24)),
+            ("the east side near JojaMart and the river bridge", new Rectangle(78, 30, 44, 30)),
+            ("the saloon block in the south", new Rectangle(44, 58, 34, 22)),
+            ("the museum and blacksmith block", new Rectangle(45, 10, 35, 24)),
+            ("the community center hill", new Rectangle(18, 6, 26, 22)),
+            ("the west river approach", new Rectangle(0, 22, 30, 42))
+        },
+        ["BusStop"] = new[]
+        {
+            ("the bus turnaround", new Rectangle(26, 20, 18, 20)),
+            ("the tunnel approach", new Rectangle(0, 20, 14, 25)),
+            ("the farm road", new Rectangle(14, 35, 14, 20)),
+            ("the mountain path", new Rectangle(16, 0, 20, 16))
+        },
+        ["Mountain"] = new[]
+        {
+            ("the mountain lake shore", new Rectangle(20, 18, 30, 24)),
+            ("the carpenter's shop trail", new Rectangle(65, 4, 22, 22)),
+            ("the mines entrance path", new Rectangle(90, 8, 22, 26)),
+            ("the railroad approach", new Rectangle(48, 0, 16, 14)),
+            ("the adventurer's guild slope", new Rectangle(82, 34, 24, 20))
+        },
+        ["Forest"] = new[]
+        {
+            ("the wizard tower woods", new Rectangle(0, 35, 24, 36)),
+            ("the Marnie ranch trail", new Rectangle(50, 8, 30, 20)),
+            ("the Leah cottage path", new Rectangle(50, 44, 28, 20)),
+            ("the sewer grate area", new Rectangle(27, 37, 18, 18)),
+            ("the south forest clearing", new Rectangle(35, 60, 30, 20))
+        },
+        ["Beach"] = new[]
+        {
+            ("the docks by Willy's shop", new Rectangle(68, 8, 28, 20)),
+            ("the tidepool bridge", new Rectangle(95, 24, 26, 26)),
+            ("the central shoreline", new Rectangle(45, 28, 40, 30)),
+            ("the west boardwalk", new Rectangle(12, 24, 28, 28)),
+            ("the south surf line", new Rectangle(35, 60, 55, 22))
+        },
+        ["Farm"] = new[]
+        {
+            ("the farmhouse yard", new Rectangle(55, 10, 26, 24)),
+            ("the shipping bin lane", new Rectangle(38, 8, 16, 20)),
+            ("the greenhouse side", new Rectangle(20, 8, 14, 20)),
+            ("the southern fields", new Rectangle(30, 45, 65, 35)),
+            ("the eastern field edge", new Rectangle(95, 20, 35, 45))
+        }
+    };
 
     private sealed class NpcPublishHeadlineUpdate
     {
@@ -133,6 +214,19 @@ public sealed class ModEntry : Mod
         public int Day { get; set; }
         public int TimeOfDay { get; set; }
         public DateTime CapturedUtc { get; set; }
+    }
+
+    private sealed class PromptLocationContext
+    {
+        public string InternalName { get; set; } = "Unknown";
+        public string DisplayName { get; set; } = "Unknown";
+        public string ExactPhrase { get; set; } = "At unknown location";
+        public string Exposure { get; set; } = "unknown";
+        public string NearbyLandmark { get; set; } = "none";
+        public int TileX { get; set; } = -1;
+        public int TileY { get; set; } = -1;
+        public string MicroArea { get; set; } = "none";
+        public string Precision { get; set; } = "low";
     }
 
     private static readonly Dictionary<string, string> PublishSourceNpcFallbackMap = new(StringComparer.OrdinalIgnoreCase)
@@ -5462,11 +5556,16 @@ public sealed class ModEntry : Mod
             if (_npcMemoryService is not null)
                 _npcMemoryService.WriteTurn(_state, who, message, string.Empty, _state.Calendar.Day);
 
+            var promptLocationContext = BuildPromptLocationContext(who);
+            Monitor.Log(
+                $"Player chat location context: npc={who} exact='{promptLocationContext.ExactPhrase}' exposure={promptLocationContext.Exposure} internal='{promptLocationContext.InternalName}' landmark='{promptLocationContext.NearbyLandmark}' tile=({promptLocationContext.TileX},{promptLocationContext.TileY}) micro='{promptLocationContext.MicroArea}' precision={promptLocationContext.Precision}.",
+                LogLevel.Trace);
+
             var req = new NpcChatRequest
             {
                 SenderName = string.IsNullOrWhiteSpace(senderName) ? "Player" : senderName,
                 SenderMessage = message,
-                GameStateInfo = BuildCompactGameStateInfo(who, message, effectiveContextTag)
+                GameStateInfo = BuildCompactGameStateInfo(who, message, effectiveContextTag, promptLocationContext)
             };
 
             _npcUiPendingById.AddOrUpdate(npcId, 1, (_, v) => v + 1);
@@ -6462,7 +6561,11 @@ public sealed class ModEntry : Mod
         });
     }
 
-    private string BuildCompactGameStateInfo(string? npcName = null, string? playerText = null, string? contextTag = null)
+    private string BuildCompactGameStateInfo(
+        string? npcName = null,
+        string? playerText = null,
+        string? contextTag = null,
+        PromptLocationContext? promptLocationContext = null)
     {
         SyncCalendarSeasonFromWorld();
         var townProfile = ResolveActiveTownProfile();
@@ -6472,6 +6575,7 @@ public sealed class ModEntry : Mod
         var weather = GetCurrentWeatherLabel();
         var dayOfWeek = GetCurrentDayOfWeekLabel();
         var timeOfDay = GetCurrentTimeOfDayLabel(out var hour24, out var minute);
+        var locationContext = promptLocationContext ?? BuildPromptLocationContext(npcName);
         var heartLevel = GetNpcHeartLevel(npcName);
         var npcReputation = GetNpcReputation(npcName);
         var npcHasMetPlayer = HasNpcMetPlayer(npcName);
@@ -6524,6 +6628,9 @@ public sealed class ModEntry : Mod
         var newsContext = BuildNewsAwarenessBlock();
         var eventsContext = BuildRecentEventAwarenessBlock(playerText);
         var effectiveContextTag = string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag!;
+        var locationContextBlock = $"LOCATION_CONTEXT: exact='{locationContext.ExactPhrase}' exposure={locationContext.Exposure} internal='{locationContext.InternalName}' landmark='{locationContext.NearbyLandmark}' tile=({locationContext.TileX},{locationContext.TileY}) micro_area='{locationContext.MicroArea}' precision={locationContext.Precision}.";
+        var locationAwarenessRule = "LOCATION_AWARENESS_RULE: Treat LOCATION_CONTEXT as ground truth. If exposure=indoors, do not describe rain, snow, wet boots, or wet clothes. If exposure=outdoors, weather sensations are allowed when relevant.";
+        var locationPrecisionRule = "LOCATION_PRECISION_RULE: If LocationPrecision is low, keep phrasing general and do not assert an exact street/block name.";
         if (string.Equals(effectiveContextTag, "player_chat_followup", StringComparison.OrdinalIgnoreCase))
             TryEnsureRecentVanillaDialogueContextForNpc(npcName);
 
@@ -6592,6 +6699,8 @@ public sealed class ModEntry : Mod
             "TRUST_RULE: If hearts are high but reputation is low, remain warm in tone but cautious on promises, favors, and high-stakes requests.",
             "PLAYER_NAME_RULE: Use PLAYER_KNOWLEDGE to decide how to address the player. If NpcHasMetPlayer is false, do not call the player by name.",
             "TIME_RULE: If asked for time, answer with hour and minute plus AM/PM (for example: 6:30 AM). Never answer with minutes only.",
+            locationAwarenessRule,
+            locationPrecisionRule,
             "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
             "QUEST_RULE: Never give text-only task offers without propose_quest.",
             "QUEST_RULE: If your request includes an exact amount, set propose_quest.count to that number and keep target as only the item/resource/NPC name.",
@@ -6621,6 +6730,12 @@ public sealed class ModEntry : Mod
             $"STATE: CurrentWeather {weather}.",
             $"STATE: CurrentDayOfWeek {dayOfWeek}.",
             $"STATE: CurrentTimeOfDay {timeOfDay}.",
+            $"STATE: ExactLocation {locationContext.ExactPhrase}.",
+            $"STATE: LocationExposure {locationContext.Exposure}.",
+            $"STATE: LocationTileX {locationContext.TileX}.",
+            $"STATE: LocationTileY {locationContext.TileY}.",
+            $"STATE: LocationMicroArea {locationContext.MicroArea}.",
+            $"STATE: LocationPrecision {locationContext.Precision}.",
             $"STATE: RelationshipHearts {(string.IsNullOrWhiteSpace(npcName) ? 0 : heartLevel)}.",
             $"STATE: NpcReputation {(string.IsNullOrWhiteSpace(npcName) ? 0 : npcReputation)}.",
             $"STATE: CurrentHour24 {hour24:00}.",
@@ -6638,6 +6753,7 @@ public sealed class ModEntry : Mod
             $"STATE: ActiveTownRequests {_state.Quests.Active.Count} by_template=[{activeQuestTemplateCounts}].",
             npcMemory,
             townMemory,
+            locationContextBlock,
             vanillaDialogueContext,
             sourceDialogueContext
         );
@@ -7725,6 +7841,144 @@ public sealed class ModEntry : Mod
             return value;
 
         return value[..Math.Max(1, maxLength - 3)] + "...";
+    }
+
+    private PromptLocationContext BuildPromptLocationContext(string? npcName = null)
+    {
+        var location = Game1.currentLocation;
+        if (location is null)
+            return new PromptLocationContext();
+
+        var anchorTile = Game1.player?.Tile ?? Vector2.Zero;
+        if (!string.IsNullOrWhiteSpace(npcName))
+        {
+            var npc = location.characters.FirstOrDefault(candidate =>
+                candidate is not null
+                && (!string.IsNullOrWhiteSpace(candidate.Name) && string.Equals(candidate.Name, npcName, StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(candidate.displayName) && string.Equals(candidate.displayName, npcName, StringComparison.OrdinalIgnoreCase)));
+            if (npc is not null)
+                anchorTile = npc.Tile;
+        }
+
+        var tileX = Math.Max(0, (int)Math.Floor(anchorTile.X));
+        var tileY = Math.Max(0, (int)Math.Floor(anchorTile.Y));
+        var internalName = string.IsNullOrWhiteSpace(location.Name)
+            ? location.GetType().Name
+            : location.Name;
+        var displayName = ResolvePromptLocationDisplayName(internalName);
+        var exposure = location.IsOutdoors ? "outdoors" : "indoors";
+
+        var nearbyLandmark = "none";
+        if (location.IsOutdoors && TryResolveNearbyLandmark(location, anchorTile, out var resolvedLandmark))
+            nearbyLandmark = resolvedLandmark;
+
+        var microArea = ResolvePromptLocationMicroArea(location, internalName, tileX, tileY, nearbyLandmark, out var precision);
+        var exactPhrase = location.IsOutdoors
+            ? (string.Equals(microArea, "none", StringComparison.OrdinalIgnoreCase)
+                ? $"In {displayName}"
+                : $"In {displayName}, {microArea}")
+            : $"Inside {displayName}";
+
+        return new PromptLocationContext
+        {
+            InternalName = internalName,
+            DisplayName = displayName,
+            ExactPhrase = exactPhrase,
+            Exposure = exposure,
+            NearbyLandmark = nearbyLandmark,
+            TileX = tileX,
+            TileY = tileY,
+            MicroArea = microArea,
+            Precision = precision
+        };
+    }
+
+    private static string ResolvePromptLocationMicroArea(
+        GameLocation location,
+        string internalName,
+        int tileX,
+        int tileY,
+        string nearbyLandmark,
+        out string precision)
+    {
+        if (TryResolveConfiguredMicroArea(internalName, tileX, tileY, out var configuredArea))
+        {
+            precision = "high";
+            return configuredArea;
+        }
+
+        if (location.IsOutdoors && !string.Equals(nearbyLandmark, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            precision = "medium";
+            return $"near {nearbyLandmark}";
+        }
+
+        precision = "low";
+        return "none";
+    }
+
+    private static bool TryResolveConfiguredMicroArea(string internalName, int tileX, int tileY, out string areaLabel)
+    {
+        areaLabel = string.Empty;
+        if (string.IsNullOrWhiteSpace(internalName))
+            return false;
+
+        if (!PromptLocationMicroAreaZones.TryGetValue(internalName.Trim(), out var zones) || zones.Length == 0)
+            return false;
+
+        var tilePoint = new Point(tileX, tileY);
+        foreach (var zone in zones)
+        {
+            if (!zone.Bounds.Contains(tilePoint))
+                continue;
+
+            areaLabel = zone.AreaLabel;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveNearbyLandmark(GameLocation location, Vector2 anchorTile, out string landmark)
+    {
+        landmark = string.Empty;
+        if (location is null || !location.IsOutdoors || location.warps is null || location.warps.Count == 0)
+            return false;
+
+        var currentDisplayName = ResolvePromptLocationDisplayName(location.Name);
+        var nearest = location.warps
+            .Where(warp => warp is not null && !string.IsNullOrWhiteSpace(warp.TargetName))
+            .Select(warp => new
+            {
+                Landmark = ResolvePromptLocationDisplayName(warp.TargetName),
+                Distance = Vector2.Distance(anchorTile, new Vector2(warp.X, warp.Y))
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Landmark)
+                && !string.Equals(x.Landmark, currentDisplayName, StringComparison.OrdinalIgnoreCase)
+                && x.Distance <= 12f)
+            .OrderBy(x => x.Distance)
+            .FirstOrDefault();
+
+        if (nearest is null)
+            return false;
+
+        landmark = nearest.Landmark;
+        return true;
+    }
+
+    private static string ResolvePromptLocationDisplayName(string? rawName)
+    {
+        if (string.IsNullOrWhiteSpace(rawName))
+            return "Unknown";
+
+        var trimmed = rawName.Trim();
+        if (PromptLocationDisplayOverrides.TryGetValue(trimmed, out var displayName))
+            return displayName;
+
+        var readable = trimmed.Replace('_', ' ');
+        readable = Regex.Replace(readable, "(?<=[a-z0-9])(?=[A-Z])", " ", RegexOptions.CultureInvariant);
+        readable = Regex.Replace(readable, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+        return string.IsNullOrWhiteSpace(readable) ? trimmed : readable;
     }
 
     private static string GetCurrentWeatherLabel()
