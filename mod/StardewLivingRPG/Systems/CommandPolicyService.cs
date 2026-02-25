@@ -25,7 +25,8 @@ public sealed class CommandPolicyService
     {
         "adjust_reputation",
         "shift_interest_influence",
-        "apply_market_modifier"
+        "apply_market_modifier",
+        "adjust_town_sentiment"
     };
 
     private readonly Dictionary<string, CommandPolicyRule> _rules = new(StringComparer.OrdinalIgnoreCase);
@@ -175,6 +176,13 @@ public sealed class CommandPolicyService
             explicitlyAllowed: allowed,
             explicitlyDenied: denied,
             defaultAllow: false);
+    }
+
+    public IReadOnlyList<string> GetAmbientConditionalCommandsEnabled()
+    {
+        return _ambientConditionalEnabled
+            .OrderBy(command => command, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static IEnumerable<string> ResolveAllowedCommands(CommandPolicyRule rule)
