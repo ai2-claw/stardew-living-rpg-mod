@@ -115,6 +115,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
     private string? _lastNpcMessage;
     private string? _lastPlayerMessage;
+    private bool _hasReceivedNpcReplyInSession;
 
     private int _thinkFrame;
 
@@ -468,8 +469,12 @@ public sealed class NpcChatInputMenu : IClickableMenu
             if (!string.IsNullOrWhiteSpace(next))
             {
                 var (clean, explicitEmotion) = ParseIncomingNpcMessage(next);
-                var inferredEmotion = explicitEmotion ?? InferEmotionFromText(clean);
+                var isFirstNpcReplyInSession = !_hasReceivedNpcReplyInSession;
+                var inferredEmotion = isFirstNpcReplyInSession
+                    ? PortraitEmotion.Neutral
+                    : explicitEmotion ?? InferEmotionFromText(clean);
                 SetPortraitEmotion(inferredEmotion);
+                _hasReceivedNpcReplyInSession = true;
                 if (clean != _lastNpcMessageForScroll)
                 {
                     _lastNpcMessage = clean;

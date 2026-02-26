@@ -1,5 +1,58 @@
 # CHANGELOG
 
+## 0.5.0 - 2026-02-24
+
+### Added
+- Deterministic NPC location grounding in chat prompt context:
+  - exact location phrase
+  - indoor/outdoor exposure
+  - tile coordinates
+  - map micro-area labels with precision level
+- Emotion-aware NPC portraits in `NpcChatInputMenu`.
+- Live portrait sourcing from the current in-game NPC state, with fallback to portrait asset loads.
+- Optional `<emotion:neutral|happy|sad|angry|surprised|worried>` cue support for NPC replies.
+
+### Changed
+- NPC mod follow-up chat flow now uses manual triggering after vanilla interactions instead of automatic open.
+- Follow-up chat entry preserves and blends recent vanilla dialogue continuity with town-memory context.
+- Chat prompt contracts now include explicit location-awareness and portrait-emotion guidance.
+- Release metadata updated:
+  - manifest version bumped to `0.5.0`
+  - GitHub update key removed, Nexus update key retained
+
+### Fixed
+- Player-initiated chat no longer stalls behind ambient NPC stream routing in common contention cases.
+- Reduced indoor weather-contradiction replies via explicit exposure-aware prompt rules.
+- Added robust portrait frame clamping/fallback behavior for NPCs with non-standard portrait sheet widths.
+
+## 0.4.0 - 2025-02-23
+
+### Added
+- Integrated custom NPC content pack framework:
+  - Load custom NPCs via content packs targeting `mx146323.StardewLivingRPG`
+  - Canon baseline validation with strict mode option
+  - Lore injection into Player2 prompt context at runtime
+  - Template pack included for pack authors at `custom_npc_pack_template/`
+  - Debug commands: `slrpg_customnpc_validate`, `slrpg_customnpc_list`, `slrpg_customnpc_dump`, `slrpg_customnpc_reload`
+- Scroll functionality for NPC chat menu:
+  - Visual scrollbar with thumb drag and track click (page up/down)
+  - Mouse wheel scroll as secondary input
+  - Scissor clipping prevents text overflow beyond chat region
+  - Auto-scroll to bottom on new NPC message arrival
+- Config options for custom NPC framework:
+  - `EnableCustomNpcFramework` (default `true`)
+  - `EnableCustomNpcLoreInjection` (default `true`)
+  - `EnableStrictCustomNpcCanonValidation` (default `true`)
+  - `CustomNpcLoreLocaleOverride`
+  - `LogCustomNpcPromptInjectionPreview` (default `false`)
+  - `AmbientRecordTownEventDailyCap` (default `2`)
+
+### Changed
+- Version bumped from 0.2.0 to 0.4.0
+- Added Nexus update key (`Nexus:42597`) to manifest
+- Town memory events now track source NPC
+- Town memory propagation expanded to full NPC roster with event-mentions-NPC awareness
+
 ## Unreleased
 
 ### Added

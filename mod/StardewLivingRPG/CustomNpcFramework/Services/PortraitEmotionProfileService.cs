@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using StardewModdingAPI;
 using StardewValley;
 using StardewLivingRPG.CustomNpcFramework.Models;
@@ -10,23 +11,27 @@ internal sealed class PortraitEmotionProfileService
 {
     private const string BuiltInProfilesPath = "assets/portrait-emotion-profiles.json";
     private const string ContentPackProfilesPath = "content/portrait-profiles.json";
+    private const string AssetsProfilesPath = "assets/portrait-profiles.json";
     private static readonly BindingFlags NpcFieldFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
     private static readonly FieldInfo? NpcLastAppearanceIdField = typeof(NPC).GetField("LastAppearanceId", NpcFieldFlags);
     private static readonly FieldInfo? NpcLastLocationNameForAppearanceField = typeof(NPC).GetField("LastLocationNameForAppearance", NpcFieldFlags);
 
     private readonly IModHelper _helper;
     private readonly IMonitor _monitor;
+    private readonly string _hostModUniqueId;
     private readonly Dictionary<string, RuntimePortraitProfile> _profilesByToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _aliasToToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ValidationIssue> _validationIssues = new();
 
-    public PortraitEmotionProfileService(IModHelper helper, IMonitor monitor)
+    public PortraitEmotionProfileService(IModHelper helper, IMonitor monitor, string hostModUniqueId)
     {
         _helper = helper;
         _monitor = monitor;
+        _hostModUniqueId = hostModUniqueId ?? string.Empty;
     }
 
     public int LoadedContentPackCount { get; private set; }
+    public int LoadedExternalProfileFileCount { get; private set; }
     public int ProfileCount => _profilesByToken.Count;
     public IReadOnlyList<ValidationIssue> ValidationIssues => _validationIssues;
 
@@ -36,6 +41,7 @@ internal sealed class PortraitEmotionProfileService
         _aliasToToken.Clear();
         _validationIssues.Clear();
         LoadedContentPackCount = 0;
+        LoadedExternalProfileFileCount = 0;
 
         var builtInProfiles = _helper.Data.ReadJsonFile<PortraitEmotionProfilesFile>(BuiltInProfilesPath);
         if (builtInProfiles is null)
@@ -78,9 +84,161 @@ internal sealed class PortraitEmotionProfileService
                 replaceExisting: true);
         }
 
+        LoadExternalModProfiles(strictMode);
+
         _monitor.Log(
-            $"Portrait profile framework loaded contentPacks={LoadedContentPackCount}, npcs={ProfileCount}, issues={_validationIssues.Count}.",
+            $"Portrait profile framework loaded contentPacks={LoadedContentPackCount}, externalProfileFiles={LoadedExternalProfileFileCount}, npcs={ProfileCount}, issues={_validationIssues.Count}.",
             LogLevel.Info);
+    }
+
+    private void LoadExternalModProfiles(bool strictMode)
+    {
+        var helperDirectory = _helper.DirectoryPath;
+        if (string.IsNullOrWhiteSpace(helperDirectory))
+            return;
+
+        var modsRoot = TryGetParentDirectory(helperDirectory);
+        if (string.IsNullOrWhiteSpace(modsRoot) || !Directory.Exists(modsRoot))
+            return;
+
+        var hostDirectory = NormalizePath(helperDirectory);
+        foreach (var modDirectory in Directory.GetDirectories(modsRoot))
+        {
+            var normalizedModDirectory = NormalizePath(modDirectory);
+            if (string.Equals(normalizedModDirectory, hostDirectory, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var contentPackForUniqueId = TryReadManifestContentPackForUniqueId(modDirectory);
+            if (!string.IsNullOrWhiteSpace(contentPackForUniqueId)
+                && !string.IsNullOrWhiteSpace(_hostModUniqueId)
+                && string.Equals(contentPackForUniqueId, _hostModUniqueId, StringComparison.OrdinalIgnoreCase))
+            {
+                // Owned content packs are already loaded through Helper.ContentPacks.GetOwned().
+                continue;
+            }
+
+            TryLoadExternalProfileFile(modDirectory, ContentPackProfilesPath, strictMode);
+            TryLoadExternalProfileFile(modDirectory, AssetsProfilesPath, strictMode);
+        }
+    }
+
+    private void TryLoadExternalProfileFile(string modDirectory, string relativePath, bool strictMode)
+    {
+        var fullPath = Path.Combine(modDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        if (!File.Exists(fullPath))
+            return;
+
+        PortraitEmotionProfilesFile? profiles;
+        try
+        {
+            profiles = JsonSerializer.Deserialize<PortraitEmotionProfilesFile>(File.ReadAllText(fullPath));
+        }
+        catch (Exception ex)
+        {
+            var sourceId = TryReadManifestUniqueId(modDirectory) ?? new DirectoryInfo(modDirectory).Name;
+            _validationIssues.Add(Warning(
+                sourceId,
+                string.Empty,
+                relativePath,
+                "W_PORTRAIT_PROFILE_PARSE_FAILED",
+                $"Failed to read '{relativePath}': {ex.Message}"));
+            return;
+        }
+
+        if (profiles is null || profiles.Npcs.Count == 0)
+            return;
+
+        var packId = TryReadManifestUniqueId(modDirectory) ?? new DirectoryInfo(modDirectory).Name;
+        MergeProfiles(
+            profiles,
+            sourceId: packId,
+            sourcePath: relativePath,
+            strictMode: strictMode,
+            replaceExisting: true);
+        LoadedExternalProfileFileCount++;
+    }
+
+    private static string? TryReadManifestUniqueId(string modDirectory)
+    {
+        try
+        {
+            var manifestPath = Path.Combine(modDirectory, "manifest.json");
+            if (!File.Exists(manifestPath))
+                return null;
+
+            using var json = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            if (json.RootElement.TryGetProperty("UniqueID", out var uniqueIdElement)
+                && uniqueIdElement.ValueKind == JsonValueKind.String)
+            {
+                var uniqueId = uniqueIdElement.GetString()?.Trim();
+                if (!string.IsNullOrWhiteSpace(uniqueId))
+                    return uniqueId;
+            }
+        }
+        catch
+        {
+            // Ignore malformed external manifests.
+        }
+
+        return null;
+    }
+
+    private static string? TryReadManifestContentPackForUniqueId(string modDirectory)
+    {
+        try
+        {
+            var manifestPath = Path.Combine(modDirectory, "manifest.json");
+            if (!File.Exists(manifestPath))
+                return null;
+
+            using var json = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            if (!json.RootElement.TryGetProperty("ContentPackFor", out var contentPackForElement)
+                || contentPackForElement.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            if (contentPackForElement.TryGetProperty("UniqueID", out var uniqueIdElement)
+                && uniqueIdElement.ValueKind == JsonValueKind.String)
+            {
+                var uniqueId = uniqueIdElement.GetString()?.Trim();
+                if (!string.IsNullOrWhiteSpace(uniqueId))
+                    return uniqueId;
+            }
+        }
+        catch
+        {
+            // Ignore malformed external manifests.
+        }
+
+        return null;
+    }
+
+    private static string NormalizePath(string? path)
+    {
+        var normalized = path ?? string.Empty;
+        try
+        {
+            normalized = Path.GetFullPath(normalized);
+        }
+        catch
+        {
+            // Keep original if path normalization fails.
+        }
+
+        return normalized.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static string? TryGetParentDirectory(string path)
+    {
+        try
+        {
+            return Directory.GetParent(path)?.FullName;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public bool TryResolveFrameIndex(

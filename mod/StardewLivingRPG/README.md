@@ -116,8 +116,11 @@ Config knobs:
   - `ContentPackFor.UniqueID = "mx146323.StardewLivingRPG"`
 - A starter template is included at:
   - `custom_npc_pack_template/`
+- SVE starter portrait profile mapping template:
+  - `custom_npc_pack_template/content/portrait-profiles.sve-starter.json`
 - Optional portrait emotion profile injections are read from:
   - `content/portrait-profiles.json`
+  - `assets/portrait-profiles.json` (for dependency DLL mods, e.g. compatibility mods)
 - Canon baseline rules for strict validation are in:
   - `assets/tlv-custom-npc-canon-baseline.json`
 - Built-in portrait profile defaults are in:

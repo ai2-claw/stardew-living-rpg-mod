@@ -11999,7 +11999,7 @@ public sealed class ModEntry : Mod
 
     private void InitializePortraitProfileFramework()
     {
-        _portraitEmotionProfileService = new PortraitEmotionProfileService(Helper, Monitor);
+        _portraitEmotionProfileService = new PortraitEmotionProfileService(Helper, Monitor, ModManifest.UniqueID);
         ReloadPortraitProfiles();
     }
 
