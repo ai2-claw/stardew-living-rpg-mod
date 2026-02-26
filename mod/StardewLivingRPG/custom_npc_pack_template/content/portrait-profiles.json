@@ -1,0 +1,37 @@
+{
+  "Npcs": {
+    "silas": {
+      "Aliases": [ "Silas", "Mr. Silas", "Silas Greenfield" ],
+      "DefaultFrames": {
+        "Neutral": 0,
+        "Happy": 1,
+        "Content": 3,
+        "Blush": 4,
+        "Sad": 2,
+        "Angry": 5,
+        "Worried": 2,
+        "Surprised": 7
+      },
+      "Variants": [
+        {
+          "Id": "silas_winter",
+          "Priority": 20,
+          "AppearanceIdContains": [ "winter" ],
+          "FrameOffset": 8
+        },
+        {
+          "Id": "silas_beach",
+          "Priority": 20,
+          "AppearanceIdContains": [ "beach" ],
+          "FrameOffset": 16
+        },
+        {
+          "Id": "silas_hospital",
+          "Priority": 20,
+          "Locations": [ "hospital" ],
+          "FrameOffset": 24
+        }
+      ]
+    }
+  }
+}

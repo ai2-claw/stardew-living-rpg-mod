@@ -48,6 +48,9 @@ M0 + M1 scaffold includes:
 - `slrpg_customnpc_list`: list loaded custom-NPC entries from installed packs
 - `slrpg_customnpc_dump <npc>`: dump one custom NPC lore profile by name/token
 - `slrpg_customnpc_reload`: reload custom-NPC packs without restarting the game
+- `slrpg_portrait_profile_validate`: validate loaded portrait emotion profile files
+- `slrpg_portrait_profile_dump <npc>`: dump one resolved portrait profile by name/token
+- `slrpg_portrait_profile_probe <npc> [emotion]`: probe resolved portrait frame index for an NPC/emotion
 
 Player-facing Player2 UX:
 - auto-connect on save load (config: `AutoConnectPlayer2OnLoad`, default `true`)
@@ -103,6 +106,9 @@ Config knobs:
 - `EnableStrictCustomNpcCanonValidation` (default `true`; blocks lore/canon conflicts on load)
 - `CustomNpcLoreLocaleOverride` (default empty; optional locale override for custom-NPC lore overlays)
 - `LogCustomNpcPromptInjectionPreview` (default `false`; trace-level logs when lore blocks are appended)
+- `EnablePortraitEmotionProfiles` (default `true`; enables per-NPC/per-variant portrait emotion profile resolution)
+- `PortraitProfileStrictMode` (default `false`; if `true`, require stricter portrait profile definitions)
+- `LogPortraitProfileResolution` (default `false`; trace log resolved portrait frame source/index at runtime)
 
 ## Custom NPC packs (integrated)
 - Custom NPC packs should be separate folders inside `Mods/` (not inside this mod folder).
@@ -110,8 +116,12 @@ Config knobs:
   - `ContentPackFor.UniqueID = "mx146323.StardewLivingRPG"`
 - A starter template is included at:
   - `custom_npc_pack_template/`
+- Optional portrait emotion profile injections are read from:
+  - `content/portrait-profiles.json`
 - Canon baseline rules for strict validation are in:
   - `assets/tlv-custom-npc-canon-baseline.json`
+- Built-in portrait profile defaults are in:
+  - `assets/portrait-emotion-profiles.json`
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).

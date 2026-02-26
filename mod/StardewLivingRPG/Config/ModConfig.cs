@@ -48,4 +48,9 @@ public sealed class ModConfig
     public bool EnableStrictCustomNpcCanonValidation { get; set; } = true;
     public string CustomNpcLoreLocaleOverride { get; set; } = string.Empty;
     public bool LogCustomNpcPromptInjectionPreview { get; set; } = false;
+
+    // Portrait emotion profile framework (per-NPC/per-variant frame mapping).
+    public bool EnablePortraitEmotionProfiles { get; set; } = true;
+    public bool PortraitProfileStrictMode { get; set; } = false;
+    public bool LogPortraitProfileResolution { get; set; } = false;
 }

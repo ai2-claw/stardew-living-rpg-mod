@@ -113,6 +113,52 @@ public sealed class ModEntry : Mod
         "celebration",
         "town fair"
     };
+    private static readonly string[] PlayerChatHappyEmotionTokens =
+    {
+        "happy", "glad", "great", "wonderful", "excited", "delighted",
+        "smile", "smiles", "smiling",
+        "grin", "grins", "grinning",
+        "beam", "beams", "beaming",
+        "laugh", "laughs", "laughing",
+        "cheerful", "joyful",
+        "thanks", "thank you", "haha", "heh"
+    };
+    private static readonly string[] PlayerChatContentEmotionTokens =
+    {
+        "content", "satisfied", "at ease", "comfortable"
+    };
+    private static readonly string[] PlayerChatBlushEmotionTokens =
+    {
+        "blush", "blushes", "blushing",
+        "bashful", "shy", "flustered"
+    };
+    private static readonly string[] PlayerChatSadEmotionTokens =
+    {
+        "sad", "sorry", "down", "unhappy", "regret", "regretful",
+        "sigh", "sighs", "sighing",
+        "disappointed", "gloomy",
+        "frown", "frowns", "frowning",
+        "tearful", "cry", "cries", "crying"
+    };
+    private static readonly string[] PlayerChatAngryEmotionTokens =
+    {
+        "angry", "mad", "furious", "annoyed", "frustrated", "irritated",
+        "frustrating", "upset", "resentful",
+        "snap", "snaps", "snapping",
+        "grr", "ugh"
+    };
+    private static readonly string[] PlayerChatSurprisedEmotionTokens =
+    {
+        "wow", "whoa", "really", "what", "surprised", "surprising",
+        "unexpected", "shocked", "startled", "amazed",
+        "gasp", "gasps", "gasping"
+    };
+    private static readonly string[] PlayerChatWorriedEmotionTokens =
+    {
+        "worried", "concerned", "nervous", "anxious",
+        "unsure", "not sure", "uncertain", "hesitant",
+        "uneasy", "wary", "hmm", "pensive", "thoughtful", "contemplative"
+    };
     private static readonly HashSet<string> ChildNpcNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Jas",
@@ -463,6 +509,8 @@ public sealed class ModEntry : Mod
     private NpcPackLoader? _customNpcPackLoader;
     private IReadOnlyList<LoadedNpcPack> _customNpcLoadedPacks = Array.Empty<LoadedNpcPack>();
     private IReadOnlyList<ValidationIssue> _customNpcValidationIssues = Array.Empty<ValidationIssue>();
+    private PortraitEmotionProfileService? _portraitEmotionProfileService;
+    private IReadOnlyList<ValidationIssue> _portraitProfileValidationIssues = Array.Empty<ValidationIssue>();
 
     // Player2 M2 runtime session state
     private Player2Client? _player2Client;
@@ -616,6 +664,7 @@ public sealed class ModEntry : Mod
         _commandPolicyService = new CommandPolicyService();
         _player2Client = new Player2Client();
         InitializeCustomNpcFramework(helper);
+        InitializePortraitProfileFramework();
 
         RegisterPlayerConsoleCommands(helper);
         if (_config.ShowDeveloperConsoleCommands)
@@ -680,6 +729,9 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_customnpc_list", "List loaded integrated custom NPCs.", OnCustomNpcListCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_dump", "Dump integrated custom NPC lore: slrpg_customnpc_dump <npc>", OnCustomNpcDumpCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_reload", "Reload integrated custom-NPC packs.", OnCustomNpcReloadCommand);
+        helper.ConsoleCommands.Add("slrpg_portrait_profile_validate", "Validate loaded NPC portrait emotion profiles.", OnPortraitProfileValidateCommand);
+        helper.ConsoleCommands.Add("slrpg_portrait_profile_dump", "Dump portrait profile details: slrpg_portrait_profile_dump <npc>", OnPortraitProfileDumpCommand);
+        helper.ConsoleCommands.Add("slrpg_portrait_profile_probe", "Probe frame resolution: slrpg_portrait_profile_probe <npc> [emotion]", OnPortraitProfileProbeCommand);
     }
 
     private void TryMigrateLegacyPlayer2Config(IModHelper helper)
@@ -772,6 +824,7 @@ public sealed class ModEntry : Mod
             ReloadCustomNpcPacks();
             InjectCustomNpcTargetsIntoRumorBoard("SaveLoaded");
         }
+        ReloadPortraitProfiles();
         Monitor.Log($"State loaded (version={_state.Version}, mode={_state.Config.Mode}).", LogLevel.Info);
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
@@ -1701,7 +1754,8 @@ public sealed class ModEntry : Mod
             initialPlayerMessage,
             autoSendInitialPlayerMessage,
             portraitAssetName: npcName,
-            resolveLiveNpc: () => ResolveNpcByName(npcName) ?? ResolveNpcByName(npc.displayName) ?? npc);
+            resolveLiveNpc: () => ResolveNpcByName(npcName) ?? ResolveNpcByName(npc.displayName) ?? npc,
+            resolveProfilePortraitIndex: ResolvePortraitProfileFrameIndex);
     }
 
     private bool HasPendingQuestForNpc(string npcName)
@@ -7052,8 +7106,9 @@ public sealed class ModEntry : Mod
             {
                 _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
                 playerFacingMsg = NormalizeNpcTimeReply(npcId, playerFacingMsg);
+                var playerFacingUiMsg = EnsurePlayerFacingEmotionTag(playerFacingMsg);
                 var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
-                q.Enqueue(playerFacingMsg);
+                q.Enqueue(playerFacingUiMsg);
             }
             else
             {
@@ -7422,7 +7477,7 @@ public sealed class ModEntry : Mod
             $"STYLE: Reply strictly in-character as {(string.IsNullOrWhiteSpace(npcName) ? "the addressed NPC" : npcName)}, concise, natural, no assistant-speak.",
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
-            "STYLE: Optional portrait cue at start of spoken text: <emotion:neutral|happy|sad|angry|surprised|worried>. Keep at most one tag.",
+            "STYLE: Start each spoken player-facing reply with exactly one leading portrait cue tag: <emotion:neutral|happy|content|blush|sad|angry|surprised|worried>.",
             promptLanguageRule,
             "LANGUAGE_RULE: For structured command outputs, keep command names and argument keys in English; localize only string values.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
@@ -11353,6 +11408,216 @@ public sealed class ModEntry : Mod
         return string.IsNullOrWhiteSpace(prefix) ? trimmed : prefix;
     }
 
+    private static string EnsurePlayerFacingEmotionTag(string message)
+    {
+        var text = (message ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+            return "<emotion:neutral>";
+
+        string? resolvedEmotion = null;
+        while (true)
+        {
+            var leadingMatch = Regex.Match(
+                text,
+                @"^\s*<\s*emotion\s*:\s*(?<value>[a-zA-Z_]+)\s*>\s*",
+                RegexOptions.CultureInvariant);
+            if (!leadingMatch.Success || leadingMatch.Length <= 0)
+                break;
+
+            if (TryNormalizeEmotionTagValue(leadingMatch.Groups["value"].Value, out var parsedEmotion))
+                resolvedEmotion = parsedEmotion;
+            text = text[leadingMatch.Length..];
+        }
+
+        text = Regex.Replace(
+            text,
+            @"<\s*emotion\s*:\s*(?<value>[a-zA-Z_]+)\s*>",
+            match =>
+            {
+                if (resolvedEmotion is null
+                    && TryNormalizeEmotionTagValue(match.Groups["value"].Value, out var parsedEmotion))
+                {
+                    resolvedEmotion = parsedEmotion;
+                }
+
+                return string.Empty;
+            },
+            RegexOptions.CultureInvariant);
+        text = Regex.Replace(text, @"\s{2,}", " ", RegexOptions.CultureInvariant).Trim();
+
+        var inferredEmotion = InferEmotionTagFromText(text);
+        if (resolvedEmotion is null
+            || (string.Equals(resolvedEmotion, "neutral", StringComparison.Ordinal)
+                && !string.Equals(inferredEmotion, "neutral", StringComparison.Ordinal)))
+        {
+            resolvedEmotion = inferredEmotion;
+        }
+        return string.IsNullOrWhiteSpace(text)
+            ? $"<emotion:{resolvedEmotion}>"
+            : $"<emotion:{resolvedEmotion}> {text}";
+    }
+
+    private static bool TryNormalizeEmotionTagValue(string rawValue, out string normalizedEmotion)
+    {
+        normalizedEmotion = "neutral";
+        if (string.IsNullOrWhiteSpace(rawValue))
+            return false;
+
+        var normalized = rawValue.Trim().ToLowerInvariant().Replace("_", string.Empty, StringComparison.Ordinal);
+        normalizedEmotion = normalized switch
+        {
+            "neutral" or "calm" => "neutral",
+            "happy" or "glad" or "cheerful" or "joyful" or "delighted" or "excited"
+                or "smile" or "smiles" or "smiling"
+                or "grin" or "grins" or "grinning"
+                or "beam" or "beams" or "beaming"
+                or "laugh" or "laughs" or "laughing" => "happy",
+            "content"
+                or "satisfied" or "comfortable"
+                => "content",
+            "blush" or "blushes" or "blushing"
+                or "bashful" or "shy" or "flustered" => "blush",
+            "sad" or "down" or "unhappy" or "sorry" or "regretful" or "disappointed" or "gloomy"
+                or "sigh" or "sighs" or "sighing"
+                or "frown" or "frowns" or "frowning"
+                or "tearful" or "cry" or "cries" or "crying" => "sad",
+            "angry" or "mad" or "annoyed" or "frustrated" or "irritated" or "furious" or "upset" or "resentful"
+                or "snap" or "snaps" or "snapping" => "angry",
+            "surprised" or "surprising" or "shock" or "shocked" or "startled" or "amazed"
+                or "gasp" or "gasps" or "gasping" => "surprised",
+            "worried" or "concerned" or "nervous" or "anxious" or "unsure" or "uncertain" or "hesitant" or "uneasy" or "wary"
+                or "pensive" or "thoughtful" or "contemplative" => "worried",
+            _ => "neutral"
+        };
+
+        return normalized is "neutral"
+            or "calm"
+            or "happy"
+            or "glad"
+            or "cheerful"
+            or "joyful"
+            or "delighted"
+            or "excited"
+            or "smile"
+            or "smiles"
+            or "smiling"
+            or "grin"
+            or "grins"
+            or "grinning"
+            or "beam"
+            or "beams"
+            or "beaming"
+            or "laugh"
+            or "laughs"
+            or "laughing"
+            or "content"
+            or "satisfied"
+            or "comfortable"
+            or "blush"
+            or "blushes"
+            or "blushing"
+            or "bashful"
+            or "shy"
+            or "flustered"
+            or "sad"
+            or "down"
+            or "unhappy"
+            or "sorry"
+            or "regretful"
+            or "disappointed"
+            or "gloomy"
+            or "sigh"
+            or "sighs"
+            or "sighing"
+            or "frown"
+            or "frowns"
+            or "frowning"
+            or "tearful"
+            or "cry"
+            or "cries"
+            or "crying"
+            or "angry"
+            or "mad"
+            or "annoyed"
+            or "frustrated"
+            or "irritated"
+            or "furious"
+            or "upset"
+            or "resentful"
+            or "snap"
+            or "snaps"
+            or "snapping"
+            or "surprised"
+            or "shock"
+            or "surprising"
+            or "shocked"
+            or "startled"
+            or "amazed"
+            or "gasp"
+            or "gasps"
+            or "gasping"
+            or "worried"
+            or "concerned"
+            or "nervous"
+            or "anxious"
+            or "unsure"
+            or "uncertain"
+            or "hesitant"
+            or "uneasy"
+            or "wary"
+            or "pensive"
+            or "thoughtful"
+            or "contemplative";
+    }
+
+    private static string InferEmotionTagFromText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return "neutral";
+
+        var normalizedText = text.Trim().ToLowerInvariant();
+        if (ContainsAnyEmotionToken(normalizedText, PlayerChatAngryEmotionTokens))
+            return "angry";
+        if (ContainsAnyEmotionToken(normalizedText, PlayerChatSadEmotionTokens))
+            return "sad";
+        if (ContainsAnyEmotionToken(normalizedText, PlayerChatWorriedEmotionTokens))
+            return "worried";
+        if (ContainsAnyEmotionToken(normalizedText, PlayerChatBlushEmotionTokens))
+            return "blush";
+        if (ContainsAnyEmotionToken(normalizedText, PlayerChatContentEmotionTokens))
+            return "content";
+        if (ContainsAnyEmotionToken(normalizedText, PlayerChatHappyEmotionTokens))
+            return "happy";
+        if (ContainsAnyEmotionToken(normalizedText, PlayerChatSurprisedEmotionTokens)
+            || normalizedText.Contains("?!", StringComparison.Ordinal))
+        {
+            return "surprised";
+        }
+
+        return "neutral";
+    }
+
+    private static bool ContainsAnyEmotionToken(string text, IEnumerable<string> tokens)
+    {
+        foreach (var token in tokens)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                continue;
+
+            if (token.Contains(' '))
+            {
+                if (text.Contains(token, StringComparison.Ordinal))
+                    return true;
+                continue;
+            }
+
+            if (ContainsTargetToken(text, token))
+                return true;
+        }
+
+        return false;
+    }
+
     private static bool TryExtractEmbeddedJsonObject(string text, out string payloadJson, out string prefix)
     {
         payloadJson = string.Empty;
@@ -11732,6 +11997,74 @@ public sealed class ModEntry : Mod
         return locale.Trim().Replace('_', '-').ToLowerInvariant();
     }
 
+    private void InitializePortraitProfileFramework()
+    {
+        _portraitEmotionProfileService = new PortraitEmotionProfileService(Helper, Monitor);
+        ReloadPortraitProfiles();
+    }
+
+    private void ReloadPortraitProfiles()
+    {
+        if (_portraitEmotionProfileService is null)
+            return;
+
+        if (!_config.EnablePortraitEmotionProfiles)
+        {
+            _portraitProfileValidationIssues = Array.Empty<ValidationIssue>();
+            Monitor.Log("Portrait emotion profile framework is disabled by config.", LogLevel.Info);
+            return;
+        }
+
+        _portraitEmotionProfileService.Reload(_config.PortraitProfileStrictMode);
+        _portraitProfileValidationIssues = _portraitEmotionProfileService.ValidationIssues;
+        LogPortraitProfileValidationIssues(verbose: false);
+    }
+
+    private void LogPortraitProfileValidationIssues(bool verbose)
+    {
+        var errors = _portraitProfileValidationIssues.Where(i => i.Severity == ValidationSeverity.Error).ToArray();
+        var warnings = _portraitProfileValidationIssues.Where(i => i.Severity == ValidationSeverity.Warning).ToArray();
+        Monitor.Log(
+            $"Portrait profile validation summary: errors={errors.Length}, warnings={warnings.Length}.",
+            errors.Length > 0 ? LogLevel.Warn : LogLevel.Info);
+
+        if (!verbose)
+        {
+            foreach (var sample in errors.Take(5))
+                Monitor.Log($"[ERROR:{sample.Code}] source={sample.PackId} npc={sample.NpcId} {sample.Message}", LogLevel.Warn);
+            foreach (var sample in warnings.Take(5))
+                Monitor.Log($"[WARN:{sample.Code}] source={sample.PackId} npc={sample.NpcId} {sample.Message}", LogLevel.Debug);
+            return;
+        }
+
+        foreach (var issue in _portraitProfileValidationIssues
+                     .OrderByDescending(i => i.Severity)
+                     .ThenBy(i => i.PackId, StringComparer.OrdinalIgnoreCase))
+        {
+            var level = issue.Severity == ValidationSeverity.Error ? LogLevel.Warn : LogLevel.Info;
+            Monitor.Log(
+                $"[{issue.Severity}:{issue.Code}] source={issue.PackId} npc={issue.NpcId} file={issue.SourcePath} -> {issue.Message}",
+                level);
+        }
+    }
+
+    private int? ResolvePortraitProfileFrameIndex(NPC? npc, string? npcNameOrToken, string emotionKey)
+    {
+        if (!_config.EnablePortraitEmotionProfiles || _portraitEmotionProfileService is null)
+            return null;
+
+        if (!_portraitEmotionProfileService.TryResolveFrameIndex(npc, npcNameOrToken, emotionKey, out var frameIndex, out var resolutionSource))
+            return null;
+
+        if (_config.LogPortraitProfileResolution)
+        {
+            var npcLabel = npc?.Name ?? npcNameOrToken ?? "(unknown)";
+            Monitor.Log($"Portrait profile resolved frame={frameIndex} npc={npcLabel} emotion={emotionKey} source={resolutionSource}.", LogLevel.Trace);
+        }
+
+        return frameIndex;
+    }
+
     private void InjectCustomNpcTargetsIntoRumorBoard(string source)
     {
         if (!_config.EnableCustomNpcFramework || _customNpcRegistry is null || _customNpcRegistry.NpcsByToken.Count == 0)
@@ -11800,9 +12133,70 @@ public sealed class ModEntry : Mod
         Monitor.Log($"ForbiddenClaims: {string.Join(", ", npc.Lore.ForbiddenClaims)}", LogLevel.Info);
     }
 
+    private void OnPortraitProfileValidateCommand(string command, string[] args)
+    {
+        LogPortraitProfileValidationIssues(verbose: true);
+    }
+
+    private void OnPortraitProfileDumpCommand(string command, string[] args)
+    {
+        if (_portraitEmotionProfileService is null)
+            return;
+
+        if (args.Length == 0)
+        {
+            Monitor.Log("Usage: slrpg_portrait_profile_dump <npc>", LogLevel.Info);
+            return;
+        }
+
+        var raw = string.Join(" ", args);
+        Monitor.Log(_portraitEmotionProfileService.BuildProfileDebugDump(raw), LogLevel.Info);
+    }
+
+    private void OnPortraitProfileProbeCommand(string command, string[] args)
+    {
+        if (_portraitEmotionProfileService is null)
+            return;
+
+        if (args.Length == 0)
+        {
+            Monitor.Log("Usage: slrpg_portrait_profile_probe <npc> [emotion]", LogLevel.Info);
+            return;
+        }
+
+        var defaultEmotion = "happy";
+        var knownEmotionTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "neutral", "happy", "content", "blush", "sad", "angry", "worried", "surprised"
+        };
+
+        string emotion = defaultEmotion;
+        string rawNpc;
+        if (args.Length > 1 && knownEmotionTokens.Contains(args[^1]))
+        {
+            emotion = args[^1];
+            rawNpc = string.Join(" ", args.Take(args.Length - 1));
+        }
+        else
+        {
+            rawNpc = string.Join(" ", args);
+        }
+
+        var npc = ResolveNpcByName(rawNpc);
+        if (_portraitEmotionProfileService.TryResolveFrameIndex(npc, rawNpc, emotion, out var frameIndex, out var source))
+        {
+            var npcLabel = npc?.Name ?? rawNpc;
+            Monitor.Log($"Portrait profile probe resolved npc={npcLabel} emotion={emotion} frame={frameIndex} source={source}.", LogLevel.Info);
+            return;
+        }
+
+        Monitor.Log($"Portrait profile probe could not resolve npc={rawNpc} emotion={emotion}.", LogLevel.Warn);
+    }
+
     private void OnCustomNpcReloadCommand(string command, string[] args)
     {
         ReloadCustomNpcPacks();
+        ReloadPortraitProfiles();
         InjectCustomNpcTargetsIntoRumorBoard("ReloadCommand");
     }
 }

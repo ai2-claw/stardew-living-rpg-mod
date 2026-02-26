@@ -5,6 +5,7 @@ using StardewValley;
 using StardewValley.Menus;
 using StardewLivingRPG.Utils;
 using System;
+using System.Reflection;
 using System.Text.RegularExpressions;
 
 namespace StardewLivingRPG.UI;
@@ -15,6 +16,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
     {
         Neutral,
         Happy,
+        Content,
+        Blush,
         Sad,
         Angry,
         Surprised,
@@ -22,11 +25,34 @@ public sealed class NpcChatInputMenu : IClickableMenu
     }
 
     private const int PortraitFrameSize = 64;
+    // Default portrait expression indices used when NPC-specific indices are unavailable.
+    private const int DefaultPortraitIndexNeutral = 0;
+    private const int DefaultPortraitIndexHappy = 1;
+    private const int DefaultPortraitIndexSad = 2;
+    private const int DefaultPortraitIndexContent = 3;
+    private const int DefaultPortraitIndexBlush = 4;
+    private const int DefaultPortraitIndexAngry = 5;
+    private const int DefaultPortraitIndexSurprised = 7;
+    private static readonly BindingFlags NpcPortraitIndexBindingFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+    private static readonly FieldInfo? NpcPortraitNeutralIndexField = typeof(NPC).GetField("portrait_neutral_index", NpcPortraitIndexBindingFlags);
+    private static readonly FieldInfo? NpcPortraitHappyIndexField = typeof(NPC).GetField("portrait_happy_index", NpcPortraitIndexBindingFlags);
+    private static readonly FieldInfo? NpcPortraitSadIndexField = typeof(NPC).GetField("portrait_sad_index", NpcPortraitIndexBindingFlags);
+    private static readonly FieldInfo? NpcPortraitAngryIndexField = typeof(NPC).GetField("portrait_angry_index", NpcPortraitIndexBindingFlags);
+    private static readonly FieldInfo? NpcPortraitCustomIndexField = typeof(NPC).GetField("portrait_custom_index", NpcPortraitIndexBindingFlags);
+    private static readonly FieldInfo? NpcPortraitBlushIndexField = typeof(NPC).GetField("portrait_blush_index", NpcPortraitIndexBindingFlags);
     private static readonly TimeSpan LivePortraitRefreshInterval = TimeSpan.FromMilliseconds(350);
     private static readonly TimeSpan EmotionNeutralDecay = TimeSpan.FromSeconds(8);
     private static readonly string[] HappyEmotionTokens =
     {
         "happy", "glad", "great", "wonderful", "excited", "delighted", "thanks", "thank you", "haha", "heh"
+    };
+    private static readonly string[] ContentEmotionTokens =
+    {
+        "content", "satisfied", "at ease", "comfortable"
+    };
+    private static readonly string[] BlushEmotionTokens =
+    {
+        "blush", "blushes", "blushing", "bashful", "shy", "flustered"
     };
     private static readonly string[] SadEmotionTokens =
     {
@@ -42,8 +68,41 @@ public sealed class NpcChatInputMenu : IClickableMenu
     };
     private static readonly string[] WorriedEmotionTokens =
     {
-        "worried", "concerned", "nervous", "anxious", "unsure", "not sure", "uncertain", "hmm"
+        "worried", "concerned", "nervous", "anxious", "unsure", "not sure", "uncertain", "hmm",
+        "pensive", "thoughtful", "contemplative"
     };
+    private readonly struct PortraitFrameProfile
+    {
+        public PortraitFrameProfile(int neutral, int happy, int content, int blush, int sad, int angry, int surprised, int worried)
+        {
+            Neutral = neutral;
+            Happy = happy;
+            Content = content;
+            Blush = blush;
+            Sad = sad;
+            Angry = angry;
+            Surprised = surprised;
+            Worried = worried;
+        }
+
+        public int Neutral { get; }
+        public int Happy { get; }
+        public int Content { get; }
+        public int Blush { get; }
+        public int Sad { get; }
+        public int Angry { get; }
+        public int Surprised { get; }
+        public int Worried { get; }
+    }
+    private static readonly PortraitFrameProfile DefaultPortraitFrameProfile = new(
+        neutral: DefaultPortraitIndexNeutral,
+        happy: DefaultPortraitIndexHappy,
+        content: DefaultPortraitIndexContent,
+        blush: DefaultPortraitIndexBlush,
+        sad: DefaultPortraitIndexSad,
+        angry: DefaultPortraitIndexAngry,
+        surprised: DefaultPortraitIndexSurprised,
+        worried: DefaultPortraitIndexSad);
 
     private readonly string _npcName;
     private readonly string _portraitAssetName;
@@ -52,6 +111,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
     private readonly Func<string?>? _pollIncoming;
     private readonly Func<bool>? _isThinking;
     private readonly Func<NPC?>? _resolveLiveNpc;
+    private readonly Func<NPC?, string?, string, int?>? _resolveProfilePortraitIndex;
 
     private string? _lastNpcMessage;
     private string? _lastPlayerMessage;
@@ -68,6 +128,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
     // Portrait Data
     private Texture2D? _fallbackPortraitTexture;
     private Texture2D? _activePortraitTexture;
+    private NPC? _activeLiveNpc;
     private Rectangle _portraitSource = new(0, 0, PortraitFrameSize, PortraitFrameSize);
     private PortraitEmotion _currentPortraitEmotion = PortraitEmotion.Neutral;
     private DateTime _lastEmotionUpdateUtc = DateTime.UtcNow;
@@ -105,7 +166,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
         string? initialPlayerMessage = null,
         bool autoSendInitialPlayerMessage = false,
         string? portraitAssetName = null,
-        Func<NPC?>? resolveLiveNpc = null)
+        Func<NPC?>? resolveLiveNpc = null,
+        Func<NPC?, string?, string, int?>? resolveProfilePortraitIndex = null)
         : base(
             Game1.uiViewport.Width / 2 - (MenuWidth / 2),
             Game1.uiViewport.Height / 2 - (MenuHeight / 2),
@@ -120,6 +182,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         _pollIncoming = pollIncoming;
         _isThinking = isThinking;
         _resolveLiveNpc = resolveLiveNpc;
+        _resolveProfilePortraitIndex = resolveProfilePortraitIndex;
         _nextPortraitRefreshUtc = DateTime.UtcNow;
 
         _activePortraitTexture = TryResolveLivePortrait();
@@ -469,14 +532,19 @@ public sealed class NpcChatInputMenu : IClickableMenu
     private Texture2D? TryResolveLivePortrait()
     {
         if (_resolveLiveNpc is null)
+        {
+            _activeLiveNpc = null;
             return null;
+        }
 
         try
         {
-            return _resolveLiveNpc()?.Portrait;
+            _activeLiveNpc = _resolveLiveNpc();
+            return _activeLiveNpc?.Portrait;
         }
         catch
         {
+            _activeLiveNpc = null;
             return null;
         }
     }
@@ -518,24 +586,126 @@ public sealed class NpcChatInputMenu : IClickableMenu
             return;
         }
 
-        var frameCount = Math.Max(1, texture.Width / PortraitFrameSize);
-        var desiredIndex = GetPortraitFrameIndex(_currentPortraitEmotion);
-        var clampedIndex = Math.Clamp(desiredIndex, 0, frameCount - 1);
-        var sourceHeight = Math.Min(PortraitFrameSize, texture.Height);
-        _portraitSource = new Rectangle(clampedIndex * PortraitFrameSize, 0, PortraitFrameSize, sourceHeight);
+        var framesAcross = Math.Max(1, texture.Width / PortraitFrameSize);
+        var framesDown = Math.Max(1, texture.Height / PortraitFrameSize);
+        var frameCount = Math.Max(1, framesAcross * framesDown);
+        var portraitProfile = ResolvePortraitFrameProfile(_activeLiveNpc);
+        var desiredIndex = ResolveDesiredPortraitFrameIndex(_currentPortraitEmotion, portraitProfile);
+        // Do not clamp to the last frame when a specific emotion frame is missing.
+        // Fall back to neutral frame 0 for unsupported expressions.
+        var neutralFallbackIndex = portraitProfile.Neutral >= 0 && portraitProfile.Neutral < frameCount
+            ? portraitProfile.Neutral
+            : 0;
+        var resolvedIndex = desiredIndex >= 0 && desiredIndex < frameCount
+            ? desiredIndex
+            : neutralFallbackIndex;
+        var sourceX = (resolvedIndex % framesAcross) * PortraitFrameSize;
+        var sourceY = (resolvedIndex / framesAcross) * PortraitFrameSize;
+        if (sourceX + PortraitFrameSize > texture.Width || sourceY + PortraitFrameSize > texture.Height)
+        {
+            sourceX = 0;
+            sourceY = 0;
+        }
+
+        _portraitSource = new Rectangle(sourceX, sourceY, PortraitFrameSize, PortraitFrameSize);
     }
 
-    private static int GetPortraitFrameIndex(PortraitEmotion emotion)
+    private static int GetPortraitFrameIndex(PortraitEmotion emotion, PortraitFrameProfile profile)
     {
         return emotion switch
         {
-            PortraitEmotion.Happy => 1,
-            PortraitEmotion.Sad => 2,
-            PortraitEmotion.Angry => 3,
-            PortraitEmotion.Surprised => 4,
-            PortraitEmotion.Worried => 5,
-            _ => 0
+            PortraitEmotion.Happy => profile.Happy,
+            PortraitEmotion.Content => profile.Content,
+            PortraitEmotion.Blush => profile.Blush,
+            PortraitEmotion.Sad => profile.Sad,
+            PortraitEmotion.Worried => profile.Worried,
+            PortraitEmotion.Angry => profile.Angry,
+            PortraitEmotion.Surprised => profile.Surprised,
+            _ => profile.Neutral
         };
+    }
+
+    private int ResolveDesiredPortraitFrameIndex(PortraitEmotion emotion, PortraitFrameProfile fallbackProfile)
+    {
+        if (_resolveProfilePortraitIndex is not null)
+        {
+            try
+            {
+                var profileIndex = _resolveProfilePortraitIndex(_activeLiveNpc, _portraitAssetName, NormalizeEmotionKey(emotion));
+                if (profileIndex.HasValue && profileIndex.Value >= 0)
+                    return profileIndex.Value;
+            }
+            catch
+            {
+                // Profile resolution should never block portrait rendering.
+            }
+        }
+
+        return GetPortraitFrameIndex(emotion, fallbackProfile);
+    }
+
+    private static string NormalizeEmotionKey(PortraitEmotion emotion)
+    {
+        return emotion switch
+        {
+            PortraitEmotion.Neutral => "neutral",
+            PortraitEmotion.Happy => "happy",
+            PortraitEmotion.Content => "content",
+            PortraitEmotion.Blush => "blush",
+            PortraitEmotion.Sad => "sad",
+            PortraitEmotion.Angry => "angry",
+            PortraitEmotion.Surprised => "surprised",
+            PortraitEmotion.Worried => "worried",
+            _ => "neutral"
+        };
+    }
+
+    private static PortraitFrameProfile ResolvePortraitFrameProfile(NPC? npc)
+    {
+        if (npc is null)
+            return DefaultPortraitFrameProfile;
+
+        var neutral = ResolvePortraitIndexOrDefault(npc, NpcPortraitNeutralIndexField, DefaultPortraitIndexNeutral, allowZero: true);
+        var happy = ResolvePortraitIndexOrDefault(npc, NpcPortraitHappyIndexField, DefaultPortraitIndexHappy, allowZero: false);
+        var sad = ResolvePortraitIndexOrDefault(npc, NpcPortraitSadIndexField, DefaultPortraitIndexSad, allowZero: false);
+        var angry = ResolvePortraitIndexOrDefault(npc, NpcPortraitAngryIndexField, DefaultPortraitIndexAngry, allowZero: false);
+        var custom = ResolvePortraitIndexOrDefault(npc, NpcPortraitCustomIndexField, DefaultPortraitIndexContent, allowZero: false);
+        var blush = ResolvePortraitIndexOrDefault(npc, NpcPortraitBlushIndexField, DefaultPortraitIndexBlush, allowZero: false);
+
+        var worried = custom > 0 ? custom : sad;
+        var content = custom > 0 ? custom : blush;
+        var blushExpression = blush > 0 ? blush : custom;
+
+        return new PortraitFrameProfile(
+            neutral: neutral,
+            happy: happy,
+            content: content,
+            blush: blushExpression,
+            sad: sad,
+            angry: angry,
+            surprised: DefaultPortraitIndexSurprised,
+            worried: worried);
+    }
+
+    private static int ResolvePortraitIndexOrDefault(NPC npc, FieldInfo? field, int fallbackIndex, bool allowZero)
+    {
+        if (field is null)
+            return fallbackIndex;
+
+        try
+        {
+            if (field.GetValue(npc) is int value)
+            {
+                if (value > 0 || (allowZero && value == 0))
+                    return value;
+            }
+        }
+        catch
+        {
+            // Preserve fallback indices if reflection fails.
+        }
+
+        return fallbackIndex;
     }
 
     private static bool TryParseEmotionTag(string rawTag, out PortraitEmotion emotion)
@@ -555,10 +725,12 @@ public sealed class NpcChatInputMenu : IClickableMenu
         {
             "neutral" or "calm" => PortraitEmotion.Neutral,
             "happy" or "glad" or "cheerful" or "smile" => PortraitEmotion.Happy,
+            "content" => PortraitEmotion.Content,
+            "blush" or "blushes" or "blushing" or "bashful" or "shy" or "flustered" => PortraitEmotion.Blush,
             "sad" or "down" or "unhappy" => PortraitEmotion.Sad,
             "angry" or "mad" or "annoyed" or "frustrated" => PortraitEmotion.Angry,
             "surprised" or "shock" => PortraitEmotion.Surprised,
-            "worried" or "concerned" or "nervous" or "anxious" or "unsure" => PortraitEmotion.Worried,
+            "worried" or "concerned" or "nervous" or "anxious" or "unsure" or "pensive" or "thoughtful" or "contemplative" => PortraitEmotion.Worried,
             _ => PortraitEmotion.Neutral
         };
 
@@ -599,6 +771,10 @@ public sealed class NpcChatInputMenu : IClickableMenu
             return PortraitEmotion.Sad;
         if (ContainsAnyToken(normalized, WorriedEmotionTokens))
             return PortraitEmotion.Worried;
+        if (ContainsAnyToken(normalized, BlushEmotionTokens))
+            return PortraitEmotion.Blush;
+        if (ContainsAnyToken(normalized, ContentEmotionTokens))
+            return PortraitEmotion.Content;
         if (ContainsAnyToken(normalized, HappyEmotionTokens))
             return PortraitEmotion.Happy;
         if (ContainsAnyToken(normalized, SurprisedEmotionTokens) || normalized.Contains("?!", StringComparison.Ordinal))

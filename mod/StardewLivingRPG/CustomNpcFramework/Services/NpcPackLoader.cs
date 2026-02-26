@@ -78,13 +78,19 @@ internal sealed class NpcPackLoader
             }
 
             var identities = pack.ReadJsonFile<NpcListFile>("content/npcs.json");
-            if (identities is null || identities.Npcs.Count == 0)
+            var loreBase = pack.ReadJsonFile<NpcLoreFile>("content/lore.json");
+            var portraitProfiles = pack.ReadJsonFile<PortraitEmotionProfilesFile>("content/portrait-profiles.json");
+            var hasIdentityData = identities is not null && identities.Npcs.Count > 0;
+            var hasLoreData = loreBase is not null && loreBase.Npcs.Count > 0;
+            var hasPortraitProfiles = portraitProfiles is not null && portraitProfiles.Npcs.Count > 0;
+            var portraitOnlyPack = hasPortraitProfiles && !hasIdentityData && !hasLoreData;
+
+            if (!portraitOnlyPack && !hasIdentityData)
             {
                 packIssues.Add(Error(packId, string.Empty, "content/npcs.json", "E_NPCS_FILE_MISSING", "Missing or empty required file content/npcs.json."));
             }
 
-            var loreBase = pack.ReadJsonFile<NpcLoreFile>("content/lore.json");
-            if (loreBase is null || loreBase.Npcs.Count == 0)
+            if (!portraitOnlyPack && !hasLoreData)
             {
                 packIssues.Add(Error(packId, string.Empty, "content/lore.json", "E_LORE_FILE_MISSING", "Missing or empty required file content/lore.json."));
             }
@@ -94,6 +100,12 @@ internal sealed class NpcPackLoader
             var lore = MergeLocaleOverlay(pack, loreBase ?? new NpcLoreFile(), locale);
 
             if (packIssues.Any(i => i.Severity == ValidationSeverity.Error))
+            {
+                allIssues.AddRange(packIssues);
+                continue;
+            }
+
+            if (portraitOnlyPack)
             {
                 allIssues.AddRange(packIssues);
                 continue;

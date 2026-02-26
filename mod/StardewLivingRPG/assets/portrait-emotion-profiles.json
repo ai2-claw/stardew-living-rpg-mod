@@ -1,0 +1,51 @@
+{
+  "Npcs": {
+    "Alex": {
+      "Aliases": [ "Alex" ],
+      "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 },
+      "Variants": [
+        {
+          "Id": "alex_beach",
+          "Priority": 60,
+          "AppearanceIdContains": [ "alex_beach", "beach" ],
+          "Seasons": [ "summer" ],
+          "Locations": [ "beach" ],
+          "Frames": { "Neutral": 0, "Happy": 1, "Content": 0, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 }
+        }
+      ]
+    },
+    "Elliott": { "Aliases": [ "Elliott" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Harvey": { "Aliases": [ "Harvey" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Sam": { "Aliases": [ "Sam" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Sebastian": { "Aliases": [ "Sebastian" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Shane": { "Aliases": [ "Shane" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Abigail": { "Aliases": [ "Abigail" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Emily": { "Aliases": [ "Emily" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Haley": { "Aliases": [ "Haley" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Leah": { "Aliases": [ "Leah" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Maru": { "Aliases": [ "Maru" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Penny": { "Aliases": [ "Penny" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Caroline": { "Aliases": [ "Caroline" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Clint": { "Aliases": [ "Clint" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Demetrius": { "Aliases": [ "Demetrius" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Dwarf": { "Aliases": [ "Dwarf" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Evelyn": { "Aliases": [ "Evelyn" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "George": { "Aliases": [ "George" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Gus": { "Aliases": [ "Gus" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Gunther": { "Aliases": [ "Gunther" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Jas": { "Aliases": [ "Jas", "Jaz" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Jodi": { "Aliases": [ "Jodi" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Kent": { "Aliases": [ "Kent" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Krobus": { "Aliases": [ "Krobus" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Lewis": { "Aliases": [ "Lewis" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Linus": { "Aliases": [ "Linus" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Marnie": { "Aliases": [ "Marnie" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Pam": { "Aliases": [ "Pam" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Pierre": { "Aliases": [ "Pierre" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Robin": { "Aliases": [ "Robin" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Sandy": { "Aliases": [ "Sandy" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Vincent": { "Aliases": [ "Vincent" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Willy": { "Aliases": [ "Willy" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } },
+    "Wizard": { "Aliases": [ "Wizard" ], "DefaultFrames": { "Neutral": 0, "Happy": 1, "Content": 3, "Blush": 4, "Sad": 2, "Angry": 5, "Worried": 2, "Surprised": 7 } }
+  }
+}
