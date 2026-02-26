@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## 0.6.0 - 2026-02-26
+
+### Added
+- Portrait emotion profile framework with per-NPC and per-variant frame mapping.
+- Built-in portrait profile defaults file: `assets/portrait-emotion-profiles.json`.
+- Companion pack portrait profile template: `custom_npc_pack_template/content/portrait-profiles.json`.
+- New portrait profile diagnostics commands:
+  - `slrpg_portrait_profile_validate`
+  - `slrpg_portrait_profile_dump <npc>`
+  - `slrpg_portrait_profile_probe <npc> [emotion]`
+- New portrait profile config options:
+  - `EnablePortraitEmotionProfiles`
+  - `PortraitProfileStrictMode`
+  - `LogPortraitProfileResolution`
+
+### Changed
+- Manifest version bumped to `0.6.0`.
+- Portrait emotion routing expanded with explicit `content` and `blush` support.
+- Portrait profile loader now supports dependency mod profile files at:
+  - `content/portrait-profiles.json`
+  - `assets/portrait-profiles.json`
+- Portrait template variants now use explicit `Frames` mappings (no `FrameOffset` in shipped examples).
+
+### Fixed
+- Resolved emotion-to-portrait index mapping so non-happy emotions no longer collapse to a single frame.
+- Enabled portrait-only compatibility packs to load without requiring `content/npcs.json` and `content/lore.json`.
+- Fixed first NPC reply emotion behavior in chat:
+  - first reply now renders as neutral
+  - subsequent replies use explicit/inferred emotion normally
+
 ## 0.5.0 - 2026-02-24
 
 ### Added
