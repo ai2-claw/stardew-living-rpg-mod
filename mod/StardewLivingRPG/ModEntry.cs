@@ -49,8 +49,8 @@ public sealed class ModEntry : Mod
     private const double DefaultMsPerNpcChatClockStep = 7000d;
     private const double NpcChatClockSlowdownMultiplier = 2d;
     private const float NpcDialogueHookInteractionRadiusTiles = 3.5f;
-    private const float NpcDialogueHookFallbackRadiusTiles = 3.75f;
-    private const float NpcManualFollowUpActivationRadiusTiles = 1.85f;
+    private const float NpcDialogueHookFallbackRadiusTiles = 1f;
+    private const float NpcManualFollowUpActivationRadiusTiles = 1f;
     private const float VanillaDialogueContextVicinityRadiusTiles = 5.5f;
     private static readonly TimeSpan NpcManualFollowUpWindow = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan NpcManualFollowUpSuppressDuration = TimeSpan.FromMilliseconds(160);
@@ -95,6 +95,23 @@ public sealed class ModEntry : Mod
         "PortraitPersonName",
         "StoreOwner",
         "StoreOwnerName"
+    };
+    private static readonly string[] WorldEventFestivalKeywords =
+    {
+        "festival",
+        "egg festival",
+        "flower dance",
+        "luau",
+        "moonlight jellies",
+        "stardew valley fair",
+        "spirit eve",
+        "spirits eve",
+        "festival of ice",
+        "feast of the winter star",
+        "night market",
+        "desert festival",
+        "celebration",
+        "town fair"
     };
     private static readonly HashSet<string> ChildNpcNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -952,7 +969,7 @@ public sealed class ModEntry : Mod
         if (loc is null)
             return false;
 
-        var nearbyRequester = TryResolveNpcDialogueHookTarget(loc);
+        var nearbyRequester = TryResolveNpcDialogueHookTargetForAction(e, loc);
 
         if (nearbyRequester is null)
             return false;
@@ -972,11 +989,11 @@ public sealed class ModEntry : Mod
         if (!TryResolveActiveManualNpcFollowUp(out var followUpNpc, out var contextTag))
             return false;
 
-        var hoveredNpc = TryResolveNpcDialogueHookTarget(Game1.currentLocation);
+        var hoveredNpc = TryResolveNpcDialogueHookTargetForAction(e, Game1.currentLocation);
         if (hoveredNpc is null || !IsSameNpcIdentity(hoveredNpc, followUpNpc))
             return false;
 
-        if (Vector2.Distance(hoveredNpc.Tile, Game1.player.Tile) > NpcManualFollowUpActivationRadiusTiles)
+        if (!IsWithinTileStepRange(Game1.player.Tile, hoveredNpc.Tile, NpcManualFollowUpActivationRadiusTiles))
             return false;
 
         ClearNpcDialogueHook();
@@ -1138,6 +1155,25 @@ public sealed class ModEntry : Mod
             .FirstOrDefault();
     }
 
+    private NPC? TryResolveNpcDialogueHookTargetForAction(ButtonPressedEventArgs e, GameLocation location)
+    {
+        if (location is null)
+            return null;
+
+        if (e.Button is SButton.MouseRight or SButton.MouseLeft)
+        {
+            var hoveredNpc = TryResolveRosterNpcUnderCursor(location);
+            if (hoveredNpc is null)
+                return null;
+
+            return Vector2.Distance(hoveredNpc.Tile, Game1.player.Tile) <= NpcDialogueHookInteractionRadiusTiles
+                ? hoveredNpc
+                : null;
+        }
+
+        return TryResolveNpcDialogueHookTarget(location);
+    }
+
     private NPC? TryResolveRosterNpcUnderCursor(GameLocation location)
     {
         if (location is null)
@@ -1230,6 +1266,16 @@ public sealed class ModEntry : Mod
         return Vector2.Dot(delta, facingUnit);
     }
 
+    private static bool IsWithinTileStepRange(Vector2 originTile, Vector2 targetTile, float maxTileDistance)
+    {
+        if (maxTileDistance < 0f)
+            return false;
+
+        var dx = MathF.Abs(targetTile.X - originTile.X);
+        var dy = MathF.Abs(targetTile.Y - originTile.Y);
+        return Math.Max(dx, dy) <= maxTileDistance;
+    }
+
     private void ArmNpcDialogueHook(NPC npc)
     {
         if (npc is null || string.IsNullOrWhiteSpace(npc.Name))
@@ -1263,10 +1309,6 @@ public sealed class ModEntry : Mod
             return;
 
         var owner = TryResolveNpcFromOpenedMenu(menu);
-        if (owner is null && Game1.currentLocation is not null)
-            owner = TryResolveNpcDialogueHookTarget(Game1.currentLocation);
-        if (owner is null && isShopMenu)
-            owner = ResolveJojaFallbackNpc(menu);
 
         if (owner is null || !IsRosterNpc(owner))
             return;
@@ -1301,9 +1343,6 @@ public sealed class ModEntry : Mod
 
         if (Game1.currentSpeaker is not null && !string.IsNullOrWhiteSpace(Game1.currentSpeaker.Name))
             return Game1.currentSpeaker;
-
-        if (Game1.currentLocation is not null)
-            return TryResolveNpcDialogueHookTarget(Game1.currentLocation);
 
         return null;
     }
@@ -2478,13 +2517,11 @@ public sealed class ModEntry : Mod
     {
         if (_townMemoryService is null || !Context.IsWorldReady || !Game1.eventUp || Game1.CurrentEvent is null)
             return;
-        if (!_config.EnableCustomNpcFramework || _customNpcRegistry is null || _customNpcRegistry.NpcsByToken.Count == 0)
-            return;
 
         var eventObject = (object)Game1.CurrentEvent;
+        var locationName = Game1.currentLocation?.Name ?? "Town";
         var actorNames = ExtractWorldEventActorNames(eventObject);
-        if (actorNames.Count == 0)
-            return;
+        var isFestivalEvent = IsLikelyFestivalWorldEvent(eventObject, locationName, actorNames);
 
         var customActors = actorNames
             .Where(IsCustomNpcNameOrAlias)
@@ -2492,10 +2529,9 @@ public sealed class ModEntry : Mod
             .ToList();
         if (customActors.Count == 0)
             customActors = FindCustomNpcNamesInEventCommands(eventObject, maxMatches: 2);
-        if (customActors.Count == 0)
+        if (!isFestivalEvent && customActors.Count == 0)
             return;
 
-        var locationName = Game1.currentLocation?.Name ?? "Town";
         var identity = BuildWorldEventIdentity(eventObject, locationName, actorNames);
         if (string.IsNullOrWhiteSpace(identity))
             return;
@@ -2512,15 +2548,17 @@ public sealed class ModEntry : Mod
             Source = "world_event"
         };
 
+        IReadOnlyList<string> summaryActors = customActors.Count > 0 ? customActors : actorNames;
         var sourceNpc = ResolvePreferredWorldEventSourceNpc(customActors);
-        var summary = BuildWorldEventSummary(customActors, locationName);
-        var visibility = IsLikelyPublicTownLocation(locationName) ? "public" : "local";
-        var severity = customActors.Count >= 2 ? 3 : 2;
-        var tags = BuildWorldEventTags(customActors, locationName);
+        var summary = BuildWorldEventSummary(summaryActors, locationName, isFestivalEvent);
+        var visibility = isFestivalEvent || IsLikelyPublicTownLocation(locationName) ? "public" : "local";
+        var severity = isFestivalEvent ? 4 : customActors.Count >= 2 ? 3 : 2;
+        var tags = BuildWorldEventTags(summaryActors, locationName, isFestivalEvent, customActors.Count > 0);
+        var kind = isFestivalEvent ? "social" : "community";
 
         _townMemoryService.RecordEvent(
             _state,
-            "community",
+            kind,
             summary,
             locationName,
             _state.Calendar.Day,
@@ -2611,7 +2649,7 @@ public sealed class ModEntry : Mod
         return string.Empty;
     }
 
-    private static string BuildWorldEventSummary(IReadOnlyList<string> actors, string locationName)
+    private static string BuildWorldEventSummary(IReadOnlyList<string> actors, string locationName, bool isFestivalEvent)
     {
         var names = actors
             .Where(a => !string.IsNullOrWhiteSpace(a))
@@ -2620,6 +2658,16 @@ public sealed class ModEntry : Mod
             .Take(2)
             .ToArray();
         var location = string.IsNullOrWhiteSpace(locationName) ? "Town" : locationName;
+
+        if (isFestivalEvent)
+        {
+            if (names.Length == 0)
+                return $"Festival activity was underway near {location}.";
+            if (names.Length == 1)
+                return $"{names[0]} was seen joining festival activity near {location}.";
+
+            return $"{names[0]} and {names[1]} were seen joining festival activity near {location}.";
+        }
 
         if (names.Length == 0)
             return $"A live town event just happened near {location}.";
@@ -2645,14 +2693,22 @@ public sealed class ModEntry : Mod
                || token.Contains("busstop", StringComparison.Ordinal);
     }
 
-    private static string[] BuildWorldEventTags(IReadOnlyList<string> actors, string locationName)
+    private static string[] BuildWorldEventTags(
+        IReadOnlyList<string> actors,
+        string locationName,
+        bool isFestivalEvent,
+        bool hasCustomActors)
     {
         var tags = new List<string>
         {
             "world_event",
-            "source_mod_event",
-            "custom_npc"
+            "source_live_event"
         };
+
+        if (isFestivalEvent)
+            tags.Add("festival");
+        if (hasCustomActors)
+            tags.Add("custom_npc");
 
         tags.Add(NormalizeTargetToken(locationName));
         foreach (var actor in actors)
@@ -2663,6 +2719,162 @@ public sealed class ModEntry : Mod
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(8)
             .ToArray();
+    }
+
+    private static bool IsLikelyFestivalWorldEvent(object eventObject, string locationName, IReadOnlyList<string> actorNames)
+    {
+        if (IsTruthyEventMember(eventObject, "isFestival")
+            || IsTruthyEventMember(eventObject, "festival")
+            || IsTruthyEventMember(eventObject, "festivalEvent")
+            || IsTruthyEventMember(eventObject, "isFestivalDay"))
+        {
+            return true;
+        }
+
+        if (TryGetMemberValue(eventObject, "festivalData", out var festivalData) && festivalData is not null)
+            return true;
+
+        var metadata = string.Join(
+            " ",
+            new[]
+            {
+                TryReadEventMemberAsString(eventObject, "id"),
+                TryReadEventMemberAsString(eventObject, "eventId"),
+                TryReadEventMemberAsString(eventObject, "festivalName"),
+                TryReadEventMemberAsString(eventObject, "festivalId"),
+                TryReadEventMemberAsString(eventObject, "festival")
+            }.Where(s => !string.IsNullOrWhiteSpace(s)));
+
+        if (ContainsAnyFestivalKeyword(metadata))
+            return true;
+
+        var commandText = BuildWorldEventCommandTextSample(eventObject, maxCommands: 24);
+        if (ContainsAnyFestivalKeyword(commandText))
+            return true;
+
+        if (actorNames.Count >= 8 && IsLikelyPublicTownLocation(locationName))
+            return true;
+
+        return IsGameFestivalFlagSet();
+    }
+
+    private static bool IsTruthyEventMember(object source, string memberName)
+    {
+        if (!TryGetMemberValue(source, memberName, out var raw) || raw is null)
+            return false;
+
+        return IsTruthyValue(raw);
+    }
+
+    private static bool IsTruthyValue(object rawValue)
+    {
+        return rawValue switch
+        {
+            bool b => b,
+            int i => i != 0,
+            long l => l != 0L,
+            string s => ParseTruthyText(s),
+            _ => ParseTruthyText(rawValue.ToString() ?? string.Empty)
+        };
+
+        static bool ParseTruthyText(string text)
+        {
+            var normalized = (text ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+                return false;
+            if (bool.TryParse(normalized, out var parsed))
+                return parsed;
+
+            return normalized.Equals("1", StringComparison.OrdinalIgnoreCase)
+                   || normalized.Equals("yes", StringComparison.OrdinalIgnoreCase)
+                   || normalized.Equals("on", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private static bool ContainsAnyFestivalKeyword(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        foreach (var keyword in WorldEventFestivalKeywords)
+        {
+            if (ContainsTargetToken(text, keyword))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsGameFestivalFlagSet()
+    {
+        if (TryGetStaticMemberValue(typeof(Game1), "isFestival", out var memberValue)
+            && memberValue is not null
+            && IsTruthyValue(memberValue))
+        {
+            return true;
+        }
+
+        var method = typeof(Game1).GetMethod(
+                         "isFestival",
+                         BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+                         binder: null,
+                         types: Type.EmptyTypes,
+                         modifiers: null)
+                     ?? typeof(Game1).GetMethod(
+                         "IsFestival",
+                         BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+                         binder: null,
+                         types: Type.EmptyTypes,
+                         modifiers: null);
+        if (method is null || method.ReturnType != typeof(bool))
+            return false;
+
+        try
+        {
+            var result = method.Invoke(null, null);
+            return result is bool isFestival && isFestival;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string BuildWorldEventCommandTextSample(object eventObject, int maxCommands)
+    {
+        if (!TryGetMemberValue(eventObject, "eventCommands", out var rawCommands) || rawCommands is null)
+            return string.Empty;
+
+        var commands = new List<string>();
+        var limit = Math.Max(1, maxCommands);
+        if (rawCommands is IEnumerable<string> typed)
+        {
+            foreach (var command in typed)
+            {
+                if (string.IsNullOrWhiteSpace(command))
+                    continue;
+                commands.Add(command.Trim());
+                if (commands.Count >= limit)
+                    break;
+            }
+        }
+        else if (rawCommands is System.Collections.IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                var text = item?.ToString();
+                if (string.IsNullOrWhiteSpace(text))
+                    continue;
+                commands.Add(text.Trim());
+                if (commands.Count >= limit)
+                    break;
+            }
+        }
+
+        if (commands.Count == 0)
+            return string.Empty;
+
+        return string.Join(' ', commands);
     }
 
     private static string BuildWorldEventIdentity(object eventObject, string locationName, IReadOnlyList<string> actorNames)
@@ -2859,6 +3071,30 @@ public sealed class ModEntry : Mod
         return true;
     }
 
+    private static bool TryGetStaticMemberValue(Type sourceType, string memberName, out object? value)
+    {
+        value = null;
+        if (sourceType is null || string.IsNullOrWhiteSpace(memberName))
+            return false;
+
+        const BindingFlags flags =
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+
+        var prop = sourceType.GetProperty(memberName, flags);
+        if (prop is not null)
+        {
+            value = prop.GetValue(null);
+            return true;
+        }
+
+        var field = sourceType.GetField(memberName, flags);
+        if (field is null)
+            return false;
+
+        value = field.GetValue(null);
+        return true;
+    }
+
     private static void AddName(List<string> names, string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -3005,7 +3241,7 @@ public sealed class ModEntry : Mod
         var requesterName = _pendingNpcDialogueHookName;
         var loc = Game1.currentLocation;
         var npc = ResolvePendingNpcDialogueHookNpc(requesterName, loc);
-        if (npc is null || Vector2.Distance(npc.Tile, Game1.player.Tile) > NpcDialogueHookFallbackRadiusTiles)
+        if (npc is null || !IsWithinTileStepRange(Game1.player.Tile, npc.Tile, NpcDialogueHookFallbackRadiusTiles))
         {
             ClearNpcDialogueHook();
             return;
