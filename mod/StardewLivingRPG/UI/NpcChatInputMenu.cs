@@ -24,7 +24,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         Worried
     }
 
-    private const int PortraitFrameSize = 64;
+    private const int DefaultPortraitFrameSize = 64;
     // Default portrait expression indices used when NPC-specific indices are unavailable.
     private const int DefaultPortraitIndexNeutral = 0;
     private const int DefaultPortraitIndexHappy = 1;
@@ -130,7 +130,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
     private Texture2D? _fallbackPortraitTexture;
     private Texture2D? _activePortraitTexture;
     private NPC? _activeLiveNpc;
-    private Rectangle _portraitSource = new(0, 0, PortraitFrameSize, PortraitFrameSize);
+    private Rectangle _portraitSource = new(0, 0, DefaultPortraitFrameSize, DefaultPortraitFrameSize);
     private PortraitEmotion _currentPortraitEmotion = PortraitEmotion.Neutral;
     private DateTime _lastEmotionUpdateUtc = DateTime.UtcNow;
     private DateTime _nextPortraitRefreshUtc;
@@ -587,15 +587,16 @@ public sealed class NpcChatInputMenu : IClickableMenu
         var texture = _activePortraitTexture ?? _fallbackPortraitTexture;
         if (texture is null)
         {
-            _portraitSource = new Rectangle(0, 0, PortraitFrameSize, PortraitFrameSize);
+            _portraitSource = new Rectangle(0, 0, DefaultPortraitFrameSize, DefaultPortraitFrameSize);
             return;
         }
 
-        var framesAcross = Math.Max(1, texture.Width / PortraitFrameSize);
-        var framesDown = Math.Max(1, texture.Height / PortraitFrameSize);
-        var frameCount = Math.Max(1, framesAcross * framesDown);
         var portraitProfile = ResolvePortraitFrameProfile(_activeLiveNpc);
         var desiredIndex = ResolveDesiredPortraitFrameIndex(_currentPortraitEmotion, portraitProfile);
+        var frameSize = ResolvePortraitFrameSize(texture, _activeLiveNpc);
+        var framesAcross = Math.Max(1, texture.Width / frameSize);
+        var framesDown = Math.Max(1, texture.Height / frameSize);
+        var frameCount = Math.Max(1, framesAcross * framesDown);
         // Do not clamp to the last frame when a specific emotion frame is missing.
         // Fall back to neutral frame 0 for unsupported expressions.
         var neutralFallbackIndex = portraitProfile.Neutral >= 0 && portraitProfile.Neutral < frameCount
@@ -604,15 +605,51 @@ public sealed class NpcChatInputMenu : IClickableMenu
         var resolvedIndex = desiredIndex >= 0 && desiredIndex < frameCount
             ? desiredIndex
             : neutralFallbackIndex;
-        var sourceX = (resolvedIndex % framesAcross) * PortraitFrameSize;
-        var sourceY = (resolvedIndex / framesAcross) * PortraitFrameSize;
-        if (sourceX + PortraitFrameSize > texture.Width || sourceY + PortraitFrameSize > texture.Height)
+        var sourceX = (resolvedIndex % framesAcross) * frameSize;
+        var sourceY = (resolvedIndex / framesAcross) * frameSize;
+        if (sourceX + frameSize > texture.Width || sourceY + frameSize > texture.Height)
         {
             sourceX = 0;
             sourceY = 0;
         }
 
-        _portraitSource = new Rectangle(sourceX, sourceY, PortraitFrameSize, PortraitFrameSize);
+        _portraitSource = new Rectangle(sourceX, sourceY, frameSize, frameSize);
+    }
+
+    private static int ResolvePortraitFrameSize(Texture2D texture, NPC? npc)
+    {
+        if (npc is not null)
+        {
+            try
+            {
+                var mugShotSource = npc.getMugShotSourceRect();
+                if (mugShotSource.Width > 0
+                    && mugShotSource.Height > 0
+                    && mugShotSource.Width == mugShotSource.Height)
+                {
+                    return mugShotSource.Width;
+                }
+            }
+            catch
+            {
+                // If mugshot source resolution fails, fall back to sheet heuristics.
+            }
+        }
+
+        // Stardew portrait sheets are conventionally two columns wide; HD packs often
+        // keep the same layout but scale each frame up (e.g., 64->256).
+        var twoColumnFrameSize = texture.Width / 2;
+        if (twoColumnFrameSize >= DefaultPortraitFrameSize
+            && texture.Width % 2 == 0
+            && texture.Height % twoColumnFrameSize == 0)
+        {
+            return twoColumnFrameSize;
+        }
+
+        if (texture.Width >= DefaultPortraitFrameSize && texture.Height >= DefaultPortraitFrameSize)
+            return DefaultPortraitFrameSize;
+
+        return Math.Max(1, Math.Min(texture.Width, texture.Height));
     }
 
     private static int GetPortraitFrameIndex(PortraitEmotion emotion, PortraitFrameProfile profile)

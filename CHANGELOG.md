@@ -29,6 +29,9 @@
 - Fixed first NPC reply emotion behavior in chat:
   - first reply now renders as neutral
   - subsequent replies use explicit/inferred emotion normally
+- Fixed high-resolution portrait rendering in chat and newspaper:
+  - supports non-standard sheet grids (including short grids like `2x2` and `2x5`)
+  - avoids blank newspaper byline portraits for single-frame HD sheets (`1x1`)
 
 ## 0.5.0 - 2026-02-24
 

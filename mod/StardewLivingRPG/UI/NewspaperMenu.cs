@@ -33,6 +33,7 @@ public sealed class NewspaperMenu : IClickableMenu
     private const int ContentTopSpacingBelowMasthead = 20;
     private const int ScrollBarWidth = 24;
     private const int ScrollBarGap = 8;
+    private const int DefaultPortraitFrameSize = 64;
 
     public NewspaperMenu(NewspaperIssue? issue)
         : base(
@@ -323,7 +324,7 @@ public sealed class NewspaperMenu : IClickableMenu
                 var npc = Game1.getCharacterFromName(npcName);
                 if (npc?.Portrait != null)
                 {
-                    var sourceRect = new Rectangle(0, 0, 64, 64);
+                    var sourceRect = ResolveNewspaperPortraitSourceRect(npc);
                     b.Draw(npc.Portrait, new Rectangle(portraitX, portraitY, portraitSize, portraitSize), sourceRect, Color.White * 0.9f);
                 }
             }
@@ -418,6 +419,55 @@ public sealed class NewspaperMenu : IClickableMenu
         }
 
         return sourceNpc;
+    }
+
+    private static Rectangle ResolveNewspaperPortraitSourceRect(NPC npc)
+    {
+        var portraitTexture = npc.Portrait;
+        if (portraitTexture is null)
+            return new Rectangle(0, 0, DefaultPortraitFrameSize, DefaultPortraitFrameSize);
+
+        var frameSize = ResolvePortraitFrameSize(portraitTexture, npc);
+        var width = Math.Min(frameSize, portraitTexture.Width);
+        var height = Math.Min(frameSize, portraitTexture.Height);
+        return new Rectangle(0, 0, width, height);
+    }
+
+    private static int ResolvePortraitFrameSize(Texture2D portraitTexture, NPC npc)
+    {
+        try
+        {
+            var mugShotSource = npc.getMugShotSourceRect();
+            if (mugShotSource.Width > 0
+                && mugShotSource.Height > 0
+                && mugShotSource.Width == mugShotSource.Height
+                && mugShotSource.Width <= portraitTexture.Width
+                && mugShotSource.Height <= portraitTexture.Height)
+            {
+                return mugShotSource.Width;
+            }
+        }
+        catch
+        {
+            // Fall back to texture-shape heuristics when mugshot source isn't available.
+        }
+
+        var twoColumnFrameSize = portraitTexture.Width / 2;
+        if (twoColumnFrameSize >= DefaultPortraitFrameSize
+            && portraitTexture.Width != portraitTexture.Height
+            && portraitTexture.Width % 2 == 0
+            && portraitTexture.Height % twoColumnFrameSize == 0)
+        {
+            return twoColumnFrameSize;
+        }
+
+        if (portraitTexture.Width == portraitTexture.Height)
+            return portraitTexture.Width;
+
+        if (portraitTexture.Width >= DefaultPortraitFrameSize && portraitTexture.Height >= DefaultPortraitFrameSize)
+            return DefaultPortraitFrameSize;
+
+        return Math.Max(1, Math.Min(portraitTexture.Width, portraitTexture.Height));
     }
 
     private static bool IsEditorByline(string sourceNpc, TownProfile townProfile)
