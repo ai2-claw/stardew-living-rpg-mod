@@ -54,7 +54,7 @@ public sealed class ModEntry : Mod
     private const float VanillaDialogueContextVicinityRadiusTiles = 5.5f;
     private static readonly TimeSpan NpcManualFollowUpWindow = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan NpcManualFollowUpSuppressDuration = TimeSpan.FromMilliseconds(160);
-    private static readonly TimeSpan NpcManualFollowUpNoVanillaDelay = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan NpcManualFollowUpNoVanillaDelay = TimeSpan.FromMilliseconds(40);
     private static readonly TimeSpan PendingFallbackQuestOfferMaxAge = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan VanillaDialogueContextMaxAge = TimeSpan.FromMinutes(12);
     private const int VanillaDialogueContextSequenceMaxLines = 6;

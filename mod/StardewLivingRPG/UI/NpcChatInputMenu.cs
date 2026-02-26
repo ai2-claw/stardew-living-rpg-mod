@@ -122,16 +122,11 @@ public sealed class NpcChatInputMenu : IClickableMenu
         _resolveLiveNpc = resolveLiveNpc;
         _nextPortraitRefreshUtc = DateTime.UtcNow;
 
-        // --- LOAD PORTRAIT ---
-        try
-        {
-            _fallbackPortraitTexture = Game1.content.Load<Texture2D>($"Portraits\\{_portraitAssetName}");
-        }
-        catch
-        {
-            _fallbackPortraitTexture = null;
-        }
-        _activePortraitTexture = _fallbackPortraitTexture;
+        _activePortraitTexture = TryResolveLivePortrait();
+        if (_activePortraitTexture is null)
+            TryEnsureFallbackPortraitTextureLoaded();
+        if (_activePortraitTexture is null)
+            _activePortraitTexture = _fallbackPortraitTexture;
         RefreshPortraitTexture(force: true);
 
         // --- COMPONENTS (created once; positioned in RecalculateLayout) ---
@@ -463,21 +458,42 @@ public sealed class NpcChatInputMenu : IClickableMenu
             return;
 
         _nextPortraitRefreshUtc = now + LivePortraitRefreshInterval;
-        Texture2D? livePortrait = null;
-        if (_resolveLiveNpc is not null)
-        {
-            try
-            {
-                var liveNpc = _resolveLiveNpc();
-                livePortrait = liveNpc?.Portrait;
-            }
-            catch
-            {
-            }
-        }
+        var livePortrait = TryResolveLivePortrait();
+        if (livePortrait is null)
+            TryEnsureFallbackPortraitTextureLoaded();
 
         _activePortraitTexture = livePortrait ?? _activePortraitTexture ?? _fallbackPortraitTexture;
         UpdatePortraitSourceRect();
+    }
+
+    private Texture2D? TryResolveLivePortrait()
+    {
+        if (_resolveLiveNpc is null)
+            return null;
+
+        try
+        {
+            return _resolveLiveNpc()?.Portrait;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void TryEnsureFallbackPortraitTextureLoaded()
+    {
+        if (_fallbackPortraitTexture is not null || string.IsNullOrWhiteSpace(_portraitAssetName))
+            return;
+
+        try
+        {
+            _fallbackPortraitTexture = Game1.content.Load<Texture2D>($"Portraits\\{_portraitAssetName}");
+        }
+        catch
+        {
+            _fallbackPortraitTexture = null;
+        }
     }
 
     private void SetPortraitEmotion(PortraitEmotion emotion)
