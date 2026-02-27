@@ -423,6 +423,21 @@ public sealed class RumorBoardMenu : IClickableMenu
         _detailScrollThumbHeld = false;
     }
 
+    public override void gameWindowSizeChanged(Rectangle oldBounds, Rectangle newBounds)
+    {
+        base.gameWindowSizeChanged(oldBounds, newBounds);
+
+        // Recalculate menu position based on new viewport
+        xPositionOnScreen = Game1.uiViewport.Width / 2 - 520;
+        yPositionOnScreen = Game1.uiViewport.Height / 2 - 300;
+
+        // Update close button position
+        _closeButton.bounds = new Rectangle(xPositionOnScreen + width - 68, yPositionOnScreen + 20, 48, 48);
+
+        // Rebuild all layout elements
+        BuildLayout();
+    }
+
     private void CheckSelectedQuestProgress()
     {
         if (_selectedQuest is null || !_selectedQuest.Status.Equals("active", StringComparison.OrdinalIgnoreCase))

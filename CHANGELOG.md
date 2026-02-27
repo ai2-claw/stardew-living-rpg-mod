@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 0.7.2 - 2026-02-28
+
+### Added
+- Quest progress checking via Refresh button: when an active quest is selected, Refresh shows completion progress using i18n keys.
+
+### Changed
+- Manifest version bumped to `0.7.2`.
+
+### Fixed
+- Rumor Board UI now correctly recalculates layout when window is resized (added `gameWindowSizeChanged` override).
+- Progress messages from Refresh/Complete buttons are no longer overwritten by external status sync.
+
 ## 0.7.1 - 2026-02-27
 
 ### Changed
