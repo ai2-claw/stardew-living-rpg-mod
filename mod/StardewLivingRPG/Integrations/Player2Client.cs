@@ -794,7 +794,7 @@ public sealed class Player2Client
                 ShortName = "Editor",
                 Name = townProfile.NewspaperEditorName,
                 CharacterDescription = "Town newspaper editor writing short, dramatic headlines.",
-                SystemPrompt = $"Write one sensational newspaper headline per request. {languageRule} Reply with headline text only. Max 30 characters.",
+                SystemPrompt = $"Write one sensational tabloid-style newspaper headline per request. Keep it concise (roughly 4-10 words), punchy, and readable. {languageRule} Reply with headline text only.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>()
             };
@@ -877,7 +877,7 @@ public sealed class Player2Client
     private static string BuildHeadlinePrompt(string articleTitle, string articleCategory, string articleContent)
     {
         var languageRule = I18n.BuildPromptLanguageInstruction();
-        return $"You are a tabloid newspaper editor. Convert this article into a sensational 30-char headline. {languageRule}\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline, max 30 characters. Make it exciting and exaggerated like a small-town tabloid.";
+        return $"You are a tabloid newspaper editor. Convert this article into one sensational but concise headline. Keep it short and punchy (roughly 4-10 words), with no extra commentary. {languageRule}\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline. Make it exciting and exaggerated like a small-town tabloid.";
     }
 
     private static bool IsNpcMissing(HttpRequestException ex)
@@ -920,9 +920,6 @@ public sealed class Player2Client
         // Guard against metadata tokens being mistaken as headlines.
         if (!headline.Any(char.IsLetter))
             return null;
-
-        if (headline.Length > 30)
-            headline = headline.Substring(0, 27) + "...";
 
         return string.IsNullOrWhiteSpace(headline) ? null : headline;
     }
@@ -1075,8 +1072,8 @@ public sealed class Player2Client
         var prefixes = new[] { "BREAKING:", "SHOCKING:", "URGENT:", "ALERT:" };
         var hash = Math.Abs(title.GetHashCode());
         var prefix = prefixes[hash % prefixes.Length];
-        var truncated = title.Length > 22 ? title.Substring(0, 22) : title;
-        return $"{prefix} {truncated}!";
+        var cleanedTitle = string.IsNullOrWhiteSpace(title) ? "Town Buzz" : title.Trim();
+        return $"{prefix} {cleanedTitle}!";
     }
 
     public async Task<List<NewspaperArticle>> GenerateArticlesAsync(GenerateArticlesRequest request, CancellationToken ct)

@@ -98,6 +98,10 @@ public sealed class TownMemoryService
             var dayDistance = Math.Abs(day - ev.Day);
             var recencyScore = Math.Max(0, 10 - dayDistance);
             var score = ev.Severity * 6 + recencyScore;
+            if (string.Equals(ev.Kind, "pass_out", StringComparison.OrdinalIgnoreCase))
+                score += 8;
+            if (ev.Tags.Any(tag => string.Equals(tag, "player", StringComparison.OrdinalIgnoreCase)))
+                score += 4;
             if (TownEventTemporalHelper.IsUpcoming(ev, day, currentTimeOfDay))
                 score -= 2;
             foreach (var tag in tags)

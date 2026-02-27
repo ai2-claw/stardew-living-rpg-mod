@@ -3203,6 +3203,8 @@ public sealed class ModEntry : Mod
         var locationName = string.IsNullOrWhiteSpace(_pendingLateNightPassOutLocation)
             ? "Town"
             : _pendingLateNightPassOutLocation;
+        var farmerDisplayName = ResolvePlayerFarmerDisplayName();
+        var playerTag = ResolvePlayerNameTag();
         var key = $"town_incident:passout:{_pendingLateNightPassOutDay}";
         if (!_state.Facts.Facts.ContainsKey(key))
         {
@@ -3210,12 +3212,12 @@ public sealed class ModEntry : Mod
             _townMemoryService.RecordEvent(
                 _state,
                 "pass_out",
-                $"A farmer was found passed out late at night near {locationName}.",
+                $"{farmerDisplayName} was found passed out late at night near {locationName}.",
                 locationName,
                 _pendingLateNightPassOutDay,
-                severity: 2,
+                severity: 3,
                 visibility: "public",
-                "late-night", "pass-out", "rescue");
+                "late-night", "pass-out", "rescue", "player", playerTag);
         }
 
         _pendingLateNightPassOutDay = -1;
@@ -3229,6 +3231,29 @@ public sealed class ModEntry : Mod
 
         return locationName.Contains("FarmHouse", StringComparison.OrdinalIgnoreCase)
             || locationName.Contains("Cabin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolvePlayerFarmerDisplayName()
+    {
+        var rawName = Game1.player?.Name;
+        var safeName = string.IsNullOrWhiteSpace(rawName)
+            ? "Player"
+            : rawName.Trim();
+        return $"Farmer {safeName}";
+    }
+
+    private static string ResolvePlayerNameTag()
+    {
+        var rawName = Game1.player?.Name;
+        if (string.IsNullOrWhiteSpace(rawName))
+            return "player_name_unknown";
+
+        var normalized = new string(rawName
+            .Trim()
+            .ToLowerInvariant()
+            .Select(ch => char.IsLetterOrDigit(ch) ? ch : '_')
+            .ToArray());
+        return $"player_{normalized}";
     }
 
     private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
@@ -7854,7 +7879,9 @@ public sealed class ModEntry : Mod
                 var visibilityBoost = string.Equals(ev.Visibility, "public", StringComparison.OrdinalIgnoreCase) ? 6 : 0;
                 var relevanceBoost = CountEventFocusMatches(ev, focusTokens) * 3;
                 var recencyBoost = Math.Max(0, 3 - Math.Abs(day - ev.Day));
-                return (ev.Severity * 4) + visibilityBoost + relevanceBoost + recencyBoost;
+                var passOutBoost = string.Equals(ev.Kind, "pass_out", StringComparison.OrdinalIgnoreCase) ? 8 : 0;
+                var playerEventBoost = ev.Tags.Any(tag => string.Equals(tag, "player", StringComparison.OrdinalIgnoreCase)) ? 4 : 0;
+                return (ev.Severity * 4) + visibilityBoost + relevanceBoost + recencyBoost + passOutBoost + playerEventBoost;
             })
             .ThenByDescending(ev => ev.Day)
             .ThenByDescending(ev => ev.Severity)

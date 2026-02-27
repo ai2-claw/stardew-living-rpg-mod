@@ -201,7 +201,7 @@ public sealed class NewspaperService
                 "pass_out" => new NewspaperArticle
                 {
                     Title = "Late-Night Collapse Reported",
-                    Content = $"{ev.Summary} Town responders assisted and escorted the farmer home safely. The incident occurred on {CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(ev.Day)}.",
+                    Content = $"{ev.Summary} Town responders assisted and escorted {ResolvePassOutSubject(ev.Summary)} home safely. The incident occurred on {CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(ev.Day)}.",
                     Category = "community",
                     SourceNpc = TownReporterByline,
                     Day = state.Calendar.Day,
@@ -782,6 +782,23 @@ public sealed class NewspaperService
         return "community";
     }
 
+    private static string ResolvePassOutSubject(string summary)
+    {
+        if (string.IsNullOrWhiteSpace(summary))
+            return "the farmer";
+
+        var trimmed = summary.Trim();
+        if (!trimmed.StartsWith("Farmer ", StringComparison.OrdinalIgnoreCase))
+            return "the farmer";
+
+        var wasIndex = trimmed.IndexOf(" was ", StringComparison.OrdinalIgnoreCase);
+        if (wasIndex <= 0)
+            return "the farmer";
+
+        var subject = trimmed[..wasIndex].Trim();
+        return string.IsNullOrWhiteSpace(subject) ? "the farmer" : subject;
+    }
+
     /// <summary>
     /// Generate seasonal filler articles to reach minimum article count.
     /// Deterministic based on day number and season.
@@ -924,7 +941,7 @@ public sealed class NewspaperService
         if (string.IsNullOrWhiteSpace(clean))
             clean = "Town Buzz";
 
-        return TruncateHeadline(FallbackHeadline(clean));
+        return FallbackHeadline(clean);
     }
 
     private static string FallbackHeadline(string title)
@@ -932,16 +949,8 @@ public sealed class NewspaperService
         var prefixes = new[] { "BREAKING:", "SHOCKING:", "URGENT:", "ALERT:" };
         var hash = Math.Abs(title.GetHashCode());
         var prefix = prefixes[hash % prefixes.Length];
-        var truncated = title.Length > 22 ? title.Substring(0, 22) : title;
-        return $"{prefix} {truncated}!";
-    }
-
-    private static string TruncateHeadline(string headline)
-    {
-        if (headline.Length <= 30)
-            return headline;
-
-        return headline.Substring(0, 27) + "...";
+        var cleanedTitle = string.IsNullOrWhiteSpace(title) ? "Town Buzz" : title.Trim();
+        return $"{prefix} {cleanedTitle}!";
     }
 
     private static bool IsTownReporterSource(string sourceNpc)

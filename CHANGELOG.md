@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 0.6.1 - 2026-02-27
+
+### Changed
+- Newspaper headline generation no longer enforces a hard 30-character truncation in prompt or fallback paths.
+- Player2 headline prompt now requests concise tabloid-style headlines (roughly 4-10 words) instead of character-limited output.
+
+### Fixed
+- Late-night `pass_out` events now record and publish the active player name (for example, `Farmer John`) instead of generic farmer wording.
+- Town event scoring now prioritizes `pass_out` and player-tagged incidents so NPC awareness and follow-up chatter surface those events more reliably.
+
 ## 0.6.0 - 2026-02-26
 
 ### Added
