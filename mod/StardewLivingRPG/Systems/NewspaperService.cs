@@ -542,7 +542,7 @@ public sealed class NewspaperService
             || string.Equals(sourceNpc, LegacyTownReporterByline, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string Cap(string value) => string.IsNullOrEmpty(value) ? value : char.ToUpper(value[0]) + value.Substring(1);
+    private static string Cap(string value) => QuestTextHelper.PrettyName(value);
 
     private async Task<List<string>> GenerateDynamicMarketOutlookHintsAsync(SaveState state)
     {
@@ -631,13 +631,13 @@ public sealed class NewspaperService
             return null;
 
         return state.Economy.Crops
-            .Where(kv => kv.Value.PriceToday < kv.Value.PriceYesterday)
-            .OrderByDescending(kv => (kv.Value.PriceYesterday - kv.Value.PriceToday) / kv.Value.PriceYesterday)
+            .Where(kv => kv.Value.PriceYesterday > 0 && kv.Value.PriceToday < kv.Value.PriceYesterday)
+            .OrderByDescending(kv => (kv.Value.PriceYesterday - kv.Value.PriceToday) / (float)kv.Value.PriceYesterday)
             .Select(kv => new CropTrendEntry
             {
                 Crop = kv.Key,
                 Today = kv.Value.PriceToday,
-                DeltaPct = (kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday
+                DeltaPct = (kv.Value.PriceToday - kv.Value.PriceYesterday) / (float)kv.Value.PriceYesterday
             })
             .FirstOrDefault();
     }
@@ -648,13 +648,13 @@ public sealed class NewspaperService
             return null;
 
         return state.Economy.Crops
-            .Where(kv => kv.Value.PriceToday > kv.Value.PriceYesterday)
-            .OrderByDescending(kv => (kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday)
+            .Where(kv => kv.Value.PriceYesterday > 0 && kv.Value.PriceToday > kv.Value.PriceYesterday)
+            .OrderByDescending(kv => (kv.Value.PriceToday - kv.Value.PriceYesterday) / (float)kv.Value.PriceYesterday)
             .Select(kv => new CropTrendEntry
             {
                 Crop = kv.Key,
                 Today = kv.Value.PriceToday,
-                DeltaPct = (kv.Value.PriceToday - kv.Value.PriceYesterday) / kv.Value.PriceYesterday
+                DeltaPct = (kv.Value.PriceToday - kv.Value.PriceYesterday) / (float)kv.Value.PriceYesterday
             })
             .FirstOrDefault();
     }
