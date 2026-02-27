@@ -18,11 +18,6 @@ public sealed class ModConfig
     // Open rumor board menu.
     public SButton OpenRumorBoardKey { get; set; } = SButton.L;
 
-    // NPC chat time flow.
-    // False: time advances at reduced speed while chat menu is open.
-    // True: freeze in-game clock while chat menu is open.
-    public bool FreezeTimeDuringNpcChat { get; set; } = false;
-
     // Player2 integration (M2)
     public bool EnablePlayer2 { get; set; } = true;
     public string Player2ApiBaseUrl { get; set; } = "https://api.player2.game/v1";

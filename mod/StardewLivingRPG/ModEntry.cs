@@ -46,8 +46,6 @@ public sealed class ModEntry : Mod
     private const int SimulationToastCooldownSeconds = 25;
     private const double StagedValidationMaxQuestRateDelta = 1.25d;
     private const double StagedValidationMaxMarketRateDelta = 0.75d;
-    private const double DefaultMsPerNpcChatClockStep = 7000d;
-    private const double NpcChatClockSlowdownMultiplier = 4d;
     private const float NpcDialogueHookInteractionRadiusTiles = 3.5f;
     private const float NpcDialogueHookFallbackRadiusTiles = 1f;
     private const float NpcManualFollowUpActivationRadiusTiles = 1f;
@@ -62,23 +60,6 @@ public sealed class ModEntry : Mod
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
     private const string CreatorPlayer2GameClientId = "019c4693-2a12-7ef5-bae2-ff29ee9fa674";
 
-    private static readonly MethodInfo? PerformTenMinuteClockUpdateMethod = typeof(Game1).GetMethod(
-        "performTenMinuteClockUpdate",
-        BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-        binder: null,
-        types: Type.EmptyTypes,
-        modifiers: null);
-    private static readonly FieldInfo? RealMsPerGameMinuteField = typeof(Game1).GetField(
-        "realMilliSecondsPerGameMinute",
-        BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-    private static readonly MethodInfo? UpdateAmbientLightingMethod = typeof(GameLocation).GetMethod(
-        "_updateAmbientLighting",
-        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-        binder: null,
-        types: Type.EmptyTypes,
-        modifiers: null);
-    private static readonly GameTime NpcChatZeroGameTime = new(TimeSpan.Zero, TimeSpan.Zero);
-    private static readonly GameTime NpcChatVisualRefreshGameTime = new(TimeSpan.Zero, TimeSpan.FromMilliseconds(16d));
     private static readonly string[] ShopMenuOwnerMemberCandidates =
     {
         "portraitPerson",
@@ -611,11 +592,6 @@ public sealed class ModEntry : Mod
     private string _manualNpcFollowUpContextTag = "player_chat";
     private DateTime _manualNpcFollowUpReadyUtc;
     private DateTime _manualNpcFollowUpSuppressUntilUtc;
-    private DateTime _npcChatClockLastTickUtc;
-    private double _npcChatClockAccumulatorMs;
-    private bool _npcChatClockMethodMissingLogged;
-    private bool _npcChatVisualRefreshFailedLogged;
-    private bool _npcChatLocationUpdateFailedLogged;
     private bool _player2AutoConnectSuppressedByUser;
     private string _ambientConditionalUnlockSummary = "(none)";
     private int _ambientConditionalUnlockSummaryDay = -1;
@@ -2052,155 +2028,6 @@ public sealed class ModEntry : Mod
         return true;
     }
 
-    private void TryAdvanceClockWhileNpcChatOpen()
-    {
-        if (Game1.activeClickableMenu is not NpcChatInputMenu
-            || Game1.eventUp
-            || Game1.dialogueUp
-            || Game1.currentLocation is null)
-        {
-            _npcChatClockLastTickUtc = default;
-            _npcChatClockAccumulatorMs = 0d;
-            return;
-        }
-
-        if (_config.FreezeTimeDuringNpcChat)
-        {
-            _npcChatClockLastTickUtc = DateTime.UtcNow;
-            _npcChatClockAccumulatorMs = 0d;
-            return;
-        }
-
-        var now = DateTime.UtcNow;
-        if (_npcChatClockLastTickUtc == default)
-        {
-            _npcChatClockLastTickUtc = now;
-            return;
-        }
-
-        var elapsedMs = (now - _npcChatClockLastTickUtc).TotalMilliseconds;
-        _npcChatClockLastTickUtc = now;
-        if (elapsedMs <= 0d)
-            return;
-
-        // Clamp to avoid huge jumps after tabbing out.
-        elapsedMs = Math.Min(elapsedMs, 250d);
-        TryUpdateNpcChatLocationVisuals(elapsedMs);
-        _npcChatClockAccumulatorMs += elapsedMs;
-
-        var msPerClockStep = GetNpcChatClockStepMs(Game1.currentLocation);
-        while (_npcChatClockAccumulatorMs >= msPerClockStep)
-        {
-            _npcChatClockAccumulatorMs -= msPerClockStep;
-            if (!TryInvokeTenMinuteClockUpdate())
-            {
-                _npcChatClockAccumulatorMs = 0d;
-                return;
-            }
-        }
-    }
-
-    private double GetNpcChatClockStepMs(GameLocation location)
-    {
-        var baseMsPerMinute = DefaultMsPerNpcChatClockStep / 10d;
-        var raw = RealMsPerGameMinuteField?.GetValue(null);
-        switch (raw)
-        {
-            case int i when i > 0:
-                baseMsPerMinute = i;
-                break;
-            case float f when f > 0f:
-                baseMsPerMinute = f;
-                break;
-            case double d when d > 0d:
-                baseMsPerMinute = d;
-                break;
-        }
-
-        // performTenMinuteClockUpdate advances the world by 10 in-game minutes per call.
-        // Apply slowdown multiplier so chat time moves slower than normal.
-        var perMinuteTotal = Math.Max(1d, baseMsPerMinute + Math.Max(0, location.ExtraMillisecondsPerInGameMinute));
-        return Math.Max(300d, perMinuteTotal * 10d * NpcChatClockSlowdownMultiplier);
-    }
-
-    private bool TryInvokeTenMinuteClockUpdate()
-    {
-        if (PerformTenMinuteClockUpdateMethod is null)
-        {
-            if (!_npcChatClockMethodMissingLogged)
-            {
-                _npcChatClockMethodMissingLogged = true;
-                Monitor.Log("NPC chat unpause fallback unavailable: performTenMinuteClockUpdate not found.", LogLevel.Warn);
-            }
-
-            return false;
-        }
-
-        try
-        {
-            PerformTenMinuteClockUpdateMethod.Invoke(null, null);
-            TryRefreshNpcChatVisuals();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            if (!_npcChatClockMethodMissingLogged)
-            {
-                _npcChatClockMethodMissingLogged = true;
-                Monitor.Log($"NPC chat unpause failed to invoke clock update: {ex.Message}", LogLevel.Warn);
-            }
-
-            return false;
-        }
-    }
-
-    private void TryRefreshNpcChatVisuals()
-    {
-        var location = Game1.currentLocation;
-        if (location is null)
-            return;
-
-        try
-        {
-            Game1.UpdateGameClock(NpcChatZeroGameTime);
-            Game1.updateWeather(NpcChatVisualRefreshGameTime);
-            UpdateAmbientLightingMethod?.Invoke(location, null);
-        }
-        catch (Exception ex)
-        {
-            if (_npcChatVisualRefreshFailedLogged)
-                return;
-
-            _npcChatVisualRefreshFailedLogged = true;
-            Monitor.Log($"NPC chat lighting refresh failed: {ex.Message}", LogLevel.Trace);
-        }
-    }
-
-    private void TryUpdateNpcChatLocationVisuals(double elapsedMs)
-    {
-        var location = Game1.currentLocation;
-        if (location is null)
-            return;
-
-        var ms = Math.Clamp(elapsedMs, 1d, 250d);
-        var gameTime = new GameTime(TimeSpan.FromMilliseconds(ms), TimeSpan.FromMilliseconds(ms));
-
-        try
-        {
-            Game1.UpdateGameClock(gameTime);
-            Game1.updateWeather(gameTime);
-            UpdateAmbientLightingMethod?.Invoke(location, null);
-        }
-        catch (Exception ex)
-        {
-            if (_npcChatLocationUpdateFailedLogged)
-                return;
-
-            _npcChatLocationUpdateFailedLogged = true;
-            Monitor.Log($"NPC chat location visual update failed: {ex.Message}", LogLevel.Trace);
-        }
-    }
-
     private void OnUpdateTicked(object? sender, UpdateTickedEventArgs e)
     {
         if (!Context.IsWorldReady)
@@ -2208,7 +2035,6 @@ public sealed class ModEntry : Mod
 
         SyncCalendarSeasonFromWorld();
         SyncPlayer2DeviceAuthModal();
-        TryAdvanceClockWhileNpcChatOpen();
         TrackLateNightPassOutWindow();
         TryCaptureTownIncidents();
         TryCaptureLiveWorldEvents();
