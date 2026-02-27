@@ -1145,10 +1145,11 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        var currentNpc = Game1.currentLocation.characters.FirstOrDefault(candidate =>
+        var currentNpc = GetRosterNpcInteractionCandidates(Game1.currentLocation).FirstOrDefault(candidate =>
             candidate is not null
             && !string.IsNullOrWhiteSpace(candidate.Name)
-            && string.Equals(candidate.Name, _manualNpcFollowUpName, StringComparison.OrdinalIgnoreCase));
+            && string.Equals(candidate.Name, _manualNpcFollowUpName, StringComparison.OrdinalIgnoreCase))
+            ?? _manualNpcFollowUpNpc;
         if (currentNpc is null)
         {
             ClearManualNpcFollowUpState();
@@ -1185,6 +1186,10 @@ public sealed class ModEntry : Mod
 
     private NPC? TryResolveNpcDialogueHookTarget(GameLocation location)
     {
+        var candidates = GetRosterNpcInteractionCandidates(location);
+        if (candidates.Count == 0)
+            return null;
+
         var hoveredNpc = TryResolveRosterNpcUnderCursor(location);
         if (hoveredNpc is not null
             && Vector2.Distance(hoveredNpc.Tile, Game1.player.Tile) <= NpcDialogueHookInteractionRadiusTiles)
@@ -1196,8 +1201,7 @@ public sealed class ModEntry : Mod
         var facingTile = GetPlayerFacingTile(playerTile, Game1.player.FacingDirection);
         var facingUnit = GetFacingUnitVector(Game1.player.FacingDirection);
 
-        return location.characters
-            .Where(npc => npc is not null && IsRosterNpc(npc))
+        return candidates
             .Select(npc => new
             {
                 Npc = npc,
@@ -1238,8 +1242,7 @@ public sealed class ModEntry : Mod
             return null;
 
         var mouseWorld = new Point(Game1.viewport.X + Game1.getMouseX(), Game1.viewport.Y + Game1.getMouseY());
-        return location.characters
-            .Where(npc => npc is not null && IsRosterNpc(npc))
+        return GetRosterNpcInteractionCandidates(location)
             .Select(npc => new
             {
                 Npc = npc,
@@ -1250,6 +1253,103 @@ public sealed class ModEntry : Mod
             .ThenBy(x => Vector2.Distance(x.Npc.Tile, Game1.player.Tile))
             .Select(x => x.Npc)
             .FirstOrDefault();
+    }
+
+    private List<NPC> GetRosterNpcInteractionCandidates(GameLocation location)
+    {
+        var candidates = new List<NPC>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddCandidate(NPC? candidate)
+        {
+            if (candidate is null || !IsRosterNpc(candidate))
+                return;
+
+            var key = string.IsNullOrWhiteSpace(candidate.Name)
+                ? candidate.displayName
+                : candidate.Name;
+            if (string.IsNullOrWhiteSpace(key))
+                return;
+
+            if (seen.Add(key.Trim()))
+                candidates.Add(candidate);
+        }
+
+        foreach (var npc in location.characters)
+            AddCandidate(npc);
+
+        foreach (var npc in GetActiveEventNpcs())
+            AddCandidate(npc);
+
+        return candidates;
+    }
+
+    private static IEnumerable<NPC> GetActiveEventNpcs()
+    {
+        if (!Game1.eventUp || Game1.CurrentEvent is null)
+            yield break;
+
+        var eventObject = (object)Game1.CurrentEvent;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var memberNames = new[] { "actors", "farmerActors" };
+        foreach (var memberName in memberNames)
+        {
+            foreach (var npc in ExtractNpcsFromEventMember(eventObject, memberName))
+            {
+                if (npc is null)
+                    continue;
+
+                var key = string.IsNullOrWhiteSpace(npc.Name) ? npc.displayName : npc.Name;
+                if (string.IsNullOrWhiteSpace(key) || !seen.Add(key.Trim()))
+                    continue;
+
+                yield return npc;
+            }
+        }
+    }
+
+    private static IEnumerable<NPC> ExtractNpcsFromEventMember(object source, string memberName)
+    {
+        if (!TryGetMemberValue(source, memberName, out var value) || value is null)
+            return Enumerable.Empty<NPC>();
+
+        return ExtractNpcsFromUnknownValue(value);
+    }
+
+    private static IEnumerable<NPC> ExtractNpcsFromUnknownValue(object rawValue)
+    {
+        var npcs = new List<NPC>();
+        switch (rawValue)
+        {
+            case NPC npc:
+                npcs.Add(npc);
+                break;
+            case IEnumerable<NPC> typed:
+                foreach (var candidate in typed)
+                {
+                    if (candidate is not null)
+                        npcs.Add(candidate);
+                }
+                break;
+            case System.Collections.IDictionary dictionary:
+                foreach (System.Collections.DictionaryEntry entry in dictionary)
+                {
+                    if (entry.Key is NPC keyNpc)
+                        npcs.Add(keyNpc);
+                    if (entry.Value is NPC valueNpc)
+                        npcs.Add(valueNpc);
+                }
+                break;
+            case System.Collections.IEnumerable enumerable:
+                foreach (var item in enumerable)
+                {
+                    if (item is NPC itemNpc)
+                        npcs.Add(itemNpc);
+                }
+                break;
+        }
+
+        return npcs;
     }
 
     private static Rectangle GetNpcCursorHoverBounds(NPC npc)
@@ -1272,7 +1372,7 @@ public sealed class ModEntry : Mod
     {
         if (Game1.currentLocation is null
             || Game1.dialogueUp
-            || Game1.eventUp
+            || (Game1.eventUp && !IsFestivalInteractionEventActive())
             || Game1.activeClickableMenu is not null)
         {
             return;
@@ -1332,6 +1432,17 @@ public sealed class ModEntry : Mod
         var dx = MathF.Abs(targetTile.X - originTile.X);
         var dy = MathF.Abs(targetTile.Y - originTile.Y);
         return Math.Max(dx, dy) <= maxTileDistance;
+    }
+
+    private static bool IsFestivalInteractionEventActive()
+    {
+        if (!Game1.eventUp || Game1.CurrentEvent is null)
+            return false;
+
+        var eventObject = (object)Game1.CurrentEvent;
+        var locationName = Game1.currentLocation?.Name ?? "Town";
+        var actorNames = ExtractWorldEventActorNames(eventObject);
+        return IsLikelyFestivalWorldEvent(eventObject, locationName, actorNames);
     }
 
     private void ArmNpcDialogueHook(NPC npc)
@@ -3314,7 +3425,9 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        if (Game1.eventUp || Game1.dialogueUp || Game1.activeClickableMenu is not null)
+        if ((Game1.eventUp && !IsFestivalInteractionEventActive())
+            || Game1.dialogueUp
+            || Game1.activeClickableMenu is not null)
             return;
 
         // Give vanilla interaction a brief moment to open dialogue/menu first.
