@@ -14,6 +14,8 @@ namespace StardewLivingRPG.Integrations;
 public sealed class Player2Client
 {
     private const int MaxMarketOutlookLineCharacters = 120;
+    private const int MaxRewrittenEventTitleCharacters = 80;
+    private const int MaxRewrittenEventContentCharacters = 420;
     private readonly HttpClient _http;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -1215,6 +1217,77 @@ public sealed class Player2Client
         return new List<string>();
     }
 
+    public async Task<RewrittenNewspaperEventArticle?> TryRewriteNewspaperEventArticleAsync(RewriteNewspaperEventArticleRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_apiBaseUrl) || string.IsNullOrWhiteSpace(_p2Key))
+            return null;
+
+        return await TryRewriteNewspaperEventArticleAsync(_apiBaseUrl, _p2Key, request, ct);
+    }
+
+    public async Task<RewrittenNewspaperEventArticle?> TryRewriteNewspaperEventArticleAsync(
+        string apiBaseUrl,
+        string p2Key,
+        RewriteNewspaperEventArticleRequest request,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(p2Key))
+            return null;
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                var npcId = await EnsureHeadlineEditorNpcIdAsync(apiBaseUrl, p2Key, ct);
+                var previousHistoryMessage = await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
+
+                var prompt = BuildEventArticleRewritePrompt(request);
+                var townProfile = ResolveActiveTownProfile();
+                var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
+                using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
+                    {
+                        SenderName = townProfile.NewspaperDeskName,
+                        SenderMessage = prompt,
+                        GameStateInfo = BuildEventArticleRewriteStateInfo(request.Context)
+                    }, _jsonOptions), Encoding.UTF8, "application/json")
+                };
+                msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
+                using var res = await _http.SendAsync(msg, ct);
+                var body = await res.Content.ReadAsStringAsync(ct);
+                res.EnsureSuccessStatusCode();
+
+                var immediateMessage = TryExtractLatestMessage(body);
+                var immediateFromMessage = ParseRewrittenEventArticlePayload(immediateMessage);
+                if (immediateFromMessage is not null)
+                    return immediateFromMessage;
+
+                var immediate = ParseRewrittenEventArticlePayload(body);
+                if (immediate is not null)
+                    return immediate;
+
+                var fromHistory = await WaitForFreshHeadlineFromHistoryAsync(apiBaseUrl, p2Key, npcId, previousHistoryMessage, ct);
+                var historyRewrite = ParseRewrittenEventArticlePayload(fromHistory);
+                if (historyRewrite is not null)
+                    return historyRewrite;
+            }
+            catch (HttpRequestException ex) when (attempt == 0 && IsNpcMissing(ex))
+            {
+                _headlineEditorNpcId = null;
+                continue;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Player2Client] TryRewriteNewspaperEventArticleAsync EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+                break;
+            }
+        }
+
+        return null;
+    }
+
     private static string BuildArticleGenerationPrompt(GenerateArticlesRequest request, int count)
     {
         var season = request.Context?.Season ?? "spring";
@@ -1278,6 +1351,52 @@ public sealed class Player2Client
         return $"market_outlook_generation: season={context.Season}, day={context.Day}, year={context.Year}, mode={mode}";
     }
 
+    private static string BuildEventArticleRewritePrompt(RewriteNewspaperEventArticleRequest request)
+    {
+        var context = request.Context ?? new NewspaperEventRewriteContext();
+        var season = string.IsNullOrWhiteSpace(context.Season) ? "spring" : context.Season;
+        var kind = string.IsNullOrWhiteSpace(context.EventKind) ? "incident" : context.EventKind.Trim();
+        var visibility = string.IsNullOrWhiteSpace(context.EventVisibility) ? "local" : context.EventVisibility.Trim();
+        var location = string.IsNullOrWhiteSpace(context.EventLocation) ? "(none)" : context.EventLocation.Trim();
+        var summary = string.IsNullOrWhiteSpace(context.SourceSummary) ? "(none)" : context.SourceSummary.Trim();
+        var requiredDayLabel = string.IsNullOrWhiteSpace(context.RequiredDayLabel) ? "(none)" : context.RequiredDayLabel.Trim();
+        var originalTitle = string.IsNullOrWhiteSpace(context.OriginalTitle) ? "(none)" : context.OriginalTitle.Trim();
+        var originalContent = string.IsNullOrWhiteSpace(context.OriginalContent) ? "(none)" : context.OriginalContent.Trim();
+        var languageRule = I18n.BuildPromptLanguageInstruction();
+        var townProfile = ResolveActiveTownProfile();
+        var locationRule = string.Equals(location, "(none)", StringComparison.Ordinal)
+            ? "Location is unspecified; do not invent one."
+            : $"Location to preserve verbatim: {location}.";
+
+        return
+            $"You are the editor of {townProfile.NewspaperTitle} in Stardew Valley. " +
+            $"Rewrite one event article for season {season}, day {context.Day}, year {context.Year}. " +
+            $"{languageRule} " +
+            "Style goal: immersive local-newspaper tone, concise and grounded. " +
+            "Fact guardrail: DO NOT alter facts, timeline, participants, outcomes, or severity. " +
+            "Rewrite requirement: rewrite both title and body, and do not copy original draft wording except required fact strings. " +
+            "Do not invent names, causes, injuries, or consequences. " +
+            $"Event metadata: kind={kind}, event_day={context.EventDay}, visibility={visibility}, severity={context.EventSeverity}. " +
+            $"Summary to preserve verbatim: {summary}. " +
+            $"Day label to preserve verbatim: {requiredDayLabel}. " +
+            $"{locationRule} " +
+            $"Original draft title: {originalTitle}. Original draft content: {originalContent}. " +
+            "Output must include the exact summary text and exact day label text in content. " +
+            "For JSON responses, translate only string values. Never translate JSON keys. " +
+            "Return STRICT JSON only with schema: {\"title\":\"...\",\"content\":\"...\"}. " +
+            "No markdown, no prose outside JSON.";
+    }
+
+    private static string BuildEventArticleRewriteStateInfo(NewspaperEventRewriteContext? context)
+    {
+        if (context is null)
+            return "event_article_rewrite";
+
+        return
+            $"event_article_rewrite: season={context.Season}, day={context.Day}, year={context.Year}, " +
+            $"event_day={context.EventDay}, kind={context.EventKind}, visibility={context.EventVisibility}, severity={context.EventSeverity}";
+    }
+
     private List<NewspaperArticle> ParseGeneratedArticlesPayload(string? payload, int maxCount)
     {
         if (string.IsNullOrWhiteSpace(payload))
@@ -1312,6 +1431,21 @@ public sealed class Player2Client
         }
 
         return ParseMarketOutlookPlainText(payload, maxCount);
+    }
+
+    private RewrittenNewspaperEventArticle? ParseRewrittenEventArticlePayload(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            return null;
+
+        var candidates = BuildJsonCandidates(payload);
+        foreach (var candidate in candidates)
+        {
+            if (TryParseRewrittenEventArticleJson(candidate, out var rewritten))
+                return rewritten;
+        }
+
+        return ParseRewrittenEventArticlePlainText(payload);
     }
 
     private static List<string> BuildJsonCandidates(string payload)
@@ -1458,6 +1592,126 @@ public sealed class Player2Client
         }
     }
 
+    private bool TryParseRewrittenEventArticleJson(string json, out RewrittenNewspaperEventArticle rewritten)
+    {
+        rewritten = new RewrittenNewspaperEventArticle();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            JsonElement sourceObject;
+            if (root.ValueKind == JsonValueKind.Object
+                && TryGetPropertyCaseInsensitive(root, "article", out var articleObject)
+                && articleObject.ValueKind == JsonValueKind.Object)
+            {
+                sourceObject = articleObject;
+            }
+            else if (root.ValueKind == JsonValueKind.Object
+                && TryGetPropertyCaseInsensitive(root, "rewrite", out var rewriteObject)
+                && rewriteObject.ValueKind == JsonValueKind.Object)
+            {
+                sourceObject = rewriteObject;
+            }
+            else if (root.ValueKind == JsonValueKind.Object
+                && HasAnyStringProperty(root, "title", "headline", "subject")
+                && HasAnyStringProperty(root, "content", "body"))
+            {
+                sourceObject = root;
+            }
+            else
+            {
+                return false;
+            }
+
+            var hasTitle = TryGetFirstStringProperty(sourceObject, out var title, "title", "headline", "subject");
+            var hasContent = TryGetFirstStringProperty(sourceObject, out var content, "content", "body");
+            if (!hasContent
+                && TryGetFirstStringProperty(sourceObject, out var messageLikeContent, "message", "text")
+                && IsLikelyBodyContent(messageLikeContent, hasTitle ? title : null))
+            {
+                hasContent = true;
+                content = messageLikeContent;
+            }
+
+            if (!hasContent || string.IsNullOrWhiteSpace(content))
+                return false;
+
+            var cleanTitle = hasTitle ? SanitizeRewrittenEventText(title, MaxRewrittenEventTitleCharacters) : string.Empty;
+            var cleanContent = SanitizeRewrittenEventText(content, MaxRewrittenEventContentCharacters);
+            if (string.IsNullOrWhiteSpace(cleanContent))
+                return false;
+
+            rewritten = new RewrittenNewspaperEventArticle
+            {
+                Title = cleanTitle,
+                Content = cleanContent
+            };
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private RewrittenNewspaperEventArticle? ParseRewrittenEventArticlePlainText(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            return null;
+
+        var normalized = payload.Replace("\r", "\n", StringComparison.Ordinal);
+        var lines = normalized
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToList();
+        if (lines.Count == 0)
+            return null;
+
+        if (lines.Count == 1 && LooksLikeJsonPayload(lines[0]))
+            return null;
+
+        string? title = null;
+        string? content = null;
+        foreach (var line in lines)
+        {
+            if (title is null && TryExtractLabeledValue(line, out var labeledTitle, "title", "headline", "subject"))
+            {
+                title = labeledTitle;
+                continue;
+            }
+
+            if (content is null && TryExtractLabeledValue(line, out var labeledContent, "content", "body", "message", "text"))
+                content = labeledContent;
+        }
+
+        if (string.IsNullOrWhiteSpace(title) && lines.Count >= 2)
+            title = lines[0];
+
+        if (string.IsNullOrWhiteSpace(content) && lines.Count >= 2)
+            content = string.Join(" ", lines.Skip(1));
+
+        if (string.IsNullOrWhiteSpace(content) && lines.Count == 1)
+            content = lines[0];
+
+        if (string.IsNullOrWhiteSpace(content) || !IsLikelyBodyContent(content, title))
+            return null;
+
+        var cleanTitle = string.IsNullOrWhiteSpace(title)
+            ? string.Empty
+            : SanitizeRewrittenEventText(title, MaxRewrittenEventTitleCharacters);
+        var cleanContent = SanitizeRewrittenEventText(content, MaxRewrittenEventContentCharacters);
+        if (string.IsNullOrWhiteSpace(cleanContent))
+            return null;
+
+        return new RewrittenNewspaperEventArticle
+        {
+            Title = cleanTitle,
+            Content = cleanContent
+        };
+    }
+
     private static void AppendMarketOutlookItems(JsonElement source, List<string> output, int maxCount)
     {
         if (output.Count >= maxCount)
@@ -1552,6 +1806,28 @@ public sealed class Player2Client
         return string.IsNullOrWhiteSpace(line) ? null : line;
     }
 
+    private static string SanitizeRewrittenEventText(string? raw, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
+
+        var line = raw
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim()
+            .Trim('"')
+            .Trim('\'')
+            .Trim();
+
+        while (line.Contains("  ", StringComparison.Ordinal))
+            line = line.Replace("  ", " ", StringComparison.Ordinal);
+
+        if (line.Length > maxLength)
+            line = line[..(maxLength - 3)].TrimEnd() + "...";
+
+        return line;
+    }
+
     private static bool TryGetStringProperty(JsonElement obj, string propertyName, out string value)
     {
         value = string.Empty;
@@ -1578,6 +1854,73 @@ public sealed class Player2Client
 
         value = default;
         return false;
+    }
+
+    private static bool HasAnyStringProperty(JsonElement obj, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (TryGetStringProperty(obj, propertyName, out var value) && !string.IsNullOrWhiteSpace(value))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetFirstStringProperty(JsonElement obj, out string value, params string[] propertyNames)
+    {
+        value = string.Empty;
+        foreach (var propertyName in propertyNames)
+        {
+            if (!TryGetStringProperty(obj, propertyName, out var candidate) || string.IsNullOrWhiteSpace(candidate))
+                continue;
+
+            value = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractLabeledValue(string line, out string value, params string[] labels)
+    {
+        value = string.Empty;
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        foreach (var label in labels)
+        {
+            var prefix = $"{label}:";
+            if (!line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            value = line[prefix.Length..].Trim();
+            return !string.IsNullOrWhiteSpace(value);
+        }
+
+        return false;
+    }
+
+    private static bool IsLikelyBodyContent(string? candidate, string? title)
+    {
+        if (string.IsNullOrWhiteSpace(candidate))
+            return false;
+
+        var cleanCandidate = candidate.Trim();
+        if (cleanCandidate.Length < 36)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(title)
+            && cleanCandidate.Equals(title.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var wordCount = cleanCandidate.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        if (wordCount < 7)
+            return false;
+
+        return cleanCandidate.Any(ch => ch is '.' or '!' or '?') || wordCount >= 12;
     }
 
     private static string NormalizeArticleCategory(string? category)
@@ -1879,6 +2222,75 @@ public sealed class GenerateArticlesResponse
 {
     [JsonPropertyName("articles")]
     public List<NewspaperArticle> Articles { get; set; } = new();
+}
+
+public sealed class RewriteNewspaperEventArticleRequest
+{
+    [JsonPropertyName("short_name")]
+    public string ShortName { get; set; } = "Editor";
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "Town Editor";
+
+    [JsonPropertyName("character_description")]
+    public string CharacterDescription { get; set; } = "You rewrite town event briefs into immersive but factual newspaper prose.";
+
+    [JsonPropertyName("system_prompt")]
+    public string SystemPrompt { get; set; } = "Rewrite the provided event article for readability while preserving facts exactly.";
+
+    [JsonPropertyName("keep_game_state")]
+    public bool KeepGameState { get; set; } = false;
+
+    [JsonPropertyName("context")]
+    public NewspaperEventRewriteContext? Context { get; set; }
+}
+
+public sealed class NewspaperEventRewriteContext
+{
+    [JsonPropertyName("season")]
+    public string Season { get; set; } = "spring";
+
+    [JsonPropertyName("day")]
+    public int Day { get; set; }
+
+    [JsonPropertyName("year")]
+    public int Year { get; set; } = 1;
+
+    [JsonPropertyName("event_day")]
+    public int EventDay { get; set; }
+
+    [JsonPropertyName("event_kind")]
+    public string EventKind { get; set; } = "incident";
+
+    [JsonPropertyName("event_location")]
+    public string EventLocation { get; set; } = string.Empty;
+
+    [JsonPropertyName("event_visibility")]
+    public string EventVisibility { get; set; } = "local";
+
+    [JsonPropertyName("event_severity")]
+    public int EventSeverity { get; set; } = 1;
+
+    [JsonPropertyName("source_summary")]
+    public string SourceSummary { get; set; } = string.Empty;
+
+    [JsonPropertyName("required_day_label")]
+    public string RequiredDayLabel { get; set; } = string.Empty;
+
+    [JsonPropertyName("original_title")]
+    public string OriginalTitle { get; set; } = string.Empty;
+
+    [JsonPropertyName("original_content")]
+    public string OriginalContent { get; set; } = string.Empty;
+}
+
+public sealed class RewrittenNewspaperEventArticle
+{
+    [JsonPropertyName("title")]
+    public string Title { get; set; } = string.Empty;
+
+    [JsonPropertyName("content")]
+    public string Content { get; set; } = string.Empty;
 }
 
 public sealed class GenerateMarketOutlookRequest

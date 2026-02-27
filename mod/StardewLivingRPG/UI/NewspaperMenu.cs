@@ -34,7 +34,9 @@ public sealed class NewspaperMenu : IClickableMenu
     private const int ScrollBarWidth = 24;
     private const int ScrollBarGap = 8;
     private const int MinScrollBottomCompensationPixels = 2;
-    private const int ArticleBodyLineAdvancePixels = 22;
+    private const int ArticleTextLineSpacingPixels = 2;
+    private const int ArticleTitleLineAdvancePixels = 26;
+    private const int ArticleBodyLineAdvancePixels = 22 + ArticleTextLineSpacingPixels;
     private const int DefaultPortraitFrameSize = 64;
 
     public NewspaperMenu(NewspaperIssue? issue)
@@ -376,7 +378,7 @@ public sealed class NewspaperMenu : IClickableMenu
         {
             if (draw && b is not null)
                 b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(40, 20, 10));
-            y += 26;
+            y += ArticleTitleLineAdvancePixels;
         }
         y += 8;
 

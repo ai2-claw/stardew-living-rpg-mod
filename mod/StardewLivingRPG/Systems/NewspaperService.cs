@@ -4,6 +4,7 @@ using StardewLivingRPG.Integrations;
 using StardewLivingRPG.Utils;
 using StardewModdingAPI;
 using StardewValley;
+using System.Text;
 
 namespace StardewLivingRPG.Systems;
 
@@ -11,10 +12,15 @@ public sealed class NewspaperService
 {
     private const int MinDailyArticles = 1;
     private const int MaxDailyArticles = 5;
+    private const int EventArticleRewriteTimeoutSeconds = 8;
+    private const int EventArticleRewriteMaxTitleLength = 80;
+    private const int EventArticleRewriteMaxContentLength = 420;
+    private const float EventRewriteDuplicateSimilarityThreshold = 0.9f;
     private const string TownReporterByline = "Town Reporter";
     private const string LegacyTownReporterByline = "Town Report";
     private Player2Client? _player2;
     private readonly IMonitor _monitor;
+    private readonly record struct EventArticleDraft(TownMemoryEvent Event, NewspaperArticle Article);
 
     public NewspaperService(IMonitor monitor, Player2Client? player2 = null)
     {
@@ -48,7 +54,8 @@ public sealed class NewspaperService
 
         // 1. Generate event articles from town memory (runs FIRST)
         var eventArticles = GenerateEventArticles(state, yesterday: state.Calendar.Day - 1);
-        foreach (var article in eventArticles)
+        var rewrittenEventArticles = await RewriteEventArticlesAsync(state, eventArticles);
+        foreach (var article in rewrittenEventArticles)
         {
             if (issue.Articles.Count < MaxDailyArticles)
                 issue.Articles.Add(article);
@@ -165,9 +172,9 @@ public sealed class NewspaperService
     /// Generate event articles from town memory (yesterday's events).
     /// Max 1 event article per day.
     /// </summary>
-    private static List<NewspaperArticle> GenerateEventArticles(SaveState state, int yesterday)
+    private static List<EventArticleDraft> GenerateEventArticles(SaveState state, int yesterday)
     {
-        var articles = new List<NewspaperArticle>();
+        var articles = new List<EventArticleDraft>();
 
         // Get yesterday's events from town memory
         var yesterdayEvents = state.TownMemory.Events
@@ -268,11 +275,415 @@ public sealed class NewspaperService
 
             if (article is not null && articles.Count < 1)
             {
-                articles.Add(article);
+                articles.Add(new EventArticleDraft(ev, article));
             }
         }
 
         return articles;
+    }
+
+    private async Task<List<NewspaperArticle>> RewriteEventArticlesAsync(SaveState state, List<EventArticleDraft> drafts)
+    {
+        if (drafts.Count == 0)
+            return new List<NewspaperArticle>();
+
+        var rewrittenArticles = new List<NewspaperArticle>(drafts.Count);
+        foreach (var draft in drafts)
+        {
+            var rewritten = await RewriteSingleEventArticleAsync(state, draft.Event, draft.Article);
+            rewrittenArticles.Add(rewritten);
+        }
+
+        return rewrittenArticles;
+    }
+
+    private async Task<NewspaperArticle> RewriteSingleEventArticleAsync(SaveState state, TownMemoryEvent townEvent, NewspaperArticle sourceArticle)
+    {
+        var fallback = RewriteEventArticleFallback(townEvent, sourceArticle);
+        if (_player2 is null)
+        {
+            _monitor.Log($"Event rewrite skipped: Player2 unavailable for kind '{townEvent.Kind}'.", LogLevel.Trace);
+            return fallback;
+        }
+
+        var request = BuildEventArticleRewriteRequest(state, townEvent, sourceArticle, includeOriginalDraft: true);
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(EventArticleRewriteTimeoutSeconds));
+            var rewritten = await _player2.TryRewriteNewspaperEventArticleAsync(request, cts.Token);
+            if (rewritten is null)
+            {
+                _monitor.Log(
+                    $"Event rewrite fallback used: Player2 returned empty rewrite (kind={townEvent.Kind}, day={townEvent.Day}).",
+                    LogLevel.Debug);
+                return fallback;
+            }
+
+            if (IsLowQualityRewriteBody(rewritten, sourceArticle))
+            {
+                _monitor.Log(
+                    $"Event rewrite low-quality body detected; retrying without original draft context (kind={townEvent.Kind}).",
+                    LogLevel.Debug);
+
+                var retryRequest = BuildEventArticleRewriteRequest(state, townEvent, sourceArticle, includeOriginalDraft: false);
+                using var retryCts = new CancellationTokenSource(TimeSpan.FromSeconds(EventArticleRewriteTimeoutSeconds));
+                var retryRewrite = await _player2.TryRewriteNewspaperEventArticleAsync(retryRequest, retryCts.Token);
+                if (retryRewrite is null || IsLowQualityRewriteBody(retryRewrite, sourceArticle))
+                {
+                    _monitor.Log(
+                        $"Event rewrite fallback used: low-quality body after retry (kind={townEvent.Kind}, day={townEvent.Day}).",
+                        LogLevel.Debug);
+                    return fallback;
+                }
+
+                rewritten = retryRewrite;
+            }
+
+            if (!TryBuildValidatedRewrittenEventArticle(townEvent, sourceArticle, rewritten, out var validated))
+            {
+                _monitor.Log(
+                    $"Event rewrite fallback used: rewrite validation failed (kind={townEvent.Kind}, day={townEvent.Day}, location={townEvent.Location}).",
+                    LogLevel.Debug);
+                return fallback;
+            }
+
+            if (IsNearDuplicateRewrite(validated.Content, sourceArticle.Content))
+            {
+                _monitor.Log(
+                    $"Event rewrite duplicate body detected; retrying without original draft context (kind={townEvent.Kind}).",
+                    LogLevel.Debug);
+
+                var retryRequest = BuildEventArticleRewriteRequest(state, townEvent, sourceArticle, includeOriginalDraft: false);
+                using var retryCts = new CancellationTokenSource(TimeSpan.FromSeconds(EventArticleRewriteTimeoutSeconds));
+                var retryRewrite = await _player2.TryRewriteNewspaperEventArticleAsync(retryRequest, retryCts.Token);
+                if (retryRewrite is not null
+                    && TryBuildValidatedRewrittenEventArticle(townEvent, sourceArticle, retryRewrite, out var retriedValidated)
+                    && !IsNearDuplicateRewrite(retriedValidated.Content, sourceArticle.Content))
+                {
+                    _monitor.Log(
+                        $"Event rewrite applied via Player2 after duplicate retry (kind={townEvent.Kind}, title='{retriedValidated.Title}').",
+                        LogLevel.Debug);
+                    return retriedValidated;
+                }
+
+                _monitor.Log(
+                    $"Event rewrite fallback used: duplicate body after retry (kind={townEvent.Kind}, day={townEvent.Day}).",
+                    LogLevel.Debug);
+                return fallback;
+            }
+
+            _monitor.Log(
+                $"Event rewrite applied via Player2 (kind={townEvent.Kind}, title='{validated.Title}').",
+                LogLevel.Debug);
+            return validated;
+        }
+        catch (Exception ex)
+        {
+            _monitor.Log($"Event rewrite failed for kind '{townEvent.Kind}': {ex.Message}", LogLevel.Trace);
+            return fallback;
+        }
+    }
+
+    private static RewriteNewspaperEventArticleRequest BuildEventArticleRewriteRequest(
+        SaveState state,
+        TownMemoryEvent townEvent,
+        NewspaperArticle sourceArticle,
+        bool includeOriginalDraft)
+    {
+        return new RewriteNewspaperEventArticleRequest
+        {
+            Context = new NewspaperEventRewriteContext
+            {
+                Season = state.Calendar.Season,
+                Day = state.Calendar.Day,
+                Year = state.Calendar.Year,
+                EventDay = townEvent.Day,
+                EventKind = townEvent.Kind,
+                EventLocation = townEvent.Location,
+                EventVisibility = townEvent.Visibility,
+                EventSeverity = Math.Clamp(townEvent.Severity, 1, 5),
+                SourceSummary = (townEvent.Summary ?? string.Empty).Trim(),
+                RequiredDayLabel = CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(townEvent.Day),
+                OriginalTitle = includeOriginalDraft ? sourceArticle.Title : string.Empty,
+                OriginalContent = includeOriginalDraft ? sourceArticle.Content : string.Empty
+            }
+        };
+    }
+
+    private static bool TryBuildValidatedRewrittenEventArticle(
+        TownMemoryEvent sourceEvent,
+        NewspaperArticle sourceArticle,
+        RewrittenNewspaperEventArticle? rewritten,
+        out NewspaperArticle validated)
+    {
+        validated = sourceArticle;
+        if (rewritten is null)
+            return false;
+
+        var title = SanitizeRewriteText(rewritten.Title, EventArticleRewriteMaxTitleLength);
+        if (string.IsNullOrWhiteSpace(title))
+            title = SanitizeRewriteText(sourceArticle.Title, EventArticleRewriteMaxTitleLength);
+
+        var content = SanitizeRewriteText(rewritten.Content, EventArticleRewriteMaxContentLength);
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(content))
+            return false;
+
+        content = EnforceRequiredEventFacts(title, content, sourceEvent);
+
+        validated = new NewspaperArticle
+        {
+            Title = title,
+            Content = content,
+            Category = sourceArticle.Category,
+            SourceNpc = sourceArticle.SourceNpc,
+            IsNpcPublished = sourceArticle.IsNpcPublished,
+            Day = sourceArticle.Day,
+            ExpirationDay = sourceArticle.ExpirationDay
+        };
+        return true;
+    }
+
+    private static string EnforceRequiredEventFacts(string title, string content, TownMemoryEvent sourceEvent)
+    {
+        var enriched = SanitizeRewriteText(content, EventArticleRewriteMaxContentLength);
+        var summary = (sourceEvent.Summary ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(summary)
+            && !ContainsNormalizedSubstring(enriched, summary))
+        {
+            enriched = SanitizeRewriteText(
+                $"{enriched} {EnsureSentence(summary)}",
+                EventArticleRewriteMaxContentLength);
+        }
+
+        var dayLabel = CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(sourceEvent.Day);
+        var sourceLocation = (sourceEvent.Location ?? string.Empty).Trim();
+        if (!ContainsNormalizedSubstring(enriched, dayLabel))
+        {
+            var dayLocationSentence = string.IsNullOrWhiteSpace(sourceLocation)
+                ? $"It was recorded on {dayLabel}."
+                : $"It was recorded on {dayLabel} in {sourceLocation}.";
+            enriched = SanitizeRewriteText(
+                $"{enriched} {dayLocationSentence}",
+                EventArticleRewriteMaxContentLength);
+        }
+        else if (!string.IsNullOrWhiteSpace(sourceLocation)
+            && !ContainsNormalizedSubstring($"{title} {enriched}", sourceLocation))
+        {
+            enriched = SanitizeRewriteText(
+                $"{enriched} Location: {sourceLocation}.",
+                EventArticleRewriteMaxContentLength);
+        }
+
+        // If truncation still dropped required facts, force a compact fact-locked tail.
+        if (!ContainsNormalizedSubstring(enriched, dayLabel)
+            || (!string.IsNullOrWhiteSpace(summary) && !ContainsNormalizedSubstring(enriched, summary))
+            || (!string.IsNullOrWhiteSpace(sourceLocation) && !ContainsNormalizedSubstring($"{title} {enriched}", sourceLocation)))
+        {
+            var locationClause = string.IsNullOrWhiteSpace(sourceLocation)
+                ? string.Empty
+                : $" in {sourceLocation}";
+            enriched = SanitizeRewriteText(
+                $"{EnsureSentence(summary)} It was recorded on {dayLabel}{locationClause}.",
+                EventArticleRewriteMaxContentLength);
+        }
+
+        return enriched;
+    }
+
+    private static NewspaperArticle RewriteEventArticleFallback(TownMemoryEvent townEvent, NewspaperArticle sourceArticle)
+    {
+        var title = SanitizeRewriteText(BuildFallbackEventTitle(townEvent, sourceArticle.Title), EventArticleRewriteMaxTitleLength);
+        var summarySentence = EnsureSentence((townEvent.Summary ?? string.Empty).Trim());
+        if (string.IsNullOrWhiteSpace(summarySentence))
+            summarySentence = EnsureSentence(sourceArticle.Content);
+
+        var dayLabel = CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(townEvent.Day);
+        var location = string.IsNullOrWhiteSpace(townEvent.Location)
+            ? ResolveActiveTownProfile().CanonTown
+            : townEvent.Location.Trim();
+        var rewriteLead = BuildFallbackEventLead(townEvent);
+        var severityTone = BuildFallbackSeverityTone(townEvent.Severity);
+        var visibilityLine = string.Equals(townEvent.Visibility, "public", StringComparison.OrdinalIgnoreCase)
+            ? "Witnesses around town shared the update quickly."
+            : "The update traveled through local channels.";
+        var content = SanitizeRewriteText(
+            $"{rewriteLead} {summarySentence} {severityTone} It was recorded on {dayLabel} in {location}. {visibilityLine}",
+            EventArticleRewriteMaxContentLength);
+
+        return new NewspaperArticle
+        {
+            Title = string.IsNullOrWhiteSpace(title) ? sourceArticle.Title : title,
+            Content = string.IsNullOrWhiteSpace(content) ? sourceArticle.Content : content,
+            Category = sourceArticle.Category,
+            SourceNpc = sourceArticle.SourceNpc,
+            IsNpcPublished = sourceArticle.IsNpcPublished,
+            Day = sourceArticle.Day,
+            ExpirationDay = sourceArticle.ExpirationDay
+        };
+    }
+
+    private static string BuildFallbackEventTitle(TownMemoryEvent townEvent, string sourceTitle)
+    {
+        var location = string.IsNullOrWhiteSpace(townEvent.Location) ? string.Empty : $" - {townEvent.Location.Trim()}";
+        return (townEvent.Kind ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "market" => $"Market Bulletin{location}",
+            "storm" => $"Storm Bulletin{location}",
+            "achievement" => $"Community Milestone{location}",
+            "social" => $"Town Talk{location}",
+            "community" => $"Community Ledger{location}",
+            "nature" => $"Nature Watch{location}",
+            "fainting" => "Mines Safety Bulletin",
+            "pass_out" => "Late-Night Safety Bulletin",
+            "incident" => "Town Incident Bulletin",
+            _ => string.IsNullOrWhiteSpace(sourceTitle)
+                ? $"{QuestTextHelper.PrettyName(townEvent.Kind)} Update"
+                : sourceTitle
+        };
+    }
+
+    private static string BuildFallbackEventLead(TownMemoryEvent townEvent)
+    {
+        return (townEvent.Kind ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "market" => "From the market stalls, reporters noted a fresh development.",
+            "storm" => "Weather watchers filed a town bulletin.",
+            "achievement" => "Residents marked a notable community milestone.",
+            "social" => "Conversation around town turned to a shared update.",
+            "community" => "The community board logged a new development.",
+            "nature" => "Nature observers flagged changing local conditions.",
+            "fainting" => "A safety report reached the newsroom overnight.",
+            "pass_out" => "A late-night safety report reached the newsroom.",
+            "incident" => "The town desk logged an incident report.",
+            _ => "The town desk logged a local report."
+        };
+    }
+
+    private static string BuildFallbackSeverityTone(int severity)
+    {
+        return Math.Clamp(severity, 1, 5) switch
+        {
+            >= 5 => "Responders treated the matter as urgent.",
+            4 => "Responders treated the matter with high priority.",
+            3 => "Responders treated the matter as a notable concern.",
+            2 => "Responders monitored the matter closely.",
+            _ => "Responders noted the matter and shared guidance."
+        };
+    }
+
+    private static string EnsureSentence(string text)
+    {
+        var clean = SanitizeRewriteText(text, EventArticleRewriteMaxContentLength);
+        if (string.IsNullOrWhiteSpace(clean))
+            return string.Empty;
+
+        if (clean.EndsWith(".", StringComparison.Ordinal)
+            || clean.EndsWith("!", StringComparison.Ordinal)
+            || clean.EndsWith("?", StringComparison.Ordinal))
+        {
+            return clean;
+        }
+
+        return $"{clean}.";
+    }
+
+    private static string SanitizeRewriteText(string? text, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        var clean = text
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
+
+        while (clean.Contains("  ", StringComparison.Ordinal))
+            clean = clean.Replace("  ", " ", StringComparison.Ordinal);
+
+        if (clean.Length > maxLength)
+            clean = clean[..(maxLength - 3)].TrimEnd() + "...";
+
+        return clean;
+    }
+
+    private static bool ContainsNormalizedSubstring(string text, string expectedSegment)
+    {
+        var normalizedText = NormalizeForValidation(text);
+        var normalizedExpected = NormalizeForValidation(expectedSegment);
+        if (string.IsNullOrWhiteSpace(normalizedExpected))
+            return true;
+
+        return normalizedText.Contains(normalizedExpected, StringComparison.Ordinal);
+    }
+
+    private static string NormalizeForValidation(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var builder = new StringBuilder(value.Length);
+        var previousWasSpace = false;
+        foreach (var ch in value.ToLowerInvariant())
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(ch);
+                previousWasSpace = false;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(ch) || ch is '-' or '_' or '/' or ':')
+            {
+                if (!previousWasSpace)
+                {
+                    builder.Append(' ');
+                    previousWasSpace = true;
+                }
+            }
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static bool IsNearDuplicateRewrite(string rewrittenContent, string sourceContent)
+    {
+        var normalizedRewritten = NormalizeForValidation(rewrittenContent);
+        var normalizedSource = NormalizeForValidation(sourceContent);
+        if (string.IsNullOrWhiteSpace(normalizedRewritten) || string.IsNullOrWhiteSpace(normalizedSource))
+            return false;
+
+        if (string.Equals(normalizedRewritten, normalizedSource, StringComparison.Ordinal))
+            return true;
+
+        var rewrittenTokens = normalizedRewritten.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
+        var sourceTokens = normalizedSource.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
+        if (rewrittenTokens.Count == 0 || sourceTokens.Count == 0)
+            return false;
+
+        var overlap = rewrittenTokens.Intersect(sourceTokens, StringComparer.Ordinal).Count();
+        var similarity = overlap / (float)Math.Max(rewrittenTokens.Count, sourceTokens.Count);
+        return similarity >= EventRewriteDuplicateSimilarityThreshold;
+    }
+
+    private static bool IsLowQualityRewriteBody(RewrittenNewspaperEventArticle rewritten, NewspaperArticle sourceArticle)
+    {
+        var rewrittenBody = (rewritten.Content ?? string.Empty).Trim();
+        var rewrittenTitle = (rewritten.Title ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(rewrittenBody))
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(rewrittenTitle)
+            && rewrittenBody.Equals(rewrittenTitle, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var wordCount = rewrittenBody.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        if (wordCount < 8)
+            return true;
+
+        return IsNearDuplicateRewrite(rewrittenBody, sourceArticle.Content);
     }
 
     private async Task<List<NewspaperArticle>> GenerateDynamicStoryArticlesAsync(SaveState state, List<NewspaperArticle> currentIssueArticles, int count)

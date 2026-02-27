@@ -6767,11 +6767,11 @@ public sealed class ModEntry : Mod
         if (!string.IsNullOrWhiteSpace(apiBaseUrl) && !string.IsNullOrWhiteSpace(player2Key))
             clientForService?.SetCredentials(apiBaseUrl, player2Key);
 
-        _ = Task.Run(async () =>
+        _ = Task.Run(() =>
         {
             try
             {
-                var issue = await service.BuildIssueAsync(snapshot, null);
+                var issue = service.BuildIssue(snapshot, _config, clientForService, player2Key);
                 _completedNewspaperIssues.Enqueue(issue);
             }
             catch (Exception ex)
