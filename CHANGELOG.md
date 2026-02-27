@@ -14,6 +14,13 @@
   - `EnablePortraitEmotionProfiles`
   - `PortraitProfileStrictMode`
   - `LogPortraitProfileResolution`
+- Built-in vanilla canon lore grounding file: `assets/vanilla-canon-lore.json`.
+- New vanilla canon lore diagnostics commands:
+  - `slrpg_vanilla_lore_validate`
+  - `slrpg_vanilla_lore_dump <npc>`
+- New vanilla canon lore config options:
+  - `EnableVanillaCanonLoreInjection`
+  - `LogVanillaCanonLoreInjectionPreview`
 
 ### Changed
 - Manifest version bumped to `0.6.0`.
@@ -22,6 +29,7 @@
   - `content/portrait-profiles.json`
   - `assets/portrait-profiles.json`
 - Portrait template variants now use explicit `Frames` mappings (no `FrameOffset` in shipped examples).
+- `slrpg_regression_targeted` now includes vanilla lore contradiction regressions (Pierre/Abigail, Elliott editor grounding, and referenced-NPC lore selection behavior).
 
 ### Fixed
 - Resolved emotion-to-portrait index mapping so non-happy emotions no longer collapse to a single frame.

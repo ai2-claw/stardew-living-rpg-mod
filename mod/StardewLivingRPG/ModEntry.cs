@@ -509,6 +509,8 @@ public sealed class ModEntry : Mod
     private NpcPackLoader? _customNpcPackLoader;
     private IReadOnlyList<LoadedNpcPack> _customNpcLoadedPacks = Array.Empty<LoadedNpcPack>();
     private IReadOnlyList<ValidationIssue> _customNpcValidationIssues = Array.Empty<ValidationIssue>();
+    private VanillaCanonLoreService? _vanillaCanonLoreService;
+    private IReadOnlyList<ValidationIssue> _vanillaCanonValidationIssues = Array.Empty<ValidationIssue>();
     private PortraitEmotionProfileService? _portraitEmotionProfileService;
     private IReadOnlyList<ValidationIssue> _portraitProfileValidationIssues = Array.Empty<ValidationIssue>();
 
@@ -664,6 +666,7 @@ public sealed class ModEntry : Mod
         _commandPolicyService = new CommandPolicyService();
         _player2Client = new Player2Client();
         InitializeCustomNpcFramework(helper);
+        InitializeVanillaCanonLoreFramework(helper);
         InitializePortraitProfileFramework();
 
         RegisterPlayerConsoleCommands(helper);
@@ -709,7 +712,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_intent_inject", "Inject raw NPC intent envelope JSON for resolver QA.", OnIntentInjectCommand);
         helper.ConsoleCommands.Add("slrpg_debug_news_toast", "Inject debug publish_article/publish_rumor intent and trigger HUD toast: slrpg_debug_news_toast <article|rumor> [text]", OnDebugNewsToastCommand);
         helper.ConsoleCommands.Add("slrpg_intent_smoketest", "Run mini automated intent resolver smoke tests.", OnIntentSmokeTestCommand);
-        helper.ConsoleCommands.Add("slrpg_regression_targeted", "Run targeted regression checks (chat routing, pass-out publication, market outlook, ambient command lane).", OnTargetedRegressionCommand);
+        helper.ConsoleCommands.Add("slrpg_regression_targeted", "Run targeted regression checks (chat routing, pass-out publication, market outlook, ambient command lane, vanilla lore grounding).", OnTargetedRegressionCommand);
         helper.ConsoleCommands.Add("slrpg_anchor_smoketest", "Run deterministic anchor trigger/resolution smoke test.", OnAnchorSmokeTestCommand);
         helper.ConsoleCommands.Add("slrpg_baseline_3day", "Run deterministic 3-day baseline metrics simulation.", OnBaselineThreeDayCommand);
         helper.ConsoleCommands.Add("slrpg_baseline_7day", "Run deterministic 7-day scenario simulation and compare against 3-day baseline.", OnBaselineSevenDayCommand);
@@ -729,6 +732,8 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_customnpc_list", "List loaded integrated custom NPCs.", OnCustomNpcListCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_dump", "Dump integrated custom NPC lore: slrpg_customnpc_dump <npc>", OnCustomNpcDumpCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_reload", "Reload integrated custom-NPC packs.", OnCustomNpcReloadCommand);
+        helper.ConsoleCommands.Add("slrpg_vanilla_lore_validate", "Validate built-in vanilla canon lore entries.", OnVanillaLoreValidateCommand);
+        helper.ConsoleCommands.Add("slrpg_vanilla_lore_dump", "Dump vanilla canon lore entry: slrpg_vanilla_lore_dump <npc>", OnVanillaLoreDumpCommand);
         helper.ConsoleCommands.Add("slrpg_portrait_profile_validate", "Validate loaded NPC portrait emotion profiles.", OnPortraitProfileValidateCommand);
         helper.ConsoleCommands.Add("slrpg_portrait_profile_dump", "Dump portrait profile details: slrpg_portrait_profile_dump <npc>", OnPortraitProfileDumpCommand);
         helper.ConsoleCommands.Add("slrpg_portrait_profile_probe", "Probe frame resolution: slrpg_portrait_profile_probe <npc> [emotion]", OnPortraitProfileProbeCommand);
@@ -5076,6 +5081,11 @@ public sealed class ModEntry : Mod
         fail += ambientLane.Fail;
         total += ambientLane.Total;
 
+        var vanillaLore = RunVanillaLoreRegressionChecks();
+        pass += vanillaLore.Pass;
+        fail += vanillaLore.Fail;
+        total += vanillaLore.Total;
+
         return (pass, fail, total);
     }
 
@@ -5158,6 +5168,92 @@ public sealed class ModEntry : Mod
             Monitor.Log("[FAIL] market outlook regression did not surface live mover data", LogLevel.Warn);
 
         return passed;
+    }
+
+    private (int Pass, int Fail, int Total) RunVanillaLoreRegressionChecks()
+    {
+        if (!_config.EnableVanillaCanonLoreInjection)
+        {
+            Monitor.Log("[SKIP] vanilla lore regression -> feature disabled by config", LogLevel.Info);
+            return (0, 0, 0);
+        }
+
+        if (_vanillaCanonLoreService is null)
+        {
+            Monitor.Log("[FAIL] vanilla lore regression -> VanillaCanonLoreService unavailable", LogLevel.Warn);
+            return (0, 1, 1);
+        }
+
+        var pass = 0;
+        var fail = 0;
+        var total = 0;
+
+        ReloadVanillaCanonLore();
+
+        var hasErrors = _vanillaCanonValidationIssues.Any(i => i.Severity == ValidationSeverity.Error);
+        if (!hasErrors)
+        {
+            pass++;
+            Monitor.Log("[PASS] vanilla lore regression validation has no blocking errors", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] vanilla lore regression found blocking validation errors", LogLevel.Warn);
+        }
+        total++;
+
+        var pierreLore = _vanillaCanonLoreService.BuildLorePromptBlock("Pierre", "Town", "regression_vanilla");
+        var pierreGuardrailPass =
+            pierreLore.Contains("VANILLA_NPC_LORE[Pierre]", StringComparison.OrdinalIgnoreCase)
+            && pierreLore.Contains("Abigail", StringComparison.OrdinalIgnoreCase)
+            && pierreLore.Contains("Pierre is not Abigail's father", StringComparison.OrdinalIgnoreCase);
+        if (pierreGuardrailPass)
+        {
+            pass++;
+            Monitor.Log("[PASS] vanilla lore regression includes Pierre/Abigail contradiction guardrail", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] vanilla lore regression missing Pierre/Abigail contradiction guardrail", LogLevel.Warn);
+        }
+        total++;
+
+        var elliottLore = _vanillaCanonLoreService.BuildLorePromptBlock("Elliott", "Beach", "regression_vanilla");
+        var elliottEditorialPass = elliottLore.Contains("The Valley Times", StringComparison.OrdinalIgnoreCase);
+        if (elliottEditorialPass)
+        {
+            pass++;
+            Monitor.Log("[PASS] vanilla lore regression keeps Elliott editorial grounding", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] vanilla lore regression missing Elliott editorial grounding", LogLevel.Warn);
+        }
+        total++;
+
+        var referencedLore = _vanillaCanonLoreService.BuildReferencedNpcLorePromptBlock(
+            "I heard Abigail is unrelated to Pierre. Is that true?",
+            speakingNpcName: "Pierre",
+            maxMatches: 2);
+        var referencePass =
+            referencedLore.Contains("VANILLA_NPC_REFERENCE_LORE[Abigail]", StringComparison.OrdinalIgnoreCase)
+            && !referencedLore.Contains("VANILLA_NPC_REFERENCE_LORE[Pierre]", StringComparison.OrdinalIgnoreCase);
+        if (referencePass)
+        {
+            pass++;
+            Monitor.Log("[PASS] vanilla lore regression referenced-NPC block resolves Abigail without duplicating active speaker", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] vanilla lore regression referenced-NPC block failed Abigail/Pierre selection behavior", LogLevel.Warn);
+        }
+        total++;
+
+        return (pass, fail, total);
     }
 
     private void ConfigureAmbientPolicyRegressionSignals(bool unlockAmbientMutations)
@@ -7554,6 +7650,33 @@ public sealed class ModEntry : Mod
             vanillaDialogueContext,
             sourceDialogueContext
         );
+
+        if (_config.EnableVanillaCanonLoreInjection
+            && _vanillaCanonLoreService is not null)
+        {
+            var vanillaLoreBlock = _vanillaCanonLoreService.BuildLorePromptBlock(
+                npcName,
+                Game1.currentLocation?.Name,
+                effectiveContextTag);
+            if (!string.IsNullOrWhiteSpace(vanillaLoreBlock))
+            {
+                basePrompt = $"{basePrompt} {vanillaLoreBlock}".Trim();
+                if (_config.LogVanillaCanonLoreInjectionPreview)
+                    Monitor.Log($"Injected vanilla canon lore block for '{npcName ?? "(none)"}'.", LogLevel.Trace);
+            }
+
+            var referencedVanillaLore = _vanillaCanonLoreService.BuildReferencedNpcLorePromptBlock(
+                playerText,
+                speakingNpcName: npcName,
+                maxMatches: 2);
+            if (!string.IsNullOrWhiteSpace(referencedVanillaLore))
+            {
+                var awarenessRule = "VANILLA_CANON_AWARENESS_RULE: Referenced vanilla NPC canon facts are authoritative. Do not contradict explicit family/job constraints; if uncertain, answer partially without contradiction.";
+                basePrompt = $"{basePrompt} {awarenessRule} {referencedVanillaLore}".Trim();
+                if (_config.LogVanillaCanonLoreInjectionPreview)
+                    Monitor.Log($"Injected referenced vanilla lore block for context '{effectiveContextTag}'.", LogLevel.Trace);
+            }
+        }
 
         if (_config.EnableCustomNpcFramework
             && _config.EnableCustomNpcLoreInjection
@@ -11900,6 +12023,69 @@ public sealed class ModEntry : Mod
         return value[..Math.Max(1, maxLength - 3)] + "...";
     }
 
+    private void InitializeVanillaCanonLoreFramework(IModHelper helper)
+    {
+        if (!_config.EnableVanillaCanonLoreInjection)
+        {
+            Monitor.Log("Vanilla canon lore injection is disabled by config.", LogLevel.Info);
+            return;
+        }
+
+        if (_customNpcCanonBaselineService is null)
+        {
+            _customNpcCanonBaselineService = new CanonBaselineService(helper, Monitor);
+            _customNpcCanonBaselineService.Load();
+        }
+
+        _vanillaCanonLoreService = new VanillaCanonLoreService(
+            helper,
+            Monitor,
+            _customNpcCanonBaselineService,
+            ResolveCustomNpcLocale);
+        ReloadVanillaCanonLore();
+    }
+
+    private void ReloadVanillaCanonLore()
+    {
+        if (!_config.EnableVanillaCanonLoreInjection || _vanillaCanonLoreService is null)
+        {
+            _vanillaCanonValidationIssues = Array.Empty<ValidationIssue>();
+            return;
+        }
+
+        _vanillaCanonLoreService.Reload(_config.EnableStrictCustomNpcCanonValidation);
+        _vanillaCanonValidationIssues = _vanillaCanonLoreService.ValidationIssues;
+        LogVanillaCanonValidationIssues(verbose: false);
+    }
+
+    private void LogVanillaCanonValidationIssues(bool verbose)
+    {
+        var errors = _vanillaCanonValidationIssues.Where(i => i.Severity == ValidationSeverity.Error).ToArray();
+        var warnings = _vanillaCanonValidationIssues.Where(i => i.Severity == ValidationSeverity.Warning).ToArray();
+        Monitor.Log(
+            $"Vanilla canon lore validation summary: errors={errors.Length}, warnings={warnings.Length}.",
+            errors.Length > 0 ? LogLevel.Warn : LogLevel.Info);
+
+        if (!verbose)
+        {
+            foreach (var sample in errors.Take(5))
+                Monitor.Log($"[ERROR:{sample.Code}] npc={sample.NpcId} {sample.Message}", LogLevel.Warn);
+            foreach (var sample in warnings.Take(5))
+                Monitor.Log($"[WARN:{sample.Code}] npc={sample.NpcId} {sample.Message}", LogLevel.Debug);
+            return;
+        }
+
+        foreach (var issue in _vanillaCanonValidationIssues
+                     .OrderByDescending(i => i.Severity)
+                     .ThenBy(i => i.NpcId, StringComparer.OrdinalIgnoreCase))
+        {
+            var level = issue.Severity == ValidationSeverity.Error ? LogLevel.Warn : LogLevel.Info;
+            Monitor.Log(
+                $"[{issue.Severity}:{issue.Code}] npc={issue.NpcId} file={issue.SourcePath} -> {issue.Message}",
+                level);
+        }
+    }
+
     private void InitializeCustomNpcFramework(IModHelper helper)
     {
         if (!_config.EnableCustomNpcFramework)
@@ -12133,6 +12319,30 @@ public sealed class ModEntry : Mod
         Monitor.Log($"ForbiddenClaims: {string.Join(", ", npc.Lore.ForbiddenClaims)}", LogLevel.Info);
     }
 
+    private void OnVanillaLoreValidateCommand(string command, string[] args)
+    {
+        ReloadVanillaCanonLore();
+        LogVanillaCanonValidationIssues(verbose: true);
+    }
+
+    private void OnVanillaLoreDumpCommand(string command, string[] args)
+    {
+        if (_vanillaCanonLoreService is null)
+        {
+            Monitor.Log("Vanilla canon lore service is not initialized.", LogLevel.Warn);
+            return;
+        }
+
+        if (args.Length == 0)
+        {
+            Monitor.Log("Usage: slrpg_vanilla_lore_dump <npc>", LogLevel.Info);
+            return;
+        }
+
+        var raw = string.Join(" ", args);
+        Monitor.Log(_vanillaCanonLoreService.BuildLoreDebugDump(raw), LogLevel.Info);
+    }
+
     private void OnPortraitProfileValidateCommand(string command, string[] args)
     {
         LogPortraitProfileValidationIssues(verbose: true);
@@ -12196,6 +12406,7 @@ public sealed class ModEntry : Mod
     private void OnCustomNpcReloadCommand(string command, string[] args)
     {
         ReloadCustomNpcPacks();
+        ReloadVanillaCanonLore();
         ReloadPortraitProfiles();
         InjectCustomNpcTargetsIntoRumorBoard("ReloadCommand");
     }

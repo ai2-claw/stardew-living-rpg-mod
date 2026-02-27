@@ -29,7 +29,7 @@ M0 + M1 scaffold includes:
 - `slrpg_debug_state`: print compact daily diagnostics snapshot
 - `slrpg_intent_inject <json>`: inject raw intent envelope for deterministic resolver QA
 - `slrpg_intent_smoketest`: run a mini automated resolver smoke suite with pass/fail summary
-- `slrpg_regression_targeted`: run targeted regression checks (chat routing, pass-out publication, market outlook, ambient command lane)
+- `slrpg_regression_targeted`: run targeted regression checks (chat routing, pass-out publication, market outlook, ambient command lane, vanilla lore grounding)
 - `slrpg_anchor_smoketest`: run deterministic anchor trigger/resolution smoke test
 - `slrpg_baseline_3day`: run deterministic 3-day baseline metrics simulation
 - `slrpg_baseline_7day`: run deterministic 7-day scenario metrics simulation and compare with baseline
@@ -48,6 +48,8 @@ M0 + M1 scaffold includes:
 - `slrpg_customnpc_list`: list loaded custom-NPC entries from installed packs
 - `slrpg_customnpc_dump <npc>`: dump one custom NPC lore profile by name/token
 - `slrpg_customnpc_reload`: reload custom-NPC packs without restarting the game
+- `slrpg_vanilla_lore_validate`: validate built-in vanilla canon lore entries
+- `slrpg_vanilla_lore_dump <npc>`: dump one built-in vanilla canon lore entry by name/token
 - `slrpg_portrait_profile_validate`: validate loaded portrait emotion profile files
 - `slrpg_portrait_profile_dump <npc>`: dump one resolved portrait profile by name/token
 - `slrpg_portrait_profile_probe <npc> [emotion]`: probe resolved portrait frame index for an NPC/emotion
@@ -103,9 +105,11 @@ Config knobs:
 - `AmbientRecordTownEventDailyCap` (default `2`; per-NPC ambient `record_town_event` cap per day, set `0` to disable)
 - `EnableCustomNpcFramework` (default `true`; enables integrated custom-NPC content pack loading)
 - `EnableCustomNpcLoreInjection` (default `true`; injects custom-NPC lore blocks into prompt context)
+- `EnableVanillaCanonLoreInjection` (default `true`; injects built-in vanilla canon lore blocks into prompt context)
 - `EnableStrictCustomNpcCanonValidation` (default `true`; blocks lore/canon conflicts on load)
 - `CustomNpcLoreLocaleOverride` (default empty; optional locale override for custom-NPC lore overlays)
 - `LogCustomNpcPromptInjectionPreview` (default `false`; trace-level logs when lore blocks are appended)
+- `LogVanillaCanonLoreInjectionPreview` (default `false`; trace-level logs when vanilla lore blocks are appended)
 - `EnablePortraitEmotionProfiles` (default `true`; enables per-NPC/per-variant portrait emotion profile resolution)
 - `PortraitProfileStrictMode` (default `false`; if `true`, require stricter portrait profile definitions)
 - `LogPortraitProfileResolution` (default `false`; trace log resolved portrait frame source/index at runtime)
@@ -123,6 +127,8 @@ Config knobs:
   - `assets/portrait-profiles.json` (for dependency DLL mods, e.g. compatibility mods)
 - Canon baseline rules for strict validation are in:
   - `assets/tlv-custom-npc-canon-baseline.json`
+- Built-in vanilla canon lore grounding is in:
+  - `assets/vanilla-canon-lore.json`
 - Built-in portrait profile defaults are in:
   - `assets/portrait-emotion-profiles.json`
 

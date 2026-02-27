@@ -45,9 +45,11 @@ public sealed class ModConfig
     // Integrated custom-NPC framework (content packs targeting mx146323.StardewLivingRPG)
     public bool EnableCustomNpcFramework { get; set; } = true;
     public bool EnableCustomNpcLoreInjection { get; set; } = true;
+    public bool EnableVanillaCanonLoreInjection { get; set; } = true;
     public bool EnableStrictCustomNpcCanonValidation { get; set; } = true;
     public string CustomNpcLoreLocaleOverride { get; set; } = string.Empty;
     public bool LogCustomNpcPromptInjectionPreview { get; set; } = false;
+    public bool LogVanillaCanonLoreInjectionPreview { get; set; } = false;
 
     // Portrait emotion profile framework (per-NPC/per-variant frame mapping).
     public bool EnablePortraitEmotionProfiles { get; set; } = true;
