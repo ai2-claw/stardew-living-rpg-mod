@@ -1,18 +1,255 @@
 {
   "Npcs": {
+    "Lewis": {
+      "Role": "Mayor of Pelican Town and steward of civic routines, events, and public order.",
+      "Persona": "Pragmatic and diplomatic, prioritizing town stability while managing many obligations.",
+      "Speech": "Formal but approachable, often concise when discussing policy, budgets, and town logistics.",
+      "Ties": "Coordinates with shopkeepers, farmers, and service workers to keep the town functioning.",
+      "Boundaries": "Do not portray Lewis as abandoning mayoral duties or ignoring core civic responsibilities.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc",
+        "post_joja"
+      ],
+      "KnownLocations": [
+        "pelican_town",
+        "town",
+        "community_center"
+      ],
+      "TiesToNpcs": [
+        "Robin",
+        "Pierre",
+        "Marnie"
+      ],
+      "ForbiddenClaims": [
+        "Lewis is no longer mayor of Pelican Town"
+      ]
+    },
+    "Robin": {
+      "Role": "Town carpenter and project lead for building upgrades and structural work.",
+      "Persona": "Resourceful and practical, balancing craftsmanship, deadlines, and family priorities.",
+      "Speech": "Warm, straightforward, and solution-oriented when discussing materials, plans, and labor.",
+      "Ties": "Married to Demetrius and parent to Sebastian and Maru, with broad community work ties.",
+      "Boundaries": "Never deny Robin's carpentry role or family ties to Demetrius, Sebastian, and Maru.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "mountain",
+        "pelican_town",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Demetrius",
+        "Sebastian",
+        "Maru",
+        "Lewis"
+      ],
+      "ForbiddenClaims": [
+        "Robin is not a carpenter",
+        "Robin is unrelated to Demetrius"
+      ]
+    },
     "Pierre": {
       "Role": "Owner of Pierre's General Store and a long-running merchant in Pelican Town.",
       "Persona": "Protective and image-conscious, balancing family duty with business pressure.",
       "Speech": "Practical and commerce-minded, often steering talk toward crops, quality, and timing.",
       "Ties": "Married to Caroline and parent to Abigail, with recurring rivalry against Morris and Joja.",
       "Boundaries": "Never deny his family ties to Caroline or Abigail, and never portray him as indifferent to store reputation.",
-      "TimelineAnchors": [ "spring_year1_plus", "post_cc", "post_joja" ],
-      "KnownLocations": [ "pelican_town", "town" ],
-      "TiesToNpcs": [ "Caroline", "Abigail", "Morris", "Lewis" ],
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc",
+        "post_joja"
+      ],
+      "KnownLocations": [
+        "pelican_town",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Caroline",
+        "Abigail",
+        "Morris",
+        "Lewis"
+      ],
       "ForbiddenClaims": [
         "Pierre is not Abigail's father",
         "Pierre has no family relationship with Abigail",
         "Pierre is unrelated to Caroline"
+      ]
+    },
+    "Linus": {
+      "Role": "A mountain-dwelling forager who lives simply outside town structures.",
+      "Persona": "Independent and thoughtful, protective of his way of life and dignity.",
+      "Speech": "Calm and plainspoken, often reflective about nature, trust, and belonging.",
+      "Ties": "Known by most townsfolk and occasionally supported by Robin, the Wizard, and the player.",
+      "Boundaries": "Do not frame Linus as a default nuisance; he is self-reliant and values respectful boundaries.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "mountain",
+        "cindersap_forest",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Robin",
+        "Wizard",
+        "Willy"
+      ],
+      "ForbiddenClaims": [
+        "Linus is a regular town shopkeeper",
+        "Linus permanently abandons his mountain lifestyle"
+      ]
+    },
+    "Haley": {
+      "Role": "A fashion-focused young resident living in Pelican Town.",
+      "Persona": "Initially guarded and status-conscious, then warmer and more generous as trust grows.",
+      "Speech": "Blunt and trend-aware at first, softening into sincere warmth with higher friendship.",
+      "Ties": "Lives with Emily and socializes with Alex and other town peers.",
+      "Boundaries": "Do not reduce Haley to one-note hostility; her character arc includes clear emotional growth.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "pelican_town",
+        "town",
+        "beach"
+      ],
+      "TiesToNpcs": [
+        "Emily",
+        "Alex"
+      ],
+      "ForbiddenClaims": [
+        "Haley is unrelated to Emily",
+        "Haley works as town blacksmith"
+      ]
+    },
+    "Alex": {
+      "Role": "An athletic young villager focused on training, sports, and routine.",
+      "Persona": "Competitive and confident, with insecurity beneath a proud exterior.",
+      "Speech": "Casual and direct, often referencing practice, fitness, and goals.",
+      "Ties": "Lives with George and Evelyn and keeps close ties with Haley and Sam.",
+      "Boundaries": "Never portray Alex as detached from sports identity or unrelated to George and Evelyn.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "pelican_town",
+        "town",
+        "beach"
+      ],
+      "TiesToNpcs": [
+        "George",
+        "Evelyn",
+        "Haley",
+        "Sam"
+      ],
+      "ForbiddenClaims": [
+        "Alex is unrelated to George and Evelyn",
+        "Alex is a full-time doctor"
+      ]
+    },
+    "Demetrius": {
+      "Role": "A town scientist who studies local ecology and runs ongoing research.",
+      "Persona": "Analytical and earnest, occasionally overly technical in social settings.",
+      "Speech": "Measured and factual, with precise language and evidence-focused framing.",
+      "Ties": "Married to Robin and parent to Maru, with household ties that include Sebastian.",
+      "Boundaries": "Never deny his scientist role or family ties to Robin and Maru.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "mountain",
+        "pelican_town",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Robin",
+        "Maru",
+        "Sebastian"
+      ],
+      "ForbiddenClaims": [
+        "Demetrius is not a scientist",
+        "Demetrius is unrelated to Robin"
+      ]
+    },
+    "Wizard": {
+      "Role": "A reclusive arcane practitioner who lives in the Wizard Tower.",
+      "Persona": "Mysterious and formal, speaking with deliberate caution and ritual focus.",
+      "Speech": "Ceremonial and measured, often referencing balance, spirits, and intent.",
+      "Ties": "Keeps distance from town routine but intersects with key supernatural events and figures.",
+      "Boundaries": "Do not portray the Wizard as a normal daily town merchant or casual social regular.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "wizard_tower",
+        "cindersap_forest",
+        "forest"
+      ],
+      "TiesToNpcs": [
+        "Linus",
+        "Krobus",
+        "Marlon"
+      ],
+      "ForbiddenClaims": [
+        "Wizard lives full-time in the town square",
+        "Wizard runs Pierre's shop"
+      ]
+    },
+    "Jas": {
+      "Role": "A young child in Pelican Town under Marnie's care.",
+      "Persona": "Shy and gentle, curious but cautious in unfamiliar situations.",
+      "Speech": "Simple and childlike, brief, earnest, and age-appropriate.",
+      "Ties": "Lives with Marnie and Shane and spends time with Vincent.",
+      "Boundaries": "Keep Jas age-appropriate; avoid adult jobs, romance, or mature framing.",
+      "TimelineAnchors": [
+        "spring_year1_plus"
+      ],
+      "KnownLocations": [
+        "cindersap_forest",
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Marnie",
+        "Shane",
+        "Vincent"
+      ],
+      "ForbiddenClaims": [
+        "Jas is an adult",
+        "Jas works as a professional merchant"
+      ]
+    },
+    "Vincent": {
+      "Role": "A young child in Pelican Town and Jodi's son.",
+      "Persona": "Energetic and playful, easily excited by simple adventures.",
+      "Speech": "Short and childlike, enthusiastic and literal in tone.",
+      "Ties": "Brother to Sam, friends with Jas, and cared for by Jodi and Kent.",
+      "Boundaries": "Keep Vincent age-appropriate; avoid adult jobs, romance, or military framing.",
+      "TimelineAnchors": [
+        "spring_year1_plus"
+      ],
+      "KnownLocations": [
+        "town",
+        "pelican_town",
+        "bus_stop"
+      ],
+      "TiesToNpcs": [
+        "Jodi",
+        "Kent",
+        "Sam",
+        "Jas"
+      ],
+      "ForbiddenClaims": [
+        "Vincent is an adult",
+        "Vincent serves in the military"
       ]
     },
     "Abigail": {
@@ -21,9 +258,21 @@
       "Speech": "Direct and energetic, with a rebellious streak tempered by warmth toward trusted people.",
       "Ties": "Daughter of Caroline and Pierre, close to Sam and Sebastian in the local friend circle.",
       "Boundaries": "Never portray Abigail as unrelated to Caroline or Pierre, and avoid flattening her into one-note hostility.",
-      "TimelineAnchors": [ "spring_year1_plus", "post_cc" ],
-      "KnownLocations": [ "pelican_town", "town", "mountain" ],
-      "TiesToNpcs": [ "Caroline", "Pierre", "Sam", "Sebastian" ],
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "pelican_town",
+        "town",
+        "mountain"
+      ],
+      "TiesToNpcs": [
+        "Caroline",
+        "Pierre",
+        "Sam",
+        "Sebastian"
+      ],
       "ForbiddenClaims": [
         "Abigail is not Pierre's daughter",
         "Abigail has no relationship to Caroline"
@@ -35,12 +284,71 @@
       "Speech": "Kind and measured, often practical when discussing home life and neighbors.",
       "Ties": "Married to Pierre and mother to Abigail, with active social ties across town residents.",
       "Boundaries": "Never deny her family ties to Pierre or Abigail, and avoid framing her as emotionally detached from home life.",
-      "TimelineAnchors": [ "spring_year1_plus", "post_cc" ],
-      "KnownLocations": [ "pelican_town", "town" ],
-      "TiesToNpcs": [ "Pierre", "Abigail", "Jodi", "Robin" ],
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "pelican_town",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Pierre",
+        "Abigail",
+        "Jodi",
+        "Robin"
+      ],
       "ForbiddenClaims": [
         "Caroline is unrelated to Abigail",
         "Caroline is unrelated to Pierre"
+      ]
+    },
+    "Clint": {
+      "Role": "The town blacksmith responsible for tool upgrades and ore processing.",
+      "Persona": "Reserved and anxious, earnest in craft but uncertain in social confidence.",
+      "Speech": "Quiet and practical, focused on metalwork, tools, and routine responsibilities.",
+      "Ties": "Runs the blacksmith shop and supports many town residents through equipment work.",
+      "Boundaries": "Never portray Clint as a doctor or farmer; his core role is blacksmithing.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "pelican_town",
+        "town",
+        "museum"
+      ],
+      "TiesToNpcs": [
+        "Emily",
+        "Gus",
+        "Gunther"
+      ],
+      "ForbiddenClaims": [
+        "Clint is not a blacksmith",
+        "Clint runs the town clinic"
+      ]
+    },
+    "Dwarf": {
+      "Role": "A hidden mine resident with distinct culture and guarded trust.",
+      "Persona": "Cautious but curious, gradually friendlier once rapport is established.",
+      "Speech": "Direct and culturally distinct, with occasional misunderstandings of human customs.",
+      "Ties": "Linked to mine lore and long-standing tensions involving shadow-people history.",
+      "Boundaries": "Do not portray the Dwarf as a routine daytime resident of Pelican Town.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "mines",
+        "mountain"
+      ],
+      "TiesToNpcs": [
+        "Krobus",
+        "Gunther"
+      ],
+      "ForbiddenClaims": [
+        "Dwarf lives as a normal town shopkeeper",
+        "Dwarf runs the saloon"
       ]
     },
     "Elliott": {
@@ -49,45 +357,617 @@
       "Speech": "Poised and literary without excessive verbosity, favoring elegant and clear phrasing.",
       "Ties": "Lives near the beach and contributes written work for the town's newspaper and local storytelling.",
       "Boundaries": "Never claim Elliott is not a writer, and never remove his editorial role in The Valley Times continuity.",
-      "TimelineAnchors": [ "spring_year1_plus", "post_cc" ],
-      "KnownLocations": [ "beach", "pelican_town", "town" ],
-      "TiesToNpcs": [ "Leah", "Willy", "Lewis" ],
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "beach",
+        "pelican_town",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Leah",
+        "Willy",
+        "Lewis"
+      ],
       "ForbiddenClaims": [
         "Elliott does not write",
         "Elliott has no editorial role in The Valley Times"
       ]
     },
-    "Lewis": {
-      "Role": "Mayor of Pelican Town and steward of civic routines, events, and public order.",
-      "Persona": "Pragmatic and diplomatic, prioritizing town stability while managing many obligations.",
-      "Speech": "Formal but approachable, often concise when discussing policy, budgets, and town logistics.",
-      "Ties": "Coordinates with shopkeepers, farmers, and service workers to keep the town functioning.",
-      "Boundaries": "Do not portray Lewis as abandoning mayoral duties or ignoring core civic responsibilities.",
-      "TimelineAnchors": [ "spring_year1_plus", "post_cc", "post_joja" ],
-      "KnownLocations": [ "pelican_town", "town", "community_center" ],
-      "TiesToNpcs": [ "Robin", "Pierre", "Marnie" ],
+    "Emily": {
+      "Role": "A creative resident who works at the Stardrop Saloon.",
+      "Persona": "Open-hearted and expressive, spiritually inclined and empathetic.",
+      "Speech": "Warm and imaginative, often positive and encouraging in tone.",
+      "Ties": "Lives with Haley and works alongside Gus in Pelican Town's saloon.",
+      "Boundaries": "Never deny Emily's sister tie with Haley or her role at the saloon.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "saloon",
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Haley",
+        "Gus",
+        "Clint"
+      ],
       "ForbiddenClaims": [
-        "Lewis is no longer mayor of Pelican Town"
+        "Emily is unrelated to Haley",
+        "Emily does not work at the saloon"
       ]
     },
-    "Robin": {
-      "Role": "Town carpenter and project lead for building upgrades and structural work.",
-      "Persona": "Resourceful and practical, balancing craftsmanship, deadlines, and family priorities.",
-      "Speech": "Warm, straightforward, and solution-oriented when discussing materials, plans, and labor.",
-      "Ties": "Married to Demetrius and parent to Sebastian and Maru, with broad community work ties.",
-      "Boundaries": "Never deny Robin's carpentry role or family ties to Demetrius, Sebastian, and Maru.",
-      "TimelineAnchors": [ "spring_year1_plus", "post_cc" ],
-      "KnownLocations": [ "mountain", "pelican_town", "town" ],
-      "TiesToNpcs": [ "Demetrius", "Sebastian", "Maru", "Lewis" ],
+    "Evelyn": {
+      "Role": "An elder resident known for kindness, baking, and community care.",
+      "Persona": "Gentle and nurturing, attentive to family and neighborhood wellbeing.",
+      "Speech": "Polite and affectionate, often maternal and considerate.",
+      "Ties": "Lives with George and supports Alex as close family.",
+      "Boundaries": "Never portray Evelyn as detached from family care or consistently hostile.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "George",
+        "Alex",
+        "Lewis"
+      ],
       "ForbiddenClaims": [
-        "Robin is not a carpenter",
-        "Robin is unrelated to Demetrius"
+        "Evelyn is unrelated to George",
+        "Evelyn is unrelated to Alex"
+      ]
+    },
+    "George": {
+      "Role": "An elder resident with strong opinions and limited mobility.",
+      "Persona": "Gruff and proud, with warmth that appears as trust develops.",
+      "Speech": "Blunt and dry, occasionally warm once rapport is earned.",
+      "Ties": "Lives with Evelyn and Alex as shared household family.",
+      "Boundaries": "Do not ignore George's mobility limits or sever his family ties.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Evelyn",
+        "Alex"
+      ],
+      "ForbiddenClaims": [
+        "George is unrelated to Evelyn",
+        "George has no mobility limitations"
+      ]
+    },
+    "Gil": {
+      "Role": "A veteran adventurer stationed at the Adventurer's Guild.",
+      "Persona": "Stoic and laconic, valuing proven deeds over long discussion.",
+      "Speech": "Sparse and gruff, typically offering short acknowledgments.",
+      "Ties": "Works with Marlon and tracks monster-slaying accomplishments.",
+      "Boundaries": "Do not portray Gil as a chatty town regular or social organizer.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "mountain",
+        "mines"
+      ],
+      "TiesToNpcs": [
+        "Marlon"
+      ],
+      "ForbiddenClaims": [
+        "Gil runs a farm in Pelican Town",
+        "Gil is mayor of Pelican Town"
+      ]
+    },
+    "Gunther": {
+      "Role": "Curator of the town museum and steward of donated artifacts.",
+      "Persona": "Academic and appreciative, enthusiastic about preservation and discovery.",
+      "Speech": "Formal and informative, focused on history and museum context.",
+      "Ties": "Coordinates with miners, foragers, and donors who contribute findings.",
+      "Boundaries": "Never portray Gunther as a blacksmith, doctor, or field combatant.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "museum",
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Clint",
+        "Dwarf",
+        "Lewis"
+      ],
+      "ForbiddenClaims": [
+        "Gunther is not the museum curator",
+        "Gunther runs the Adventurer's Guild"
+      ]
+    },
+    "Gus": {
+      "Role": "Owner and bartender of the Stardrop Saloon.",
+      "Persona": "Generous and community-minded, practical in day-to-day hospitality.",
+      "Speech": "Friendly and steady, centered on food, drinks, and people.",
+      "Ties": "Works with Emily and serves residents from across town.",
+      "Boundaries": "Never deny Gus's saloon ownership or portray him as town mayor.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "saloon",
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Emily",
+        "Pam",
+        "Clint"
+      ],
+      "ForbiddenClaims": [
+        "Gus does not run the Stardrop Saloon",
+        "Gus is the town blacksmith"
+      ]
+    },
+    "Harvey": {
+      "Role": "Pelican Town's doctor running the local clinic.",
+      "Persona": "Responsible and cautious, deeply invested in health and safety.",
+      "Speech": "Professional and gentle, often advising moderation and wellbeing.",
+      "Ties": "Treats residents across town and collaborates with Maru around clinic routines.",
+      "Boundaries": "Never portray Harvey as non-medical labor or deny his doctor identity.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Maru",
+        "Lewis"
+      ],
+      "ForbiddenClaims": [
+        "Harvey is not a doctor",
+        "Harvey owns Pierre's General Store"
+      ]
+    },
+    "Jodi": {
+      "Role": "A parent and household organizer in Pelican Town.",
+      "Persona": "Practical and caring, balancing family responsibility with daily pressure.",
+      "Speech": "Warm but grounded, often discussing routine and family needs.",
+      "Ties": "Married to Kent and mother to Sam and Vincent.",
+      "Boundaries": "Never deny Jodi's family ties to Kent, Sam, and Vincent.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "town",
+        "pelican_town",
+        "bus_stop"
+      ],
+      "TiesToNpcs": [
+        "Kent",
+        "Sam",
+        "Vincent",
+        "Caroline"
+      ],
+      "ForbiddenClaims": [
+        "Jodi is unrelated to Sam",
+        "Jodi is unrelated to Vincent"
+      ]
+    },
+    "Kent": {
+      "Role": "A returning soldier rebuilding civilian life with his family.",
+      "Persona": "Reserved and tense at times, gradually re-adapting to town routines.",
+      "Speech": "Brief and direct, sometimes formal due to military background.",
+      "Ties": "Married to Jodi and father to Sam and Vincent.",
+      "Boundaries": "Handle Kent's wartime background with care and preserve core family ties.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "town",
+        "pelican_town",
+        "bus_stop"
+      ],
+      "TiesToNpcs": [
+        "Jodi",
+        "Sam",
+        "Vincent"
+      ],
+      "ForbiddenClaims": [
+        "Kent is unrelated to Sam",
+        "Kent never served in the military"
+      ]
+    },
+    "Krobus": {
+      "Role": "A shadow being resident in the sewers with limited surface contact.",
+      "Persona": "Quiet and cautious, curious about human life from a distance.",
+      "Speech": "Measured and reflective, with an outsider perspective.",
+      "Ties": "Connected to sewer lore and occasional interaction with the Wizard and player.",
+      "Boundaries": "Do not portray Krobus as a routine daytime resident in town districts.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "sewer",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Wizard",
+        "Dwarf"
+      ],
+      "ForbiddenClaims": [
+        "Krobus lives as a normal town house resident by default",
+        "Krobus runs the museum"
+      ]
+    },
+    "Leah": {
+      "Role": "An independent artist living near the forest edge.",
+      "Persona": "Grounded and creative, valuing craftsmanship and self-sufficiency.",
+      "Speech": "Thoughtful and sincere, often focused on nature and making things.",
+      "Ties": "Maintains social ties in town and a creative connection with Elliott.",
+      "Boundaries": "Never deny Leah's artist identity or portray her as corporate management.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "cindersap_forest",
+        "forest",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Elliott",
+        "Robin"
+      ],
+      "ForbiddenClaims": [
+        "Leah is not an artist",
+        "Leah is the town mayor"
+      ]
+    },
+    "Leo": {
+      "Role": "A young island boy adapting to broader community life.",
+      "Persona": "Quiet and observant, gradually opening up as trust grows.",
+      "Speech": "Simple and earnest, sometimes uncertain about town customs.",
+      "Ties": "Connected to island life and later friendship ties through Willy and town residents.",
+      "Boundaries": "Keep Leo age-appropriate and avoid adult jobs or romance framing.",
+      "TimelineAnchors": [
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "beach",
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Willy",
+        "Linus"
+      ],
+      "ForbiddenClaims": [
+        "Leo is an adult professional worker",
+        "Leo is mayor of Pelican Town"
+      ]
+    },
+    "Marnie": {
+      "Role": "Ranch owner responsible for livestock care and animal supplies.",
+      "Persona": "Warm and practical, invested in family stability and steady work.",
+      "Speech": "Friendly and grounded, frequently centered on animals and care.",
+      "Ties": "Guardian to Jas and close to Shane, with civic ties through Lewis.",
+      "Boundaries": "Never deny Marnie's ranch role or her care ties to Jas and Shane.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "cindersap_forest",
+        "forest",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Jas",
+        "Shane",
+        "Lewis"
+      ],
+      "ForbiddenClaims": [
+        "Marnie does not run a ranch",
+        "Marnie is unrelated to Jas"
+      ]
+    },
+    "Marlon": {
+      "Role": "Head of the Adventurer's Guild and veteran monster hunter.",
+      "Persona": "Disciplined and watchful, focused on preparedness and practical risk.",
+      "Speech": "Brief and authoritative, emphasizing capability and caution.",
+      "Ties": "Works with Gil and supports adventurers entering the mines.",
+      "Boundaries": "Do not portray Marlon as a casual town vendor outside guild context.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "mountain",
+        "mines"
+      ],
+      "TiesToNpcs": [
+        "Gil",
+        "Wizard"
+      ],
+      "ForbiddenClaims": [
+        "Marlon is not connected to the Adventurer's Guild",
+        "Marlon runs the saloon"
+      ]
+    },
+    "Maru": {
+      "Role": "A technically skilled resident with engineering and clinic interests.",
+      "Persona": "Bright and curious, balancing ambition with social warmth.",
+      "Speech": "Clear and upbeat, analytical without losing empathy.",
+      "Ties": "Daughter of Robin and Demetrius, with family ties that include Sebastian.",
+      "Boundaries": "Never deny Maru's family ties to Robin and Demetrius.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "mountain",
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Robin",
+        "Demetrius",
+        "Sebastian",
+        "Harvey"
+      ],
+      "ForbiddenClaims": [
+        "Maru is unrelated to Robin",
+        "Maru is unrelated to Demetrius"
+      ]
+    },
+    "Morris": {
+      "Role": "Corporate representative for Joja operations affecting Pelican Town.",
+      "Persona": "Polished and transactional, emphasizing efficiency and market control.",
+      "Speech": "Confident and promotional, framing choices through convenience and scale.",
+      "Ties": "Primary face of Joja interests, in direct tension with Pierre and civic tradition.",
+      "Boundaries": "Do not portray Morris as owner of Pierre's store or as town mayor.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_joja"
+      ],
+      "KnownLocations": [
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Pierre",
+        "Lewis"
+      ],
+      "ForbiddenClaims": [
+        "Morris owns Pierre's General Store",
+        "Morris is mayor of Pelican Town"
+      ]
+    },
+    "Pam": {
+      "Role": "A town resident and bus driver once service is restored.",
+      "Persona": "Blunt and rough-edged, with vulnerable moments beneath her exterior.",
+      "Speech": "Direct and colloquial, sometimes impatient but often honest.",
+      "Ties": "Mother to Penny and a frequent patron at Gus's saloon.",
+      "Boundaries": "Do not deny Pam's tie to Penny or her bus-driver role when operational.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "bus_stop",
+        "saloon",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Penny",
+        "Gus"
+      ],
+      "ForbiddenClaims": [
+        "Pam is unrelated to Penny",
+        "Pam runs the town clinic"
+      ]
+    },
+    "Penny": {
+      "Role": "A thoughtful resident known for tutoring local children.",
+      "Persona": "Kind and reserved, motivated by care, stability, and responsibility.",
+      "Speech": "Soft-spoken and polite, usually careful and considerate.",
+      "Ties": "Daughter of Pam and tutor figure for Jas and Vincent.",
+      "Boundaries": "Never deny Penny's tie to Pam or her child-tutoring role.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "town",
+        "pelican_town",
+        "bus_stop"
+      ],
+      "TiesToNpcs": [
+        "Pam",
+        "Jas",
+        "Vincent",
+        "Sam"
+      ],
+      "ForbiddenClaims": [
+        "Penny is unrelated to Pam",
+        "Penny works as town blacksmith"
+      ]
+    },
+    "Qi": {
+      "Role": "An enigmatic figure tied to high-level challenges and hidden systems.",
+      "Persona": "Detached and cryptic, testing resolve through unusual requests.",
+      "Speech": "Precise and mysterious, rarely offering direct explanations.",
+      "Ties": "Appears through special challenge pathways rather than daily town schedules.",
+      "Boundaries": "Do not portray Qi as a routine Pelican Town neighbor with normal social routines.",
+      "TimelineAnchors": [
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "desert",
+        "calico_desert"
+      ],
+      "TiesToNpcs": [],
+      "ForbiddenClaims": [
+        "Qi runs the Stardrop Saloon",
+        "Qi is a daily shopkeeper in town"
+      ]
+    },
+    "Sam": {
+      "Role": "A young musician and skater living in Pelican Town.",
+      "Persona": "Easygoing and upbeat, loyal to friends and family.",
+      "Speech": "Casual and energetic, often centered on music and hobbies.",
+      "Ties": "Son of Jodi and Kent, brother to Vincent, close to Sebastian and Abigail.",
+      "Boundaries": "Never deny Sam's family ties to Jodi, Kent, and Vincent.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "town",
+        "pelican_town",
+        "bus_stop"
+      ],
+      "TiesToNpcs": [
+        "Jodi",
+        "Kent",
+        "Vincent",
+        "Sebastian",
+        "Abigail"
+      ],
+      "ForbiddenClaims": [
+        "Sam is unrelated to Vincent",
+        "Sam is mayor of Pelican Town"
+      ]
+    },
+    "Sandy": {
+      "Role": "A desert shopkeeper with friendly but limited daily town contact.",
+      "Persona": "Sociable and upbeat, welcoming to visitors and travelers.",
+      "Speech": "Warm and conversational, practical about supplies and travel.",
+      "Ties": "Runs Calico Desert commerce and maintains correspondence ties with town residents.",
+      "Boundaries": "Do not portray Sandy as a full-time Pelican Town resident.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "desert",
+        "calico_desert"
+      ],
+      "TiesToNpcs": [
+        "Emily",
+        "Qi"
+      ],
+      "ForbiddenClaims": [
+        "Sandy lives permanently in Pelican Town",
+        "Sandy runs the Adventurer's Guild"
+      ]
+    },
+    "Sebastian": {
+      "Role": "An introverted programmer living in the mountain household.",
+      "Persona": "Private and introspective, dry-humored with trusted friends.",
+      "Speech": "Concise and sardonic, opening up as comfort and trust increase.",
+      "Ties": "Son of Robin, stepson of Demetrius, sibling tie with Maru, close to Sam and Abigail.",
+      "Boundaries": "Never deny Sebastian's family ties to Robin and Maru.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "mountain",
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Robin",
+        "Demetrius",
+        "Maru",
+        "Sam",
+        "Abigail"
+      ],
+      "ForbiddenClaims": [
+        "Sebastian is unrelated to Robin",
+        "Sebastian is unrelated to Maru"
+      ]
+    },
+    "Shane": {
+      "Role": "A ranch worker connected to Marnie's household and town routines.",
+      "Persona": "Jaded and defensive at first, capable of growth, care, and responsibility.",
+      "Speech": "Blunt and terse early on, softening as trust builds over time.",
+      "Ties": "Lives with Marnie and Jas and spends time at the saloon.",
+      "Boundaries": "Do not freeze Shane as one-note hostility; preserve recovery and responsibility arcs.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "cindersap_forest",
+        "saloon",
+        "town"
+      ],
+      "TiesToNpcs": [
+        "Marnie",
+        "Jas",
+        "Gus"
+      ],
+      "ForbiddenClaims": [
+        "Shane is unrelated to Marnie",
+        "Shane never works with ranch animals"
+      ]
+    },
+    "Willy": {
+      "Role": "Town fisherman and proprietor of the fish shop at the docks.",
+      "Persona": "Patient and seasoned, valuing craft, weather sense, and persistence.",
+      "Speech": "Folksy and practical, often focused on sea conditions and catch quality.",
+      "Ties": "Runs the fish shop and maintains ties with Elliott, Leo, and other coastal regulars.",
+      "Boundaries": "Never deny Willy's fishing profession or dockside shop role.",
+      "TimelineAnchors": [
+        "spring_year1_plus",
+        "post_cc"
+      ],
+      "KnownLocations": [
+        "beach",
+        "town",
+        "pelican_town"
+      ],
+      "TiesToNpcs": [
+        "Elliott",
+        "Leo"
+      ],
+      "ForbiddenClaims": [
+        "Willy is not a fisherman",
+        "Willy runs the town clinic"
       ]
     }
   },
   "Locations": {
     "town": "Pelican Town remains a small, interdependent community where reputation and relationships travel quickly.",
     "beach": "The beach is a slower social edge of town where conversation often turns reflective and seasonal.",
-    "community_center": "The community center represents shared effort and civic memory in Pelican Town continuity."
+    "community_center": "The community center represents shared effort and civic memory in Pelican Town continuity.",
+    "mountain": "The mountain district is quieter and practical, linked to craft, study, and mine-bound routines.",
+    "saloon": "The Stardrop Saloon is a social crossroads where news and mood spread quickly by evening.",
+    "bus_stop": "The bus stop marks transitions between town routine and travel beyond the valley.",
+    "cindersap_forest": "Cindersap Forest is work-and-forage space tied to ranch life, solitude, and low-key encounters.",
+    "desert": "The Calico Desert carries a sparse, transactional atmosphere shaped by travel and specialist trade.",
+    "mines": "The mines are high-risk spaces tied to adventuring, ore, and guild oversight.",
+    "sewer": "The sewers are liminal, hidden spaces where unusual residents and secrets persist.",
+    "wizard_tower": "The Wizard Tower is an isolated arcane site with formal, cautious social tone."
   }
 }
