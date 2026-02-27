@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
@@ -171,11 +174,11 @@ public sealed class RumorBoardMenu : IClickableMenu
         var viewportY = detailPanel.Y + 16;
         var viewportBottom = _acceptButton.Y - 8;
         var viewportHeight = Math.Max(40, viewportBottom - viewportY);
-        var viewportWidth = detailPanel.Width - 32;
+        var viewportWidth = detailPanel.Width - 48; // Increased padding
         if (reserveScrollbarSpace)
             viewportWidth = Math.Max(120, viewportWidth - DetailScrollbarWidth - DetailScrollbarGap);
 
-        return new Rectangle(detailPanel.X + 16, viewportY, viewportWidth, viewportHeight);
+        return new Rectangle(detailPanel.X + 24, viewportY, viewportWidth, viewportHeight); // Shifted right
     }
 
     private int GetMaxDetailScroll()
@@ -428,6 +431,8 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         b.Draw(Game1.fadeToBlackRect, Game1.graphics.GraphicsDevice.Viewport.Bounds, Color.Black * 0.4f);
         Game1.drawDialogueBox(xPositionOnScreen, yPositionOnScreen, width, height, false, true);
+        
+        // Ribbon Header
         SpriteText.drawStringWithScrollCenteredAt(
             b,
             I18n.Get("rumor_board.title", "Town Request Board"),
@@ -450,56 +455,65 @@ public sealed class RumorBoardMenu : IClickableMenu
             ? xPositionOnScreen + width - SectionWidth - SectionLeftMargin - 20
             : xPositionOnScreen + SectionLeftMargin);
 
-        var labelY = rows.Count > 0 ? rows[0].Rect.Y - 24 : yPositionOnScreen + SectionTopY + 6;
+        // Shift label right to align perfectly with the padded card contents
+        labelX += 20;
+
+        var labelY = rows.Count > 0 ? rows[0].Rect.Y - 32 : yPositionOnScreen + SectionTopY + 6;
         var labelPos = new Vector2(labelX, labelY);
-        const float labelScale = 0.8f;
-        b.DrawString(Game1.smallFont, label, labelPos, new Color(70, 110, 185), 0f, Vector2.Zero, labelScale, SpriteEffects.None, 0f);
+        
+        // Polished heading with text shadow instead of raw text drawing
+        Utility.drawTextWithShadow(b, label, Game1.smallFont, labelPos, Game1.textColor, 1f, -1f, -1, -1, 0.5f);
+
+        Point mouse = new Point(Game1.getMouseX(), Game1.getMouseY());
 
         if (rows.Count > 0)
         {
             foreach (var (quest, rect) in rows)
             {
-                // Row container drop shadow.
-                b.Draw(Game1.staminaRect, new Rectangle(rect.X + 2, rect.Y + 2, rect.Width, rect.Height), Color.Black * 0.18f);
+                bool isHovered = rect.Contains(mouse);
+                bool isSelected = _selectedQuest?.QuestId == quest.QuestId;
 
-                if (_selectedQuest?.QuestId == quest.QuestId)
-                {
-                    IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(375, 357, 3, 3), rect.X, rect.Y, rect.Width, rect.Height, Color.White, 4f, false);
-                }
-                else
-                {
-                    // Cream parchment card background.
-                    b.Draw(Game1.staminaRect, rect, new Color(255, 238, 191));
+                // Row container drop shadow for depth
+                b.Draw(Game1.staminaRect, new Rectangle(rect.X + 4, rect.Y + 4, rect.Width, rect.Height), Color.Black * 0.15f);
 
-                    // 2px dark brown border to match Stardew's chunky UI framing.
-                    var borderColor = new Color(85, 45, 20);
-                    const int borderThickness = 2;
+                // Highlighted background interaction
+                Color bgColor = isSelected ? new Color(255, 250, 220) : (isHovered ? new Color(255, 245, 205) : new Color(255, 238, 191));
+                b.Draw(Game1.staminaRect, rect, bgColor);
 
-                    // Top
-                    b.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, rect.Width, borderThickness), borderColor);
-                    // Bottom
-                    b.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y + rect.Height - borderThickness, rect.Width, borderThickness), borderColor);
-                    // Left
-                    b.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, borderThickness, rect.Height), borderColor);
-                    // Right
-                    b.Draw(Game1.staminaRect, new Rectangle(rect.X + rect.Width - borderThickness, rect.Y, borderThickness, rect.Height), borderColor);
-                }
+                // Polished 2px/3px borders 
+                Color borderColor = isSelected ? new Color(220, 120, 40) : new Color(130, 80, 40);
+                int borderThickness = isSelected ? 3 : 2;
+
+                // Draw borders dynamically
+                b.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, rect.Width, borderThickness), borderColor);
+                b.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y + rect.Height - borderThickness, rect.Width, borderThickness), borderColor);
+                b.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, borderThickness, rect.Height), borderColor);
+                b.Draw(Game1.staminaRect, new Rectangle(rect.X + rect.Width - borderThickness, rect.Y, borderThickness, rect.Height), borderColor);
 
                 var title = QuestTextHelper.BuildQuestTitle(quest);
-                var dueDateText = quest.ExpiresDay > 0
-                    ? CalendarDisplayHelper.FormatWeekdayDay(quest.ExpiresDay)
-                    : I18n.Get("rumor_board.deadline.none", "No deadline");
-                var text = isActiveSection
-                    ? $"{title} ({dueDateText})"
-                    : $"{title}  +{quest.RewardGold}g";
+                
+                // Truncate title correctly leaving room for right-aligned text
+                int spaceForRightText = 120; // Increased to ensure right text doesn't overlap
+                var clippedTitle = TrimTextToWidth(Game1.smallFont, title, rect.Width - 44 - spaceForRightText);
 
                 if (isActiveSection)
-                    DrawClockIcon(b, rect.X + 12, rect.Y + 14);
+                    DrawClockIcon(b, rect.X + 20, rect.Y + 14); // Pushed right
                 else
-                    DrawCoinIcon(b, rect.X + 12, rect.Y + 14);
+                    DrawCoinIcon(b, rect.X + 20, rect.Y + 14); // Pushed right
 
-                var clipped = TrimTextToWidth(Game1.smallFont, text, rect.Width - 57);
-                b.DrawString(Game1.smallFont, clipped, new Vector2(rect.X + 45, rect.Y + 10), Game1.textColor);
+                Color titleColor = isSelected ? Game1.textColor : Game1.textColor * 0.9f;
+                b.DrawString(Game1.smallFont, clippedTitle, new Vector2(rect.X + 44, rect.Y + 10), titleColor); // Centered vertically & pushed right
+
+                // Beautifully Right-Aligned Metadata (Gold/Date)
+                string rightText = isActiveSection 
+                    ? (quest.ExpiresDay > 0 ? CalendarDisplayHelper.FormatWeekdayDay(quest.ExpiresDay) : "No limit") 
+                    : $"+{quest.RewardGold}g";
+                
+                var rightSize = Game1.smallFont.MeasureString(rightText);
+                Vector2 rightPos = new Vector2(rect.X + rect.Width - rightSize.X - 20, rect.Y + 10); // Pushed symmetrically left, centered vertically
+                
+                Color rightColor = isActiveSection ? new Color(150, 50, 50) : new Color(40, 110, 40);
+                b.DrawString(Game1.smallFont, rightText, rightPos, rightColor);
             }
         }
         else
@@ -570,11 +584,17 @@ public sealed class RumorBoardMenu : IClickableMenu
         b.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, null, null);
         Game1.graphics.GraphicsDevice.ScissorRectangle = oldScissor;
 
+        // Draw Polished Scrollbar if needed
         if (CanScrollDetailContent())
         {
-            b.Draw(Game1.staminaRect, _detailScrollTrackRegion, new Color(139, 90, 43) * 0.3f);
-            var thumbColor = _detailScrollThumbHeld ? new Color(221, 148, 25) : new Color(191, 118, 15);
-            b.Draw(Game1.staminaRect, _detailScrollThumbRegion, thumbColor);
+            // Darker track to seat the thumb nicely
+            b.Draw(Game1.staminaRect, _detailScrollTrackRegion, new Color(100, 70, 40) * 0.5f);
+            
+            // Authentic UI Texture for scrollbar thumb instead of a flat box
+            Color thumbTint = _detailScrollThumbHeld ? Color.White : Color.LightGray;
+            IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(432, 439, 9, 9), 
+                _detailScrollThumbRegion.X, _detailScrollThumbRegion.Y, 
+                _detailScrollThumbRegion.Width, _detailScrollThumbRegion.Height, thumbTint, 4f, false);
         }
 
         DrawButton(b, _acceptButton, I18n.Get("rumor_board.button.accept", "Accept"), enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
@@ -714,11 +734,15 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     private static void DrawButton(SpriteBatch b, Rectangle rect, string text, bool enabled)
     {
-        IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(432, 439, 9, 9), rect.X, rect.Y, rect.Width, rect.Height, enabled ? Color.White : Color.Gray, 4f, false);
+        IClickableMenu.drawTextureBox(b, Game1.mouseCursors, new Rectangle(432, 439, 9, 9), rect.X, rect.Y, rect.Width, rect.Height, enabled ? Color.White : Color.Gray * 0.8f, 4f, false);
 
         var size = Game1.smallFont.MeasureString(text);
         var pos = new Vector2(rect.X + (rect.Width - size.X) / 2f, rect.Y + (rect.Height - size.Y) / 2f);
-        b.DrawString(Game1.smallFont, text, pos, enabled ? Game1.textColor : Game1.textColor * 0.5f);
+        
+        if (enabled)
+            Utility.drawTextWithShadow(b, text, Game1.smallFont, pos, Game1.textColor, 1f, -1f, -1, -1, 0.5f);
+        else
+            b.DrawString(Game1.smallFont, text, pos, Game1.textColor * 0.4f);
     }
 
     private static string TrimTextToWidth(SpriteFont font, string text, int maxWidth)
