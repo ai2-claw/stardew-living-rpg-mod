@@ -323,6 +323,14 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         if (_askWorkButton.Contains(x, y))
         {
+            // If an active quest is selected, check its progress instead of searching for new postings
+            if (_selectedQuest is not null && _selectedQuest.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
+            {
+                CheckSelectedQuestProgress();
+                Game1.playSound("smallSelect");
+                return;
+            }
+
             _searchStartAvailableCount = _state.Quests.Available.Count;
             _onAskMayorForWork();
             _statusMessage = SearchingDetailMessage;
@@ -413,6 +421,38 @@ public sealed class RumorBoardMenu : IClickableMenu
     {
         base.releaseLeftClick(x, y);
         _detailScrollThumbHeld = false;
+    }
+
+    private void CheckSelectedQuestProgress()
+    {
+        if (_selectedQuest is null || !_selectedQuest.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
+        {
+            _statusMessage = I18n.Get("rumor_board.status.refresh_requires_active", "Select an active request to check progress.");
+            return;
+        }
+
+        var progress = _rumorBoardService.GetQuestProgress(_state, _selectedQuest.QuestId, Game1.player);
+        if (!progress.Exists)
+        {
+            _statusMessage = I18n.Get("rumor_board.status.refresh_missing", "That request is no longer active.");
+            return;
+        }
+
+        if (progress.IsReadyToComplete)
+        {
+            var title = QuestTextHelper.BuildQuestTitle(progress.Quest!);
+            _statusMessage = I18n.Get("rumor_board.status.refresh_ready", $"Ready to complete: {title}", new { title });
+        }
+        else if (progress.RequiresItems)
+        {
+            var item = QuestTextHelper.PrettyName(progress.Quest!.TargetItem);
+            _statusMessage = I18n.Get("rumor_board.status.refresh_items", $"Progress: {progress.HaveCount}/{progress.NeedCount} {item}", new { have = progress.HaveCount, need = progress.NeedCount, item });
+        }
+        else // social_visit
+        {
+            var target = QuestTextHelper.PrettyName(progress.Quest!.TargetItem);
+            _statusMessage = I18n.Get("rumor_board.status.refresh_visit", $"Visit {target} to complete", new { target });
+        }
     }
 
     public override void draw(SpriteBatch b)
@@ -677,23 +717,28 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     private void SyncDetailMessageFromExternalStatus()
     {
-        var external = (_getExternalStatus?.Invoke() ?? string.Empty).Trim();
-        if (external.IndexOf("No new postings right now", StringComparison.OrdinalIgnoreCase) >= 0)
-        {
-            _statusMessage = DailyCapDetailMessage;
-            _awaitingBoardSearchResult = false;
+        // Only sync when we're actually awaiting a board search result
+        if (!_awaitingBoardSearchResult)
             return;
-        }
 
-        if (_awaitingBoardSearchResult && _state.Quests.Available.Count > _searchStartAvailableCount)
+        var external = (_getExternalStatus?.Invoke() ?? string.Empty).Trim();
+
+        if (_state.Quests.Available.Count > _searchStartAvailableCount)
         {
             _statusMessage = DefaultDetailMessage;
             _awaitingBoardSearchResult = false;
             return;
         }
 
-        if (!_awaitingBoardSearchResult || string.IsNullOrWhiteSpace(external))
+        if (string.IsNullOrWhiteSpace(external))
             return;
+
+        if (external.IndexOf("No new postings right now", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            _statusMessage = DailyCapDetailMessage;
+            _awaitingBoardSearchResult = false;
+            return;
+        }
 
         if (external.IndexOf("New posting added to the board", StringComparison.OrdinalIgnoreCase) >= 0)
         {
