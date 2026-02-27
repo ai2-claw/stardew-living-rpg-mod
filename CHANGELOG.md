@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 0.7.1 - 2026-02-27
+
+### Changed
+- Manifest version bumped to `0.7.1`.
+
+### Fixed
+- Market Board mini-bar history now includes the latest computed daily price, so indicators reflect current-day movement instead of lagging by one update.
+
 ## 0.7.0 - 2026-02-27
 
 ### Changed
