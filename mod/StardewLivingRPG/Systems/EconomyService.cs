@@ -61,11 +61,6 @@ public sealed class EconomyService
 
         foreach (var (crop, entry) in state.Economy.Crops)
         {
-            // Track price history before updating
-            entry.PriceHistory7D.Add(entry.PriceToday);
-            if (entry.PriceHistory7D.Count > 7)
-                entry.PriceHistory7D.RemoveAt(0);
-
             entry.PriceYesterday = entry.PriceToday;
 
             // Gentle pressure in cozy mode: saturating penalty, never a hard crash.
@@ -90,6 +85,11 @@ public sealed class EconomyService
             var boundedDaily = Clamp(raw, maxDown, maxUp);
 
             entry.PriceToday = (int)MathF.Round(Clamp(boundedDaily, floor, ceiling));
+
+            // Track a rolling 7-day history including today's computed price.
+            entry.PriceHistory7D.Add(entry.PriceToday);
+            if (entry.PriceHistory7D.Count > 7)
+                entry.PriceHistory7D.RemoveAt(0);
 
             var deltaPct = entry.PriceYesterday == 0 ? 0f : (entry.PriceToday - entry.PriceYesterday) / (float)entry.PriceYesterday;
             entry.TrendEma = (entry.TrendEma * 0.7f) + (deltaPct * 0.3f);
