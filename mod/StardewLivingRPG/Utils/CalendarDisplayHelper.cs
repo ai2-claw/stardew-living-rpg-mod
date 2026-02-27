@@ -26,6 +26,12 @@ public static class CalendarDisplayHelper
         return $"{parts.Weekday} {parts.DayOfSeason} ({parts.Season} Year {parts.Year})";
     }
 
+    public static string FormatSeasonDayYearShort(int absoluteDay)
+    {
+        var parts = Resolve(absoluteDay);
+        return $"{parts.Season} {parts.DayOfSeason}, Yr {parts.Year}";
+    }
+
     private static CalendarDisplayParts Resolve(int absoluteDay)
     {
         var safeAbsoluteDay = Math.Max(1, absoluteDay);

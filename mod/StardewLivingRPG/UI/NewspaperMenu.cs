@@ -24,7 +24,7 @@ public sealed class NewspaperMenu : IClickableMenu
     // Layout constants
     private const int MenuWidth = 640;
     private const int MenuHeight = 822;
-    private const int MastheadHeight = 100;
+    private const int MastheadHeight = 124;
     private const int PaperInsetX = 32;
     private const int PaperInsetTop = 96;
     private const int PaperInsetBottom = 32;
@@ -33,6 +33,8 @@ public sealed class NewspaperMenu : IClickableMenu
     private const int ContentTopSpacingBelowMasthead = 20;
     private const int ScrollBarWidth = 24;
     private const int ScrollBarGap = 8;
+    private const int MinScrollBottomCompensationPixels = 2;
+    private const int ArticleBodyLineAdvancePixels = 22;
     private const int DefaultPortraitFrameSize = 64;
 
     public NewspaperMenu(NewspaperIssue? issue)
@@ -133,7 +135,7 @@ public sealed class NewspaperMenu : IClickableMenu
         var trackHeight = _scrollTrackRegion.Height - _scrollThumbRegion.Height;
         var newThumbY = Math.Clamp(y - _scrollThumbDragOffset, _scrollTrackRegion.Y, _scrollTrackRegion.Y + trackHeight);
         var scrollPercent = trackHeight > 0 ? (float)(newThumbY - _scrollTrackRegion.Y) / trackHeight : 0f;
-        var maxScroll = Math.Max(0, _contentHeight - _contentViewport.Height);
+        var maxScroll = GetMaxScrollOffset();
         _contentScrollOffset = (int)(scrollPercent * maxScroll);
     }
 
@@ -192,15 +194,31 @@ public sealed class NewspaperMenu : IClickableMenu
 
     private void ScrollBy(int delta)
     {
-        var maxScroll = Math.Max(0, _contentHeight - _contentViewport.Height);
+        var maxScroll = GetMaxScrollOffset();
         _contentScrollOffset = Math.Clamp(_contentScrollOffset + delta, 0, maxScroll);
         UpdateScrollThumbRegion();
     }
 
     private void ClampScrollOffset()
     {
-        var maxScroll = Math.Max(0, _contentHeight - _contentViewport.Height);
+        var maxScroll = GetMaxScrollOffset();
         _contentScrollOffset = Math.Clamp(_contentScrollOffset, 0, maxScroll);
+    }
+
+    private int GetMaxScrollOffset()
+    {
+        var overflowPixels = _contentHeight - _contentViewport.Height;
+        if (overflowPixels <= 0)
+            return 0;
+
+        return overflowPixels + GetScrollBottomCompensationPixels();
+    }
+
+    private static int GetScrollBottomCompensationPixels()
+    {
+        var glyphHeight = (int)Math.Ceiling(Game1.smallFont.MeasureString("ygp").Y);
+        var descenderOverflow = Math.Max(0, glyphHeight - ArticleBodyLineAdvancePixels);
+        return Math.Max(MinScrollBottomCompensationPixels, descenderOverflow + 1);
     }
 
     private void UpdateScrollThumbRegion()
@@ -211,7 +229,7 @@ public sealed class NewspaperMenu : IClickableMenu
             return;
         }
 
-        var maxScroll = _contentHeight - _contentViewport.Height;
+        var maxScroll = GetMaxScrollOffset();
         var thumbRatio = (float)_contentViewport.Height / _contentHeight;
         var thumbHeight = Math.Max(20, (int)(_scrollTrackRegion.Height * thumbRatio));
         var scrollPercent = maxScroll > 0 ? (float)_contentScrollOffset / maxScroll : 0f;
@@ -279,10 +297,12 @@ public sealed class NewspaperMenu : IClickableMenu
         y += 40;
 
         var singleColumnY = y;
-        foreach (var article in _issue.Articles)
+        for (var i = 0; i < _issue.Articles.Count; i++)
         {
+            var article = _issue.Articles[i];
             DrawArticle(b, article, contentX, ref singleColumnY, contentWidth, draw);
-            singleColumnY += 16;
+            if (i < _issue.Articles.Count - 1)
+                singleColumnY += 16;
         }
 
         return singleColumnY;
@@ -365,14 +385,14 @@ public sealed class NewspaperMenu : IClickableMenu
         {
             if (draw && b is not null)
                 b.DrawString(Game1.smallFont, line, new Vector2(x, y), new Color(60, 50, 40));
-            y += 22;
+            y += ArticleBodyLineAdvancePixels;
         }
     }
 
     private void DrawMasthead(SpriteBatch b, Rectangle paperRect)
     {
         var centerX = paperRect.Center.X;
-        var topY = paperRect.Y + 20;
+        var topY = paperRect.Y + 18;
 
         var townProfile = TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name);
         string title = I18n.Get("newspaper.title", townProfile.NewspaperTitle);
@@ -385,16 +405,25 @@ public sealed class NewspaperMenu : IClickableMenu
 
         // Subtitle: Date
         var issueDay = _issue?.Day ?? 1;
-        var displayDate = CalendarDisplayHelper.FormatSeasonYearWeekdayDay(issueDay);
+        var displayDate = CalendarDisplayHelper.FormatSeasonDayYearShort(issueDay);
         string dateStr = I18n.Get(
             "newspaper.subtitle",
             $"Vol. 1 - {displayDate} - Price: Free",
             new { date = displayDate });
-        Vector2 dateSize = Game1.smallFont.MeasureString(dateStr);
-        b.DrawString(Game1.smallFont, dateStr, new Vector2(centerX - dateSize.X / 2f, topY + 45), new Color(80, 60, 40));
+        var subtitleMaxWidth = paperRect.Width - 56;
+        var subtitleLines = Game1.smallFont.MeasureString(dateStr).X <= subtitleMaxWidth
+            ? new[] { dateStr }
+            : TextWrapHelper.WrapText(Game1.smallFont, dateStr, subtitleMaxWidth);
+        var subtitleY = topY + 45;
+        foreach (var line in subtitleLines)
+        {
+            var dateSize = Game1.smallFont.MeasureString(line);
+            b.DrawString(Game1.smallFont, line, new Vector2(centerX - dateSize.X / 2f, subtitleY), new Color(80, 60, 40));
+            subtitleY += Game1.smallFont.LineSpacing + 1;
+        }
 
         // Separator Lines
-        int lineY = topY + 80;
+        int lineY = subtitleY + 6;
         b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, lineY, paperRect.Width - 40, 2), Color.Black * 0.6f);
         b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, lineY + 4, paperRect.Width - 40, 1), Color.Black * 0.4f);
     }
@@ -503,10 +532,11 @@ public sealed class NewspaperMenu : IClickableMenu
         }
         y += 10;
 
-        if (_issue.Sections != null)
+        if (_issue.Sections is { Count: > 0 })
         {
-            foreach (var section in _issue.Sections)
+            for (var i = 0; i < _issue.Sections.Count; i++)
             {
+                var section = _issue.Sections[i];
                 var wrappedBody = TextWrapHelper.WrapText(Game1.smallFont, section, contentMaxWidth);
                 foreach (var line in wrappedBody)
                 {
@@ -514,7 +544,9 @@ public sealed class NewspaperMenu : IClickableMenu
                         b.DrawString(Game1.smallFont, line, new Vector2(contentX, y), new Color(60, 50, 40));
                     y += 28;
                 }
-                y += 16;
+
+                if (i < _issue.Sections.Count - 1)
+                    y += 16;
             }
         }
 
@@ -535,8 +567,9 @@ public sealed class NewspaperMenu : IClickableMenu
             }
             y += 30;
 
-            foreach (var hint in _issue.PredictiveHints)
+            for (var i = 0; i < _issue.PredictiveHints.Count; i++)
             {
+                var hint = _issue.PredictiveHints[i];
                 var bulletText = $"- {hint}";
                 var wrappedHint = TextWrapHelper.WrapText(Game1.smallFont, bulletText, contentMaxWidth);
                 foreach (var line in wrappedHint)
@@ -545,7 +578,9 @@ public sealed class NewspaperMenu : IClickableMenu
                         b.DrawString(Game1.smallFont, line, new Vector2(contentX + 10, y), new Color(70, 60, 50));
                     y += 24;
                 }
-                y += 4;
+
+                if (i < _issue.PredictiveHints.Count - 1)
+                    y += 4;
             }
         }
 

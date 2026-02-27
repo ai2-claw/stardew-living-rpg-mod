@@ -105,7 +105,7 @@ public sealed class MarketBoardMenu : IClickableMenu
         b.DrawString(Game1.dialogueFont, title, titlePos, new Color(60, 40, 20));
 
         // Subtitle with date
-        var displayDate = CalendarDisplayHelper.FormatSeasonYearWeekdayDay(_state.Calendar.Day);
+        var displayDate = CalendarDisplayHelper.FormatSeasonDayYearShort(_state.Calendar.Day);
         string dateStr = I18n.Get(
             "market_board.subtitle",
             $"{displayDate} - Price: Free",

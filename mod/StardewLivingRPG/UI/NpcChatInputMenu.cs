@@ -957,6 +957,15 @@ public sealed class NpcChatInputMenu : IClickableMenu
         {
             b.Draw(portraitTexture, _portraitRegion, _portraitSource, Color.White);
         }
+        else if (!TryDrawNpcSpriteFallback(b))
+        {
+            const string missingPortraitMarker = "?";
+            var markerSize = Game1.dialogueFont.MeasureString(missingPortraitMarker);
+            var markerPos = new Vector2(
+                _portraitRegion.Center.X - markerSize.X / 2f,
+                _portraitRegion.Center.Y - markerSize.Y / 2f);
+            b.DrawString(Game1.dialogueFont, missingPortraitMarker, markerPos, new Color(240, 220, 180) * 0.8f);
+        }
 
         // Portrait Frame
         int t = 4;
@@ -972,6 +981,65 @@ public sealed class NpcChatInputMenu : IClickableMenu
         int inset = -2;
         b.Draw(Game1.staminaRect, new Rectangle(_portraitRegion.X + inset, _portraitRegion.Y + inset, _portraitRegion.Width - inset * 2, 2), frameColor);
         b.Draw(Game1.staminaRect, new Rectangle(_portraitRegion.X + inset, _portraitRegion.Bottom - inset - 2, _portraitRegion.Width - inset * 2, 2), frameColor);
+    }
+
+    private bool TryDrawNpcSpriteFallback(SpriteBatch b)
+    {
+        var npc = _activeLiveNpc;
+        if (npc?.Sprite is null)
+            return false;
+
+        Texture2D? spriteTexture = null;
+        try
+        {
+            var sprite = npc.Sprite;
+            var spriteType = sprite.GetType();
+            if (spriteType.GetProperty("Texture", NpcPortraitIndexBindingFlags)?.GetValue(sprite) is Texture2D textureFromProperty)
+                spriteTexture = textureFromProperty;
+            else if (spriteType.GetField("Texture", NpcPortraitIndexBindingFlags)?.GetValue(sprite) is Texture2D textureFromField)
+                spriteTexture = textureFromField;
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (spriteTexture is null)
+            return false;
+
+        var sourceRect = ResolveNpcSpriteFallbackSourceRect(npc, spriteTexture);
+        if (sourceRect.Width <= 0 || sourceRect.Height <= 0)
+            return false;
+
+        if (sourceRect.Right > spriteTexture.Width || sourceRect.Bottom > spriteTexture.Height)
+            return false;
+
+        b.Draw(spriteTexture, _portraitRegion, sourceRect, Color.White);
+        return true;
+    }
+
+    private static Rectangle ResolveNpcSpriteFallbackSourceRect(NPC npc, Texture2D spriteTexture)
+    {
+        try
+        {
+            var sourceRectProperty = npc.Sprite.GetType().GetProperty("SourceRect", NpcPortraitIndexBindingFlags);
+            if (sourceRectProperty?.GetValue(npc.Sprite) is Rectangle sourceRect
+                && sourceRect.Width > 0
+                && sourceRect.Height > 0
+                && sourceRect.Right <= spriteTexture.Width
+                && sourceRect.Bottom <= spriteTexture.Height)
+            {
+                return sourceRect;
+            }
+        }
+        catch
+        {
+            // Fall back to default top-left sprite frame.
+        }
+
+        var width = Math.Max(1, Math.Min(spriteTexture.Width, npc.Sprite.SpriteWidth));
+        var height = Math.Max(1, Math.Min(spriteTexture.Height, npc.Sprite.SpriteHeight));
+        return new Rectangle(0, 0, width, height);
     }
 
     private void DrawConversationText(SpriteBatch b)

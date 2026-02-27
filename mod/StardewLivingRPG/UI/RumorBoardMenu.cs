@@ -28,6 +28,13 @@ public sealed class RumorBoardMenu : IClickableMenu
     private readonly List<(QuestEntry Quest, Rectangle Rect)> _activeRows = new();
     private int _availableScrollOffset;
     private int _activeScrollOffset;
+    private int _detailScrollOffset;
+    private int _detailContentHeight;
+    private Rectangle _detailTextViewport;
+    private Rectangle _detailScrollTrackRegion;
+    private Rectangle _detailScrollThumbRegion;
+    private bool _detailScrollThumbHeld;
+    private int _detailScrollThumbDragOffset;
 
     private QuestEntry? _selectedQuest;
     private string _statusMessage = string.Empty;
@@ -51,6 +58,9 @@ public sealed class RumorBoardMenu : IClickableMenu
     private const int SectionRowsStartOffset = 36;
     private const int DetailPanelHeight = 190;
     private const int DetailBottomPadding = 36;
+    private const int DetailLineHeight = 26;
+    private const int DetailScrollbarWidth = 14;
+    private const int DetailScrollbarGap = 8;
 
     public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork, Func<string>? getExternalStatus = null)
         : base(
@@ -156,20 +166,77 @@ public sealed class RumorBoardMenu : IClickableMenu
             DetailPanelHeight);
     }
 
+    private Rectangle GetDetailTextViewportBounds(Rectangle detailPanel, bool reserveScrollbarSpace)
+    {
+        var viewportY = detailPanel.Y + 16;
+        var viewportBottom = _acceptButton.Y - 8;
+        var viewportHeight = Math.Max(40, viewportBottom - viewportY);
+        var viewportWidth = detailPanel.Width - 32;
+        if (reserveScrollbarSpace)
+            viewportWidth = Math.Max(120, viewportWidth - DetailScrollbarWidth - DetailScrollbarGap);
+
+        return new Rectangle(detailPanel.X + 16, viewportY, viewportWidth, viewportHeight);
+    }
+
+    private int GetMaxDetailScroll()
+    {
+        return Math.Max(0, _detailContentHeight - _detailTextViewport.Height);
+    }
+
+    private bool CanScrollDetailContent()
+    {
+        return _detailContentHeight > _detailTextViewport.Height;
+    }
+
+    private void ClampDetailScrollOffset()
+    {
+        _detailScrollOffset = Math.Clamp(_detailScrollOffset, 0, GetMaxDetailScroll());
+    }
+
+    private void ScrollDetailBy(int delta)
+    {
+        _detailScrollOffset = Math.Clamp(_detailScrollOffset + delta, 0, GetMaxDetailScroll());
+        UpdateDetailScrollThumbRegion();
+    }
+
+    private void UpdateDetailScrollThumbRegion()
+    {
+        if (!CanScrollDetailContent())
+        {
+            _detailScrollThumbRegion = Rectangle.Empty;
+            return;
+        }
+
+        var maxScroll = GetMaxDetailScroll();
+        var thumbRatio = (float)_detailTextViewport.Height / _detailContentHeight;
+        var thumbHeight = Math.Max(20, (int)(_detailScrollTrackRegion.Height * thumbRatio));
+        var scrollPercent = maxScroll > 0 ? (float)_detailScrollOffset / maxScroll : 0f;
+        var thumbY = _detailScrollTrackRegion.Y + (int)((_detailScrollTrackRegion.Height - thumbHeight) * scrollPercent);
+
+        _detailScrollThumbRegion = new Rectangle(
+            _detailScrollTrackRegion.X,
+            thumbY,
+            _detailScrollTrackRegion.Width,
+            thumbHeight);
+    }
+
     public override void receiveScrollWheelAction(int direction)
     {
         base.receiveScrollWheelAction(direction);
         if (direction == 0)
             return;
 
-        var delta = direction > 0 ? -1 : 1;
+        var rowDelta = direction > 0 ? -1 : 1;
         var mouseX = Game1.getMouseX();
         var mouseY = Game1.getMouseY();
 
         if (GetAvailableListBounds().Contains(mouseX, mouseY))
         {
-            var maxAvailableOffset = Math.Max(0, _state.Quests.Available.Count - VisibleQuestRows);
-            var next = Math.Clamp(_availableScrollOffset + delta, 0, maxAvailableOffset);
+            var visibleAvailableCount = _state.Quests.Available.Count(q =>
+                q.Status.Equals("available", StringComparison.OrdinalIgnoreCase)
+                && (q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day));
+            var maxAvailableOffset = Math.Max(0, visibleAvailableCount - VisibleQuestRows);
+            var next = Math.Clamp(_availableScrollOffset + rowDelta, 0, maxAvailableOffset);
             if (next != _availableScrollOffset)
             {
                 _availableScrollOffset = next;
@@ -180,19 +247,46 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         if (GetActiveListBounds().Contains(mouseX, mouseY))
         {
-            var maxActiveOffset = Math.Max(0, _state.Quests.Active.Count - VisibleQuestRows);
-            var next = Math.Clamp(_activeScrollOffset + delta, 0, maxActiveOffset);
+            var visibleActiveCount = _state.Quests.Active.Count(q =>
+                q.Status.Equals("active", StringComparison.OrdinalIgnoreCase)
+                && (q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day));
+            var maxActiveOffset = Math.Max(0, visibleActiveCount - VisibleQuestRows);
+            var next = Math.Clamp(_activeScrollOffset + rowDelta, 0, maxActiveOffset);
             if (next != _activeScrollOffset)
             {
                 _activeScrollOffset = next;
                 BuildLayout();
             }
+            return;
+        }
+
+        if (_selectedQuest is not null
+            && (_detailTextViewport.Contains(mouseX, mouseY) || _detailScrollTrackRegion.Contains(mouseX, mouseY)))
+        {
+            var pixelDelta = direction > 0 ? -DetailLineHeight * 2 : DetailLineHeight * 2;
+            ScrollDetailBy(pixelDelta);
         }
     }
 
     public override void receiveLeftClick(int x, int y, bool playSound = true)
     {
         base.receiveLeftClick(x, y, playSound);
+
+        if (_selectedQuest is not null && _detailScrollThumbRegion.Contains(x, y) && CanScrollDetailContent())
+        {
+            _detailScrollThumbHeld = true;
+            _detailScrollThumbDragOffset = y - _detailScrollThumbRegion.Y;
+            return;
+        }
+
+        if (_selectedQuest is not null && _detailScrollTrackRegion.Contains(x, y) && CanScrollDetailContent())
+        {
+            if (y < _detailScrollThumbRegion.Y)
+                ScrollDetailBy(-Math.Max(DetailLineHeight * 2, _detailTextViewport.Height / 2));
+            else if (y > _detailScrollThumbRegion.Bottom)
+                ScrollDetailBy(Math.Max(DetailLineHeight * 2, _detailTextViewport.Height / 2));
+            return;
+        }
 
         if (_closeButton.containsPoint(x, y))
         {
@@ -206,6 +300,8 @@ public sealed class RumorBoardMenu : IClickableMenu
                 continue;
 
             _selectedQuest = quest;
+            _detailScrollOffset = 0;
+            _detailScrollThumbHeld = false;
             Game1.playSound("smallSelect");
             return;
         }
@@ -216,6 +312,8 @@ public sealed class RumorBoardMenu : IClickableMenu
                 continue;
 
             _selectedQuest = quest;
+            _detailScrollOffset = 0;
+            _detailScrollThumbHeld = false;
             Game1.playSound("smallSelect");
             return;
         }
@@ -254,6 +352,8 @@ public sealed class RumorBoardMenu : IClickableMenu
             }
 
             _selectedQuest = null;
+            _detailScrollOffset = 0;
+            _detailScrollThumbHeld = false;
             BuildLayout();
             return;
         }
@@ -273,6 +373,8 @@ public sealed class RumorBoardMenu : IClickableMenu
             }
 
             _selectedQuest = null;
+            _detailScrollOffset = 0;
+            _detailScrollThumbHeld = false;
             BuildLayout();
         }
     }
@@ -281,6 +383,33 @@ public sealed class RumorBoardMenu : IClickableMenu
     {
         base.performHoverAction(x, y);
         _closeButton.tryHover(x, y);
+    }
+
+    public override void leftClickHeld(int x, int y)
+    {
+        base.leftClickHeld(x, y);
+        if (!_detailScrollThumbHeld || !CanScrollDetailContent())
+            return;
+
+        var trackHeight = _detailScrollTrackRegion.Height - _detailScrollThumbRegion.Height;
+        if (trackHeight <= 0)
+        {
+            _detailScrollOffset = 0;
+            return;
+        }
+
+        var newThumbY = Math.Clamp(
+            y - _detailScrollThumbDragOffset,
+            _detailScrollTrackRegion.Y,
+            _detailScrollTrackRegion.Y + trackHeight);
+        var scrollPercent = (float)(newThumbY - _detailScrollTrackRegion.Y) / trackHeight;
+        _detailScrollOffset = (int)(scrollPercent * GetMaxDetailScroll());
+    }
+
+    public override void releaseLeftClick(int x, int y)
+    {
+        base.releaseLeftClick(x, y);
+        _detailScrollThumbHeld = false;
     }
 
     public override void draw(SpriteBatch b)
@@ -369,7 +498,8 @@ public sealed class RumorBoardMenu : IClickableMenu
                 else
                     DrawCoinIcon(b, rect.X + 12, rect.Y + 14);
 
-                b.DrawString(Game1.smallFont, text, new Vector2(rect.X + 45, rect.Y + 10), Game1.textColor);
+                var clipped = TrimTextToWidth(Game1.smallFont, text, rect.Width - 57);
+                b.DrawString(Game1.smallFont, clipped, new Vector2(rect.X + 45, rect.Y + 10), Game1.textColor);
             }
         }
         else
@@ -388,15 +518,87 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         if (_selectedQuest is null)
         {
-            var msgSize = Game1.smallFont.MeasureString(_statusMessage);
-            b.DrawString(Game1.smallFont, _statusMessage, new Vector2(panel.X + (panel.Width / 2f) - (msgSize.X / 2f), panel.Y + 62), Game1.textColor * 0.5f);
+            _detailScrollOffset = 0;
+            _detailContentHeight = 0;
+            _detailTextViewport = Rectangle.Empty;
+            _detailScrollTrackRegion = Rectangle.Empty;
+            _detailScrollThumbRegion = Rectangle.Empty;
+            _detailScrollThumbHeld = false;
+            DrawWrappedStatusMessage(b, panel, _statusMessage);
             DrawButton(b, _askWorkButton, I18n.Get("rumor_board.button.new_postings", "New Postings"), enabled: true);
             return;
         }
 
         var q = _selectedQuest;
         var progress = _rumorBoardService.GetQuestProgress(_state, q.QuestId, Game1.player);
+        var rawLines = BuildDetailLines(q, progress);
 
+        _detailTextViewport = GetDetailTextViewportBounds(panel, reserveScrollbarSpace: false);
+        var wrappedLines = WrapDetailLines(rawLines, _detailTextViewport.Width);
+        _detailContentHeight = wrappedLines.Count * DetailLineHeight;
+
+        if (_detailContentHeight > _detailTextViewport.Height)
+            _detailTextViewport = GetDetailTextViewportBounds(panel, reserveScrollbarSpace: true);
+
+        wrappedLines = WrapDetailLines(rawLines, _detailTextViewport.Width);
+        _detailContentHeight = wrappedLines.Count * DetailLineHeight;
+
+        _detailScrollTrackRegion = CanScrollDetailContent()
+            ? new Rectangle(
+                _detailTextViewport.Right + DetailScrollbarGap,
+                _detailTextViewport.Y,
+                DetailScrollbarWidth,
+                _detailTextViewport.Height)
+            : Rectangle.Empty;
+        ClampDetailScrollOffset();
+        UpdateDetailScrollThumbRegion();
+
+        var oldScissor = Game1.graphics.GraphicsDevice.ScissorRectangle;
+        var rasterizer = new RasterizerState { ScissorTestEnable = true };
+        b.End();
+        b.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, null, rasterizer);
+        Game1.graphics.GraphicsDevice.ScissorRectangle = _detailTextViewport;
+
+        var y = _detailTextViewport.Y - _detailScrollOffset;
+        foreach (var line in wrappedLines)
+        {
+            b.DrawString(Game1.smallFont, line, new Vector2(_detailTextViewport.X, y), Game1.textColor);
+            y += DetailLineHeight;
+        }
+
+        b.End();
+        b.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, null, null);
+        Game1.graphics.GraphicsDevice.ScissorRectangle = oldScissor;
+
+        if (CanScrollDetailContent())
+        {
+            b.Draw(Game1.staminaRect, _detailScrollTrackRegion, new Color(139, 90, 43) * 0.3f);
+            var thumbColor = _detailScrollThumbHeld ? new Color(221, 148, 25) : new Color(191, 118, 15);
+            b.Draw(Game1.staminaRect, _detailScrollThumbRegion, thumbColor);
+        }
+
+        DrawButton(b, _acceptButton, I18n.Get("rumor_board.button.accept", "Accept"), enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
+        DrawButton(b, _completeButton, I18n.Get("rumor_board.button.complete", "Complete"), enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
+        DrawButton(b, _askWorkButton, I18n.Get("rumor_board.button.refresh", "Refresh"), enabled: true);
+    }
+
+    private static void DrawWrappedStatusMessage(SpriteBatch b, Rectangle panel, string message)
+    {
+        var wrapped = TextWrapHelper.WrapText(Game1.smallFont, message, panel.Width - 48);
+        var totalHeight = wrapped.Length * DetailLineHeight;
+        var y = panel.Y + Math.Max(16, ((panel.Height - 56) - totalHeight) / 2);
+
+        foreach (var line in wrapped)
+        {
+            var size = Game1.smallFont.MeasureString(line);
+            var x = panel.X + (panel.Width / 2f) - (size.X / 2f);
+            b.DrawString(Game1.smallFont, line, new Vector2(x, y), Game1.textColor * 0.5f);
+            y += DetailLineHeight;
+        }
+    }
+
+    private static List<string> BuildDetailLines(QuestEntry q, QuestProgressResult progress)
+    {
         var lines = new List<string>
         {
             I18n.Get(
@@ -418,37 +620,39 @@ public sealed class RumorBoardMenu : IClickableMenu
         };
 
         if (progress.Exists && progress.RequiresItems)
+        {
             lines.Add(I18n.Get(
                 "rumor_board.detail.progress_items",
                 $"Progress: {progress.HaveCount}/{progress.NeedCount} {q.TargetItem} (ready={progress.IsReadyToComplete})",
                 new { have = progress.HaveCount, need = progress.NeedCount, item = q.TargetItem, ready = progress.IsReadyToComplete }));
+        }
         else if (progress.Exists && q.TemplateId.Equals("social_visit", StringComparison.OrdinalIgnoreCase))
+        {
             lines.Add(I18n.Get(
                 "rumor_board.detail.progress_visit",
                 $"Progress: visit {QuestTextHelper.PrettyName(q.TargetItem)} ({progress.HaveCount}/{progress.NeedCount})",
                 new { target = QuestTextHelper.PrettyName(q.TargetItem), have = progress.HaveCount, need = progress.NeedCount }));
-
-        var y = panel.Y + 16;
-        var maxY = _acceptButton.Y - 8;
-        foreach (var line in lines)
-        {
-            var wrapped = TextWrapHelper.WrapText(Game1.smallFont, line, panel.Width - 32);
-            foreach (var w in wrapped)
-            {
-                if (y + 24 > maxY)
-                    break;
-
-                b.DrawString(Game1.smallFont, w, new Vector2(panel.X + 16, y), Game1.textColor);
-                y += 26;
-            }
-
-            if (y + 24 > maxY)
-                break;
         }
 
-        DrawButton(b, _acceptButton, I18n.Get("rumor_board.button.accept", "Accept"), enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
-        DrawButton(b, _completeButton, I18n.Get("rumor_board.button.complete", "Complete"), enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
-        DrawButton(b, _askWorkButton, I18n.Get("rumor_board.button.refresh", "Refresh"), enabled: true);
+        return lines;
+    }
+
+    private static List<string> WrapDetailLines(IEnumerable<string> lines, int width)
+    {
+        var wrappedLines = new List<string>();
+        foreach (var line in lines)
+        {
+            var wrapped = TextWrapHelper.WrapText(Game1.smallFont, line, width);
+            if (wrapped.Length == 0)
+            {
+                wrappedLines.Add(string.Empty);
+                continue;
+            }
+
+            wrappedLines.AddRange(wrapped);
+        }
+
+        return wrappedLines;
     }
 
     private void SyncDetailMessageFromExternalStatus()
@@ -515,6 +719,24 @@ public sealed class RumorBoardMenu : IClickableMenu
         var size = Game1.smallFont.MeasureString(text);
         var pos = new Vector2(rect.X + (rect.Width - size.X) / 2f, rect.Y + (rect.Height - size.Y) / 2f);
         b.DrawString(Game1.smallFont, text, pos, enabled ? Game1.textColor : Game1.textColor * 0.5f);
+    }
+
+    private static string TrimTextToWidth(SpriteFont font, string text, int maxWidth)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        if (font.MeasureString(text).X <= maxWidth)
+            return text;
+
+        const string ellipsis = "...";
+        var trimmed = text.TrimEnd();
+        while (trimmed.Length > 0 && font.MeasureString(trimmed + ellipsis).X > maxWidth)
+            trimmed = trimmed[..^1];
+
+        return string.IsNullOrWhiteSpace(trimmed)
+            ? ellipsis
+            : trimmed + ellipsis;
     }
 
     private static void DrawCoinIcon(SpriteBatch b, int x, int y)
