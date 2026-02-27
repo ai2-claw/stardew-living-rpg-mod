@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## 0.7.0 - 2026-02-27
+
+### Changed
+- Manifest version bumped to `0.7.0`.
+- Removed Jas/Vincent age-specific prompt directives from `ModEntry` to avoid redundancy with `assets/vanilla-canon-lore.json`.
+
+### Fixed
+- Festival interactions now support NPC chat follow-up reliably by resolving event actors (not only `currentLocation.characters`) for target detection and follow-up state checks.
+- Festival events no longer block the NPC chat cursor/fallback path used to open chat after vanilla interaction flow.
+
+### Removed
+- Removed runtime child-age response normalization fallback (`NormalizeNpcAgeReply`) and related helpers from `ModEntry`; canon age grounding now relies on lore injection.
+
 ## 0.6.1 - 2026-02-27
 
 ### Changed

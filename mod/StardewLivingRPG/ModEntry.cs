@@ -159,12 +159,6 @@ public sealed class ModEntry : Mod
         "unsure", "not sure", "uncertain", "hesitant",
         "uneasy", "wary", "hmm", "pensive", "thoughtful", "contemplative"
     };
-    private static readonly HashSet<string> ChildNpcNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Jas",
-        "Jaz",
-        "Vincent"
-    };
     private static readonly Dictionary<string, string> PromptLocationDisplayOverrides = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Town"] = "Pelican Town",
@@ -6257,8 +6251,6 @@ public sealed class ModEntry : Mod
                     "robin" => $"You are Robin, the carpenter of {townName} in Stardew Valley. Never claim to be Lewis or any other NPC.",
                     "pierre" => $"You are Pierre, the shopkeeper of {townName} in Stardew Valley. Never claim to be Lewis or any other NPC.",
                     "lewis" => $"You are Mayor Lewis of {townName} in Stardew Valley.",
-                    "jas" => $"You are Jas, a child living in {townName} in Stardew Valley. Never claim to be an adult or in your twenties.",
-                    "vincent" => $"You are Vincent, a child living in {townName} in Stardew Valley. Never claim to be an adult or in your twenties.",
                     _ => $"You are {shortName} of {townName} in Stardew Valley. Never claim to be another NPC."
                 };
 
@@ -7334,7 +7326,6 @@ public sealed class ModEntry : Mod
             if (string.IsNullOrWhiteSpace(playerFacingMsg))
                 playerFacingMsg = rawMessage;
             var npcName = GetNpcShortNameById(npcId);
-            playerFacingMsg = NormalizeNpcAgeReply(npcName, playerFacingMsg);
 
             if (routeToPlayerChat)
             {
@@ -7409,69 +7400,6 @@ public sealed class ModEntry : Mod
         var split = canonical.Split(" (", 2, StringSplitOptions.None);
         var clockTime = split[0];
         return $"It's {clockTime}.";
-    }
-
-    private static string NormalizeNpcAgeReply(string npcName, string message)
-    {
-        if (string.IsNullOrWhiteSpace(message) || !IsChildNpcName(npcName))
-            return message;
-
-        if (!LooksLikeAdultAgeClaim(message))
-            return message;
-
-        var townName = TownProfileResolver.ResolveForLocation(Game1.currentLocation?.Name).CanonTown;
-        return $"I'm still a kid in {townName}.";
-    }
-
-    private static bool LooksLikeAdultAgeClaim(string message)
-    {
-        if (string.IsNullOrWhiteSpace(message))
-            return false;
-
-        const RegexOptions opts = RegexOptions.CultureInvariant | RegexOptions.IgnoreCase;
-        var explicitYearsOld = Regex.Match(
-            message,
-            @"\b(?:i am|i['’]m|im|my age is)\s+(?<age>\d{2})\s*years?\s*old\b",
-            opts);
-        if (explicitYearsOld.Success
-            && int.TryParse(explicitYearsOld.Groups["age"].Value, out var ageYearsOld)
-            && ageYearsOld >= 18)
-        {
-            return true;
-        }
-
-        var explicitAgeSentence = Regex.Match(
-            message,
-            @"\b(?:i am|i['’]m|im)\s+(?<age>\d{2})(?:[.!?,]|$)",
-            opts);
-        if (explicitAgeSentence.Success
-            && int.TryParse(explicitAgeSentence.Groups["age"].Value, out var ageSentence)
-            && ageSentence >= 18)
-        {
-            return true;
-        }
-
-        var decadeNumber = Regex.Match(
-            message,
-            @"\b(?:i am|i['’]m|im)\s+in\s+my\s+(?<decade>\d{2})s\b",
-            opts);
-        if (decadeNumber.Success
-            && int.TryParse(decadeNumber.Groups["decade"].Value, out var decade)
-            && decade >= 20)
-        {
-            return true;
-        }
-
-        return Regex.IsMatch(message, @"\b(?:i am|i['’]m|im)\s+in\s+my\s+twenties\b", opts)
-            || Regex.IsMatch(message, @"\bin\s+my\s+twenties\b", opts);
-    }
-
-    private static bool IsChildNpcName(string? npcName)
-    {
-        if (string.IsNullOrWhiteSpace(npcName))
-            return false;
-
-        return ChildNpcNames.Contains(npcName.Trim());
     }
 
     private string? DequeueNpcUiMessage(string npcId)
@@ -7680,7 +7608,6 @@ public sealed class ModEntry : Mod
         var ambientFamiliarityRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase) && heartLevel <= 2
             ? "AMBIENT_TONE_RULE: Low-heart references to the player must stay neutral and guarded; avoid affectionate, over-familiar, or intimate framing."
             : string.Empty;
-        var npcAgeRule = BuildNpcAgePromptRule(npcName);
         var manualIntentRule = contextTag switch
         {
             "manual_relationship" => "MANUAL_INTENT_RULE: Player explicitly asked a relationship check. If trust is low or context is poor, reject or defer in-character with a brief reason.",
@@ -7722,7 +7649,6 @@ public sealed class ModEntry : Mod
             ambientEventFirstRule,
             ambientUnlockRule,
             ambientFamiliarityRule,
-            npcAgeRule,
             speechStyleBlock,
             "RELATIONSHIP_RULE: Match familiarity to STATE: RelationshipHearts. At 0-2 hearts, keep distance, be concise, and avoid affectionate language.",
             "RELATIONSHIP_RULE: At 0-1 hearts, avoid warm enthusiasm and long monologues; answer briefly and cautiously unless the player asks follow-up details.",
@@ -7868,14 +7794,6 @@ public sealed class ModEntry : Mod
         return string.Join(", ", merged);
     }
 
-    private string BuildNpcAgePromptRule(string? npcName)
-    {
-        if (!IsChildNpcName(npcName))
-            return string.Empty;
-
-        var townName = ResolveActiveTownProfile().CanonTown;
-        return $"AGE_RULE: You are a child in {townName} canon. Never claim to be an adult, in your twenties, or older. If asked your age, answer as a kid without adult numeric ages.";
-    }
     private static string GetPlayerDisplayNameForContext()
     {
         var raw = Game1.player?.Name ?? string.Empty;
