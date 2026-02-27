@@ -47,7 +47,7 @@ public sealed class ModEntry : Mod
     private const double StagedValidationMaxQuestRateDelta = 1.25d;
     private const double StagedValidationMaxMarketRateDelta = 0.75d;
     private const double DefaultMsPerNpcChatClockStep = 7000d;
-    private const double NpcChatClockSlowdownMultiplier = 2d;
+    private const double NpcChatClockSlowdownMultiplier = 4d;
     private const float NpcDialogueHookInteractionRadiusTiles = 3.5f;
     private const float NpcDialogueHookFallbackRadiusTiles = 1f;
     private const float NpcManualFollowUpActivationRadiusTiles = 1f;
@@ -2064,6 +2064,13 @@ public sealed class ModEntry : Mod
             return;
         }
 
+        if (_config.FreezeTimeDuringNpcChat)
+        {
+            _npcChatClockLastTickUtc = DateTime.UtcNow;
+            _npcChatClockAccumulatorMs = 0d;
+            return;
+        }
+
         var now = DateTime.UtcNow;
         if (_npcChatClockLastTickUtc == default)
         {
@@ -2278,7 +2285,7 @@ public sealed class ModEntry : Mod
             }
 
             _player2UiStatus = "No NPC response yet; recovering stream and retrying request...";
-            Monitor.Log($"Player2 response watchdog: no stream line after chat; restarting listener (attempt {_player2WatchdogRecoveries}).", LogLevel.Warn);
+            Monitor.Log($"Player2 response watchdog: no stream line after chat; restarting listener (attempt {_player2WatchdogRecoveries}).", LogLevel.Debug);
 
             _player2StreamDesired = true;
             _player2StreamCts?.Cancel();
@@ -2320,7 +2327,7 @@ public sealed class ModEntry : Mod
             if (_pendingStreamReplayQueuedUtc != default
                 && DateTime.UtcNow - _pendingStreamReplayQueuedUtc > TimeSpan.FromMinutes(2))
             {
-                Monitor.Log("Dropped stale pending stream replay (>2 minutes old).", LogLevel.Warn);
+                Monitor.Log("Dropped stale pending stream replay (>2 minutes old).", LogLevel.Debug);
                 ClearPendingStreamReplay();
             }
             else
@@ -2355,7 +2362,7 @@ public sealed class ModEntry : Mod
                     senderNameOverride: replaySender,
                     contextTag: replayContext,
                     captureForPlayerChat: false);
-                Monitor.Log("Replayed pending stream chat after listener recovery.", LogLevel.Warn);
+                Monitor.Log("Replayed pending stream chat after listener recovery.", LogLevel.Debug);
             }
         }
 
@@ -9357,7 +9364,7 @@ public sealed class ModEntry : Mod
                     IncrementCounter(_state.Telemetry.Daily.NpcPolicyRejectByReason, policyRejectCode);
 
                     var policyResult = NpcIntentResolveResult.Rejected(policyRejectReason, policyRejectCode);
-                    Monitor.Log($"NPC intent policy rejected lane={policyLane} [{policyRejectCode}] context={contextTag} cmd={attemptedCommand} reason={policyRejectReason}", LogLevel.Warn);
+                    Monitor.Log($"NPC intent policy rejected lane={policyLane} [{policyRejectCode}] context={contextTag} cmd={attemptedCommand} reason={policyRejectReason}", LogLevel.Debug);
                     TryRecordAmbientLaneSnapshot(sourceNpcId, policyResult, policyLane, attemptedCommand);
                     return false;
                 }
@@ -9383,7 +9390,7 @@ public sealed class ModEntry : Mod
                 if (isAmbientContext)
                     IncrementCounter(_state.Telemetry.Daily.AmbientCommandRejectedByType, metricCommand);
 
-                Monitor.Log($"NPC intent rejected lane={intentLane} [{result.ReasonCode}]: {result.Reason}", LogLevel.Warn);
+                Monitor.Log($"NPC intent rejected lane={intentLane} [{result.ReasonCode}]: {result.Reason}", LogLevel.Debug);
                 TryRecordAmbientLaneSnapshot(sourceNpcId, result, intentLane, attemptedCommand);
                 return false;
             }
