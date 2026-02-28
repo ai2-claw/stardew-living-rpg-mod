@@ -29,7 +29,18 @@ public sealed class ModEntry : Mod
     private const int NpcPublishMinimumIntervalMinutes = 120;
     private const int AmbientLaneDebugSnapshotLimit = 20;
     private const int AmbientNpcCooldownMinutes = 8;
+    private const int AmbientNpcTurnTimeoutSeconds = 12;
+    private const int AmbientNpcExtractionTimeoutSeconds = 14;
+    private const int AmbientNpcTurnRetryLimit = 1;
+    private const int AmbientNpcExtractionMaxCommands = 3;
+    private const int AmbientNpcHistorySnapshotTimeoutSeconds = 2;
+    private const int AmbientNpcHistoryFallbackAttempts = 8;
+    private const int AmbientNpcHistoryFallbackDelayMs = 300;
+    private const int AmbientNpcStreamFallbackAttempts = 10;
+    private const int AmbientNpcStreamFallbackDelayMs = 250;
     private const float AmbientPublishRumorMinConfidence = 0.62f;
+    private const int AmbientConversationBeatRepeatCooldownDays = 1;
+    private const int AmbientConversationBeatUsagePenalty = 3;
     private const int AutoMarketMinSignals = 2;
     private const float AutoMarketScarcityThreshold = 0.05f;
     private const float AutoMarketStrongScarcityThreshold = 0.09f;
@@ -273,6 +284,56 @@ public sealed class ModEntry : Mod
         public string Precision { get; set; } = "low";
     }
 
+    private sealed class AmbientConversationBeat
+    {
+        public string Id { get; init; } = string.Empty;
+        public string Label { get; init; } = string.Empty;
+        public string TopicFocus { get; init; } = string.Empty;
+        public string TurnInstruction { get; init; } = string.Empty;
+        public string ExtractionHint { get; init; } = string.Empty;
+        public int BaseWeight { get; init; } = 10;
+    }
+
+    private sealed class AmbientConversationLine
+    {
+        public int Turn { get; init; }
+        public string SpeakerShortName { get; init; } = string.Empty;
+        public string ListenerShortName { get; init; } = string.Empty;
+        public string Message { get; init; } = string.Empty;
+    }
+
+    private sealed class AmbientConversationCompletion
+    {
+        public string SpeakerShortName { get; init; } = string.Empty;
+        public string ListenerShortName { get; init; } = string.Empty;
+        public string SpeakerNpcId { get; init; } = string.Empty;
+        public string ListenerNpcId { get; init; } = string.Empty;
+        public string PairKey { get; init; } = string.Empty;
+        public bool Completed { get; init; }
+        public string AbortReason { get; init; } = string.Empty;
+        public int TurnTarget { get; init; }
+        public int TurnCompleted { get; init; }
+        public int TimeoutCount { get; init; }
+        public int RetryCount { get; init; }
+        public double DurationMs { get; init; }
+        public List<AmbientConversationLine> Transcript { get; init; } = new();
+        public List<string> CommandLines { get; init; } = new();
+        public string OverhearSnippet { get; init; } = string.Empty;
+        public bool OverhearEligible { get; init; }
+        public string BeatId { get; init; } = string.Empty;
+        public string BeatLabel { get; init; } = string.Empty;
+    }
+
+    private sealed class AmbientTurnSendResult
+    {
+        public bool Success { get; init; }
+        public string FailureCode { get; init; } = string.Empty;
+        public string Payload { get; init; } = string.Empty;
+        public string Message { get; init; } = string.Empty;
+        public int TimeoutCount { get; init; }
+        public int RetryCount { get; init; }
+    }
+
     private sealed class NpcShipmentProfile
     {
         public string NpcId { get; init; } = string.Empty;
@@ -314,6 +375,86 @@ public sealed class ModEntry : Mod
         "...",
         "nothing new",
         "no news"
+    };
+    private static readonly HashSet<string> RomanceForwardNpcNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Abigail", "Alex", "Elliott", "Emily", "Haley", "Harvey",
+        "Leah", "Maru", "Penny", "Sam", "Sebastian", "Shane"
+    };
+    private static readonly AmbientConversationBeat[] AmbientConversationBeats =
+    {
+        new()
+        {
+            Id = "intrigue",
+            Label = "town intrigue",
+            TopicFocus = "hidden motives, quiet power plays, and who is maneuvering around whom",
+            TurnInstruction = "Push beyond pleasantries: include one suspicion or strategic read tied to a real town detail.",
+            ExtractionHint = "suspicions, warnings, leverage, or strategic intentions",
+            BaseWeight = 16
+        },
+        new()
+        {
+            Id = "mystery",
+            Label = "small mystery",
+            TopicFocus = "odd behavior, missing details, and unexplained events around town",
+            TurnInstruction = "Treat this like a local mystery thread: share one clue or inconsistency and react to it.",
+            ExtractionHint = "clues, unexplained incidents, likely causes, or follow-up leads",
+            BaseWeight = 15
+        },
+        new()
+        {
+            Id = "romance",
+            Label = "romantic tension",
+            TopicFocus = "attraction, jealousy, mixed signals, and emotional stakes between townsfolk",
+            TurnInstruction = "Use subtle emotional subtext and mention one concrete relationship detail; keep it PG and in-character.",
+            ExtractionHint = "crushes, jealousy, boundaries, promises, or emotionally charged intentions",
+            BaseWeight = 12
+        },
+        new()
+        {
+            Id = "gossip",
+            Label = "sharp gossip",
+            TopicFocus = "social friction, rivalries, and reputational rumors spreading through the valley",
+            TurnInstruction = "Deliver one specific social claim and either defend it or challenge it.",
+            ExtractionHint = "social claims, reputational shifts, rivalries, or new rumors",
+            BaseWeight = 14
+        },
+        new()
+        {
+            Id = "ambition",
+            Label = "ambition and plans",
+            TopicFocus = "personal plans, next moves, and long-game goals tied to town life",
+            TurnInstruction = "State a concrete plan or worry about the next few days, then test the other NPC's reaction.",
+            ExtractionHint = "plans, commitments, hesitations, or requests for support",
+            BaseWeight = 11
+        },
+        new()
+        {
+            Id = "work",
+            Label = "work pressure",
+            TopicFocus = "job strain, responsibilities, and practical tradeoffs in daily routines",
+            TurnInstruction = "Ground the dialogue in real tasks, constraints, or deadlines instead of generic chatter.",
+            ExtractionHint = "job pressure, constraints, practical commitments, or resource issues",
+            BaseWeight = 10
+        },
+        new()
+        {
+            Id = "market",
+            Label = "market stakes",
+            TopicFocus = "price swings, supply pressure, and who benefits or suffers economically",
+            TurnInstruction = "Anchor at least one line to a specific crop or local market pressure.",
+            ExtractionHint = "market expectations, supply concerns, or who gains/loses from price shifts",
+            BaseWeight = 9
+        },
+        new()
+        {
+            Id = "community",
+            Label = "community pulse",
+            TopicFocus = "town morale, trust, and how events are changing social cohesion",
+            TurnInstruction = "Name a community consequence and whether it improves or strains trust.",
+            ExtractionHint = "trust changes, community concern, or civic follow-through",
+            BaseWeight = 9
+        }
     };
     private static readonly Dictionary<string, int> AutoMutationBudgetByAxis = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -476,6 +617,7 @@ public sealed class ModEntry : Mod
     private NpcMemoryService? _npcMemoryService;
     private TownMemoryService? _townMemoryService;
     private AmbientConsequenceService? _ambientConsequenceService;
+    private NpcConversationService? _npcConversationService;
     private NpcSpeechStyleService? _npcSpeechStyleService;
     private NpcAskGateService? _npcAskGateService;
     private CommandPolicyService? _commandPolicyService;
@@ -580,6 +722,12 @@ public sealed class ModEntry : Mod
     private DateTime _nextAmbientNpcConversationUtc;
     private int _ambientNpcConversationInFlight;
     private readonly ConcurrentDictionary<string, DateTime> _ambientNpcLastConversationUtcByNpcId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _ambientNpcLastConversationDayByPairKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _ambientNpcLastBeatByPairKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _ambientNpcLastBeatDayByPairKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _ambientBeatUsageTodayByBeatId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentQueue<AmbientConversationCompletion> _pendingAmbientConversationCompletions = new();
+    private int _ambientLastOverhearDay = -9999;
     private readonly Dictionary<string, RecentVanillaDialogueContext> _recentVanillaDialogueByNpcToken = new(StringComparer.OrdinalIgnoreCase);
 
     private string? _pendingNpcDialogueHookName;
@@ -627,6 +775,7 @@ public sealed class ModEntry : Mod
         _npcMemoryService = new NpcMemoryService();
         _townMemoryService = new TownMemoryService();
         _ambientConsequenceService = new AmbientConsequenceService();
+        _npcConversationService = new NpcConversationService();
         _intentResolver = new NpcIntentResolver(_rumorBoardService, _npcMemoryService, _townMemoryService, _config.StrictNpcTemplateValidation);
         _anchorEventService = new AnchorEventService();
         var speechStyleConfig = helper.Data.ReadJsonFile<NpcSpeechStyleConfig>("npc_speech_profiles.json")
@@ -698,6 +847,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_p2_stream_start", "Start persistent Player2 response stream listener.", OnPlayer2StreamStartCommand);
         helper.ConsoleCommands.Add("slrpg_p2_stream_stop", "Stop persistent Player2 response stream listener.", OnPlayer2StreamStopCommand);
         helper.ConsoleCommands.Add("slrpg_p2_health", "Compact Player2 health summary line.", OnPlayer2HealthCommand);
+        helper.ConsoleCommands.Add("slrpg_debug_ambient_pair_chat", "Trigger one ambient multi-turn chat for a specific pair: slrpg_debug_ambient_pair_chat <speaker> <listener> [topic]", OnDebugAmbientPairChatCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_validate", "Validate integrated custom-NPC content packs.", OnCustomNpcValidatePacksCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_list", "List loaded integrated custom NPCs.", OnCustomNpcListCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_dump", "Dump integrated custom NPC lore: slrpg_customnpc_dump <npc>", OnCustomNpcDumpCommand);
@@ -2054,6 +2204,7 @@ public sealed class ModEntry : Mod
         }
 
         TryTriggerAmbientNpcConversation();
+        TryApplyPendingAmbientConversationCompletions();
 
         if (e.IsMultipleOf(60))
             TryRunAutomaticNpcCommandExposureHooks();
@@ -2304,6 +2455,23 @@ public sealed class ModEntry : Mod
         _ambientNpcConversationDay = _state.Calendar.Day;
         _ambientNpcConversationsToday = 0;
         _ambientNpcLastConversationUtcByNpcId.Clear();
+        _ambientBeatUsageTodayByBeatId.Clear();
+        var pairCooldownDays = _npcConversationService?.ResolvePairCooldownDays(_config.AmbientNpcPairCooldownDays)
+            ?? NpcConversationService.DefaultPairCooldownDays;
+        var pruneBeforeDay = _state.Calendar.Day - Math.Max(3, pairCooldownDays + 1);
+        foreach (var entry in _ambientNpcLastConversationDayByPairKey)
+        {
+            if (entry.Value < pruneBeforeDay)
+                _ambientNpcLastConversationDayByPairKey.TryRemove(entry.Key, out _);
+        }
+        foreach (var entry in _ambientNpcLastBeatDayByPairKey)
+        {
+            if (entry.Value < pruneBeforeDay)
+            {
+                _ambientNpcLastBeatDayByPairKey.TryRemove(entry.Key, out _);
+                _ambientNpcLastBeatByPairKey.TryRemove(entry.Key, out _);
+            }
+        }
         _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(120, 360));
     }
 
@@ -2317,7 +2485,9 @@ public sealed class ModEntry : Mod
         if (_ambientNpcConversationDay != _state.Calendar.Day)
             ResetAmbientNpcConversationScheduleForDay();
 
-        if (_ambientNpcConversationsToday >= 3)
+        var dailyConversationLimit = _npcConversationService?.ResolveDailyLimit(_config.AmbientNpcConversationDailyLimit)
+            ?? NpcConversationService.DefaultDailyLimit;
+        if (dailyConversationLimit <= 0 || _ambientNpcConversationsToday >= dailyConversationLimit)
             return;
 
         if (_nextAmbientNpcConversationUtc == default)
@@ -2326,7 +2496,7 @@ public sealed class ModEntry : Mod
         if (DateTime.UtcNow < _nextAmbientNpcConversationUtc)
             return;
 
-        if (!IsPlayer2ReadyForNewspaper())
+        if (!IsPlayer2ReadyForAmbientConversation())
             return;
 
         var pendingPlayerResponses = CountPendingPlayerChatResponses();
@@ -2337,15 +2507,16 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        if (_player2PendingResponseCount > 0 || !string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest))
+        if (HasBlockingPendingPlayer2Response() || !string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest))
             return;
 
         if (Interlocked.CompareExchange(ref _ambientNpcConversationInFlight, 1, 0) == 1)
             return;
 
+        var releaseInFinally = true;
         try
         {
-            if (!TryPickAmbientNpcConversationPair(out var speakerShortName, out var speakerNpcId, out var listenerShortName))
+            if (!TryPickAmbientNpcConversationPair(out var speakerShortName, out var speakerNpcId, out var listenerShortName, out var listenerNpcId))
                 return;
             if (IsAmbientNpcConversationCoolingDown(speakerNpcId))
             {
@@ -2353,59 +2524,1664 @@ public sealed class ModEntry : Mod
                 return;
             }
 
-            string? listenerNpcId = null;
-            var hasListenerNpcId = !string.IsNullOrWhiteSpace(listenerShortName)
-                && _player2NpcIdsByShortName.TryGetValue(listenerShortName, out listenerNpcId);
+            var hasListenerNpcId = !string.IsNullOrWhiteSpace(listenerNpcId);
             if (hasListenerNpcId && listenerNpcId is not null && IsAmbientNpcConversationCoolingDown(listenerNpcId))
             {
                 Monitor.Log($"Ambient NPC cooldown active for listener {listenerShortName}; skipping this tick.", LogLevel.Trace);
                 return;
             }
 
-            var ambientWeights = _npcSpeechStyleService?.GetAmbientBehaviorWeights(speakerShortName);
-            var ambientArchetypeRule = ambientWeights is null
+            var pairKey = string.IsNullOrWhiteSpace(listenerNpcId)
                 ? string.Empty
-                : $"Archetype={ambientWeights.Archetype} weights(event={ambientWeights.EventWeight}, memory={ambientWeights.MemoryWeight}, publish={ambientWeights.PublishWeight}). Favor higher-weight actions when context supports them. ";
-            var ambientConditional = _commandPolicyService?.GetAmbientConditionalCommandsEnabled() ?? Array.Empty<string>();
-            var ambientConditionalText = ambientConditional.Count == 0
-                ? "Additional mutation commands are currently locked for ambient lane."
-                : $"Additional unlocked mutation commands now: {string.Join(", ", ambientConditional)}.";
-            var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
+                : (_npcConversationService?.BuildPairKey(speakerNpcId, listenerNpcId) ?? string.Empty);
+            var pairCooldownDays = _npcConversationService?.ResolvePairCooldownDays(_config.AmbientNpcPairCooldownDays)
+                ?? NpcConversationService.DefaultPairCooldownDays;
+            if (!string.IsNullOrWhiteSpace(pairKey)
+                && _npcConversationService is not null
+                && _npcConversationService.IsPairCoolingDown(_ambientNpcLastConversationDayByPairKey, pairKey, _state.Calendar.Day, pairCooldownDays))
+            {
+                Monitor.Log($"Ambient NPC pair cooldown active for {speakerShortName}/{listenerShortName}; skipping this tick.", LogLevel.Trace);
+                return;
+            }
 
-            var prompt =
-                $"{speakerShortName}, you had a brief offscreen conversation with {listenerShortName} about today's town happenings. " +
-                "Stay in-character and reply naturally. " +
-                promptLanguageRule + " " +
-                "Keep command names and argument keys in English; localize only message/topic/title/content string values. " +
-                "Ambient policy for this context: prefer record_town_event first and keep command usage sparse. " +
-                "Allowed command set here starts with record_town_event, record_memory_fact, publish_rumor, publish_article. " +
-                ambientConditionalText + " " +
-                "If anything notable happened, capture it with record_town_event before considering publish commands. " +
-                ambientArchetypeRule +
-                "For record_town_event, provide complete fields: kind, summary, location, severity, visibility, and tags. " +
-                "Use publish commands only when confidence and visibility are strong enough for public sharing. " +
-                "If there is meaningful concrete news, use publish_article with a concise title/content/category (title+content must be <= 100 characters total). " +
-                "If it is gossip-level information, use publish_rumor with topic, optional title/content, confidence, and target_group (title+content must be <= 100 characters total when provided). " +
-                "Do not force a command when nothing notable happened.";
-
-            SendPlayer2ChatInternal(
-                prompt,
-                speakerNpcId,
-                speakerShortName,
-                senderNameOverride: listenerShortName,
-                contextTag: "npc_to_npc_ambient",
-                captureForPlayerChat: false);
             _ambientNpcConversationsToday += 1;
             MarkAmbientNpcConversationTimestamp(speakerNpcId);
             if (hasListenerNpcId)
                 MarkAmbientNpcConversationTimestamp(listenerNpcId!);
-            Monitor.Log($"Ambient NPC conversation triggered: {speakerShortName} -> {listenerShortName}.", LogLevel.Trace);
+            if (!string.IsNullOrWhiteSpace(pairKey))
+                _ambientNpcLastConversationDayByPairKey[pairKey] = _state.Calendar.Day;
+
+            if (!_config.EnableAmbientNpcMultiTurn || !hasListenerNpcId)
+            {
+                TriggerLegacyAmbientNpcConversation(speakerShortName, speakerNpcId, listenerShortName);
+                Monitor.Log($"Ambient NPC legacy conversation triggered: {speakerShortName} -> {listenerShortName}.", LogLevel.Debug);
+                return;
+            }
+
+            var turnDepth = _npcConversationService?.ResolveTurnDepth(_state.Config.Mode, _config.AmbientNpcConversationTurnDepth)
+                ?? NpcConversationService.MinTurnDepth;
+            var topicContext = BuildAmbientConversationBaseTopic(speakerShortName, listenerShortName);
+            var beat = SelectAmbientConversationBeat(
+                speakerShortName,
+                listenerShortName,
+                pairKey,
+                topicContext.HasRecentEvent,
+                topicContext.HasMarketSignal);
+            var topicSeed = BuildAmbientConversationTopicSeed(topicContext.Topic, beat);
+            TrackAmbientConversationBeatUsage(pairKey, speakerShortName, listenerShortName, beat.Id);
+            var speakerDialogueContext = BuildCompactGameStateInfo(
+                npcName: speakerShortName,
+                contextTag: "npc_to_npc_ambient_dialogue",
+                referencedNpcName: listenerShortName);
+            var listenerDialogueContext = BuildCompactGameStateInfo(
+                npcName: listenerShortName,
+                contextTag: "npc_to_npc_ambient_dialogue",
+                referencedNpcName: speakerShortName);
+            var extractionContext = BuildCompactGameStateInfo(
+                npcName: speakerShortName,
+                contextTag: "npc_to_npc_ambient",
+                referencedNpcName: listenerShortName);
+            var overhearEligible = IsAmbientOverhearCandidateWindow();
+            _npcLastContextTagById[speakerNpcId] = "npc_to_npc_ambient_dialogue";
+            _npcLastContextTagById[listenerNpcId!] = "npc_to_npc_ambient_dialogue";
+
+            StartAmbientNpcConversationTask(
+                speakerShortName,
+                speakerNpcId,
+                listenerShortName,
+                listenerNpcId!,
+                pairKey,
+                topicSeed,
+                beat,
+                turnDepth,
+                speakerDialogueContext,
+                listenerDialogueContext,
+                extractionContext,
+                overhearEligible);
+
+            releaseInFinally = false;
+            _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(180, 480));
+            Monitor.Log($"Ambient NPC multi-turn conversation triggered: {speakerShortName} -> {listenerShortName} turns={turnDepth} beat={beat.Id}.", LogLevel.Debug);
         }
         finally
         {
-            Interlocked.Exchange(ref _ambientNpcConversationInFlight, 0);
-            _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(180, 480));
+            if (releaseInFinally)
+            {
+                Interlocked.Exchange(ref _ambientNpcConversationInFlight, 0);
+                _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(180, 480));
+            }
         }
+    }
+
+    private void TriggerLegacyAmbientNpcConversation(string speakerShortName, string speakerNpcId, string listenerShortName)
+    {
+        var ambientWeights = _npcSpeechStyleService?.GetAmbientBehaviorWeights(speakerShortName);
+        var ambientArchetypeRule = ambientWeights is null
+            ? string.Empty
+            : $"Archetype={ambientWeights.Archetype} weights(event={ambientWeights.EventWeight}, memory={ambientWeights.MemoryWeight}, publish={ambientWeights.PublishWeight}). Favor higher-weight actions when context supports them. ";
+        var ambientConditional = _commandPolicyService?.GetAmbientConditionalCommandsEnabled() ?? Array.Empty<string>();
+        var ambientConditionalText = ambientConditional.Count == 0
+            ? "Additional mutation commands are currently locked for ambient lane."
+            : $"Additional unlocked mutation commands now: {string.Join(", ", ambientConditional)}.";
+        var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
+
+        var prompt =
+            $"{speakerShortName}, you had a brief offscreen conversation with {listenerShortName} about today's town happenings. " +
+            "Stay in-character and reply naturally. " +
+            promptLanguageRule + " " +
+            "Keep command names and argument keys in English; localize only message/topic/title/content string values. " +
+            "Ambient policy for this context: prefer record_town_event first and keep command usage sparse. " +
+            "Allowed command set here starts with record_town_event, record_memory_fact, publish_rumor. " +
+            ambientConditionalText + " " +
+            "If anything notable happened, capture it with record_town_event before considering publish commands. " +
+            ambientArchetypeRule +
+            "For record_town_event, provide complete fields: kind, summary, location, severity, visibility, and tags. " +
+            "Use publish_rumor only for gossip-level information with topic, confidence, and target_group. " +
+            "Do not force a command when nothing notable happened.";
+
+        SendPlayer2ChatInternal(
+            prompt,
+            speakerNpcId,
+            speakerShortName,
+            senderNameOverride: listenerShortName,
+            contextTag: "npc_to_npc_ambient",
+            captureForPlayerChat: false);
+    }
+
+    private void StartAmbientNpcConversationTask(
+        string speakerShortName,
+        string speakerNpcId,
+        string listenerShortName,
+        string listenerNpcId,
+        string pairKey,
+        string topicSeed,
+        AmbientConversationBeat beat,
+        int turnDepth,
+        string speakerDialogueContext,
+        string listenerDialogueContext,
+        string extractionContext,
+        bool overhearEligible)
+    {
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+        {
+            Interlocked.Exchange(ref _ambientNpcConversationInFlight, 0);
+            return;
+        }
+
+        var player2Client = _player2Client;
+        var player2Key = _player2Key!;
+        var apiBaseUrl = _config.Player2ApiBaseUrl;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var completion = await RunAmbientNpcConversationAsync(
+                    player2Client,
+                    apiBaseUrl,
+                    player2Key,
+                    speakerShortName,
+                    speakerNpcId,
+                    listenerShortName,
+                    listenerNpcId,
+                    pairKey,
+                    topicSeed,
+                    beat,
+                    turnDepth,
+                    speakerDialogueContext,
+                    listenerDialogueContext,
+                    extractionContext,
+                    overhearEligible);
+                _pendingAmbientConversationCompletions.Enqueue(completion);
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"Ambient NPC conversation task failed: {ex.Message}", LogLevel.Warn);
+                _pendingAmbientConversationCompletions.Enqueue(new AmbientConversationCompletion
+                {
+                    SpeakerShortName = speakerShortName,
+                    ListenerShortName = listenerShortName,
+                    SpeakerNpcId = speakerNpcId,
+                    ListenerNpcId = listenerNpcId,
+                    PairKey = pairKey,
+                    Completed = false,
+                    AbortReason = "E_AMBIENT_TASK_EXCEPTION",
+                    TurnTarget = turnDepth,
+                    TurnCompleted = 0,
+                    DurationMs = 0,
+                    BeatId = beat.Id,
+                    BeatLabel = beat.Label
+                });
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _ambientNpcConversationInFlight, 0);
+            }
+        });
+    }
+
+    private async Task<AmbientConversationCompletion> RunAmbientNpcConversationAsync(
+        Player2Client client,
+        string apiBaseUrl,
+        string player2Key,
+        string speakerShortName,
+        string speakerNpcId,
+        string listenerShortName,
+        string listenerNpcId,
+        string pairKey,
+        string topicSeed,
+        AmbientConversationBeat beat,
+        int turnDepth,
+        string speakerDialogueContext,
+        string listenerDialogueContext,
+        string extractionContext,
+        bool overhearEligible)
+    {
+        var startedUtc = DateTime.UtcNow;
+        var transcript = new List<AmbientConversationLine>();
+        var commandLines = new List<string>();
+        var timeoutCount = 0;
+        var retryCount = 0;
+        var abortReason = string.Empty;
+
+        var currentSpeakerShortName = speakerShortName;
+        var currentSpeakerNpcId = speakerNpcId;
+        var currentListenerShortName = listenerShortName;
+        var currentListenerNpcId = listenerNpcId;
+        var currentMessage = BuildAmbientConversationTurnMessage(
+            turnNumber: 1,
+            turnDepth,
+            topicSeed,
+            beat,
+            priorLine: null);
+
+        for (var turn = 1; turn <= turnDepth; turn++)
+        {
+            if (IsAmbientConversationInterruptedByPlayer(currentSpeakerNpcId, currentListenerNpcId))
+            {
+                abortReason = "E_AMBIENT_PLAYER_INTERRUPT";
+                break;
+            }
+
+            var context = currentSpeakerNpcId.Equals(speakerNpcId, StringComparison.OrdinalIgnoreCase)
+                ? speakerDialogueContext
+                : listenerDialogueContext;
+
+            var turnResult = await TrySendAmbientConversationTurnAsync(
+                client,
+                apiBaseUrl,
+                player2Key,
+                currentSpeakerNpcId,
+                currentListenerShortName,
+                currentMessage,
+                context,
+                requireMessage: true);
+            timeoutCount += turnResult.TimeoutCount;
+            retryCount += turnResult.RetryCount;
+
+            if (!turnResult.Success)
+            {
+                abortReason = string.IsNullOrWhiteSpace(turnResult.FailureCode)
+                    ? "E_AMBIENT_TURN_FAILED"
+                    : turnResult.FailureCode;
+                break;
+            }
+
+            transcript.Add(new AmbientConversationLine
+            {
+                Turn = turn,
+                SpeakerShortName = currentSpeakerShortName,
+                ListenerShortName = currentListenerShortName,
+                Message = turnResult.Message
+            });
+
+            currentMessage = BuildAmbientConversationTurnMessage(
+                turn + 1,
+                turnDepth,
+                topicSeed,
+                beat,
+                turnResult.Message);
+
+            var nextSpeakerShortName = currentListenerShortName;
+            var nextSpeakerNpcId = currentListenerNpcId;
+            currentListenerShortName = currentSpeakerShortName;
+            currentListenerNpcId = currentSpeakerNpcId;
+            currentSpeakerShortName = nextSpeakerShortName;
+            currentSpeakerNpcId = nextSpeakerNpcId;
+        }
+
+        if (string.IsNullOrWhiteSpace(abortReason) && transcript.Count > 0)
+        {
+            if (IsAmbientConversationInterruptedByPlayer(speakerNpcId, listenerNpcId))
+            {
+                abortReason = "E_AMBIENT_PLAYER_INTERRUPT";
+            }
+            else
+            {
+                var extractionPrompt = BuildAmbientConversationExtractionPrompt(
+                    speakerShortName,
+                    listenerShortName,
+                    speakerNpcId,
+                    listenerNpcId,
+                    topicSeed,
+                    beat,
+                    transcript);
+                var extractionResult = await TrySendAmbientConversationTurnAsync(
+                    client,
+                    apiBaseUrl,
+                    player2Key,
+                    speakerNpcId,
+                    listenerShortName,
+                    extractionPrompt,
+                    extractionContext,
+                    requireMessage: false);
+                timeoutCount += extractionResult.TimeoutCount;
+                retryCount += extractionResult.RetryCount;
+
+                if (extractionResult.Success)
+                {
+                    var extractedLines = TryBuildImmediateNpcCommandLines(extractionResult.Payload, speakerNpcId, maxCount: 6);
+                    commandLines.AddRange(FilterAmbientConversationCommandBudget(extractedLines, speakerNpcId, listenerNpcId));
+                }
+                else
+                {
+                    if (string.Equals(extractionResult.FailureCode, "E_AMBIENT_EXTRACT_EMPTY", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Monitor.Log(
+                            $"Ambient extraction produced no payload; proceeding without transcript-derived commands for {speakerShortName}->{listenerShortName}.",
+                            LogLevel.Trace);
+                    }
+                    else
+                    {
+                        abortReason = extractionResult.FailureCode;
+                    }
+                }
+            }
+        }
+
+        var duration = DateTime.UtcNow - startedUtc;
+        var overhearSnippet = BuildAmbientOverhearSnippet(transcript);
+        return new AmbientConversationCompletion
+        {
+            SpeakerShortName = speakerShortName,
+            ListenerShortName = listenerShortName,
+            SpeakerNpcId = speakerNpcId,
+            ListenerNpcId = listenerNpcId,
+            PairKey = pairKey,
+            Completed = string.IsNullOrWhiteSpace(abortReason),
+            AbortReason = abortReason,
+            TurnTarget = turnDepth,
+            TurnCompleted = transcript.Count,
+            TimeoutCount = timeoutCount,
+            RetryCount = retryCount,
+            DurationMs = Math.Max(0, duration.TotalMilliseconds),
+            Transcript = transcript,
+            CommandLines = commandLines,
+            OverhearSnippet = overhearSnippet,
+            OverhearEligible = overhearEligible,
+            BeatId = beat.Id,
+            BeatLabel = beat.Label
+        };
+    }
+
+    private async Task<AmbientTurnSendResult> TrySendAmbientConversationTurnAsync(
+        Player2Client client,
+        string apiBaseUrl,
+        string player2Key,
+        string targetNpcId,
+        string senderName,
+        string senderMessage,
+        string gameStateInfo,
+        bool requireMessage)
+    {
+        var retriesUsed = 0;
+        var timeoutCount = 0;
+        var attempts = AmbientNpcTurnRetryLimit + 1;
+        var timeoutSeconds = requireMessage ? AmbientNpcTurnTimeoutSeconds : AmbientNpcExtractionTimeoutSeconds;
+
+        for (var attempt = 0; attempt < attempts; attempt++)
+        {
+            if (attempt > 0)
+                retriesUsed += 1;
+
+            try
+            {
+                NpcHistorySnapshot? previousHistorySnapshot = null;
+                var baselineSeenMessage = string.Empty;
+                if (requireMessage)
+                    _npcLastReceivedMessageById.TryGetValue(targetNpcId, out baselineSeenMessage);
+                var sentUtc = DateTime.UtcNow;
+                try
+                {
+                    using var historyCts = new CancellationTokenSource(TimeSpan.FromSeconds(AmbientNpcHistorySnapshotTimeoutSeconds));
+                    previousHistorySnapshot = await client.TryGetLatestNpcHistorySnapshotAsync(
+                        apiBaseUrl,
+                        player2Key,
+                        targetNpcId,
+                        historyCts.Token);
+                }
+                catch
+                {
+                    previousHistorySnapshot = null;
+                }
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(4, timeoutSeconds)));
+                var payload = await client.SendNpcChatAsync(
+                    apiBaseUrl,
+                    player2Key,
+                    targetNpcId,
+                    new NpcChatRequest
+                    {
+                        SenderName = string.IsNullOrWhiteSpace(senderName) ? "Town" : senderName,
+                        SenderMessage = senderMessage,
+                        GameStateInfo = gameStateInfo
+                    },
+                    cts.Token);
+
+                if (!requireMessage)
+                {
+                    var extractionPayload = payload;
+                    if (string.IsNullOrWhiteSpace(extractionPayload))
+                    {
+                        extractionPayload = await TryGetAmbientExtractionPayloadFromHistoryAsync(
+                            client,
+                            apiBaseUrl,
+                            player2Key,
+                            targetNpcId,
+                            senderMessage,
+                            previousHistorySnapshot);
+                    }
+
+                    return new AmbientTurnSendResult
+                    {
+                        Success = !string.IsNullOrWhiteSpace(extractionPayload),
+                        FailureCode = string.IsNullOrWhiteSpace(extractionPayload) ? "E_AMBIENT_EXTRACT_EMPTY" : string.Empty,
+                        Payload = extractionPayload ?? string.Empty,
+                        TimeoutCount = timeoutCount,
+                        RetryCount = retriesUsed
+                    };
+                }
+
+                var responseMessage = TryExtractImmediateResponseMessageFromPayload(payload, targetNpcId);
+                if (!string.IsNullOrWhiteSpace(responseMessage))
+                {
+                    return new AmbientTurnSendResult
+                    {
+                        Success = true,
+                        Payload = payload ?? string.Empty,
+                        Message = responseMessage,
+                        TimeoutCount = timeoutCount,
+                        RetryCount = retriesUsed
+                    };
+                }
+
+                var fallbackHistoryMessage = await TryGetAmbientTurnMessageFromHistoryAsync(
+                    client,
+                    apiBaseUrl,
+                    player2Key,
+                    targetNpcId,
+                    senderMessage,
+                    previousHistorySnapshot);
+                if (!string.IsNullOrWhiteSpace(fallbackHistoryMessage))
+                {
+                    return new AmbientTurnSendResult
+                    {
+                        Success = true,
+                        Payload = payload ?? string.Empty,
+                        Message = fallbackHistoryMessage,
+                        TimeoutCount = timeoutCount,
+                        RetryCount = retriesUsed
+                    };
+                }
+
+                var fallbackStreamMessage = await TryGetAmbientTurnMessageFromStreamCacheAsync(
+                    targetNpcId,
+                    senderMessage,
+                    baselineSeenMessage ?? string.Empty,
+                    sentUtc);
+                if (!string.IsNullOrWhiteSpace(fallbackStreamMessage))
+                {
+                    return new AmbientTurnSendResult
+                    {
+                        Success = true,
+                        Payload = payload ?? string.Empty,
+                        Message = fallbackStreamMessage,
+                        TimeoutCount = timeoutCount,
+                        RetryCount = retriesUsed
+                    };
+                }
+
+                if (attempt >= attempts - 1)
+                {
+                    if (!string.IsNullOrWhiteSpace(payload))
+                        Monitor.Log($"Ambient turn message extraction empty for npc={targetNpcId}. payload={TruncateDebugText(payload, 220)}", LogLevel.Trace);
+                    return new AmbientTurnSendResult
+                    {
+                        Success = false,
+                        FailureCode = "E_AMBIENT_TURN_EMPTY",
+                        Payload = payload ?? string.Empty,
+                        TimeoutCount = timeoutCount,
+                        RetryCount = retriesUsed
+                    };
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                timeoutCount += 1;
+                if (attempt >= attempts - 1)
+                {
+                    return new AmbientTurnSendResult
+                    {
+                        Success = false,
+                        FailureCode = "E_AMBIENT_TURN_TIMEOUT",
+                        TimeoutCount = timeoutCount,
+                        RetryCount = retriesUsed
+                    };
+                }
+            }
+            catch
+            {
+                if (attempt >= attempts - 1)
+                {
+                    return new AmbientTurnSendResult
+                    {
+                        Success = false,
+                        FailureCode = "E_AMBIENT_TURN_INVALID",
+                        TimeoutCount = timeoutCount,
+                        RetryCount = retriesUsed
+                    };
+                }
+            }
+        }
+
+        return new AmbientTurnSendResult
+        {
+            Success = false,
+            FailureCode = "E_AMBIENT_TURN_FAILED",
+            TimeoutCount = timeoutCount,
+            RetryCount = retriesUsed
+        };
+    }
+
+    private static bool IsLikelyAmbientTurnPromptEcho(string message, string senderMessage)
+    {
+        var latest = (message ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(latest))
+            return true;
+
+        var sender = (senderMessage ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(sender)
+            && string.Equals(latest, sender, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (latest.StartsWith("Offscreen NPC chat turn", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (latest.StartsWith("{", StringComparison.Ordinal) || latest.StartsWith("[", StringComparison.Ordinal))
+            return true;
+
+        return false;
+    }
+
+    private static bool IsLikelyAmbientExtractionPromptEcho(string message, string senderMessage)
+    {
+        var latest = (message ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(latest))
+            return true;
+
+        var sender = (senderMessage ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(sender)
+            && string.Equals(latest, sender, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (latest.StartsWith("Offscreen NPC chat turn", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
+    private async Task<string> TryGetAmbientExtractionPayloadFromHistoryAsync(
+        Player2Client client,
+        string apiBaseUrl,
+        string player2Key,
+        string npcId,
+        string senderMessage,
+        NpcHistorySnapshot? previousHistorySnapshot)
+    {
+        var attempts = Math.Max(1, AmbientNpcHistoryFallbackAttempts);
+        for (var i = 0; i < attempts; i++)
+        {
+            try
+            {
+                using var historyCts = new CancellationTokenSource(TimeSpan.FromSeconds(AmbientNpcHistorySnapshotTimeoutSeconds));
+                var snapshot = await client.TryGetLatestNpcHistorySnapshotAsync(apiBaseUrl, player2Key, npcId, historyCts.Token);
+                var latest = (snapshot?.LatestMessage ?? string.Empty).Trim();
+                if (!string.IsNullOrWhiteSpace(latest) && !IsLikelyAmbientExtractionPromptEcho(latest, senderMessage))
+                {
+                    var hasBaselineHash = !string.IsNullOrWhiteSpace(previousHistorySnapshot?.SnapshotHash);
+                    var historyChanged = hasBaselineHash
+                        && snapshot is not null
+                        && !string.Equals(snapshot.SnapshotHash, previousHistorySnapshot!.SnapshotHash, StringComparison.Ordinal);
+
+                    if (historyChanged || !hasBaselineHash)
+                        return latest;
+                }
+            }
+            catch
+            {
+            }
+
+            if (i < attempts - 1)
+                await Task.Delay(AmbientNpcHistoryFallbackDelayMs);
+        }
+
+        return string.Empty;
+    }
+
+    private async Task<string> TryGetAmbientTurnMessageFromStreamCacheAsync(
+        string npcId,
+        string senderMessage,
+        string baselineSeenMessage,
+        DateTime sentUtc)
+    {
+        var attempts = Math.Max(1, AmbientNpcStreamFallbackAttempts);
+        for (var i = 0; i < attempts; i++)
+        {
+            string candidate = string.Empty;
+            if (_npcLastNonPlayerMessageById.TryGetValue(npcId, out var nonPlayer)
+                && _npcLastNonPlayerMessageUtcById.TryGetValue(npcId, out var nonPlayerUtc)
+                && nonPlayerUtc >= sentUtc)
+            {
+                candidate = (nonPlayer ?? string.Empty).Trim();
+            }
+            else if (_npcLastReceivedMessageById.TryGetValue(npcId, out var received)
+                && !string.Equals((received ?? string.Empty).Trim(), (baselineSeenMessage ?? string.Empty).Trim(), StringComparison.Ordinal))
+            {
+                candidate = (received ?? string.Empty).Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(candidate) && !IsLikelyAmbientTurnPromptEcho(candidate, senderMessage))
+                return candidate;
+
+            if (i < attempts - 1)
+                await Task.Delay(AmbientNpcStreamFallbackDelayMs);
+        }
+
+        return string.Empty;
+    }
+
+    private async Task<string> TryGetAmbientTurnMessageFromHistoryAsync(
+        Player2Client client,
+        string apiBaseUrl,
+        string player2Key,
+        string npcId,
+        string senderMessage,
+        NpcHistorySnapshot? previousHistorySnapshot)
+    {
+        var attempts = Math.Max(1, AmbientNpcHistoryFallbackAttempts);
+        for (var i = 0; i < attempts; i++)
+        {
+            try
+            {
+                using var historyCts = new CancellationTokenSource(TimeSpan.FromSeconds(AmbientNpcHistorySnapshotTimeoutSeconds));
+                var snapshot = await client.TryGetLatestNpcHistorySnapshotAsync(apiBaseUrl, player2Key, npcId, historyCts.Token);
+                var latest = (snapshot?.LatestMessage ?? string.Empty).Trim();
+                if (!string.IsNullOrWhiteSpace(latest) && !IsLikelyAmbientTurnPromptEcho(latest, senderMessage))
+                {
+                    var hasBaselineHash = !string.IsNullOrWhiteSpace(previousHistorySnapshot?.SnapshotHash);
+                    var historyChanged = hasBaselineHash
+                        && snapshot is not null
+                        && !string.Equals(snapshot.SnapshotHash, previousHistorySnapshot!.SnapshotHash, StringComparison.Ordinal);
+
+                    if (historyChanged || !hasBaselineHash)
+                        return latest;
+                }
+            }
+            catch
+            {
+            }
+
+            if (i < attempts - 1)
+                await Task.Delay(AmbientNpcHistoryFallbackDelayMs);
+        }
+
+        return string.Empty;
+    }
+
+    private (string Topic, bool HasRecentEvent, bool HasMarketSignal) BuildAmbientConversationBaseTopic(string speakerShortName, string listenerShortName)
+    {
+        var recentEvent = _state.TownMemory.Events
+            .Where(ev =>
+                ev.Day >= _state.Calendar.Day - 2
+                && ev.Day <= _state.Calendar.Day
+                && !string.IsNullOrWhiteSpace(ev.Summary))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .FirstOrDefault();
+        if (recentEvent is not null)
+            return ($"recent town event: {recentEvent.Summary}", true, false);
+
+        var marketMover = _state.Economy.Crops
+            .Select(kv => new { Crop = kv.Key, Delta = kv.Value.PriceToday - kv.Value.PriceYesterday })
+            .OrderByDescending(x => Math.Abs(x.Delta))
+            .FirstOrDefault();
+        if (marketMover is not null && Math.Abs(marketMover.Delta) >= 5)
+        {
+            var direction = marketMover.Delta > 0 ? "up" : "down";
+            return ($"market chatter around {marketMover.Crop} prices moving {direction}", false, true);
+        }
+
+        return ($"{speakerShortName} and {listenerShortName} compare practical town observations from today", false, false);
+    }
+
+    private static string BuildAmbientConversationTopicSeed(string baseTopic, AmbientConversationBeat beat)
+    {
+        var topic = string.IsNullOrWhiteSpace(baseTopic)
+            ? "today's town pulse"
+            : baseTopic.Trim();
+        return $"{topic}. Conversation beat: {beat.Label} ({beat.TopicFocus}).";
+    }
+
+    private AmbientConversationBeat SelectAmbientConversationBeat(
+        string speakerShortName,
+        string listenerShortName,
+        string pairKey,
+        bool hasRecentEvent,
+        bool hasMarketSignal)
+    {
+        if (AmbientConversationBeats.Length == 0)
+        {
+            return new AmbientConversationBeat
+            {
+                Id = "default",
+                Label = "town pulse",
+                TopicFocus = "concrete local detail",
+                TurnInstruction = "Share one concrete detail and react to it.",
+                ExtractionHint = "notable details",
+                BaseWeight = 1
+            };
+        }
+
+        var beatPairKey = BuildAmbientBeatPairKey(pairKey, speakerShortName, listenerShortName);
+        var romanceEligible = IsRomanceEligibleAmbientPair(speakerShortName, listenerShortName);
+        var isEvening = Game1.timeOfDay >= 1700;
+        var isNight = Game1.timeOfDay >= 2000;
+        var weighted = new List<(AmbientConversationBeat Beat, int Weight)>(AmbientConversationBeats.Length);
+
+        foreach (var beat in AmbientConversationBeats)
+        {
+            var weight = Math.Max(1, beat.BaseWeight);
+            switch (beat.Id)
+            {
+                case "romance":
+                    weight += romanceEligible ? 7 : -4;
+                    if (isEvening)
+                        weight += 3;
+                    if (isNight)
+                        weight += 1;
+                    break;
+                case "intrigue":
+                    if (hasRecentEvent)
+                        weight += 4;
+                    if (isEvening)
+                        weight += 2;
+                    break;
+                case "mystery":
+                    if (hasRecentEvent)
+                        weight += 4;
+                    if (isNight)
+                        weight += 3;
+                    break;
+                case "market":
+                    if (hasMarketSignal)
+                        weight += 7;
+                    break;
+                case "work":
+                    if (hasMarketSignal)
+                        weight += 3;
+                    break;
+                case "community":
+                    if (hasRecentEvent)
+                        weight += 3;
+                    break;
+            }
+
+            if (_ambientBeatUsageTodayByBeatId.TryGetValue(beat.Id, out var usedToday) && usedToday > 0)
+            {
+                weight = Math.Max(1, weight - (usedToday * AmbientConversationBeatUsagePenalty));
+            }
+
+            if (!string.IsNullOrWhiteSpace(beatPairKey)
+                && _ambientNpcLastBeatByPairKey.TryGetValue(beatPairKey, out var lastBeat)
+                && _ambientNpcLastBeatDayByPairKey.TryGetValue(beatPairKey, out var lastBeatDay)
+                && string.Equals(lastBeat, beat.Id, StringComparison.OrdinalIgnoreCase)
+                && _state.Calendar.Day - lastBeatDay <= AmbientConversationBeatRepeatCooldownDays)
+            {
+                weight = Math.Max(1, weight / 4);
+            }
+
+            weighted.Add((beat, weight));
+        }
+
+        var totalWeight = 0;
+        foreach (var candidate in weighted)
+            totalWeight += Math.Max(1, candidate.Weight);
+        if (totalWeight <= 0)
+            return AmbientConversationBeats[0];
+
+        var roll = _ambientNpcRandom.Next(totalWeight);
+        foreach (var candidate in weighted)
+        {
+            var weight = Math.Max(1, candidate.Weight);
+            if (roll < weight)
+                return candidate.Beat;
+            roll -= weight;
+        }
+
+        return weighted[^1].Beat;
+    }
+
+    private void TrackAmbientConversationBeatUsage(string pairKey, string speakerShortName, string listenerShortName, string beatId)
+    {
+        if (string.IsNullOrWhiteSpace(beatId))
+            return;
+
+        _ambientBeatUsageTodayByBeatId.AddOrUpdate(beatId, 1, (_, value) => value + 1);
+        var beatPairKey = BuildAmbientBeatPairKey(pairKey, speakerShortName, listenerShortName);
+        if (string.IsNullOrWhiteSpace(beatPairKey))
+            return;
+
+        _ambientNpcLastBeatByPairKey[beatPairKey] = beatId;
+        _ambientNpcLastBeatDayByPairKey[beatPairKey] = _state.Calendar.Day;
+    }
+
+    private static string BuildAmbientBeatPairKey(string pairKey, string speakerShortName, string listenerShortName)
+    {
+        if (!string.IsNullOrWhiteSpace(pairKey))
+            return pairKey.Trim().ToLowerInvariant();
+
+        var left = (speakerShortName ?? string.Empty).Trim().ToLowerInvariant();
+        var right = (listenerShortName ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return string.Empty;
+
+        return string.Compare(left, right, StringComparison.OrdinalIgnoreCase) <= 0
+            ? $"{left}|{right}"
+            : $"{right}|{left}";
+    }
+
+    private static bool IsRomanceEligibleAmbientPair(string speakerShortName, string listenerShortName)
+    {
+        if (string.IsNullOrWhiteSpace(speakerShortName) || string.IsNullOrWhiteSpace(listenerShortName))
+            return false;
+        if (speakerShortName.Equals(listenerShortName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return RomanceForwardNpcNames.Contains(speakerShortName)
+            && RomanceForwardNpcNames.Contains(listenerShortName);
+    }
+
+    private static string BuildAmbientConversationTurnMessage(
+        int turnNumber,
+        int turnDepth,
+        string topicSeed,
+        AmbientConversationBeat beat,
+        string? priorLine)
+    {
+        var beatDirective = string.IsNullOrWhiteSpace(beat.TurnInstruction)
+            ? "Use one concrete detail and avoid generic greetings."
+            : beat.TurnInstruction;
+
+        if (turnNumber <= 1 || string.IsNullOrWhiteSpace(priorLine))
+        {
+            return
+                $"Offscreen NPC chat turn 1/{turnDepth}. Discuss {topicSeed}. " +
+                $"Beat guidance: {beatDirective} Open with a concrete claim or question. " +
+                "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+        }
+
+        return
+            $"Offscreen NPC chat turn {turnNumber}/{turnDepth}. Continue naturally from this line: \"{priorLine}\". " +
+            $"Keep beat focus on {beat.Label}. {beatDirective} Avoid generic pleasantries. " +
+            "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+    }
+
+    private static string BuildAmbientConversationExtractionPrompt(
+        string speakerShortName,
+        string listenerShortName,
+        string speakerNpcId,
+        string listenerNpcId,
+        string topicSeed,
+        AmbientConversationBeat beat,
+        IReadOnlyList<AmbientConversationLine> transcript)
+    {
+        var transcriptLines = transcript
+            .Select(line => $"T{line.Turn} {line.SpeakerShortName}->{line.ListenerShortName}: {line.Message}")
+            .ToArray();
+        var transcriptBlock = transcriptLines.Length == 0
+            ? "(none)"
+            : string.Join(" | ", transcriptLines);
+
+        return string.Join(" ",
+            $"You are {speakerShortName}. You just had an offscreen chat with {listenerShortName}.",
+            $"Topic seed: {topicSeed}.",
+            $"Conversation beat: {beat.Label}.",
+            $"Participant NPC IDs: speaker={speakerNpcId}, listener={listenerNpcId}.",
+            $"Transcript: {transcriptBlock}.",
+            "Emit JSON command objects only when strongly justified by the transcript.",
+            "Target: if transcript contains a concrete opinion, preference, promise, relationship signal, scheme, suspicion, or notable event detail, emit at least one record_memory_fact.",
+            $"Beat extraction focus: {beat.ExtractionHint}.",
+            "Budget: maximum 3 commands total.",
+            "Allowed mix: either one record_town_event, or up to two record_memory_fact commands (max one per participant npc_id), plus optional one publish_rumor.",
+            "If emitting record_memory_fact, set npc_id to one of the participant IDs above.",
+            "Never emit publish_article.",
+            "If nothing notable happened, reply with one short plain text sentence and no command.");
+    }
+
+    private bool IsAmbientConversationInterruptedByPlayer(string speakerNpcId, string listenerNpcId)
+    {
+        if (CountPendingPlayerChatResponses() > 0
+            || HasBlockingPendingPlayer2Response()
+            || !string.IsNullOrWhiteSpace(_pendingUiMayorWorkRequest))
+            return true;
+
+        if (_npcUiPendingById.TryGetValue(speakerNpcId, out var speakerPending) && speakerPending > 0)
+            return true;
+
+        if (_npcUiPendingById.TryGetValue(listenerNpcId, out var listenerPending) && listenerPending > 0)
+            return true;
+
+        return false;
+    }
+
+    private void TryApplyPendingAmbientConversationCompletions()
+    {
+        while (_pendingAmbientConversationCompletions.TryDequeue(out var completion))
+        {
+            var status = completion.Completed
+                ? "completed"
+                : $"aborted({completion.AbortReason})";
+            var beatSuffix = string.IsNullOrWhiteSpace(completion.BeatId)
+                ? string.Empty
+                : $" beat={completion.BeatId}";
+            Monitor.Log(
+                $"Ambient NPC multi-turn {status}: {completion.SpeakerShortName}->{completion.ListenerShortName} turns={completion.TurnCompleted}/{completion.TurnTarget} duration_ms={completion.DurationMs:F0} retries={completion.RetryCount} timeouts={completion.TimeoutCount}.{beatSuffix}",
+                LogLevel.Debug);
+
+            foreach (var transcriptLine in completion.Transcript)
+            {
+                Monitor.Log(
+                    $"Ambient transcript T{transcriptLine.Turn} {transcriptLine.SpeakerShortName}->{transcriptLine.ListenerShortName}: {transcriptLine.Message}",
+                    LogLevel.Trace);
+            }
+
+            if (!string.IsNullOrWhiteSpace(completion.SpeakerNpcId))
+                _npcLastContextTagById[completion.SpeakerNpcId] = "npc_to_npc_ambient";
+            if (!string.IsNullOrWhiteSpace(completion.ListenerNpcId))
+                _npcLastContextTagById[completion.ListenerNpcId] = "npc_to_npc_ambient";
+
+            var appliedStructuredMemoryOrEvent = false;
+            foreach (var commandLine in completion.CommandLines)
+            {
+                var attemptedCommand = TryExtractCommandNameFromLine(commandLine);
+                var applied = TryApplyNpcCommandFromLine(commandLine);
+                if (!applied || string.IsNullOrWhiteSpace(attemptedCommand))
+                    continue;
+
+                if (attemptedCommand.Equals("record_memory_fact", StringComparison.OrdinalIgnoreCase)
+                    || attemptedCommand.Equals("record_town_event", StringComparison.OrdinalIgnoreCase))
+                {
+                    appliedStructuredMemoryOrEvent = true;
+                }
+            }
+
+            TryPersistAmbientConversationFallbackMemory(completion, appliedStructuredMemoryOrEvent);
+
+            if (completion.OverhearEligible
+                && completion.Completed
+                && !string.IsNullOrWhiteSpace(completion.OverhearSnippet)
+                && ShouldShowAmbientOverhearMoment())
+            {
+                TryQueueAmbientOverheardGossipEvent(completion);
+                _ambientLastOverhearDay = _state.Calendar.Day;
+            }
+        }
+    }
+
+    private void TryQueueAmbientOverheardGossipEvent(AmbientConversationCompletion completion)
+    {
+        if (_townMemoryService is null)
+            return;
+
+        var snippet = NpcConversationService.NormalizeOverhearSnippet(completion.OverhearSnippet, 100);
+        if (string.IsNullOrWhiteSpace(snippet))
+            return;
+
+        var speaker = (completion.SpeakerShortName ?? string.Empty).Trim();
+        var listener = (completion.ListenerShortName ?? string.Empty).Trim();
+        var location = Game1.currentLocation?.Name ?? "Town";
+        var summary = string.IsNullOrWhiteSpace(speaker) || string.IsNullOrWhiteSpace(listener)
+            ? $"Town gossip says: {snippet}"
+            : $"Town gossip says {speaker} told {listener}: {snippet}";
+        summary = NpcConversationService.NormalizeOverhearSnippet(summary, 150);
+        if (string.IsNullOrWhiteSpace(summary) || summary.Length < 12)
+            return;
+
+        _townMemoryService.RecordEvent(
+            _state,
+            "gossip",
+            summary,
+            location,
+            _state.Calendar.Day,
+            severity: 2,
+            visibility: "public",
+            sourceNpc: string.IsNullOrWhiteSpace(speaker) ? listener : speaker,
+            tags: new[] { "ambient", "npc_chat", "overheard", "ambient_overheard", "gossip" });
+
+        Monitor.Log(
+            $"Queued ambient overhear gossip cue for player dialogue: {completion.SpeakerShortName}->{completion.ListenerShortName}.",
+            LogLevel.Trace);
+    }
+
+    private void TryPersistAmbientConversationFallbackMemory(AmbientConversationCompletion completion, bool hasStructuredMemoryOrEvent)
+    {
+        if (hasStructuredMemoryOrEvent || completion.Transcript.Count == 0)
+            return;
+
+        var topic = BuildAmbientConversationFallbackTopic(completion.Transcript);
+        var persistedAny = false;
+
+        persistedAny |= TryApplyAmbientFallbackMemoryForParticipant(
+            completion.SpeakerNpcId,
+            completion.SpeakerShortName,
+            completion.ListenerShortName,
+            completion.PairKey,
+            topic,
+            slot: "speaker");
+        persistedAny |= TryApplyAmbientFallbackMemoryForParticipant(
+            completion.ListenerNpcId,
+            completion.ListenerShortName,
+            completion.SpeakerShortName,
+            completion.PairKey,
+            topic,
+            slot: "listener");
+
+        if (!persistedAny)
+        {
+            TryRecordAmbientConversationFallbackEvent(completion, topic);
+            return;
+        }
+
+        Monitor.Log(
+            $"Ambient fallback memory persisted for {completion.SpeakerShortName}<->{completion.ListenerShortName}: topic='{TruncateDebugText(topic, 90)}'.",
+            LogLevel.Debug);
+    }
+
+    private bool TryApplyAmbientFallbackMemoryForParticipant(
+        string npcId,
+        string npcShortName,
+        string otherNpcShortName,
+        string pairKey,
+        string topic,
+        string slot)
+    {
+        if (string.IsNullOrWhiteSpace(npcId))
+            return false;
+
+        var memoryText = BuildAmbientConversationMemoryText(otherNpcShortName, topic);
+        if (string.IsNullOrWhiteSpace(memoryText))
+            return false;
+
+        var intentId = BuildSyntheticAmbientMemoryIntentId(npcId, pairKey, _state.Calendar.Day, slot);
+        var payload = JsonSerializer.Serialize(new
+        {
+            intent_id = intentId,
+            npc_id = npcId,
+            command = "record_memory_fact",
+            arguments = new
+            {
+                category = "event",
+                text = memoryText,
+                weight = 2
+            }
+        });
+
+        if (TryApplyNpcCommandFromLine(payload))
+            return true;
+
+        if (_npcMemoryService is null || string.IsNullOrWhiteSpace(npcShortName))
+            return false;
+
+        _npcMemoryService.WriteFact(_state, npcShortName, "event", memoryText, _state.Calendar.Day, weight: 2);
+        return true;
+    }
+
+    private void TryRecordAmbientConversationFallbackEvent(AmbientConversationCompletion completion, string topic)
+    {
+        if (_townMemoryService is null)
+            return;
+
+        var speaker = (completion.SpeakerShortName ?? string.Empty).Trim();
+        var listener = (completion.ListenerShortName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(speaker) && string.IsNullOrWhiteSpace(listener))
+            return;
+
+        var sourceNpc = string.IsNullOrWhiteSpace(speaker) ? listener : speaker;
+        var location = Game1.currentLocation?.Name ?? "Town";
+        var summary = string.IsNullOrWhiteSpace(speaker) || string.IsNullOrWhiteSpace(listener)
+            ? $"Neighbors traded town chatter about {topic}."
+            : $"{speaker} and {listener} traded town chatter about {topic}.";
+        summary = NpcConversationService.NormalizeOverhearSnippet(summary, 130);
+        if (string.IsNullOrWhiteSpace(summary) || summary.Length < 8)
+            return;
+
+        _townMemoryService.RecordEvent(
+            _state,
+            "social",
+            summary,
+            location,
+            _state.Calendar.Day,
+            severity: 1,
+            visibility: "local",
+            sourceNpc: sourceNpc,
+            tags: new[] { "ambient", "npc_chat" });
+    }
+
+    private static string BuildAmbientConversationFallbackTopic(IReadOnlyList<AmbientConversationLine> transcript)
+    {
+        const string defaultTopic = "day-to-day town matters";
+        for (var i = transcript.Count - 1; i >= 0; i--)
+        {
+            var candidate = NpcConversationService.NormalizeOverhearSnippet(transcript[i].Message, 90);
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+
+            candidate = Regex.Replace(candidate, "^<[^>]+>\\s*", string.Empty, RegexOptions.CultureInvariant).Trim();
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+
+            var lowered = candidate.ToLowerInvariant();
+            if (ContainsAny(
+                    lowered,
+                    "secret",
+                    "private",
+                    "between us",
+                    "dont tell",
+                    "don't tell",
+                    "keep this between",
+                    "confidential"))
+            {
+                return defaultTopic;
+            }
+
+            return candidate;
+        }
+
+        return defaultTopic;
+    }
+
+    private static string BuildAmbientConversationMemoryText(string otherNpcShortName, string topic)
+    {
+        var other = (otherNpcShortName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(other))
+            other = "a neighbor";
+
+        var cleanTopic = (topic ?? string.Empty).Trim().Trim('"').Trim('\'');
+        if (string.IsNullOrWhiteSpace(cleanTopic))
+            cleanTopic = "day-to-day town matters";
+
+        cleanTopic = NpcConversationService.NormalizeOverhearSnippet(cleanTopic, 85);
+        var text = $"Spoke with {other} about {cleanTopic}.";
+        if (text.Length > 140)
+            text = text[..140];
+        return text;
+    }
+
+    private static string BuildSyntheticAmbientMemoryIntentId(string npcId, string pairKey, int day, string slot)
+    {
+        var baseText = $"synth_ambient_mem_{day}_{npcId}_{pairKey}_{slot}".ToLowerInvariant();
+        var sanitized = Regex.Replace(baseText, @"[^a-z0-9_]+", "_", RegexOptions.CultureInvariant).Trim('_');
+        return sanitized.Length <= 120 ? sanitized : sanitized[..120];
+    }
+
+    private bool ShouldShowAmbientOverhearMoment()
+    {
+        if (!_config.EnableAmbientNpcOverhearMoments)
+            return false;
+
+        var cadenceDays = Math.Max(1, _config.AmbientNpcOverhearCadenceDays);
+        var dayDelta = _state.Calendar.Day - _ambientLastOverhearDay;
+        if (dayDelta < cadenceDays)
+            return false;
+
+        return true;
+    }
+
+    private bool IsAmbientOverhearCandidateWindow()
+    {
+        if (!_config.EnableAmbientNpcOverhearMoments)
+            return false;
+
+        var locationName = Game1.currentLocation?.Name ?? string.Empty;
+        if (!IsLikelyPublicTownLocation(locationName))
+            return false;
+
+        var time = Game1.timeOfDay;
+        return time >= 900 && time <= 2200;
+    }
+
+    private string BuildAmbientOverheardGossipCueBlock(string effectiveContextTag, string? npcName, string? playerText)
+    {
+        if (!_config.EnableAmbientNpcOverhearMoments)
+            return string.Empty;
+
+        if (string.IsNullOrWhiteSpace(effectiveContextTag)
+            || !effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        var today = _state.Calendar.Day;
+        var candidates = _state.TownMemory.Events
+            .Where(ev =>
+                ev.Day >= today - 3
+                && ev.Day <= today
+                && !string.IsNullOrWhiteSpace(ev.Summary)
+                && ev.Tags.Any(tag => string.Equals(tag, "ambient_overheard", StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .Take(8)
+            .ToList();
+        if (candidates.Count == 0)
+            return string.Empty;
+
+        var cueChance = IsLikelySmallTalkOpen(playerText) ? 0.65d : 0.22d;
+        if (_ambientNpcRandom.NextDouble() > cueChance)
+            return string.Empty;
+
+        var unconsumed = candidates
+            .Where(ev => !_state.Facts.Facts.ContainsKey(BuildAmbientOverheardCueFactKey(ev.EventId)))
+            .ToList();
+        if (unconsumed.Count == 0)
+            return string.Empty;
+
+        var selected = unconsumed[_ambientNpcRandom.Next(unconsumed.Count)];
+        var factKey = BuildAmbientOverheardCueFactKey(selected.EventId);
+        _state.Facts.Facts[factKey] = new FactValue
+        {
+            Value = true,
+            SetDay = today,
+            Source = "ambient_overheard"
+        };
+
+        var speaker = string.IsNullOrWhiteSpace(npcName) ? "This villager" : npcName.Trim();
+        var cueText = NpcConversationService.NormalizeOverhearSnippet(selected.Summary, 140);
+        if (string.IsNullOrWhiteSpace(cueText))
+            return string.Empty;
+
+        return $"AMBIENT_GOSSIP_CUE: {speaker} recently heard this town chatter and can mention it naturally: {cueText}";
+    }
+
+    private string BuildReferencedNpcWhereaboutsBlock(
+        string? speakerNpcName,
+        string? playerText,
+        string? referencedNpcName,
+        string speakerLocationInternalName,
+        string effectiveContextTag)
+    {
+        if (!Context.IsWorldReady
+            || !effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        if (!IsPlayerAskingNpcWhereabouts(playerText) && string.IsNullOrWhiteSpace(referencedNpcName))
+            return string.Empty;
+
+        var referencedNames = FindReferencedNpcNamesForWhereabouts(playerText, referencedNpcName, maxMatches: 2);
+        if (referencedNames.Count == 0)
+            return string.Empty;
+
+        var speakerToken = NormalizeTargetToken(speakerNpcName ?? string.Empty);
+        var parts = new List<string>();
+        foreach (var name in referencedNames)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            var nameToken = NormalizeTargetToken(name);
+            if (!string.IsNullOrWhiteSpace(speakerToken)
+                && string.Equals(nameToken, speakerToken, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var npc = ResolveNpcByName(name);
+            if (npc is null)
+            {
+                parts.Add($"{name}: unknown_current_location");
+                continue;
+            }
+
+            var npcLocation = BuildPromptLocationContextForNpc(npc);
+            var sameLocationAsSpeaker = !string.IsNullOrWhiteSpace(speakerLocationInternalName)
+                && string.Equals(npcLocation.InternalName, speakerLocationInternalName, StringComparison.OrdinalIgnoreCase);
+            var resolvedName = string.IsNullOrWhiteSpace(npc.displayName) ? npc.Name : npc.displayName;
+            var safeName = string.IsNullOrWhiteSpace(resolvedName) ? name : resolvedName;
+            parts.Add(
+                $"{safeName}: exact='{npcLocation.ExactPhrase}' internal='{npcLocation.InternalName}' same_location_as_speaker={sameLocationAsSpeaker} tile=({npcLocation.TileX},{npcLocation.TileY})");
+        }
+
+        if (parts.Count == 0)
+            return string.Empty;
+
+        return $"LIVE_NPC_WHEREABOUTS: [{string.Join("; ", parts)}].";
+    }
+
+    private List<string> FindReferencedNpcNamesForWhereabouts(string? playerText, string? referencedNpcName, int maxMatches)
+    {
+        var capped = Math.Max(1, maxMatches);
+        var found = new List<string>(capped);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddName(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return;
+
+            var trimmed = raw.Trim();
+            var token = NormalizeTargetToken(trimmed);
+            if (string.IsNullOrWhiteSpace(token) || !seen.Add(token))
+                return;
+
+            found.Add(trimmed);
+        }
+
+        AddName(referencedNpcName);
+
+        if (!string.IsNullOrWhiteSpace(playerText))
+        {
+            foreach (var rosterName in GetExpandedNpcRoster().OrderByDescending(name => name.Length))
+            {
+                if (!ContainsTargetToken(playerText, rosterName))
+                    continue;
+
+                AddName(rosterName);
+                if (found.Count >= capped)
+                    break;
+            }
+
+            if (found.Count < capped && _config.EnableCustomNpcFramework && _customNpcRegistry is not null)
+            {
+                var customNames = FindCustomNpcNamesInText(playerText, maxMatches: capped * 2);
+                foreach (var customName in customNames)
+                {
+                    AddName(customName);
+                    if (found.Count >= capped)
+                        break;
+                }
+            }
+        }
+
+        if (found.Count <= capped)
+            return found;
+
+        return found.Take(capped).ToList();
+    }
+
+    private PromptLocationContext BuildPromptLocationContextForNpc(NPC npc)
+    {
+        if (npc is null)
+            return new PromptLocationContext();
+
+        GameLocation? location = null;
+        NPC? locatedNpc = null;
+
+        if (Game1.currentLocation is not null)
+        {
+            locatedNpc = Game1.currentLocation.characters.FirstOrDefault(candidate =>
+                candidate is not null && IsSameNpcIdentity(candidate, npc));
+            if (locatedNpc is not null)
+                location = Game1.currentLocation;
+        }
+
+        if (location is null)
+        {
+            foreach (var candidateLocation in Game1.locations)
+            {
+                var match = candidateLocation?.characters?.FirstOrDefault(candidate =>
+                    candidate is not null && IsSameNpcIdentity(candidate, npc));
+                if (match is null)
+                    continue;
+
+                location = candidateLocation;
+                locatedNpc = match;
+                break;
+            }
+        }
+
+        location ??= Game1.currentLocation;
+        locatedNpc ??= npc;
+        if (location is null)
+            return new PromptLocationContext();
+
+        var anchorTile = locatedNpc.Tile;
+        var tileX = Math.Max(0, (int)Math.Floor(anchorTile.X));
+        var tileY = Math.Max(0, (int)Math.Floor(anchorTile.Y));
+        var internalName = string.IsNullOrWhiteSpace(location.Name)
+            ? location.GetType().Name
+            : location.Name;
+        var displayName = ResolvePromptLocationDisplayName(internalName);
+        var exposure = location.IsOutdoors ? "outdoors" : "indoors";
+
+        var nearbyLandmark = "none";
+        if (location.IsOutdoors && TryResolveNearbyLandmark(location, anchorTile, out var resolvedLandmark))
+            nearbyLandmark = resolvedLandmark;
+
+        var microArea = ResolvePromptLocationMicroArea(location, internalName, tileX, tileY, nearbyLandmark, out var precision);
+        var exactPhrase = location.IsOutdoors
+            ? (string.Equals(microArea, "none", StringComparison.OrdinalIgnoreCase)
+                ? $"In {displayName}"
+                : $"In {displayName}, {microArea}")
+            : $"Inside {displayName}";
+
+        return new PromptLocationContext
+        {
+            InternalName = internalName,
+            DisplayName = displayName,
+            ExactPhrase = exactPhrase,
+            Exposure = exposure,
+            NearbyLandmark = nearbyLandmark,
+            TileX = tileX,
+            TileY = tileY,
+            MicroArea = microArea,
+            Precision = precision
+        };
+    }
+
+    private static bool IsPlayerAskingNpcWhereabouts(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var normalized = text.Trim().ToLowerInvariant();
+        return ContainsAny(
+            normalized,
+            "where is ",
+            "where's ",
+            "where are ",
+            "have you seen ",
+            "do you know where ",
+            "any idea where ",
+            "where can i find ");
+    }
+
+    private static string BuildAmbientOverheardCueFactKey(string eventId)
+    {
+        var normalizedEventId = Regex.Replace(
+            (eventId ?? string.Empty).Trim().ToLowerInvariant(),
+            @"[^a-z0-9:_-]+",
+            "_",
+            RegexOptions.CultureInvariant)
+            .Trim('_');
+        if (string.IsNullOrWhiteSpace(normalizedEventId))
+            normalizedEventId = "unknown";
+
+        return $"ambient:overheard:player_cue:{normalizedEventId}";
+    }
+
+    private static string BuildAmbientOverhearSnippet(IReadOnlyList<AmbientConversationLine> transcript)
+    {
+        if (transcript.Count == 0)
+            return string.Empty;
+
+        var lastLine = transcript[^1];
+        var firstSnippet = NpcConversationService.NormalizeOverhearSnippet(lastLine.Message, 80);
+        if (string.IsNullOrWhiteSpace(firstSnippet))
+            return string.Empty;
+
+        var normalizedLower = firstSnippet.ToLowerInvariant();
+        if (ContainsAny(
+                normalizedLower,
+                "secret",
+                "private",
+                "between us",
+                "dont tell",
+                "don't tell",
+                "keep this between",
+                "confidential"))
+        {
+            return string.Empty;
+        }
+
+        if (transcript.Count < 2)
+            return firstSnippet;
+
+        var previousLine = transcript[^2];
+        var secondSnippet = NpcConversationService.NormalizeOverhearSnippet(previousLine.Message, 60);
+        if (string.IsNullOrWhiteSpace(secondSnippet))
+            return firstSnippet;
+
+        var combined = $"{previousLine.SpeakerShortName}: {secondSnippet} / {lastLine.SpeakerShortName}: {firstSnippet}";
+        return NpcConversationService.NormalizeOverhearSnippet(combined, 120);
+    }
+
+    private static IReadOnlyList<string> TryBuildImmediateNpcCommandLines(string? payload, string npcId, int maxCount)
+    {
+        var trimmed = payload?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed) || maxCount <= 0)
+            return Array.Empty<string>();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            var lines = new List<string>();
+            CollectImmediateCommandLines(doc.RootElement, npcId, lines, maxCount);
+            return lines;
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    private static void CollectImmediateCommandLines(JsonElement element, string npcId, List<string> lines, int maxCount)
+    {
+        if (lines.Count >= maxCount)
+            return;
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (TryHasTopLevelCommand(element))
+            {
+                lines.Add(BuildImmediateLineWithNpcId(element, npcId));
+                return;
+            }
+
+            foreach (var prop in element.EnumerateObject())
+            {
+                if (prop.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                {
+                    CollectImmediateCommandLines(prop.Value, npcId, lines, maxCount);
+                    if (lines.Count >= maxCount)
+                        return;
+                }
+            }
+
+            return;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+            return;
+
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+            {
+                CollectImmediateCommandLines(item, npcId, lines, maxCount);
+                if (lines.Count >= maxCount)
+                    return;
+            }
+        }
+    }
+
+    private static IReadOnlyList<string> FilterAmbientConversationCommandBudget(
+        IReadOnlyList<string> candidateLines,
+        string speakerNpcId,
+        string listenerNpcId)
+    {
+        if (candidateLines.Count == 0)
+            return Array.Empty<string>();
+
+        var selected = new List<string>(AmbientNpcExtractionMaxCommands);
+        var usedEventCommand = false;
+        var usedRumorCommand = false;
+        var usedMemoryNpcIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var allowedMemoryNpcIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(speakerNpcId))
+            allowedMemoryNpcIds.Add(speakerNpcId.Trim());
+        if (!string.IsNullOrWhiteSpace(listenerNpcId))
+            allowedMemoryNpcIds.Add(listenerNpcId.Trim());
+
+        foreach (var line in candidateLines)
+        {
+            if (selected.Count >= AmbientNpcExtractionMaxCommands)
+                break;
+
+            var command = TryExtractCommandNameFromLine(line);
+            if (string.IsNullOrWhiteSpace(command))
+                continue;
+
+            if (command.Equals("record_town_event", StringComparison.OrdinalIgnoreCase))
+            {
+                if (usedEventCommand || usedMemoryNpcIds.Count > 0)
+                    continue;
+
+                usedEventCommand = true;
+                selected.Add(line);
+                continue;
+            }
+
+            if (command.Equals("record_memory_fact", StringComparison.OrdinalIgnoreCase))
+            {
+                if (usedEventCommand)
+                    continue;
+
+                var sourceNpcId = (TryExtractNpcIdFromLine(line) ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(sourceNpcId))
+                    continue;
+
+                if (allowedMemoryNpcIds.Count > 0 && !allowedMemoryNpcIds.Contains(sourceNpcId))
+                    continue;
+
+                if (!usedMemoryNpcIds.Add(sourceNpcId))
+                    continue;
+
+                selected.Add(line);
+                continue;
+            }
+
+            if (command.Equals("publish_rumor", StringComparison.OrdinalIgnoreCase))
+            {
+                if (usedRumorCommand)
+                    continue;
+
+                usedRumorCommand = true;
+                selected.Add(line);
+            }
+        }
+
+        return selected;
+    }
+
+    private static string TryExtractImmediateResponseMessageFromPayload(string? payload, string npcId)
+    {
+        var line = TryBuildImmediateNpcResponseLine(payload, npcId);
+        if (string.IsNullOrWhiteSpace(line))
+            return string.Empty;
+
+        var topLevelMessage = TryExtractMessageFromLine(line);
+        if (!string.IsNullOrWhiteSpace(topLevelMessage))
+            return topLevelMessage;
+
+        var trimmedPayload = payload?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmedPayload))
+            return string.Empty;
+
+        try
+        {
+            using var payloadDoc = JsonDocument.Parse(trimmedPayload);
+            if (TryExtractLatestImmediateMessage(payloadDoc.RootElement, out var extractedMessage))
+                return extractedMessage.Trim();
+        }
+        catch
+        {
+        }
+
+        return string.Empty;
     }
 
     private bool IsAmbientNpcConversationCoolingDown(string npcId)
@@ -2427,11 +4203,12 @@ public sealed class ModEntry : Mod
         _ambientNpcLastConversationUtcByNpcId[npcId] = DateTime.UtcNow;
     }
 
-    private bool TryPickAmbientNpcConversationPair(out string speakerShortName, out string speakerNpcId, out string listenerShortName)
+    private bool TryPickAmbientNpcConversationPair(out string speakerShortName, out string speakerNpcId, out string listenerShortName, out string? listenerNpcId)
     {
         speakerShortName = string.Empty;
         speakerNpcId = string.Empty;
         listenerShortName = string.Empty;
+        listenerNpcId = null;
 
         var roster = _player2NpcIdsByShortName
             .Where(kv => !string.IsNullOrWhiteSpace(kv.Key) && !string.IsNullOrWhiteSpace(kv.Value))
@@ -2447,6 +4224,7 @@ public sealed class ModEntry : Mod
             speakerShortName = "Lewis";
             speakerNpcId = _activeNpcId!;
             listenerShortName = "Town";
+            listenerNpcId = null;
             return true;
         }
 
@@ -2459,6 +4237,7 @@ public sealed class ModEntry : Mod
         if (roster.Count == 1)
         {
             listenerShortName = "Town";
+            listenerNpcId = null;
             return true;
         }
 
@@ -2471,10 +4250,13 @@ public sealed class ModEntry : Mod
         if (listeners.Count == 0)
         {
             listenerShortName = "Town";
+            listenerNpcId = null;
             return true;
         }
 
         listenerShortName = listeners[_ambientNpcRandom.Next(listeners.Count)];
+        if (!_player2NpcIdsByShortName.TryGetValue(listenerShortName, out listenerNpcId))
+            listenerNpcId = null;
         return true;
     }
 
@@ -6429,7 +8211,48 @@ public sealed class ModEntry : Mod
             var immediateLine = TryBuildImmediateNpcResponseLine(immediatePayload, npcId);
             if (!string.IsNullOrWhiteSpace(immediateLine))
             {
-                _pendingPlayer2ChatLines.Enqueue(immediateLine);
+                var immediateMessage = TryExtractMessageFromLine(immediateLine);
+                if (IsLikelyAmbientToPlayerBleed(npcId, message, immediateMessage))
+                {
+                    Monitor.Log("Filtered likely ambient bleed from immediate player-chat response; retrying once for a fresh player-facing line.", LogLevel.Debug);
+                    var retriedDelivered = false;
+                    try
+                    {
+                        using var retryCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                        var retryPayload = _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, npcId, req, retryCts.Token)
+                            .GetAwaiter()
+                            .GetResult();
+                        var retryLine = TryBuildImmediateNpcResponseLine(retryPayload, npcId);
+                        if (!string.IsNullOrWhiteSpace(retryLine))
+                        {
+                            var retryMessage = TryExtractMessageFromLine(retryLine);
+                            if (!IsLikelyAmbientToPlayerBleed(npcId, message, retryMessage))
+                            {
+                                _pendingPlayer2ChatLines.Enqueue(retryLine);
+                                retriedDelivered = true;
+                                Monitor.Log("Player-chat ambient-bleed repair retry produced a fresh reply.", LogLevel.Trace);
+                            }
+                            else if (!string.IsNullOrWhiteSpace(retryMessage))
+                            {
+                                immediateMessage = retryMessage;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Monitor.Log($"Player-chat ambient-bleed repair retry failed: {ex.Message}", LogLevel.Trace);
+                    }
+
+                    if (!retriedDelivered)
+                    {
+                        Monitor.Log("Ambient-bleed repair retry did not yield a fresh line; waiting for history fallback.", LogLevel.Trace);
+                        StartPlayerChatHistoryFallback(npcId, previousHistorySnapshot, message, immediateMessage);
+                    }
+                }
+                else
+                {
+                    _pendingPlayer2ChatLines.Enqueue(immediateLine);
+                }
             }
             else
             {
@@ -7030,6 +8853,41 @@ public sealed class ModEntry : Mod
         return IsPlayer2RosterReady();
     }
 
+    private bool IsPlayer2ReadyForAmbientConversation()
+    {
+        if (!_config.EnablePlayer2)
+            return true;
+
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(_activeNpcId))
+            return false;
+
+        return IsPlayer2RosterReady();
+    }
+
+    private bool HasBlockingPendingPlayer2Response()
+    {
+        if (_player2PendingResponseCount <= 0)
+            return false;
+
+        if (_player2LastChatSentUtc == default)
+        {
+            _player2PendingResponseCount = 0;
+            _streamChatAwaitingResponse = false;
+            return false;
+        }
+
+        var age = DateTime.UtcNow - _player2LastChatSentUtc;
+        if (age > TimeSpan.FromSeconds(35))
+        {
+            Monitor.Log("Cleared stale pending Player2 response counter before ambient scheduling.", LogLevel.Trace);
+            _player2PendingResponseCount = 0;
+            _streamChatAwaitingResponse = false;
+            return false;
+        }
+
+        return true;
+    }
+
     private bool IsPlayer2RosterReady()
     {
         if (string.IsNullOrWhiteSpace(_activeNpcId))
@@ -7106,6 +8964,100 @@ public sealed class ModEntry : Mod
         var joulesText = joules.HasValue && j is not null ? joules.Value.ToString() : "n/a";
 
         Monitor.Log($"P2 health | login={loggedIn} npc={npc} stream={running}/{_player2StreamDesired} joules={joulesText} pending={_player2PendingResponseCount} lastLineAgo={lineAgo} lastCmd={_player2LastCommandApplied} lastCmdAgo={cmdAgo}", LogLevel.Info);
+    }
+
+    private void OnDebugAmbientPairChatCommand(string name, string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Monitor.Log("Usage: slrpg_debug_ambient_pair_chat <speaker> <listener> [topic]", LogLevel.Info);
+            return;
+        }
+
+        if (!_config.EnablePlayer2 || _player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+        {
+            Monitor.Log("Player2 must be connected before triggering ambient pair chat.", LogLevel.Warn);
+            return;
+        }
+
+        var speakerShortName = args[0].Trim();
+        var listenerShortName = args[1].Trim();
+        var forcedTopic = args.Length > 2 ? string.Join(" ", args.Skip(2)).Trim() : string.Empty;
+        if (string.IsNullOrWhiteSpace(speakerShortName) || string.IsNullOrWhiteSpace(listenerShortName))
+        {
+            Monitor.Log("Speaker and listener must be non-empty short names.", LogLevel.Warn);
+            return;
+        }
+
+        if (!_player2NpcIdsByShortName.TryGetValue(speakerShortName, out var speakerNpcId))
+        {
+            Monitor.Log($"Unknown speaker short name '{speakerShortName}'.", LogLevel.Warn);
+            return;
+        }
+
+        if (!_player2NpcIdsByShortName.TryGetValue(listenerShortName, out var listenerNpcId))
+        {
+            Monitor.Log($"Unknown listener short name '{listenerShortName}'.", LogLevel.Warn);
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _ambientNpcConversationInFlight, 1, 0) == 1)
+        {
+            Monitor.Log("Ambient conversation already in flight.", LogLevel.Warn);
+            return;
+        }
+
+        var topicContext = BuildAmbientConversationBaseTopic(speakerShortName, listenerShortName);
+        var pairKey = _npcConversationService?.BuildPairKey(speakerNpcId, listenerNpcId) ?? string.Empty;
+        var beat = SelectAmbientConversationBeat(
+            speakerShortName,
+            listenerShortName,
+            pairKey,
+            topicContext.HasRecentEvent,
+            topicContext.HasMarketSignal);
+        var topicSeed = string.IsNullOrWhiteSpace(forcedTopic)
+            ? BuildAmbientConversationTopicSeed(topicContext.Topic, beat)
+            : BuildAmbientConversationTopicSeed(forcedTopic, beat);
+        var turnDepth = _npcConversationService?.ResolveTurnDepth(_state.Config.Mode, _config.AmbientNpcConversationTurnDepth)
+            ?? NpcConversationService.MinTurnDepth;
+        TrackAmbientConversationBeatUsage(pairKey, speakerShortName, listenerShortName, beat.Id);
+        var speakerDialogueContext = BuildCompactGameStateInfo(
+            npcName: speakerShortName,
+            contextTag: "npc_to_npc_ambient_dialogue",
+            referencedNpcName: listenerShortName);
+        var listenerDialogueContext = BuildCompactGameStateInfo(
+            npcName: listenerShortName,
+            contextTag: "npc_to_npc_ambient_dialogue",
+            referencedNpcName: speakerShortName);
+        var extractionContext = BuildCompactGameStateInfo(
+            npcName: speakerShortName,
+            contextTag: "npc_to_npc_ambient",
+            referencedNpcName: listenerShortName);
+        var overhearEligible = IsAmbientOverhearCandidateWindow();
+        _npcLastContextTagById[speakerNpcId] = "npc_to_npc_ambient_dialogue";
+        _npcLastContextTagById[listenerNpcId] = "npc_to_npc_ambient_dialogue";
+
+        MarkAmbientNpcConversationTimestamp(speakerNpcId);
+        MarkAmbientNpcConversationTimestamp(listenerNpcId);
+        if (!string.IsNullOrWhiteSpace(pairKey))
+            _ambientNpcLastConversationDayByPairKey[pairKey] = _state.Calendar.Day;
+
+        StartAmbientNpcConversationTask(
+            speakerShortName,
+            speakerNpcId,
+            listenerShortName,
+            listenerNpcId,
+            pairKey,
+            topicSeed,
+            beat,
+            turnDepth,
+            speakerDialogueContext,
+            listenerDialogueContext,
+            extractionContext,
+            overhearEligible);
+
+        _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(180, 480));
+        Monitor.Log($"Debug ambient pair chat queued: {speakerShortName}->{listenerShortName} turns={turnDepth} beat={beat.Id} topic='{topicSeed}'.", LogLevel.Info);
     }
 
     private bool CaptureNpcUiMessage(string line, bool allowPlayerChatRouting, bool forcePlayerChatRouting = false)
@@ -7349,7 +9301,8 @@ public sealed class ModEntry : Mod
         string? npcName = null,
         string? playerText = null,
         string? contextTag = null,
-        PromptLocationContext? promptLocationContext = null)
+        PromptLocationContext? promptLocationContext = null,
+        string? referencedNpcName = null)
     {
         SyncCalendarSeasonFromWorld();
         var townProfile = ResolveActiveTownProfile();
@@ -7409,9 +9362,16 @@ public sealed class ModEntry : Mod
 
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
+        var ambientGossipCue = string.Empty;
+        var liveNpcWhereabouts = string.Empty;
         var newsContext = BuildNewsAwarenessBlock();
         var eventsContext = BuildRecentEventAwarenessBlock(playerText);
         var effectiveContextTag = string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag!;
+        var loreReferenceText = string.IsNullOrWhiteSpace(referencedNpcName)
+            ? playerText
+            : string.IsNullOrWhiteSpace(playerText)
+                ? referencedNpcName
+                : $"{playerText} {referencedNpcName}";
         var locationContextBlock = $"LOCATION_CONTEXT: exact='{locationContext.ExactPhrase}' exposure={locationContext.Exposure} internal='{locationContext.InternalName}' landmark='{locationContext.NearbyLandmark}' tile=({locationContext.TileX},{locationContext.TileY}) micro_area='{locationContext.MicroArea}' precision={locationContext.Precision}.";
         var locationAwarenessRule = "LOCATION_AWARENESS_RULE: Treat LOCATION_CONTEXT as ground truth. If exposure=indoors, do not describe rain, snow, wet boots, or wet clothes. If exposure=outdoors, weather sensations are allowed when relevant.";
         var locationPrecisionRule = "LOCATION_PRECISION_RULE: If LocationPrecision is low, keep phrasing general and do not assert an exact street/block name.";
@@ -7428,6 +9388,11 @@ public sealed class ModEntry : Mod
         var followUpContextRule = string.Equals(effectiveContextTag, "player_chat_followup", StringComparison.OrdinalIgnoreCase)
             ? "FOLLOWUP_CONTEXT_RULE: This chat started immediately after vanilla NPC dialogue; prioritize continuity with VANILLA_DIALOGUE_CONTEXT."
             : string.Empty;
+        var playerAmbientIsolationRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
+            ? "PLAYER_CHAT_ISOLATION_RULE: Treat this as direct player conversation. Do not repeat or continue offscreen NPC-to-NPC ambient lines verbatim."
+            : string.Empty;
+        var ambientGossipRule = string.Empty;
+        var liveWhereaboutsRule = string.Empty;
         var commandPolicyRule = _commandPolicyService?.BuildPromptRule(effectiveContextTag) ?? string.Empty;
         var ambientEventFirstRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
             ? "AMBIENT_EVENT_RULE: Prefer record_town_event first when anything notable happened; keep command use sparse and skip commands when nothing meaningful occurred."
@@ -7455,6 +9420,17 @@ public sealed class ModEntry : Mod
                 npcMemory = _npcMemoryService.BuildMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
             if (_townMemoryService is not null)
                 townMemory = _townMemoryService.BuildTownMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
+            ambientGossipCue = BuildAmbientOverheardGossipCueBlock(effectiveContextTag, npcName, playerText);
+            if (!string.IsNullOrWhiteSpace(ambientGossipCue))
+                ambientGossipRule = "AMBIENT_GOSSIP_RULE: If AMBIENT_GOSSIP_CUE exists and the player's tone is casual, naturally mention it as brief town chatter in your own words (do not quote verbatim).";
+            liveNpcWhereabouts = BuildReferencedNpcWhereaboutsBlock(
+                npcName,
+                playerText,
+                referencedNpcName,
+                locationContext.InternalName,
+                effectiveContextTag);
+            if (!string.IsNullOrWhiteSpace(liveNpcWhereabouts))
+                liveWhereaboutsRule = "LIVE_WHEREABOUTS_RULE: For any NPC listed in LIVE_NPC_WHEREABOUTS, treat that location as current truth and prioritize it over stale lore. If same_location_as_speaker=true, answer that they are nearby/in the same place right now.";
         }
 
         if (!string.IsNullOrWhiteSpace(vanillaDialogueContext) && !string.IsNullOrWhiteSpace(townMemory))
@@ -7477,6 +9453,9 @@ public sealed class ModEntry : Mod
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
             vanillaDialogueFollowUpRule,
             followUpContextRule,
+            playerAmbientIsolationRule,
+            ambientGossipRule,
+            liveWhereaboutsRule,
             vanillaTownBlendRule,
             commandPolicyRule,
             ambientEventFirstRule,
@@ -7539,6 +9518,8 @@ public sealed class ModEntry : Mod
             questDiversityContext,
             newsContext,
             eventsContext,
+            ambientGossipCue,
+            liveNpcWhereabouts,
             $"STATE: AvailableTownRequests {_state.Quests.Available.Count} by_template=[{availableQuestTemplateCounts}].",
             $"STATE: ActiveTownRequests {_state.Quests.Active.Count} by_template=[{activeQuestTemplateCounts}].",
             npcMemory,
@@ -7563,7 +9544,7 @@ public sealed class ModEntry : Mod
             }
 
             var referencedVanillaLore = _vanillaCanonLoreService.BuildReferencedNpcLorePromptBlock(
-                playerText,
+                loreReferenceText,
                 speakingNpcName: npcName,
                 maxMatches: 2);
             if (!string.IsNullOrWhiteSpace(referencedVanillaLore))
@@ -7592,7 +9573,7 @@ public sealed class ModEntry : Mod
             }
 
             var referencedNpcLore = _customNpcRegistry.BuildReferencedNpcLorePromptBlock(
-                playerText,
+                loreReferenceText,
                 speakingNpcName: npcName,
                 maxMatches: 2);
             if (!string.IsNullOrWhiteSpace(referencedNpcLore))
@@ -9073,6 +11054,9 @@ public sealed class ModEntry : Mod
                     RefreshAmbientConditionalCommandPolicy();
 
                 var contextTag = ResolveContextTagForPolicy(sourceNpcId);
+                if (string.Equals(contextTag, "npc_to_npc_ambient_dialogue", StringComparison.OrdinalIgnoreCase))
+                    return false;
+
                 var policyRejectCode = string.Empty;
                 var policyRejectReason = string.Empty;
 
@@ -9446,6 +11430,59 @@ public sealed class ModEntry : Mod
         }
 
         return false;
+    }
+
+    private bool IsLikelyAmbientToPlayerBleed(string npcId, string? playerMessage, string? candidateMessage)
+    {
+        if (string.IsNullOrWhiteSpace(npcId) || string.IsNullOrWhiteSpace(candidateMessage))
+            return false;
+
+        var candidate = candidateMessage.Trim();
+        if (string.IsNullOrWhiteSpace(candidate))
+            return false;
+
+        if (candidate.StartsWith("Offscreen NPC chat turn", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!_npcLastNonPlayerMessageById.TryGetValue(npcId, out var lastNonPlayer)
+            || string.IsNullOrWhiteSpace(lastNonPlayer))
+        {
+            return false;
+        }
+
+        if (!string.Equals(lastNonPlayer.Trim(), candidate, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (IsLikelySmallTalkOpen(playerMessage))
+            return true;
+
+        if (_npcLastNonPlayerMessageUtcById.TryGetValue(npcId, out var lastNonPlayerUtc)
+            && DateTime.UtcNow - lastNonPlayerUtc <= TimeSpan.FromMinutes(3))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsLikelySmallTalkOpen(string? playerMessage)
+    {
+        if (string.IsNullOrWhiteSpace(playerMessage))
+            return false;
+
+        var normalized = Regex.Replace(
+            playerMessage.Trim().ToLowerInvariant(),
+            @"[^a-z0-9]+",
+            " ",
+            RegexOptions.CultureInvariant)
+            .Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        return normalized == "lets chat"
+            || normalized == "let s chat"
+            || normalized.StartsWith("lets chat ", StringComparison.Ordinal)
+            || normalized.StartsWith("let s chat ", StringComparison.Ordinal);
     }
 
     private static string TryExtractMessageFromLine(string line)
@@ -11056,7 +13093,7 @@ public sealed class ModEntry : Mod
         _npcPendingFallbackQuestOfferById.Clear();
     }
 
-    private void StartPlayerChatHistoryFallback(string npcId, NpcHistorySnapshot? previousHistorySnapshot, string playerMessage)
+    private void StartPlayerChatHistoryFallback(string npcId, NpcHistorySnapshot? previousHistorySnapshot, string playerMessage, string? blockedMessage = null)
     {
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(npcId))
             return;
@@ -11105,6 +13142,14 @@ public sealed class ModEntry : Mod
                     var latest = snapshot?.LatestMessage?.Trim();
                     if (!string.IsNullOrWhiteSpace(latest))
                     {
+                        var blocked = (blockedMessage ?? string.Empty).Trim();
+                        if (!string.IsNullOrWhiteSpace(blocked)
+                            && string.Equals(latest, blocked, StringComparison.OrdinalIgnoreCase))
+                        {
+                            await Task.Delay(350, totalCts.Token);
+                            continue;
+                        }
+
                         var hasBaselineHash = !string.IsNullOrWhiteSpace(previousHistorySnapshot?.SnapshotHash);
                         var historyChanged = hasBaselineHash
                             && !string.Equals(snapshot!.SnapshotHash, previousHistorySnapshot!.SnapshotHash, StringComparison.Ordinal);
@@ -11113,8 +13158,11 @@ public sealed class ModEntry : Mod
                             || !string.Equals(seen, latest, StringComparison.Ordinal);
                         var looksLikePlayerEcho = !string.IsNullOrWhiteSpace(playerMessage)
                             && string.Equals(latest, playerMessage.Trim(), StringComparison.OrdinalIgnoreCase);
+                        var looksLikeAmbientBleed = IsLikelyAmbientToPlayerBleed(npcId, playerMessage, latest);
 
-                        if (!looksLikePlayerEcho && (historyChanged || (baselineMissing && differsFromSeen)))
+                        if (!looksLikePlayerEcho
+                            && !looksLikeAmbientBleed
+                            && (historyChanged || (baselineMissing && differsFromSeen)))
                         {
                             var fallbackLine = JsonSerializer.Serialize(new { npc_id = npcId, message = latest });
                             _pendingPlayer2ChatLines.Enqueue(fallbackLine);

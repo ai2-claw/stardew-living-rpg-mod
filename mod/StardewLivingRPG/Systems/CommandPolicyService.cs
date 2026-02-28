@@ -18,8 +18,7 @@ public sealed class CommandPolicyService
     {
         "record_town_event",
         "record_memory_fact",
-        "publish_rumor",
-        "publish_article"
+        "publish_rumor"
     };
     private static readonly string[] AmbientConditionalCommands =
     {
@@ -39,6 +38,7 @@ public sealed class CommandPolicyService
         ConfigureRule("player_request_board", knownCommands: KnownCommands, defaultAllow: true);
         ConfigureRule("manual_default", knownCommands: KnownCommands, defaultAllow: true);
         ConfigureRule("auto_default", knownCommands: KnownCommands, defaultAllow: true);
+        ConfigureRule("npc_to_npc_ambient_dialogue", knownCommands: KnownCommands, explicitlyAllowed: Array.Empty<string>(), defaultAllow: false);
         SetAmbientConditionalCommandsEnabled(Array.Empty<string>());
     }
 
