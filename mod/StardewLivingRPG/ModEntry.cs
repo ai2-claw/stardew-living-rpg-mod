@@ -1,4 +1,4 @@
-ï»¿using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
@@ -282,6 +282,19 @@ public sealed class ModEntry : Mod
         public int TileY { get; set; } = -1;
         public string MicroArea { get; set; } = "none";
         public string Precision { get; set; } = "low";
+    }
+
+    private sealed class ExternalNpcLoreProfile
+    {
+        public string Token { get; init; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public HashSet<string> Aliases { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> KnownLocations { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> TiesToNpcs { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public string RoleHint { get; set; } = "Town resident with limited documented history.";
+        public string SpeechHint { get; set; } = "Conversational and grounded.";
+        public string Boundaries { get; set; } = "Do not invent unverifiable facts; use partial knowledge when unsure.";
+        public float Confidence { get; set; } = 0.35f;
     }
 
     private sealed class AmbientConversationBeat
@@ -681,6 +694,8 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, PendingFallbackQuestOffer> _npcPendingFallbackQuestOfferById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<string> _ambientLaneDebugSnapshots = new();
+    private readonly HashSet<string> _externalAutoDiscoveredNpcNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ExternalNpcLoreProfile> _externalAutoLoreByToken = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
     private DateTime _player2LastChatSentUtc;
     private DateTime _player2LastStreamRecoveryUtc;
@@ -851,6 +866,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_customnpc_validate", "Validate integrated custom-NPC content packs.", OnCustomNpcValidatePacksCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_list", "List loaded integrated custom NPCs.", OnCustomNpcListCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_dump", "Dump integrated custom NPC lore: slrpg_customnpc_dump <npc>", OnCustomNpcDumpCommand);
+        helper.ConsoleCommands.Add("slrpg_externalnpc_list", "List auto-discovered external NPCs and lore source.", OnExternalNpcListCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_reload", "Reload integrated custom-NPC packs.", OnCustomNpcReloadCommand);
         helper.ConsoleCommands.Add("slrpg_vanilla_lore_validate", "Validate built-in vanilla canon lore entries.", OnVanillaLoreValidateCommand);
         helper.ConsoleCommands.Add("slrpg_vanilla_lore_dump", "Dump vanilla canon lore entry: slrpg_vanilla_lore_dump <npc>", OnVanillaLoreDumpCommand);
@@ -949,6 +965,8 @@ public sealed class ModEntry : Mod
             ReloadCustomNpcPacks();
             InjectCustomNpcTargetsIntoRumorBoard("SaveLoaded");
         }
+        RefreshExternalAutoDiscoveredNpcs("SaveLoaded");
+        InjectExternalNpcTargetsIntoRumorBoard("SaveLoaded");
         ReloadPortraitProfiles();
         Monitor.Log($"State loaded (version={_state.Version}, mode={_state.Config.Mode}).", LogLevel.Info);
 
@@ -979,6 +997,8 @@ public sealed class ModEntry : Mod
         TryCapturePendingLateNightPassOut();
         _lastNpcPublishAppliedDay = -1;
         _lastNpcPublishAppliedTimeOfDay = -1;
+        RefreshExternalAutoDiscoveredNpcs("DayStarted");
+        InjectExternalNpcTargetsIntoRumorBoard("DayStarted");
 
         // Give auto-connect a brief head start so day-start newspaper can use Player2 when available.
         if (_config.EnablePlayer2
@@ -1815,7 +1835,7 @@ public sealed class ModEntry : Mod
         return !string.IsNullOrWhiteSpace(npc.displayName) && IsRosterNpc(npc.displayName);
     }
 
-    private List<string> GetExpandedNpcRoster()
+    private List<string> GetExpandedNpcRoster(bool includeExternalAutoDiscovered = true)
     {
         var merged = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1848,15 +1868,26 @@ public sealed class ModEntry : Mod
             }
         }
 
+        if (includeExternalAutoDiscovered
+            && _config.EnableExternalNpcAutodiscovery
+            && _externalAutoDiscoveredNpcNames.Count > 0)
+        {
+            foreach (var npcName in _externalAutoDiscoveredNpcNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(npcName) && seen.Add(npcName))
+                    merged.Add(npcName);
+            }
+        }
+
         return merged;
     }
 
-    private List<string> GetPlayer2SpawnRoster()
+    private List<string> GetRequiredSpawnRoster()
     {
         var merged = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // Prioritize integrated custom NPCs first so they are spawned even if Player2 session limits are reached.
+        // Keep integrated custom NPCs first so official pack NPCs remain prioritized under session pressure.
         if (_config.EnableCustomNpcFramework && _customNpcRegistry is not null)
         {
             foreach (var npc in _customNpcRegistry.NpcsByToken.Values.OrderBy(n => n.DisplayName, StringComparer.OrdinalIgnoreCase))
@@ -1882,14 +1913,12 @@ public sealed class ModEntry : Mod
                 merged.Add(shortName);
         }
 
-        // Keep compatibility with any additional names injected into expanded roster.
-        foreach (var shortName in GetExpandedNpcRoster())
-        {
-            if (seen.Add(shortName))
-                merged.Add(shortName);
-        }
-
         return merged;
+    }
+
+    private List<string> GetPlayer2SpawnRoster()
+    {
+        return GetRequiredSpawnRoster();
     }
 
     private void RegisterCustomNpcSpawnAliases(string rosterKey, string npcId)
@@ -1971,27 +2000,251 @@ public sealed class ModEntry : Mod
     {
         var npcName = npc.Name ?? npc.displayName;
         var heartLevel = GetNpcHeartLevel(npcName);
-        var npcIdForChat = _player2NpcIdsByShortName.TryGetValue(npcName, out var knownNpcId)
-            ? knownNpcId
-            : _activeNpcId;
 
         Game1.activeClickableMenu = new NpcChatInputMenu(
             npc.displayName,
             text =>
             {
-                if (!string.IsNullOrWhiteSpace(npcIdForChat))
+                if (TryEnsureNpcSession(npcName, out var npcIdForChat))
+                {
                     SendPlayer2ChatInternal(text, npcIdForChat, npcName, contextTag: defaultContextTag);
-                else
-                    SendPlayer2ChatInternal(text, contextTag: defaultContextTag);
+                    return;
+                }
+
+                if (_player2NpcIdsByShortName.TryGetValue(npcName, out var mappedNpcId) && !string.IsNullOrWhiteSpace(mappedNpcId))
+                {
+                    SendPlayer2ChatInternal(text, mappedNpcId, npcName, contextTag: defaultContextTag);
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(_activeNpcId))
+                {
+                    Monitor.Log($"Player2 on-demand spawn unavailable for '{npcName}'; falling back to active NPC session.", LogLevel.Warn);
+                    SendPlayer2ChatInternal(text, _activeNpcId, npcName, contextTag: defaultContextTag);
+                    return;
+                }
+
+                SendPlayer2ChatInternal(text, contextTag: defaultContextTag);
             },
-            () => string.IsNullOrWhiteSpace(npcIdForChat) ? null : DequeueNpcUiMessage(npcIdForChat),
-            () => !string.IsNullOrWhiteSpace(npcIdForChat) && IsNpcThinking(npcIdForChat),
+            () =>
+            {
+                if (_player2NpcIdsByShortName.TryGetValue(npcName, out var npcIdForUi) && !string.IsNullOrWhiteSpace(npcIdForUi))
+                    return DequeueNpcUiMessage(npcIdForUi);
+
+                return string.IsNullOrWhiteSpace(_activeNpcId) ? null : DequeueNpcUiMessage(_activeNpcId);
+            },
+            () =>
+            {
+                if (_player2NpcIdsByShortName.TryGetValue(npcName, out var npcIdForUi) && !string.IsNullOrWhiteSpace(npcIdForUi))
+                    return IsNpcThinking(npcIdForUi);
+
+                return !string.IsNullOrWhiteSpace(_activeNpcId) && IsNpcThinking(_activeNpcId);
+            },
             heartLevel,
             initialPlayerMessage,
             autoSendInitialPlayerMessage,
             portraitAssetName: npcName,
             resolveLiveNpc: () => ResolveNpcByName(npcName) ?? ResolveNpcByName(npc.displayName) ?? npc,
             resolveProfilePortraitIndex: ResolvePortraitProfileFrameIndex);
+    }
+
+    private bool TryEnsureNpcSession(string npcName, out string npcId)
+    {
+        npcId = string.Empty;
+        if (string.IsNullOrWhiteSpace(npcName))
+            return false;
+
+        if (_player2NpcIdsByShortName.TryGetValue(npcName, out var existingNpcId) && !string.IsNullOrWhiteSpace(existingNpcId))
+        {
+            npcId = existingNpcId;
+            return true;
+        }
+
+        if (!_config.EnableExternalNpcAutodiscovery
+            || _player2Client is null
+            || string.IsNullOrWhiteSpace(_player2Key))
+        {
+            return false;
+        }
+
+        if (!IsRosterNpc(npcName))
+        {
+            RefreshExternalAutoDiscoveredNpcs("OnDemandSpawn");
+            if (!IsRosterNpc(npcName))
+                return false;
+        }
+
+        var resolvedNpc = ResolveNpcByName(npcName);
+        var spawnName = (resolvedNpc?.Name ?? npcName).Trim();
+        if (string.IsNullOrWhiteSpace(spawnName))
+            return false;
+
+        if (_player2NpcIdsByShortName.TryGetValue(spawnName, out existingNpcId) && !string.IsNullOrWhiteSpace(existingNpcId))
+        {
+            npcId = existingNpcId;
+            return true;
+        }
+
+        var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
+        var townName = ResolveActiveTownProfile().CanonTown;
+        var req = BuildRosterNpcSpawnRequest(spawnName, townName, promptLanguageRule);
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var spawnedNpcId = _player2Client.SpawnNpcAsync(_config.Player2ApiBaseUrl, _player2Key!, req, cts.Token)
+                .GetAwaiter()
+                .GetResult();
+            if (string.IsNullOrWhiteSpace(spawnedNpcId))
+                return false;
+
+            npcId = spawnedNpcId;
+            _player2NpcIdsByShortName[spawnName] = spawnedNpcId;
+            _player2NpcShortNameById[spawnedNpcId] = spawnName;
+            RegisterCustomNpcSpawnAliases(spawnName, spawnedNpcId);
+
+            if (!string.Equals(npcName, spawnName, StringComparison.OrdinalIgnoreCase))
+                _player2NpcIdsByShortName[npcName] = spawnedNpcId;
+            if (!string.IsNullOrWhiteSpace(resolvedNpc?.displayName))
+                _player2NpcIdsByShortName[resolvedNpc.displayName] = spawnedNpcId;
+
+            Monitor.Log($"Player2 NPC spawned (on-demand): {spawnName} -> {spawnedNpcId}", LogLevel.Info);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log($"Player2 on-demand NPC spawn failed ({spawnName}): {ex.Message}", LogLevel.Warn);
+            return false;
+        }
+    }
+
+    private SpawnNpcRequest BuildRosterNpcSpawnRequest(string shortName, string townName, string promptLanguageRule)
+    {
+        var identityPrompt = shortName.ToLowerInvariant() switch
+        {
+            "robin" => $"You are Robin, the carpenter of {townName} in Stardew Valley. Never claim to be Lewis or any other NPC.",
+            "pierre" => $"You are Pierre, the shopkeeper of {townName} in Stardew Valley. Never claim to be Lewis or any other NPC.",
+            "lewis" => $"You are Mayor Lewis of {townName} in Stardew Valley.",
+            _ => $"You are {shortName} of {townName} in Stardew Valley. Never claim to be another NPC."
+        };
+
+        return new SpawnNpcRequest
+        {
+            ShortName = shortName,
+            Name = shortName,
+            CharacterDescription = $"{shortName} in {townName}, practical and grounded.",
+            SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
+            KeepGameState = true,
+            Commands = new List<SpawnNpcCommand>
+            {
+                new()
+                {
+                    Name = "propose_quest",
+                    Description = "Propose a safe town request quest",
+                    Parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            template_id = new { type = "string", @enum = new[] { "gather_crop", "deliver_item", "mine_resource", "social_visit" } },
+                            target = new { type = "string" },
+                            urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } },
+                            count = new { type = "integer", minimum = 1, maximum = 99 }
+                        },
+                        required = new[] { "template_id", "target", "urgency" },
+                        additionalProperties = false
+                    }
+                },
+                new()
+                {
+                    Name = "adjust_reputation",
+                    Description = "Adjust social relationship standing after a meaningful interaction outcome",
+                    Parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            target = new { type = "string" },
+                            delta = new { type = "integer", minimum = -10, maximum = 10 },
+                            reason = new { type = "string" }
+                        },
+                        required = new[] { "target", "delta" },
+                        additionalProperties = false
+                    }
+                },
+                new()
+                {
+                    Name = "shift_interest_influence",
+                    Description = "Shift influence for a town interest group based on discussion outcomes",
+                    Parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            interest = new { type = "string", @enum = new[] { "farmers_circle", "shopkeepers_guild", "adventurers_club", "nature_keepers" } },
+                            delta = new { type = "integer", minimum = -5, maximum = 5 },
+                            reason = new { type = "string" }
+                        },
+                        required = new[] { "interest", "delta" },
+                        additionalProperties = false
+                    }
+                },
+                new()
+                {
+                    Name = "apply_market_modifier",
+                    Description = "Apply a bounded temporary market modifier when a clear anomaly is present",
+                    Parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            crop = new { type = "string" },
+                            delta_pct = new { type = "number", minimum = -0.15, maximum = 0.15 },
+                            duration_days = new { type = "integer", minimum = 1, maximum = 7 },
+                            reason = new { type = "string" }
+                        },
+                        required = new[] { "crop", "delta_pct", "duration_days" },
+                        additionalProperties = false
+                    }
+                },
+                new()
+                {
+                    Name = "publish_article",
+                    Description = "Publish a concise in-world newspaper article (title+content <= 100 characters total)",
+                    Parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            title = new { type = "string" },
+                            content = new { type = "string" },
+                            category = new { type = "string", @enum = new[] { "community", "market", "social", "nature" } }
+                        },
+                        required = new[] { "title", "content", "category" },
+                        additionalProperties = false
+                    }
+                },
+                new()
+                {
+                    Name = "publish_rumor",
+                    Description = "Publish a short town rumor with optional title/content (title+content <= 100 characters total when provided)",
+                    Parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            topic = new { type = "string" },
+                            title = new { type = "string" },
+                            content = new { type = "string" },
+                            confidence = new { type = "number" },
+                            target_group = new { type = "string" }
+                        },
+                        required = new[] { "topic", "confidence", "target_group" },
+                        additionalProperties = false
+                    }
+                }
+            }
+        };
     }
 
     private bool HasPendingQuestForNpc(string npcName)
@@ -7861,131 +8114,7 @@ public sealed class ModEntry : Mod
 
             try
             {
-                var identityPrompt = shortName.ToLowerInvariant() switch
-                {
-                    "robin" => $"You are Robin, the carpenter of {townName} in Stardew Valley. Never claim to be Lewis or any other NPC.",
-                    "pierre" => $"You are Pierre, the shopkeeper of {townName} in Stardew Valley. Never claim to be Lewis or any other NPC.",
-                    "lewis" => $"You are Mayor Lewis of {townName} in Stardew Valley.",
-                    _ => $"You are {shortName} of {townName} in Stardew Valley. Never claim to be another NPC."
-                };
-
-                var req = new SpawnNpcRequest
-                {
-                    ShortName = shortName,
-                    Name = shortName,
-                    CharacterDescription = $"{shortName} in {townName}, practical and grounded.",
-                    SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
-                    KeepGameState = true,
-                    Commands = new List<SpawnNpcCommand>
-                    {
-                        new()
-                        {
-                            Name = "propose_quest",
-                            Description = "Propose a safe town request quest",
-                            Parameters = new
-                            {
-                                type = "object",
-                                properties = new
-                                {
-                                    template_id = new { type = "string", @enum = new[] { "gather_crop", "deliver_item", "mine_resource", "social_visit" } },
-                                    target = new { type = "string" },
-                                    urgency = new { type = "string", @enum = new[] { "low", "medium", "high" } },
-                                    count = new { type = "integer", minimum = 1, maximum = 99 }
-                                },
-                                required = new[] { "template_id", "target", "urgency" },
-                                additionalProperties = false
-                            }
-                        },
-                        new()
-                        {
-                            Name = "adjust_reputation",
-                            Description = "Adjust social relationship standing after a meaningful interaction outcome",
-                            Parameters = new
-                            {
-                                type = "object",
-                                properties = new
-                                {
-                                    target = new { type = "string" },
-                                    delta = new { type = "integer", minimum = -10, maximum = 10 },
-                                    reason = new { type = "string" }
-                                },
-                                required = new[] { "target", "delta" },
-                                additionalProperties = false
-                            }
-                        },
-                        new()
-                        {
-                            Name = "shift_interest_influence",
-                            Description = "Shift influence for a town interest group based on discussion outcomes",
-                            Parameters = new
-                            {
-                                type = "object",
-                                properties = new
-                                {
-                                    interest = new { type = "string", @enum = new[] { "farmers_circle", "shopkeepers_guild", "adventurers_club", "nature_keepers" } },
-                                    delta = new { type = "integer", minimum = -5, maximum = 5 },
-                                    reason = new { type = "string" }
-                                },
-                                required = new[] { "interest", "delta" },
-                                additionalProperties = false
-                            }
-                        },
-                        new()
-                        {
-                            Name = "apply_market_modifier",
-                            Description = "Apply a bounded temporary market modifier when a clear anomaly is present",
-                            Parameters = new
-                            {
-                                type = "object",
-                                properties = new
-                                {
-                                    crop = new { type = "string" },
-                                    delta_pct = new { type = "number", minimum = -0.15, maximum = 0.15 },
-                                    duration_days = new { type = "integer", minimum = 1, maximum = 7 },
-                                    reason = new { type = "string" }
-                                },
-                                required = new[] { "crop", "delta_pct", "duration_days" },
-                                additionalProperties = false
-                            }
-                        },
-                        new()
-                        {
-                            Name = "publish_article",
-                            Description = "Publish a concise in-world newspaper article (title+content <= 100 characters total)",
-                            Parameters = new
-                            {
-                                type = "object",
-                                properties = new
-                                {
-                                    title = new { type = "string" },
-                                    content = new { type = "string" },
-                                    category = new { type = "string", @enum = new[] { "community", "market", "social", "nature" } }
-                                },
-                                required = new[] { "title", "content", "category" },
-                                additionalProperties = false
-                            }
-                        },
-                        new()
-                        {
-                            Name = "publish_rumor",
-                            Description = "Publish a short town rumor with optional title/content (title+content <= 100 characters total when provided)",
-                            Parameters = new
-                            {
-                                type = "object",
-                                properties = new
-                                {
-                                    topic = new { type = "string" },
-                                    title = new { type = "string" },
-                                    content = new { type = "string" },
-                                    confidence = new { type = "number" },
-                                    target_group = new { type = "string" }
-                                },
-                                required = new[] { "topic", "confidence", "target_group" },
-                                additionalProperties = false
-                            }
-                        }
-                    }
-                };
+                var req = BuildRosterNpcSpawnRequest(shortName, townName, promptLanguageRule);
 
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
                 var npcId = _player2Client.SpawnNpcAsync(_config.Player2ApiBaseUrl, _player2Key!, req, cts.Token)
@@ -8893,7 +9022,7 @@ public sealed class ModEntry : Mod
         if (string.IsNullOrWhiteSpace(_activeNpcId))
             return false;
 
-        var roster = GetExpandedNpcRoster();
+        var roster = GetRequiredSpawnRoster();
 
         if (roster.Count == 0)
             return true;
@@ -9529,6 +9658,8 @@ public sealed class ModEntry : Mod
             sourceDialogueContext
         );
 
+        var hasAuthoritativeLoreForNpc = false;
+        var hasAuthoritativeReferencedLore = false;
         if (_config.EnableVanillaCanonLoreInjection
             && _vanillaCanonLoreService is not null)
         {
@@ -9539,6 +9670,7 @@ public sealed class ModEntry : Mod
             if (!string.IsNullOrWhiteSpace(vanillaLoreBlock))
             {
                 basePrompt = $"{basePrompt} {vanillaLoreBlock}".Trim();
+                hasAuthoritativeLoreForNpc = true;
                 if (_config.LogVanillaCanonLoreInjectionPreview)
                     Monitor.Log($"Injected vanilla canon lore block for '{npcName ?? "(none)"}'.", LogLevel.Trace);
             }
@@ -9551,6 +9683,7 @@ public sealed class ModEntry : Mod
             {
                 var awarenessRule = "VANILLA_CANON_AWARENESS_RULE: Referenced vanilla NPC canon facts are authoritative. Do not contradict explicit family/job constraints; if uncertain, answer partially without contradiction.";
                 basePrompt = $"{basePrompt} {awarenessRule} {referencedVanillaLore}".Trim();
+                hasAuthoritativeReferencedLore = true;
                 if (_config.LogVanillaCanonLoreInjectionPreview)
                     Monitor.Log($"Injected referenced vanilla lore block for context '{effectiveContextTag}'.", LogLevel.Trace);
             }
@@ -9568,6 +9701,7 @@ public sealed class ModEntry : Mod
             if (!string.IsNullOrWhiteSpace(customLoreBlock))
             {
                 basePrompt = $"{basePrompt} {customLoreBlock}".Trim();
+                hasAuthoritativeLoreForNpc = true;
                 if (_config.LogCustomNpcPromptInjectionPreview)
                     Monitor.Log($"Injected custom NPC lore block for '{npcName ?? "(none)"}'.", LogLevel.Trace);
             }
@@ -9580,8 +9714,41 @@ public sealed class ModEntry : Mod
             {
                 var awarenessRule = "CUSTOM_NPC_AWARENESS_RULE: Referenced custom NPCs are canonical in this save. Do not claim you have never heard of them; if details are limited, answer with partial knowledge.";
                 basePrompt = $"{basePrompt} {awarenessRule} {referencedNpcLore}".Trim();
+                hasAuthoritativeReferencedLore = true;
                 if (_config.LogCustomNpcPromptInjectionPreview)
                     Monitor.Log($"Injected referenced custom NPC lore block for context '{effectiveContextTag}'.", LogLevel.Trace);
+            }
+        }
+
+        if (_config.EnableExternalNpcAutodiscovery
+            && _config.EnableExternalNpcAutoLore
+            && _externalAutoLoreByToken.Count > 0)
+        {
+            if (!hasAuthoritativeLoreForNpc)
+            {
+                var externalLoreBlock = BuildExternalNpcLorePromptBlock(
+                    npcName,
+                    Game1.currentLocation?.Name,
+                    effectiveContextTag);
+                if (!string.IsNullOrWhiteSpace(externalLoreBlock))
+                {
+                    basePrompt = $"{basePrompt} {externalLoreBlock}".Trim();
+                    hasAuthoritativeLoreForNpc = true;
+                }
+            }
+
+            if (!hasAuthoritativeReferencedLore)
+            {
+                var referencedExternalLore = BuildReferencedExternalNpcLorePromptBlock(
+                    loreReferenceText,
+                    speakingNpcName: npcName,
+                    maxMatches: 2);
+                if (!string.IsNullOrWhiteSpace(referencedExternalLore))
+                {
+                    var awarenessRule = "EXTERNAL_NPC_AWARENESS_RULE: Referenced external NPC facts come from observed dialogue/events. Use them carefully and mark uncertain details as partial.";
+                    basePrompt = $"{basePrompt} {awarenessRule} {referencedExternalLore}".Trim();
+                    hasAuthoritativeReferencedLore = true;
+                }
             }
         }
 
@@ -9599,6 +9766,15 @@ public sealed class ModEntry : Mod
         if (_config.EnableCustomNpcFramework && _customNpcRegistry is not null)
         {
             foreach (var npc in _customNpcRegistry.GetAllNpcDisplayNames())
+            {
+                if (seen.Add(npc))
+                    merged.Add(npc);
+            }
+        }
+
+        if (_config.EnableExternalNpcAutodiscovery && _externalAutoDiscoveredNpcNames.Count > 0)
+        {
+            foreach (var npc in _externalAutoDiscoveredNpcNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).Take(24))
             {
                 if (seen.Add(npc))
                     merged.Add(npc);
@@ -9756,10 +9932,10 @@ public sealed class ModEntry : Mod
         var npcDisplayName = string.IsNullOrWhiteSpace(context.NpcDisplayName)
             ? context.NpcName
             : context.NpcDisplayName;
-        var safeLine = TrimForContext(context.LastDialogueLine, 130, "none").Replace("'", "â€™", StringComparison.Ordinal);
+        var safeLine = TrimForContext(context.LastDialogueLine, 130, "none").Replace("'", "’", StringComparison.Ordinal);
         var sequence = context.DialogueSequence
             .TakeLast(4)
-            .Select(line => TrimForContext(line, 96, "none").Replace("'", "â€™", StringComparison.Ordinal))
+            .Select(line => TrimForContext(line, 96, "none").Replace("'", "’", StringComparison.Ordinal))
             .ToArray();
         return $"VANILLA_DIALOGUE_CONTEXT[{npcDisplayName}]: day={context.Day} time={context.TimeOfDay:0000} last_line='{safeLine}' sequence=[{JoinContextItems(sequence)}].";
     }
@@ -12373,19 +12549,20 @@ public sealed class ModEntry : Mod
 
     private string ResolveNpcTargetFromTownEvent(TownMemoryEvent ev)
     {
+        var rosterNames = GetExpandedNpcRoster();
         foreach (var tag in ev.Tags ?? Array.Empty<string>())
         {
-            var match = VanillaNpcRoster.FirstOrDefault(name => string.Equals(name, tag, StringComparison.OrdinalIgnoreCase));
+            var match = rosterNames.FirstOrDefault(name => string.Equals(name, tag, StringComparison.OrdinalIgnoreCase));
             if (!string.IsNullOrWhiteSpace(match))
-                return match.ToLowerInvariant();
+                return NormalizeTargetToken(match);
         }
 
-        foreach (var name in VanillaNpcRoster)
+        foreach (var name in rosterNames)
         {
             if (ev.Summary.Contains(name, StringComparison.OrdinalIgnoreCase)
                 || ev.Location.Contains(name, StringComparison.OrdinalIgnoreCase))
             {
-                return name.ToLowerInvariant();
+                return NormalizeTargetToken(name);
             }
         }
 
@@ -12884,6 +13061,12 @@ public sealed class ModEntry : Mod
         {
             if (ContainsTargetToken(text, shortName))
                 return NormalizeTargetToken(shortName);
+        }
+
+        foreach (var rosterName in GetExpandedNpcRoster().OrderByDescending(n => n.Length))
+        {
+            if (ContainsTargetToken(text, rosterName))
+                return NormalizeTargetToken(rosterName);
         }
 
         if (_config.EnableCustomNpcFramework
@@ -14190,6 +14373,391 @@ public sealed class ModEntry : Mod
         return frameIndex;
     }
 
+    private void RefreshExternalAutoDiscoveredNpcs(string source)
+    {
+        if (!_config.EnableExternalNpcAutodiscovery || !Context.IsWorldReady)
+        {
+            _externalAutoDiscoveredNpcNames.Clear();
+            _externalAutoLoreByToken.Clear();
+            return;
+        }
+
+        var discovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddCandidate(string? rawName)
+        {
+            var name = NormalizeExternalNpcName(rawName);
+            if (string.IsNullOrWhiteSpace(name))
+                return;
+            if (IsVanillaNpcName(name))
+                return;
+            if (_config.EnableCustomNpcFramework
+                && _customNpcRegistry is not null
+                && _customNpcRegistry.TryGetNpcByName(name, out _))
+            {
+                return;
+            }
+
+            discovered.Add(name);
+        }
+
+        try
+        {
+            var dispositions = Game1.content.Load<Dictionary<string, string>>("Data\\NPCDispositions");
+            foreach (var key in dispositions.Keys)
+                AddCandidate(key);
+        }
+        catch
+        {
+            // Missing/rewired disposition data is acceptable; discovery continues from runtime sources.
+        }
+
+        foreach (var location in Game1.locations)
+        {
+            foreach (var npc in location?.characters ?? Enumerable.Empty<NPC>())
+            {
+                AddCandidate(npc?.Name);
+                AddCandidate(npc?.displayName);
+            }
+        }
+
+        foreach (var friendshipNpc in Game1.player?.friendshipData?.Keys ?? Enumerable.Empty<string>())
+            AddCandidate(friendshipNpc);
+
+        var changed = !_externalAutoDiscoveredNpcNames.SetEquals(discovered);
+        _externalAutoDiscoveredNpcNames.Clear();
+        foreach (var npcName in discovered.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+            _externalAutoDiscoveredNpcNames.Add(npcName);
+
+        RebuildExternalNpcAutoLore();
+
+        if (changed)
+            Monitor.Log($"[{source}] External NPC autodiscovery refreshed: found {_externalAutoDiscoveredNpcNames.Count} candidates.", LogLevel.Info);
+    }
+
+    private void RebuildExternalNpcAutoLore()
+    {
+        _externalAutoLoreByToken.Clear();
+        if (!_config.EnableExternalNpcAutodiscovery
+            || !_config.EnableExternalNpcAutoLore
+            || _externalAutoDiscoveredNpcNames.Count == 0)
+        {
+            return;
+        }
+
+        var stateDay = _state?.Calendar?.Day ?? 0;
+        var recentEvents = _state?.TownMemory?.Events?
+            .Where(ev => ev.Day >= Math.Max(0, stateDay - 28))
+            .ToList() ?? new List<TownMemoryEvent>();
+        var tieCandidates = GetExpandedNpcRoster(includeExternalAutoDiscovered: true)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var externalName in _externalAutoDiscoveredNpcNames)
+        {
+            var token = NormalizeTargetToken(externalName);
+            if (string.IsNullOrWhiteSpace(token))
+                continue;
+
+            if (_config.EnableCustomNpcFramework
+                && _customNpcRegistry is not null
+                && _customNpcRegistry.TryGetNpcByName(externalName, out _))
+            {
+                continue;
+            }
+
+            var profile = new ExternalNpcLoreProfile
+            {
+                Token = token,
+                DisplayName = externalName
+            };
+            profile.Aliases.Add(externalName);
+
+            var worldNpc = ResolveNpcByName(externalName);
+            if (worldNpc is not null)
+            {
+                if (!string.IsNullOrWhiteSpace(worldNpc.displayName))
+                    profile.DisplayName = worldNpc.displayName.Trim();
+                if (!string.IsNullOrWhiteSpace(worldNpc.Name))
+                    profile.Aliases.Add(worldNpc.Name);
+                if (!string.IsNullOrWhiteSpace(worldNpc.displayName))
+                    profile.Aliases.Add(worldNpc.displayName);
+                if (!string.IsNullOrWhiteSpace(worldNpc.currentLocation?.Name))
+                    profile.KnownLocations.Add(worldNpc.currentLocation.Name);
+            }
+
+            var dialogueLines = LoadSourceDialogueLinesForNpc(externalName)
+                .Take(24)
+                .ToList();
+            profile.RoleHint = DeriveExternalNpcRoleHint(profile.DisplayName, dialogueLines);
+            profile.SpeechHint = DeriveExternalNpcSpeechHint(dialogueLines);
+
+            var eventMentions = 0;
+            foreach (var ev in recentEvents)
+            {
+                if (!string.IsNullOrWhiteSpace(ev.SourceNpc) && ContainsTargetToken(ev.SourceNpc, externalName))
+                {
+                    if (!string.IsNullOrWhiteSpace(ev.Location))
+                        profile.KnownLocations.Add(ev.Location);
+                    eventMentions++;
+                }
+
+                if (ContainsTargetToken(ev.Summary, externalName))
+                {
+                    if (!string.IsNullOrWhiteSpace(ev.Location))
+                        profile.KnownLocations.Add(ev.Location);
+                    eventMentions++;
+                }
+
+                foreach (var tag in ev.Tags ?? Array.Empty<string>())
+                {
+                    if (ContainsTargetToken(tag, externalName))
+                    {
+                        if (!string.IsNullOrWhiteSpace(ev.Location))
+                            profile.KnownLocations.Add(ev.Location);
+                        eventMentions++;
+                    }
+                }
+            }
+
+            foreach (var candidate in tieCandidates)
+            {
+                if (string.IsNullOrWhiteSpace(candidate)
+                    || string.Equals(candidate, externalName, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(candidate, profile.DisplayName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var mentionedInDialogue = dialogueLines.Any(line => ContainsTargetToken(line, candidate));
+                var mentionedInEvents = recentEvents.Any(ev =>
+                    ContainsTargetToken(ev.Summary, candidate)
+                    || ContainsTargetToken(ev.Location, candidate)
+                    || (ev.Tags ?? Array.Empty<string>()).Any(tag => ContainsTargetToken(tag, candidate)));
+                if (!mentionedInDialogue && !mentionedInEvents)
+                    continue;
+
+                profile.TiesToNpcs.Add(candidate);
+                if (profile.TiesToNpcs.Count >= 6)
+                    break;
+            }
+
+            var confidence = 0.35f;
+            if (dialogueLines.Count >= 4)
+                confidence += 0.22f;
+            else if (dialogueLines.Count > 0)
+                confidence += 0.12f;
+            if (profile.KnownLocations.Count > 0)
+                confidence += 0.12f;
+            if (profile.TiesToNpcs.Count > 0)
+                confidence += 0.10f;
+            if (eventMentions > 0)
+                confidence += 0.10f;
+            profile.Confidence = Math.Clamp(confidence, 0.35f, 0.90f);
+            if (profile.Confidence < 0.55f)
+                profile.Boundaries = "Most details are partial; avoid confident claims without corroboration.";
+
+            _externalAutoLoreByToken[token] = profile;
+        }
+    }
+
+    private static string DeriveExternalNpcRoleHint(string displayName, IReadOnlyList<string> dialogueLines)
+    {
+        if (dialogueLines.Count == 0)
+            return $"Town resident known locally as {displayName}.";
+
+        var sample = string.Join(" ", dialogueLines).ToLowerInvariant();
+        if (sample.Contains("shop", StringComparison.Ordinal)
+            || sample.Contains("store", StringComparison.Ordinal)
+            || sample.Contains("buy", StringComparison.Ordinal)
+            || sample.Contains("sell", StringComparison.Ordinal))
+        {
+            return "Likely involved in local trade or shop routines.";
+        }
+
+        if (sample.Contains("farm", StringComparison.Ordinal)
+            || sample.Contains("crop", StringComparison.Ordinal)
+            || sample.Contains("harvest", StringComparison.Ordinal))
+        {
+            return "Likely tied to farm work and seasonal production.";
+        }
+
+        if (sample.Contains("mine", StringComparison.Ordinal)
+            || sample.Contains("ore", StringComparison.Ordinal)
+            || sample.Contains("guild", StringComparison.Ordinal))
+        {
+            return "Likely connected to mining/adventure routes.";
+        }
+
+        if (sample.Contains("clinic", StringComparison.Ordinal)
+            || sample.Contains("doctor", StringComparison.Ordinal)
+            || sample.Contains("health", StringComparison.Ordinal))
+        {
+            return "Likely connected to town health/wellbeing routines.";
+        }
+
+        return $"Town resident known locally as {displayName}.";
+    }
+
+    private static string DeriveExternalNpcSpeechHint(IReadOnlyList<string> dialogueLines)
+    {
+        if (dialogueLines.Count == 0)
+            return "Speech pattern unknown; keep tone simple and cautious.";
+
+        var avgLength = dialogueLines.Average(line => line.Length);
+        var exclamatory = dialogueLines.Count(line => line.Contains('!'));
+        if (avgLength <= 45)
+            return "Brief and practical speaking style.";
+        if (exclamatory >= Math.Max(1, dialogueLines.Count / 3))
+            return "Expressive and energetic speaking style.";
+        if (avgLength >= 85)
+            return "Detailed, reflective speaking style.";
+
+        return "Conversational and grounded speaking style.";
+    }
+
+    private bool TryGetExternalNpcLoreProfile(string? rawName, out ExternalNpcLoreProfile profile)
+    {
+        profile = null!;
+        if (string.IsNullOrWhiteSpace(rawName))
+            return false;
+
+        var token = NormalizeTargetToken(rawName);
+        if (!string.IsNullOrWhiteSpace(token) && _externalAutoLoreByToken.TryGetValue(token, out var byToken))
+        {
+            profile = byToken;
+            return true;
+        }
+
+        foreach (var candidate in _externalAutoLoreByToken.Values)
+        {
+            if (candidate.Aliases.Any(alias => alias.Equals(rawName.Trim(), StringComparison.OrdinalIgnoreCase)))
+            {
+                profile = candidate;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private string BuildExternalNpcLorePromptBlock(string? npcName, string? locationName, string contextTag)
+    {
+        if (!TryGetExternalNpcLoreProfile(npcName, out var profile))
+            return string.Empty;
+
+        var knownLocations = profile.KnownLocations.Count == 0
+            ? "unknown"
+            : string.Join(", ", profile.KnownLocations.Take(4).Select(loc => TrimForContext(loc, 32, "unknown")));
+        var ties = profile.TiesToNpcs.Count == 0
+            ? "uncertain"
+            : string.Join(", ", profile.TiesToNpcs.Take(5).Select(name => TrimForContext(name, 26, "npc")));
+        var localContext = string.IsNullOrWhiteSpace(locationName)
+            ? "none"
+            : TrimForContext(locationName, 32, "none");
+
+        return
+            $"EXTERNAL_NPC_RULE: Use EXTERNAL_NPC_LORE as observed fallback only; never override canonical pack lore. " +
+            $"EXTERNAL_CONTEXT: {TrimForContext(contextTag, 28, "player_chat")} location_hint={localContext}. " +
+            $"EXTERNAL_NPC_LORE[{profile.DisplayName}]: role={TrimForContext(profile.RoleHint, 120, "resident")}; " +
+            $"speech={TrimForContext(profile.SpeechHint, 110, "grounded")}; " +
+            $"known_locations={TrimForContext(knownLocations, 120, "unknown")}; " +
+            $"ties={TrimForContext(ties, 120, "uncertain")}; " +
+            $"confidence={profile.Confidence:F2}; " +
+            $"boundaries={TrimForContext(profile.Boundaries, 140, "avoid invention")}.";
+    }
+
+    private string BuildReferencedExternalNpcLorePromptBlock(string? text, string? speakingNpcName, int maxMatches)
+    {
+        if (string.IsNullOrWhiteSpace(text) || _externalAutoLoreByToken.Count == 0)
+            return string.Empty;
+
+        var speakingToken = NormalizeTargetToken(speakingNpcName ?? string.Empty);
+        var matches = new List<ExternalNpcLoreProfile>();
+        var seenTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in _externalAutoLoreByToken.Values.OrderByDescending(p => p.DisplayName.Length))
+        {
+            if (!string.IsNullOrWhiteSpace(speakingToken)
+                && profile.Token.Equals(speakingToken, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var mentioned =
+                ContainsTargetToken(text, profile.DisplayName)
+                || ContainsTargetToken(text, profile.Token)
+                || profile.Aliases.Any(alias => ContainsTargetToken(text, alias));
+            if (!mentioned || !seenTokens.Add(profile.Token))
+                continue;
+
+            matches.Add(profile);
+            if (matches.Count >= Math.Max(1, maxMatches))
+                break;
+        }
+
+        if (matches.Count == 0)
+            return string.Empty;
+
+        var parts = new List<string>
+        {
+            "EXTERNAL_NPC_REFERENCE_RULE: If a referenced external NPC has limited evidence, answer with partial certainty and avoid fabricated specifics."
+        };
+        foreach (var profile in matches)
+        {
+            var ties = profile.TiesToNpcs.Count == 0
+                ? "uncertain"
+                : string.Join(", ", profile.TiesToNpcs.Take(4).Select(name => TrimForContext(name, 22, "npc")));
+            parts.Add(
+                $"EXTERNAL_NPC_REFERENCE_LORE[{profile.DisplayName}]: role={TrimForContext(profile.RoleHint, 100, "resident")}; " +
+                $"speech={TrimForContext(profile.SpeechHint, 90, "grounded")}; " +
+                $"ties={TrimForContext(ties, 100, "uncertain")}; confidence={profile.Confidence:F2}.");
+        }
+
+        return string.Join(" ", parts);
+    }
+
+    private static string NormalizeExternalNpcName(string? rawName)
+    {
+        if (string.IsNullOrWhiteSpace(rawName))
+            return string.Empty;
+
+        var cleaned = rawName
+            .Trim()
+            .Trim('"', '\'', '.', ',', ';', ':');
+        cleaned = Regex.Replace(cleaned, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+        return cleaned;
+    }
+
+    private static bool IsVanillaNpcName(string? name)
+    {
+        return !string.IsNullOrWhiteSpace(name)
+            && VanillaNpcRoster.Any(npc => npc.Equals(name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void InjectExternalNpcTargetsIntoRumorBoard(string source)
+    {
+        if (!_config.EnableExternalNpcAutodiscovery || _externalAutoDiscoveredNpcNames.Count == 0)
+            return;
+
+        var rumorBoardType = typeof(RumorBoardService);
+        var validNpcTargetsField = rumorBoardType.GetField("ValidNpcTargets", BindingFlags.NonPublic | BindingFlags.Static);
+        if (validNpcTargetsField?.GetValue(null) is not HashSet<string> validTargets)
+            return;
+
+        var added = 0;
+        foreach (var npcName in _externalAutoDiscoveredNpcNames)
+        {
+            var token = NormalizeTargetToken(npcName);
+            if (string.IsNullOrWhiteSpace(token))
+                continue;
+            if (validTargets.Add(token))
+                added++;
+        }
+
+        if (added > 0)
+            Monitor.Log($"[{source}] Added {added} external auto-discovered NPC targets to RumorBoardService social_visit validation.", LogLevel.Info);
+    }
+
     private void InjectCustomNpcTargetsIntoRumorBoard(string source)
     {
         if (!_config.EnableCustomNpcFramework || _customNpcRegistry is null || _customNpcRegistry.NpcsByToken.Count == 0)
@@ -14231,6 +14799,53 @@ public sealed class ModEntry : Mod
                 $"- {npc.DisplayName} [{npc.NpcToken}] pack={npc.PackId} modules(quest={npc.Modules.EnableQuestProposals}, rumors={npc.Modules.EnableRumors}, articles={npc.Modules.EnableArticles}, events={npc.Modules.EnableTownEvents})",
                 LogLevel.Info);
         }
+    }
+
+    private void OnExternalNpcListCommand(string command, string[] args)
+    {
+        if (!_config.EnableExternalNpcAutodiscovery)
+        {
+            Monitor.Log("External NPC autodiscovery is disabled by config.", LogLevel.Info);
+            return;
+        }
+
+        RefreshExternalAutoDiscoveredNpcs("ExternalNpcList");
+        if (_externalAutoDiscoveredNpcNames.Count == 0)
+        {
+            Monitor.Log("No external auto-discovered NPCs are currently tracked.", LogLevel.Info);
+            return;
+        }
+
+        Monitor.Log($"External auto-discovered NPCs: {_externalAutoDiscoveredNpcNames.Count}", LogLevel.Info);
+        foreach (var npcName in _externalAutoDiscoveredNpcNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+        {
+            var token = NormalizeTargetToken(npcName);
+            var spawned = _player2NpcIdsByShortName.ContainsKey(npcName);
+            var loreSource = ResolveNpcLoreSourceLabel(npcName);
+            Monitor.Log($"- {npcName} [{token}] spawned={spawned} lore={loreSource}", LogLevel.Info);
+        }
+    }
+
+    private string ResolveNpcLoreSourceLabel(string npcName)
+    {
+        if (_config.EnableCustomNpcFramework
+            && _customNpcRegistry is not null
+            && _customNpcRegistry.TryGetNpcByName(npcName, out _))
+        {
+            return "pack";
+        }
+
+        if (_config.EnableVanillaCanonLoreInjection
+            && _vanillaCanonLoreService is not null)
+        {
+            var vanillaBlock = _vanillaCanonLoreService.BuildLorePromptBlock(npcName, Game1.currentLocation?.Name, "external_npc_list");
+            if (!string.IsNullOrWhiteSpace(vanillaBlock))
+                return "vanilla";
+        }
+
+        return TryGetExternalNpcLoreProfile(npcName, out _)
+            ? "external-auto"
+            : "none";
     }
 
     private void OnCustomNpcDumpCommand(string command, string[] args)
@@ -14347,7 +14962,9 @@ public sealed class ModEntry : Mod
         ReloadCustomNpcPacks();
         ReloadVanillaCanonLore();
         ReloadPortraitProfiles();
+        RefreshExternalAutoDiscoveredNpcs("ReloadCommand");
         InjectCustomNpcTargetsIntoRumorBoard("ReloadCommand");
+        InjectExternalNpcTargetsIntoRumorBoard("ReloadCommand");
     }
 }
 

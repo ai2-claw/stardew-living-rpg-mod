@@ -48,6 +48,7 @@ M0 + M1 scaffold includes:
 - `slrpg_customnpc_validate`: validate installed custom-NPC content packs and print errors/warnings
 - `slrpg_customnpc_list`: list loaded custom-NPC entries from installed packs
 - `slrpg_customnpc_dump <npc>`: dump one custom NPC lore profile by name/token
+- `slrpg_externalnpc_list`: list auto-discovered external NPCs + token/spawn/lore-source status
 - `slrpg_customnpc_reload`: reload custom-NPC packs without restarting the game
 - `slrpg_vanilla_lore_validate`: validate built-in vanilla canon lore entries
 - `slrpg_vanilla_lore_dump <npc>`: dump one built-in vanilla canon lore entry by name/token
@@ -112,6 +113,8 @@ Config knobs:
 - `AmbientNpcOverhearCadenceDays` (default `2`; minimum day gap before next overhear candidate)
 - `EnableCustomNpcFramework` (default `true`; enables integrated custom-NPC content pack loading)
 - `EnableCustomNpcLoreInjection` (default `true`; injects custom-NPC lore blocks into prompt context)
+- `EnableExternalNpcAutodiscovery` (default `true`; auto-discovers non-vanilla NPCs from runtime/game data for no-patch support)
+- `EnableExternalNpcAutoLore` (default `true`; enables deterministic fallback lore for auto-discovered external NPCs when pack lore is unavailable)
 - `EnableVanillaCanonLoreInjection` (default `true`; injects built-in vanilla canon lore blocks into prompt context)
 - `EnableStrictCustomNpcCanonValidation` (default `true`; blocks lore/canon conflicts on load)
 - `CustomNpcLoreLocaleOverride` (default empty; optional locale override for custom-NPC lore overlays)

@@ -160,6 +160,10 @@
 - Multi-turn ambient NPC-to-NPC chat orchestration with mode-based default depths (`cozy=2`, `story=3`, `chaos=4`, max `4`).
 - New ambient debugging command: `slrpg_debug_ambient_pair_chat <speaker> <listener> [topic]`.
 - Optional overhear HUD moments for public ambient exchanges with cadence gating.
+- External NPC autodiscovery pipeline for no-patch compatibility with player-added NPC mods.
+- On-demand Player2 session spawn for discovered roster NPCs.
+- Deterministic fallback external NPC lore extraction from observed dialogue/town events when official pack lore is unavailable.
+- New diagnostics command: `slrpg_externalnpc_list`.
 - Deterministic NPC intent resolver with schema-constrained command validation.
 - Runtime handlers for full NPC command set:
   - `propose_quest`
@@ -201,6 +205,9 @@
   - response normalization fallback when a child NPC claims adult ages
 
 ### Changed
+- External NPC support is additive and compatibility-safe: integrated custom NPC content pack lore remains authoritative and overrides generated fallback lore.
+- Player2 roster readiness now tracks only required spawn roster entries, so auto-discovered external NPCs do not stall auto-connect/session health checks.
+- Expanded NPC targeting, social-visit inference, and prompt canon lists now include auto-discovered external NPCs when enabled.
 - Ambient command policy now blocks `publish_article` in `npc_to_npc_ambient` lane.
 - Added config knobs for ambient chat depth/limit/pair-cooldown/overhear cadence.
 - NPC quest language shifted toward "town requests".
