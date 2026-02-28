@@ -69,6 +69,11 @@ public sealed class ModEntry : Mod
     private const int VanillaDialogueContextSequenceMaxLines = 6;
     private const string InitialNpcChatPrompt = "Let's chat.";
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
+    private const string PlayerFamilyMarriedMilestoneFactKey = "player_family:milestone:married";
+    private const string PlayerFamilyFirstChildMilestoneFactKey = "player_family:milestone:first_child";
+    private const string PlayerFamilySpouseFactPrefix = "player_family:spouse:";
+    private const string PlayerFamilyChildFactPrefix = "player_family:child:";
+    private const string PlayerFamilyLoreTag = "player_family";
     private const string CreatorPlayer2GameClientId = "019c4693-2a12-7ef5-bae2-ff29ee9fa674";
 
     private static readonly string[] ShopMenuOwnerMemberCandidates =
@@ -104,6 +109,18 @@ public sealed class ModEntry : Mod
         "desert festival",
         "celebration",
         "town fair"
+    };
+    private static readonly Dictionary<string, string[]> SpouseImmediateAwarenessByNpc = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Abigail"] = new[] { "Caroline", "Pierre" },
+        ["Alex"] = new[] { "Evelyn", "George" },
+        ["Emily"] = new[] { "Haley" },
+        ["Haley"] = new[] { "Emily" },
+        ["Maru"] = new[] { "Robin", "Demetrius", "Sebastian" },
+        ["Penny"] = new[] { "Pam" },
+        ["Sam"] = new[] { "Jodi", "Kent", "Vincent" },
+        ["Sebastian"] = new[] { "Robin", "Demetrius", "Maru" },
+        ["Shane"] = new[] { "Marnie", "Jas" }
     };
     private static readonly string[] PlayerChatHappyEmotionTokens =
     {
@@ -958,6 +975,7 @@ public sealed class ModEntry : Mod
         ClearNpcDialogueHook();
         ClearManualNpcFollowUpState();
         SyncCalendarSeasonFromWorld();
+        TryRefreshPlayerFamilyLoreFromWorld("save-loaded", logNoChange: false);
         _economyService?.EnsureInitialized(_state.Economy);
         _rumorBoardService?.ExpireOverdueQuests(_state);
         if (_config.EnableCustomNpcFramework)
@@ -999,6 +1017,7 @@ public sealed class ModEntry : Mod
         _lastNpcPublishAppliedTimeOfDay = -1;
         RefreshExternalAutoDiscoveredNpcs("DayStarted");
         InjectExternalNpcTargetsIntoRumorBoard("DayStarted");
+        TryRefreshPlayerFamilyLoreFromWorld("day-start", logNoChange: true);
 
         // Give auto-connect a brief head start so day-start newspaper can use Player2 when available.
         if (_config.EnablePlayer2
@@ -5229,6 +5248,459 @@ public sealed class ModEntry : Mod
         return $"player_{normalized}";
     }
 
+    private void TryRefreshPlayerFamilyLoreFromWorld(string sourceTag, bool logNoChange)
+    {
+        if (!Context.IsWorldReady || Game1.player is null)
+            return;
+
+        _state.PlayerFamily ??= new PlayerFamilyState();
+        var day = Math.Max(1, _state.Calendar.Day);
+        var family = _state.PlayerFamily;
+
+        var liveSpouseNpcId = ResolveLivePlayerSpouseName(Game1.player);
+        var liveSpouseDisplayName = ResolveNpcDisplayNameOrFallback(liveSpouseNpcId);
+        var liveChildren = ReadLivePlayerChildren(Game1.player, day);
+
+        var priorSpouseNpcId = family.SpouseNpcId ?? string.Empty;
+        var priorSpouseName = family.SpouseName ?? string.Empty;
+        var priorChildrenByName = family.Children
+            .Where(child => !string.IsNullOrWhiteSpace(child.Name))
+            .ToDictionary(child => child.Name.Trim(), child => child, StringComparer.OrdinalIgnoreCase);
+
+        var mergedChildren = new List<PlayerChildProfile>();
+        var newlyObservedChildren = new List<PlayerChildProfile>();
+        foreach (var liveChild in liveChildren)
+        {
+            var canonicalName = liveChild.Name.Trim();
+            if (canonicalName.Length == 0)
+                continue;
+
+            var merged = new PlayerChildProfile
+            {
+                Name = canonicalName,
+                AgeStage = string.IsNullOrWhiteSpace(liveChild.AgeStage) ? "child" : liveChild.AgeStage,
+                FirstObservedDay = day
+            };
+
+            if (priorChildrenByName.TryGetValue(canonicalName, out var priorChild) && priorChild.FirstObservedDay > 0)
+            {
+                merged.FirstObservedDay = priorChild.FirstObservedDay;
+            }
+            else
+            {
+                newlyObservedChildren.Add(merged);
+            }
+
+            mergedChildren.Add(merged);
+        }
+
+        mergedChildren = mergedChildren
+            .OrderBy(child => child.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var spouseChanged = !string.Equals(priorSpouseNpcId, liveSpouseNpcId, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(priorSpouseName, liveSpouseDisplayName, StringComparison.OrdinalIgnoreCase);
+        var childrenChanged = !AreChildProfilesEquivalent(family.Children, mergedChildren);
+
+        family.SpouseNpcId = liveSpouseNpcId;
+        family.SpouseName = liveSpouseDisplayName;
+        family.Children = mergedChildren;
+        family.IsMarried = !string.IsNullOrWhiteSpace(liveSpouseNpcId);
+        family.IsParent = mergedChildren.Count > 0;
+        family.LastDetectedDay = day;
+        family.FactVersion = 1;
+
+        var eventCount = 0;
+        var immediateAwarenessSeeds = 0;
+        var spouseFactSourceTag = $"family:{sourceTag}";
+
+        if (family.IsMarried)
+        {
+            var spouseToken = NormalizeTargetToken(string.IsNullOrWhiteSpace(liveSpouseNpcId) ? liveSpouseDisplayName : liveSpouseNpcId);
+            if (string.IsNullOrWhiteSpace(spouseToken))
+                spouseToken = "unknown";
+            var spouseFactCreated = TryWriteFactOnce($"{PlayerFamilySpouseFactPrefix}{spouseToken}", spouseFactSourceTag);
+            var marriedMilestoneCreated = TryWriteFactOnce(PlayerFamilyMarriedMilestoneFactKey, spouseFactSourceTag);
+            if ((spouseFactCreated || marriedMilestoneCreated) && _townMemoryService is not null)
+            {
+                var spouseLabel = string.IsNullOrWhiteSpace(liveSpouseDisplayName) ? liveSpouseNpcId : liveSpouseDisplayName;
+                var summary = $"{ResolvePlayerFarmerDisplayName()} is now married to {spouseLabel}.";
+                var eventId = _townMemoryService.RecordEvent(
+                    _state,
+                    "social",
+                    summary,
+                    "FarmHouse",
+                    _state.Calendar.Day,
+                    severity: 3,
+                    visibility: "local",
+                    sourceNpc: liveSpouseNpcId,
+                    "family",
+                    "marriage",
+                    PlayerFamilyLoreTag,
+                    "player",
+                    ResolvePlayerNameTag(),
+                    spouseToken);
+                if (!string.IsNullOrWhiteSpace(eventId))
+                {
+                    eventCount += 1;
+                    immediateAwarenessSeeds += _townMemoryService.SeedImmediateKnowledge(
+                        _state,
+                        eventId,
+                        BuildImmediatePlayerFamilyAwarenessTargets(liveSpouseDisplayName, liveSpouseNpcId),
+                        _state.Calendar.Day,
+                        angle: "family-circle");
+                }
+            }
+        }
+
+        var firstChildMilestoneCreated = false;
+        foreach (var child in newlyObservedChildren)
+        {
+            var childToken = NormalizeTargetToken(child.Name);
+            if (string.IsNullOrWhiteSpace(childToken))
+                childToken = $"child_{child.FirstObservedDay}";
+            if (!TryWriteFactOnce($"{PlayerFamilyChildFactPrefix}{childToken}", spouseFactSourceTag))
+                continue;
+
+            var firstChildMilestoneForThisChild = false;
+            if (!firstChildMilestoneCreated)
+            {
+                firstChildMilestoneForThisChild = TryWriteFactOnce(PlayerFamilyFirstChildMilestoneFactKey, spouseFactSourceTag);
+                firstChildMilestoneCreated = firstChildMilestoneCreated || firstChildMilestoneForThisChild;
+            }
+
+            if (_townMemoryService is null)
+                continue;
+
+            var spouseLabel = string.IsNullOrWhiteSpace(liveSpouseDisplayName) ? liveSpouseNpcId : liveSpouseDisplayName;
+            var summary = string.IsNullOrWhiteSpace(spouseLabel)
+                ? $"{ResolvePlayerFarmerDisplayName()} welcomed {child.Name} into the household."
+                : $"{ResolvePlayerFarmerDisplayName()} and {spouseLabel} welcomed {child.Name} into the household.";
+            var eventId = _townMemoryService.RecordEvent(
+                _state,
+                "social",
+                summary,
+                "FarmHouse",
+                _state.Calendar.Day,
+                severity: 2,
+                visibility: "local",
+                sourceNpc: liveSpouseNpcId,
+                "family",
+                "child",
+                firstChildMilestoneForThisChild ? "first_child" : "new_child",
+                PlayerFamilyLoreTag,
+                "player",
+                ResolvePlayerNameTag(),
+                childToken);
+            if (!string.IsNullOrWhiteSpace(eventId))
+            {
+                eventCount += 1;
+                immediateAwarenessSeeds += _townMemoryService.SeedImmediateKnowledge(
+                    _state,
+                    eventId,
+                    BuildImmediatePlayerFamilyAwarenessTargets(liveSpouseDisplayName, liveSpouseNpcId),
+                    _state.Calendar.Day,
+                    angle: "family-circle");
+            }
+        }
+
+        if (sourceTag.StartsWith("day-start", StringComparison.OrdinalIgnoreCase))
+            TryPropagatePlayerFamilyLoreAcrossTown(sourceTag, logNoChange);
+
+        if (spouseChanged || childrenChanged || eventCount > 0)
+        {
+            var spouseLabel = string.IsNullOrWhiteSpace(family.SpouseName)
+                ? (string.IsNullOrWhiteSpace(family.SpouseNpcId) ? "none" : family.SpouseNpcId)
+                : family.SpouseName;
+            Monitor.Log(
+                $"Player family updated ({sourceTag}): spouse='{spouseLabel}' children={family.Children.Count} newChildren={newlyObservedChildren.Count} events={eventCount} seeded={immediateAwarenessSeeds}.",
+                LogLevel.Debug);
+        }
+        else if (logNoChange)
+        {
+            Monitor.Log(
+                $"Player family unchanged ({sourceTag}): spouse={(family.IsMarried ? "set" : "none")} children={family.Children.Count}.",
+                LogLevel.Trace);
+        }
+    }
+
+    private void TryPropagatePlayerFamilyLoreAcrossTown(string sourceTag, bool logNoChange)
+    {
+        if (_townMemoryService is null)
+            return;
+
+        var promoted = _townMemoryService.PropagateTaggedEventsByDay(_state, PlayerFamilyLoreTag, _state.Calendar.Day, maxNewNpcsPerEvent: 4);
+        if (promoted > 0)
+        {
+            Monitor.Log($"Player family awareness propagation ({sourceTag}): +{promoted} NPC knowledge updates.", LogLevel.Debug);
+        }
+        else if (logNoChange)
+        {
+            Monitor.Log($"Player family awareness propagation ({sourceTag}): no new spreads.", LogLevel.Trace);
+        }
+    }
+
+    private string ResolveLivePlayerSpouseName(Farmer player)
+    {
+        if (TryInvokeZeroArgMethod(player, "getSpouse", out var spouseObj) && spouseObj is NPC spouseNpc)
+        {
+            var spouseName = !string.IsNullOrWhiteSpace(spouseNpc.Name) ? spouseNpc.Name : spouseNpc.displayName;
+            if (!string.IsNullOrWhiteSpace(spouseName))
+                return spouseName.Trim();
+        }
+
+        if (!TryGetMemberValue(player, "spouse", out var spouseRaw)
+            && !TryGetMemberValue(player, "Spouse", out spouseRaw))
+        {
+            return string.Empty;
+        }
+
+        var spouseValue = (spouseRaw?.ToString() ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(spouseValue))
+            return string.Empty;
+
+        var resolvedSpouse = ResolveNpcByName(spouseValue);
+        return resolvedSpouse?.Name ?? spouseValue;
+    }
+
+    private string ResolveNpcDisplayNameOrFallback(string npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName))
+            return string.Empty;
+
+        var npc = ResolveNpcByName(npcName);
+        if (npc is null)
+            return npcName.Trim();
+
+        return string.IsNullOrWhiteSpace(npc.displayName)
+            ? npc.Name
+            : npc.displayName;
+    }
+
+    private IEnumerable<string> BuildImmediatePlayerFamilyAwarenessTargets(string spouseDisplayName, string spouseNpcId)
+    {
+        var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Lewis"
+        };
+
+        AddKnowledgeNpc(targets, spouseDisplayName);
+        AddKnowledgeNpc(targets, spouseNpcId);
+
+        var spouseKey = string.IsNullOrWhiteSpace(spouseNpcId) ? spouseDisplayName : spouseNpcId;
+        if (!string.IsNullOrWhiteSpace(spouseKey)
+            && SpouseImmediateAwarenessByNpc.TryGetValue(spouseKey.Trim(), out var closeRelations))
+        {
+            foreach (var relation in closeRelations)
+                AddKnowledgeNpc(targets, relation);
+        }
+
+        foreach (var householdNpc in EnumerateFarmHouseholdNpcNames())
+            AddKnowledgeNpc(targets, householdNpc);
+
+        return targets;
+    }
+
+    private static IEnumerable<string> EnumerateFarmHouseholdNpcNames()
+    {
+        if (!Context.IsWorldReady)
+            yield break;
+
+        foreach (var location in Game1.locations)
+        {
+            if (location is null || location.characters is null)
+                continue;
+            if (!location.Name.Contains("FarmHouse", StringComparison.OrdinalIgnoreCase)
+                && !location.Name.Contains("Cabin", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foreach (var character in location.characters)
+            {
+                if (character is null)
+                    continue;
+
+                var name = !string.IsNullOrWhiteSpace(character.Name)
+                    ? character.Name
+                    : character.displayName;
+                if (!string.IsNullOrWhiteSpace(name))
+                    yield return name;
+            }
+        }
+    }
+
+    private static void AddKnowledgeNpc(HashSet<string> targets, string? rawName)
+    {
+        if (string.IsNullOrWhiteSpace(rawName))
+            return;
+
+        var normalized = rawName.Trim();
+        if (normalized.Length == 0)
+            return;
+
+        if (normalized.Length > 32 && normalized.Contains('-', StringComparison.Ordinal))
+            return;
+
+        targets.Add(normalized);
+    }
+
+    private static List<PlayerChildProfile> ReadLivePlayerChildren(Farmer player, int day)
+    {
+        var result = new List<PlayerChildProfile>();
+
+        object? childrenRaw = null;
+        if (!TryInvokeZeroArgMethod(player, "getChildren", out childrenRaw)
+            && !TryGetMemberValue(player, "children", out childrenRaw)
+            && !TryGetMemberValue(player, "Children", out childrenRaw))
+        {
+            return result;
+        }
+
+        if (childrenRaw is not System.Collections.IEnumerable enumerable)
+            return result;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var child in enumerable)
+        {
+            if (child is null)
+                continue;
+
+            if (!TryReadObjectMemberAsString(child, "Name", out var childName)
+                && !TryReadObjectMemberAsString(child, "displayName", out childName))
+            {
+                continue;
+            }
+
+            childName = childName.Trim();
+            if (childName.Length == 0 || !seen.Add(childName))
+                continue;
+
+            result.Add(new PlayerChildProfile
+            {
+                Name = childName,
+                AgeStage = ResolveChildAgeStage(child),
+                FirstObservedDay = Math.Max(1, day)
+            });
+        }
+
+        return result
+            .OrderBy(child => child.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string ResolveChildAgeStage(object child)
+    {
+        if (TryReadMemberInt(child, "Age", out var age) || TryReadMemberInt(child, "age", out age))
+        {
+            return age switch
+            {
+                <= 0 => "infant",
+                1 => "toddler",
+                _ => "child"
+            };
+        }
+
+        if (TryReadMemberInt(child, "daysOld", out var daysOld) || TryReadMemberInt(child, "DaysOld", out daysOld))
+        {
+            if (daysOld <= 14)
+                return "infant";
+            if (daysOld <= 56)
+                return "toddler";
+            return "child";
+        }
+
+        return "child";
+    }
+
+    private static bool TryReadMemberInt(object source, string memberName, out int value)
+    {
+        value = 0;
+        if (!TryGetMemberValue(source, memberName, out var raw) || raw is null)
+            return false;
+
+        return raw switch
+        {
+            int i => (value = i) == i,
+            long l when l <= int.MaxValue && l >= int.MinValue => (value = (int)l) == (int)l,
+            _ => int.TryParse(raw.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value)
+        };
+    }
+
+    private static bool TryInvokeZeroArgMethod(object source, string methodName, out object? value)
+    {
+        value = null;
+        if (source is null || string.IsNullOrWhiteSpace(methodName))
+            return false;
+
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+        var method = source.GetType().GetMethod(methodName, flags, Type.DefaultBinder, Type.EmptyTypes, null);
+        if (method is null)
+            return false;
+
+        try
+        {
+            value = method.Invoke(source, null);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool AreChildProfilesEquivalent(IReadOnlyList<PlayerChildProfile> left, IReadOnlyList<PlayerChildProfile> right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left.Count != right.Count)
+            return false;
+
+        for (var i = 0; i < left.Count; i++)
+        {
+            var l = left[i];
+            var r = right[i];
+            if (!string.Equals(l.Name, r.Name, StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (!string.Equals(l.AgeStage, r.AgeStage, StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (l.FirstObservedDay != r.FirstObservedDay)
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool TryWriteFactOnce(string key, string source)
+    {
+        if (string.IsNullOrWhiteSpace(key) || _state.Facts.Facts.ContainsKey(key))
+            return false;
+
+        _state.Facts.Facts[key] = new FactValue
+        {
+            Value = true,
+            SetDay = _state.Calendar.Day,
+            Source = string.IsNullOrWhiteSpace(source) ? "system" : source.Trim()
+        };
+        return true;
+    }
+
+    private string BuildPlayerFamilyPromptBlock()
+    {
+        var family = _state.PlayerFamily ?? new PlayerFamilyState();
+        var spouse = string.IsNullOrWhiteSpace(family.SpouseName)
+            ? (string.IsNullOrWhiteSpace(family.SpouseNpcId) ? "none" : family.SpouseNpcId)
+            : family.SpouseName;
+        var children = family.Children
+            .Where(child => !string.IsNullOrWhiteSpace(child.Name))
+            .OrderBy(child => child.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .Select(child => $"{child.Name}:{child.AgeStage}")
+            .ToList();
+        var childrenSummary = children.Count == 0 ? "none" : string.Join(", ", children);
+
+        return $"PLAYER_FAMILY: IsMarried={family.IsMarried} IsParent={family.IsParent} Spouse='{spouse}' ChildCount={family.Children.Count} Children=[{childrenSummary}] LastDetectedDay={family.LastDetectedDay}.";
+    }
     private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
     {
         if (!Context.IsWorldReady)
@@ -6415,6 +6887,13 @@ public sealed class ModEntry : Mod
     {
         Monitor.Log("=== SLRPG State Snapshot ===", LogLevel.Info);
         Monitor.Log($"Day {_state.Calendar.Day} | Season {_state.Calendar.Season} | Year {_state.Calendar.Year}", LogLevel.Info);
+        var familyChildren = _state.PlayerFamily.Children
+            .OrderBy(child => child.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(child => $"{child.Name}:{child.AgeStage}")
+            .ToList();
+        Monitor.Log(
+            $"Player family | married={_state.PlayerFamily.IsMarried} spouse='{(string.IsNullOrWhiteSpace(_state.PlayerFamily.SpouseName) ? "none" : _state.PlayerFamily.SpouseName)}' parent={_state.PlayerFamily.IsParent} kids={_state.PlayerFamily.Children.Count} [{(familyChildren.Count == 0 ? "none" : string.Join(", ", familyChildren))}] lastDay={_state.PlayerFamily.LastDetectedDay}",
+            LogLevel.Info);
         Monitor.Log($"Mode {_state.Config.Mode} | Sentiment E/C/Env: {_state.Social.TownSentiment.Economy}/{_state.Social.TownSentiment.Community}/{_state.Social.TownSentiment.Environment}", LogLevel.Info);
         Monitor.Log($"Ambient consequence pipeline enabled: {_config.EnableAmbientConsequencePipeline}", LogLevel.Info);
         var ambientUnlocked = _commandPolicyService?.GetAmbientConditionalCommandsEnabled() ?? Array.Empty<string>();
@@ -9447,6 +9926,8 @@ public sealed class ModEntry : Mod
         var npcHasMetPlayer = HasNpcMetPlayer(npcName);
         var playerName = GetPlayerDisplayNameForContext();
         var preferredAddress = npcHasMetPlayer ? playerName : "Farmer";
+        var playerFamilyBlock = BuildPlayerFamilyPromptBlock();
+        var playerFamilyRoleRule = "PLAYER_FAMILY_ROLE_RULE: If PLAYER_FAMILY indicates married/parent status, acknowledge it naturally when context is relevant (home, family, schedule, or gossip). Do not force family references into unrelated replies.";
         var charismaStat = GetPlayerRpgStat("charisma");
         var socialStat = GetPlayerRpgStat("social");
         var speechStyleBlock = _npcSpeechStyleService?.BuildPromptBlock(
@@ -9596,6 +10077,7 @@ public sealed class ModEntry : Mod
             "TRUST_RULE: Use STATE: NpcReputation as reliability/trust for commitments only; do not use it to override warmth from hearts.",
             "TRUST_RULE: If hearts are high but reputation is low, remain warm in tone but cautious on promises, favors, and high-stakes requests.",
             "PLAYER_NAME_RULE: Use PLAYER_KNOWLEDGE to decide how to address the player. If NpcHasMetPlayer is false, do not call the player by name.",
+            playerFamilyRoleRule,
             "TIME_RULE: If asked for time, answer with hour and minute plus AM/PM (for example: 6:30 AM). Never answer with minutes only.",
             locationAwarenessRule,
             locationPrecisionRule,
@@ -9640,6 +10122,7 @@ public sealed class ModEntry : Mod
             $"STATE: CurrentMinute {minute:00}.",
             $"STATE: PlayerLocale {localeCode}.",
             $"PLAYER_KNOWLEDGE: PlayerName='{playerName}' NpcHasMetPlayer={npcHasMetPlayer} PreferredAddress='{preferredAddress}'.",
+            playerFamilyBlock,
             $"STATE: PlayerStats Charisma={charismaStat} Social={socialStat}.",
             $"STATE: Day {_state.Calendar.Day} {currentSeason}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",

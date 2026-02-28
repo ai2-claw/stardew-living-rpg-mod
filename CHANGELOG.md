@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## 0.8.1 - 2026-02-28
+
+### Added
+- Dynamic player family state persistence (`spouse`, `children`, role flags) with backward-compatible save migration.
+- Daily family lore detector for marriage and new-child milestones, with idempotent fact keys to prevent duplicate event spam.
+- Tiered family awareness flow:
+  - immediate seeding for spouse/household/close relations
+  - gradual town-wide spread via town-memory propagation
+- Prompt grounding block `PLAYER_FAMILY` plus role guidance so NPC dialogue can naturally acknowledge the player as spouse/parent when context is relevant.
+- `slrpg_debug_state` family snapshot output (married/parent flags, spouse, children, last detected day).
+
+### Changed
+- `TownMemoryService.RecordEvent(...)` now returns the resolved event id (new or deduped) to support deterministic awareness seeding.
+- Internal save-state schema version updated from `0.2.0` to `0.3.0` for player-family compatibility migration.
+
 ## 0.8.0 - 2026-02-28
 
 ### Added

@@ -6,7 +6,7 @@ public static class StateStore
 {
     private const string DataKey = "mx146323.StardewLivingRPG.SaveState";
     private const string LegacyDataKey = "mx146323.StardewLivingRPG/SaveState";
-    private const string CurrentStateVersion = "0.2.0";
+    private const string CurrentStateVersion = "0.3.0";
     private static readonly HashSet<string> ValidSeasons = new(StringComparer.OrdinalIgnoreCase)
     {
         "spring", "summer", "fall", "winter"
@@ -290,6 +290,75 @@ public static class StateStore
                 knowledge.ByEventId = new Dictionary<string, TownKnowledgeEntry>(StringComparer.OrdinalIgnoreCase);
                 changed = true;
             }
+        }
+
+        if (state.PlayerFamily is null)
+        {
+            state.PlayerFamily = new PlayerFamilyState();
+            changed = true;
+        }
+        if (state.PlayerFamily.Children is null)
+        {
+            state.PlayerFamily.Children = new List<PlayerChildProfile>();
+            changed = true;
+        }
+        for (var i = state.PlayerFamily.Children.Count - 1; i >= 0; i--)
+        {
+            var child = state.PlayerFamily.Children[i];
+            if (child is null || string.IsNullOrWhiteSpace(child.Name))
+            {
+                state.PlayerFamily.Children.RemoveAt(i);
+                changed = true;
+                continue;
+            }
+
+            child.Name = child.Name.Trim();
+            if (string.IsNullOrWhiteSpace(child.AgeStage))
+            {
+                child.AgeStage = "infant";
+                changed = true;
+            }
+            else
+            {
+                var normalizedStage = child.AgeStage.Trim().ToLowerInvariant();
+                if (normalizedStage is not ("infant" or "toddler" or "child"))
+                {
+                    child.AgeStage = "child";
+                    changed = true;
+                }
+                else if (!string.Equals(child.AgeStage, normalizedStage, StringComparison.Ordinal))
+                {
+                    child.AgeStage = normalizedStage;
+                    changed = true;
+                }
+            }
+
+            if (child.FirstObservedDay <= 0)
+            {
+                child.FirstObservedDay = Math.Max(1, state.Calendar.Day);
+                changed = true;
+            }
+        }
+
+        var hasSpouse = !string.IsNullOrWhiteSpace(state.PlayerFamily.SpouseNpcId)
+            || !string.IsNullOrWhiteSpace(state.PlayerFamily.SpouseName);
+        if (state.PlayerFamily.IsMarried != hasSpouse)
+        {
+            state.PlayerFamily.IsMarried = hasSpouse;
+            changed = true;
+        }
+
+        var hasChildren = state.PlayerFamily.Children.Count > 0;
+        if (state.PlayerFamily.IsParent != hasChildren)
+        {
+            state.PlayerFamily.IsParent = hasChildren;
+            changed = true;
+        }
+
+        if (state.PlayerFamily.FactVersion < 1)
+        {
+            state.PlayerFamily.FactVersion = 1;
+            changed = true;
         }
 
         if (string.IsNullOrWhiteSpace(state.Config.Mode))
