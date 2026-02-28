@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## 0.8.0 - 2026-02-28
+
+### Added
+- Ambient NPC-to-NPC multi-turn conversations with per-mode/default turn depth and pair cooldown support.
+- Ambient conversation beat system (romance, intrigue, mystery, gossip, work, market, community, ambition) to reduce repetitive pleasantries.
+- New debug command: `slrpg_debug_ambient_pair_chat <speaker> <listener> [topic]`.
+
+### Changed
+- Manifest version bumped to `0.8.0`.
+- Ambient prompt pipeline now separates dialogue generation and extraction contexts, with stronger extraction guidance for memory/event capture.
+- Ambient scheduling and fallback persistence now preserve conversation outcomes more reliably through synthetic memory/event persistence when structured commands are missing.
+- Ambient overhear moments no longer use HUD toasts; overheard snippets are now queued as in-world gossip cues surfaced through NPC dialogue.
+
+### Fixed
+- Prevented ambient NPC-to-NPC lines from leaking into direct player chat replies (including initial "Let's chat" openers) by filtering ambient bleed in immediate and history fallback reply paths.
+- Player chat now grounds referenced NPC whereabouts from live world state (including same-location checks), reducing stale lore answers like wrong current locations.
+
 ## 0.7.2 - 2026-02-28
 
 ### Added

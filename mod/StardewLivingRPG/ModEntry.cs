@@ -3505,19 +3505,45 @@ public sealed class ModEntry : Mod
                 && !string.IsNullOrWhiteSpace(completion.OverhearSnippet)
                 && ShouldShowAmbientOverhearMoment())
             {
-                var message = I18n.Get(
-                    "hud.ambient.overheard",
-                    $"Overheard: {completion.SpeakerShortName} and {completion.ListenerShortName} traded a quick rumor - \"{completion.OverhearSnippet}\"",
-                    new
-                    {
-                        speaker = completion.SpeakerShortName,
-                        listener = completion.ListenerShortName,
-                        snippet = completion.OverhearSnippet
-                    });
-                Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
+                TryQueueAmbientOverheardGossipEvent(completion);
                 _ambientLastOverhearDay = _state.Calendar.Day;
             }
         }
+    }
+
+    private void TryQueueAmbientOverheardGossipEvent(AmbientConversationCompletion completion)
+    {
+        if (_townMemoryService is null)
+            return;
+
+        var snippet = NpcConversationService.NormalizeOverhearSnippet(completion.OverhearSnippet, 100);
+        if (string.IsNullOrWhiteSpace(snippet))
+            return;
+
+        var speaker = (completion.SpeakerShortName ?? string.Empty).Trim();
+        var listener = (completion.ListenerShortName ?? string.Empty).Trim();
+        var location = Game1.currentLocation?.Name ?? "Town";
+        var summary = string.IsNullOrWhiteSpace(speaker) || string.IsNullOrWhiteSpace(listener)
+            ? $"Town gossip says: {snippet}"
+            : $"Town gossip says {speaker} told {listener}: {snippet}";
+        summary = NpcConversationService.NormalizeOverhearSnippet(summary, 150);
+        if (string.IsNullOrWhiteSpace(summary) || summary.Length < 12)
+            return;
+
+        _townMemoryService.RecordEvent(
+            _state,
+            "gossip",
+            summary,
+            location,
+            _state.Calendar.Day,
+            severity: 2,
+            visibility: "public",
+            sourceNpc: string.IsNullOrWhiteSpace(speaker) ? listener : speaker,
+            tags: new[] { "ambient", "npc_chat", "overheard", "ambient_overheard", "gossip" });
+
+        Monitor.Log(
+            $"Queued ambient overhear gossip cue for player dialogue: {completion.SpeakerShortName}->{completion.ListenerShortName}.",
+            LogLevel.Trace);
     }
 
     private void TryPersistAmbientConversationFallbackMemory(AmbientConversationCompletion completion, bool hasStructuredMemoryOrEvent)
@@ -3705,6 +3731,266 @@ public sealed class ModEntry : Mod
 
         var time = Game1.timeOfDay;
         return time >= 900 && time <= 2200;
+    }
+
+    private string BuildAmbientOverheardGossipCueBlock(string effectiveContextTag, string? npcName, string? playerText)
+    {
+        if (!_config.EnableAmbientNpcOverhearMoments)
+            return string.Empty;
+
+        if (string.IsNullOrWhiteSpace(effectiveContextTag)
+            || !effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        var today = _state.Calendar.Day;
+        var candidates = _state.TownMemory.Events
+            .Where(ev =>
+                ev.Day >= today - 3
+                && ev.Day <= today
+                && !string.IsNullOrWhiteSpace(ev.Summary)
+                && ev.Tags.Any(tag => string.Equals(tag, "ambient_overheard", StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .Take(8)
+            .ToList();
+        if (candidates.Count == 0)
+            return string.Empty;
+
+        var cueChance = IsLikelySmallTalkOpen(playerText) ? 0.65d : 0.22d;
+        if (_ambientNpcRandom.NextDouble() > cueChance)
+            return string.Empty;
+
+        var unconsumed = candidates
+            .Where(ev => !_state.Facts.Facts.ContainsKey(BuildAmbientOverheardCueFactKey(ev.EventId)))
+            .ToList();
+        if (unconsumed.Count == 0)
+            return string.Empty;
+
+        var selected = unconsumed[_ambientNpcRandom.Next(unconsumed.Count)];
+        var factKey = BuildAmbientOverheardCueFactKey(selected.EventId);
+        _state.Facts.Facts[factKey] = new FactValue
+        {
+            Value = true,
+            SetDay = today,
+            Source = "ambient_overheard"
+        };
+
+        var speaker = string.IsNullOrWhiteSpace(npcName) ? "This villager" : npcName.Trim();
+        var cueText = NpcConversationService.NormalizeOverhearSnippet(selected.Summary, 140);
+        if (string.IsNullOrWhiteSpace(cueText))
+            return string.Empty;
+
+        return $"AMBIENT_GOSSIP_CUE: {speaker} recently heard this town chatter and can mention it naturally: {cueText}";
+    }
+
+    private string BuildReferencedNpcWhereaboutsBlock(
+        string? speakerNpcName,
+        string? playerText,
+        string? referencedNpcName,
+        string speakerLocationInternalName,
+        string effectiveContextTag)
+    {
+        if (!Context.IsWorldReady
+            || !effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        if (!IsPlayerAskingNpcWhereabouts(playerText) && string.IsNullOrWhiteSpace(referencedNpcName))
+            return string.Empty;
+
+        var referencedNames = FindReferencedNpcNamesForWhereabouts(playerText, referencedNpcName, maxMatches: 2);
+        if (referencedNames.Count == 0)
+            return string.Empty;
+
+        var speakerToken = NormalizeTargetToken(speakerNpcName ?? string.Empty);
+        var parts = new List<string>();
+        foreach (var name in referencedNames)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            var nameToken = NormalizeTargetToken(name);
+            if (!string.IsNullOrWhiteSpace(speakerToken)
+                && string.Equals(nameToken, speakerToken, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var npc = ResolveNpcByName(name);
+            if (npc is null)
+            {
+                parts.Add($"{name}: unknown_current_location");
+                continue;
+            }
+
+            var npcLocation = BuildPromptLocationContextForNpc(npc);
+            var sameLocationAsSpeaker = !string.IsNullOrWhiteSpace(speakerLocationInternalName)
+                && string.Equals(npcLocation.InternalName, speakerLocationInternalName, StringComparison.OrdinalIgnoreCase);
+            var resolvedName = string.IsNullOrWhiteSpace(npc.displayName) ? npc.Name : npc.displayName;
+            var safeName = string.IsNullOrWhiteSpace(resolvedName) ? name : resolvedName;
+            parts.Add(
+                $"{safeName}: exact='{npcLocation.ExactPhrase}' internal='{npcLocation.InternalName}' same_location_as_speaker={sameLocationAsSpeaker} tile=({npcLocation.TileX},{npcLocation.TileY})");
+        }
+
+        if (parts.Count == 0)
+            return string.Empty;
+
+        return $"LIVE_NPC_WHEREABOUTS: [{string.Join("; ", parts)}].";
+    }
+
+    private List<string> FindReferencedNpcNamesForWhereabouts(string? playerText, string? referencedNpcName, int maxMatches)
+    {
+        var capped = Math.Max(1, maxMatches);
+        var found = new List<string>(capped);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddName(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return;
+
+            var trimmed = raw.Trim();
+            var token = NormalizeTargetToken(trimmed);
+            if (string.IsNullOrWhiteSpace(token) || !seen.Add(token))
+                return;
+
+            found.Add(trimmed);
+        }
+
+        AddName(referencedNpcName);
+
+        if (!string.IsNullOrWhiteSpace(playerText))
+        {
+            foreach (var rosterName in GetExpandedNpcRoster().OrderByDescending(name => name.Length))
+            {
+                if (!ContainsTargetToken(playerText, rosterName))
+                    continue;
+
+                AddName(rosterName);
+                if (found.Count >= capped)
+                    break;
+            }
+
+            if (found.Count < capped && _config.EnableCustomNpcFramework && _customNpcRegistry is not null)
+            {
+                var customNames = FindCustomNpcNamesInText(playerText, maxMatches: capped * 2);
+                foreach (var customName in customNames)
+                {
+                    AddName(customName);
+                    if (found.Count >= capped)
+                        break;
+                }
+            }
+        }
+
+        if (found.Count <= capped)
+            return found;
+
+        return found.Take(capped).ToList();
+    }
+
+    private PromptLocationContext BuildPromptLocationContextForNpc(NPC npc)
+    {
+        if (npc is null)
+            return new PromptLocationContext();
+
+        GameLocation? location = null;
+        NPC? locatedNpc = null;
+
+        if (Game1.currentLocation is not null)
+        {
+            locatedNpc = Game1.currentLocation.characters.FirstOrDefault(candidate =>
+                candidate is not null && IsSameNpcIdentity(candidate, npc));
+            if (locatedNpc is not null)
+                location = Game1.currentLocation;
+        }
+
+        if (location is null)
+        {
+            foreach (var candidateLocation in Game1.locations)
+            {
+                var match = candidateLocation?.characters?.FirstOrDefault(candidate =>
+                    candidate is not null && IsSameNpcIdentity(candidate, npc));
+                if (match is null)
+                    continue;
+
+                location = candidateLocation;
+                locatedNpc = match;
+                break;
+            }
+        }
+
+        location ??= Game1.currentLocation;
+        locatedNpc ??= npc;
+        if (location is null)
+            return new PromptLocationContext();
+
+        var anchorTile = locatedNpc.Tile;
+        var tileX = Math.Max(0, (int)Math.Floor(anchorTile.X));
+        var tileY = Math.Max(0, (int)Math.Floor(anchorTile.Y));
+        var internalName = string.IsNullOrWhiteSpace(location.Name)
+            ? location.GetType().Name
+            : location.Name;
+        var displayName = ResolvePromptLocationDisplayName(internalName);
+        var exposure = location.IsOutdoors ? "outdoors" : "indoors";
+
+        var nearbyLandmark = "none";
+        if (location.IsOutdoors && TryResolveNearbyLandmark(location, anchorTile, out var resolvedLandmark))
+            nearbyLandmark = resolvedLandmark;
+
+        var microArea = ResolvePromptLocationMicroArea(location, internalName, tileX, tileY, nearbyLandmark, out var precision);
+        var exactPhrase = location.IsOutdoors
+            ? (string.Equals(microArea, "none", StringComparison.OrdinalIgnoreCase)
+                ? $"In {displayName}"
+                : $"In {displayName}, {microArea}")
+            : $"Inside {displayName}";
+
+        return new PromptLocationContext
+        {
+            InternalName = internalName,
+            DisplayName = displayName,
+            ExactPhrase = exactPhrase,
+            Exposure = exposure,
+            NearbyLandmark = nearbyLandmark,
+            TileX = tileX,
+            TileY = tileY,
+            MicroArea = microArea,
+            Precision = precision
+        };
+    }
+
+    private static bool IsPlayerAskingNpcWhereabouts(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var normalized = text.Trim().ToLowerInvariant();
+        return ContainsAny(
+            normalized,
+            "where is ",
+            "where's ",
+            "where are ",
+            "have you seen ",
+            "do you know where ",
+            "any idea where ",
+            "where can i find ");
+    }
+
+    private static string BuildAmbientOverheardCueFactKey(string eventId)
+    {
+        var normalizedEventId = Regex.Replace(
+            (eventId ?? string.Empty).Trim().ToLowerInvariant(),
+            @"[^a-z0-9:_-]+",
+            "_",
+            RegexOptions.CultureInvariant)
+            .Trim('_');
+        if (string.IsNullOrWhiteSpace(normalizedEventId))
+            normalizedEventId = "unknown";
+
+        return $"ambient:overheard:player_cue:{normalizedEventId}";
     }
 
     private static string BuildAmbientOverhearSnippet(IReadOnlyList<AmbientConversationLine> transcript)
@@ -9076,6 +9362,8 @@ public sealed class ModEntry : Mod
 
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
+        var ambientGossipCue = string.Empty;
+        var liveNpcWhereabouts = string.Empty;
         var newsContext = BuildNewsAwarenessBlock();
         var eventsContext = BuildRecentEventAwarenessBlock(playerText);
         var effectiveContextTag = string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag!;
@@ -9103,6 +9391,8 @@ public sealed class ModEntry : Mod
         var playerAmbientIsolationRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
             ? "PLAYER_CHAT_ISOLATION_RULE: Treat this as direct player conversation. Do not repeat or continue offscreen NPC-to-NPC ambient lines verbatim."
             : string.Empty;
+        var ambientGossipRule = string.Empty;
+        var liveWhereaboutsRule = string.Empty;
         var commandPolicyRule = _commandPolicyService?.BuildPromptRule(effectiveContextTag) ?? string.Empty;
         var ambientEventFirstRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
             ? "AMBIENT_EVENT_RULE: Prefer record_town_event first when anything notable happened; keep command use sparse and skip commands when nothing meaningful occurred."
@@ -9130,6 +9420,17 @@ public sealed class ModEntry : Mod
                 npcMemory = _npcMemoryService.BuildMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
             if (_townMemoryService is not null)
                 townMemory = _townMemoryService.BuildTownMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
+            ambientGossipCue = BuildAmbientOverheardGossipCueBlock(effectiveContextTag, npcName, playerText);
+            if (!string.IsNullOrWhiteSpace(ambientGossipCue))
+                ambientGossipRule = "AMBIENT_GOSSIP_RULE: If AMBIENT_GOSSIP_CUE exists and the player's tone is casual, naturally mention it as brief town chatter in your own words (do not quote verbatim).";
+            liveNpcWhereabouts = BuildReferencedNpcWhereaboutsBlock(
+                npcName,
+                playerText,
+                referencedNpcName,
+                locationContext.InternalName,
+                effectiveContextTag);
+            if (!string.IsNullOrWhiteSpace(liveNpcWhereabouts))
+                liveWhereaboutsRule = "LIVE_WHEREABOUTS_RULE: For any NPC listed in LIVE_NPC_WHEREABOUTS, treat that location as current truth and prioritize it over stale lore. If same_location_as_speaker=true, answer that they are nearby/in the same place right now.";
         }
 
         if (!string.IsNullOrWhiteSpace(vanillaDialogueContext) && !string.IsNullOrWhiteSpace(townMemory))
@@ -9153,6 +9454,8 @@ public sealed class ModEntry : Mod
             vanillaDialogueFollowUpRule,
             followUpContextRule,
             playerAmbientIsolationRule,
+            ambientGossipRule,
+            liveWhereaboutsRule,
             vanillaTownBlendRule,
             commandPolicyRule,
             ambientEventFirstRule,
@@ -9215,6 +9518,8 @@ public sealed class ModEntry : Mod
             questDiversityContext,
             newsContext,
             eventsContext,
+            ambientGossipCue,
+            liveNpcWhereabouts,
             $"STATE: AvailableTownRequests {_state.Quests.Available.Count} by_template=[{availableQuestTemplateCounts}].",
             $"STATE: ActiveTownRequests {_state.Quests.Active.Count} by_template=[{activeQuestTemplateCounts}].",
             npcMemory,
