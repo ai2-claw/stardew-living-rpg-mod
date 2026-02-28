@@ -17,7 +17,7 @@ public sealed class TownMemoryService
         "Vincent", "Willy", "Wizard"
     };
 
-    public void RecordEvent(
+    public string RecordEvent(
         SaveState state,
         string kind,
         string summary,
@@ -29,7 +29,7 @@ public sealed class TownMemoryService
         params string[] tags)
     {
         if (string.IsNullOrWhiteSpace(summary))
-            return;
+            return string.Empty;
 
         var normalizedKind = (kind ?? string.Empty).Trim();
         var normalizedSummary = summary.Trim();
@@ -52,7 +52,7 @@ public sealed class TownMemoryService
                 incomingSummaryTokens));
 
         if (dedupe is not null)
-            return;
+            return dedupe.EventId;
 
         var ev = new TownMemoryEvent
         {
@@ -73,6 +73,106 @@ public sealed class TownMemoryService
 
         if (state.TownMemory.Events.Count > 300)
             state.TownMemory.Events = state.TownMemory.Events.TakeLast(300).ToList();
+
+        return ev.EventId;
+    }
+
+    public int SeedImmediateKnowledge(
+        SaveState state,
+        string eventId,
+        IEnumerable<string> npcNames,
+        int learnedDay,
+        string angle = "family-circle")
+    {
+        if (string.IsNullOrWhiteSpace(eventId) || npcNames is null)
+            return 0;
+
+        var count = 0;
+        foreach (var rawNpc in npcNames)
+        {
+            var npc = NormalizeNpcNameForKnowledge(rawNpc);
+            if (string.IsNullOrWhiteSpace(npc))
+                continue;
+
+            if (!state.TownMemory.KnowledgeByNpc.TryGetValue(npc, out var perNpc))
+            {
+                perNpc = new NpcTownKnowledge();
+                state.TownMemory.KnowledgeByNpc[npc] = perNpc;
+            }
+
+            if (perNpc.ByEventId.TryGetValue(eventId, out var existing) && existing.Knows)
+                continue;
+
+            perNpc.ByEventId[eventId] = new TownKnowledgeEntry
+            {
+                Knows = true,
+                LearnedDay = Math.Max(1, learnedDay),
+                Angle = string.IsNullOrWhiteSpace(angle) ? "family-circle" : angle.Trim()
+            };
+            count += 1;
+        }
+
+        return count;
+    }
+
+    public int PropagateTaggedEventsByDay(
+        SaveState state,
+        string tag,
+        int day,
+        int maxNewNpcsPerEvent = 4)
+    {
+        if (string.IsNullOrWhiteSpace(tag))
+            return 0;
+
+        var normalizedTag = tag.Trim().ToLowerInvariant();
+        if (maxNewNpcsPerEvent <= 0)
+            maxNewNpcsPerEvent = 1;
+
+        var events = state.TownMemory.Events
+            .Where(ev =>
+                ev is not null
+                && ev.Day < day
+                && day - ev.Day <= 21
+                && ev.Tags.Any(t => string.Equals(t, normalizedTag, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(ev => ev.Day)
+            .ThenBy(ev => ev.EventId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (events.Count == 0)
+            return 0;
+
+        var totalPromoted = 0;
+        foreach (var ev in events)
+        {
+            var promotedForEvent = 0;
+            var targets = BuildPropagationTargetNpcList(state, DefaultTownNpcRoster, ev.SourceNpc)
+                .OrderBy(npc => npc, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var npc in targets)
+            {
+                if (promotedForEvent >= maxNewNpcsPerEvent)
+                    break;
+
+                if (!state.TownMemory.KnowledgeByNpc.TryGetValue(npc, out var perNpc))
+                {
+                    perNpc = new NpcTownKnowledge();
+                    state.TownMemory.KnowledgeByNpc[npc] = perNpc;
+                }
+
+                if (perNpc.ByEventId.TryGetValue(ev.EventId, out var existing) && existing.Knows)
+                    continue;
+
+                perNpc.ByEventId[ev.EventId] = new TownKnowledgeEntry
+                {
+                    Knows = true,
+                    LearnedDay = day,
+                    Angle = "town-talk"
+                };
+                promotedForEvent += 1;
+                totalPromoted += 1;
+            }
+        }
+
+        return totalPromoted;
     }
 
     public string BuildTownMemoryBlock(SaveState state, string npcName, string playerText, int day, int maxChars = 280)
