@@ -44,6 +44,7 @@ M0 + M1 scaffold includes:
 - `slrpg_p2_stream_stop`: stop persistent NPC response listener
 - `slrpg_p2_status`: show login/NPC/stream state + joules balance
 - `slrpg_p2_health`: compact one-line health summary (login/npc/stream/joules/last line/last command)
+- `slrpg_debug_ambient_pair_chat <speaker> <listener> [topic]`: force one multi-turn ambient NPC pair exchange for debugging
 - `slrpg_customnpc_validate`: validate installed custom-NPC content packs and print errors/warnings
 - `slrpg_customnpc_list`: list loaded custom-NPC entries from installed packs
 - `slrpg_customnpc_dump <npc>`: dump one custom NPC lore profile by name/token
@@ -103,6 +104,12 @@ Config knobs:
 - `StrictNpcTemplateValidation` (default `false`; when `true`, reject `quest_*` template IDs instead of repairing)
 - `EnableAmbientConsequencePipeline` (default `true`; toggles ambient event-to-consequence converters)
 - `AmbientRecordTownEventDailyCap` (default `2`; per-NPC ambient `record_town_event` cap per day, set `0` to disable)
+- `EnableAmbientNpcMultiTurn` (default `true`; enables multi-turn ambient NPC-to-NPC chat loop)
+- `AmbientNpcConversationTurnDepth` (default `0`; `0` uses mode default: cozy=2, story=3, chaos=4)
+- `AmbientNpcConversationDailyLimit` (default `3`; ambient pair conversations per day)
+- `AmbientNpcPairCooldownDays` (default `2`; same unordered NPC pair cooldown in in-game days)
+- `EnableAmbientNpcOverhearMoments` (default `true`; enables occasional public overhear HUD snippets)
+- `AmbientNpcOverhearCadenceDays` (default `2`; minimum day gap before next overhear candidate)
 - `EnableCustomNpcFramework` (default `true`; enables integrated custom-NPC content pack loading)
 - `EnableCustomNpcLoreInjection` (default `true`; injects custom-NPC lore blocks into prompt context)
 - `EnableVanillaCanonLoreInjection` (default `true`; injects built-in vanilla canon lore blocks into prompt context)

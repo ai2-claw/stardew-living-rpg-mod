@@ -140,6 +140,9 @@
 ## Unreleased
 
 ### Added
+- Multi-turn ambient NPC-to-NPC chat orchestration with mode-based default depths (`cozy=2`, `story=3`, `chaos=4`, max `4`).
+- New ambient debugging command: `slrpg_debug_ambient_pair_chat <speaker> <listener> [topic]`.
+- Optional overhear HUD moments for public ambient exchanges with cadence gating.
 - Deterministic NPC intent resolver with schema-constrained command validation.
 - Runtime handlers for full NPC command set:
   - `propose_quest`
@@ -181,6 +184,8 @@
   - response normalization fallback when a child NPC claims adult ages
 
 ### Changed
+- Ambient command policy now blocks `publish_article` in `npc_to_npc_ambient` lane.
+- Added config knobs for ambient chat depth/limit/pair-cooldown/overhear cadence.
 - NPC quest language shifted toward "town requests".
 - Board action label refined to "New Postings" with non-digital in-world status phrasing.
 - NPC follow-up prompts adjusted to explicitly additive board checks; no vanilla dialogue replacement.

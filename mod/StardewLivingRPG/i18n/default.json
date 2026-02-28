@@ -15,6 +15,7 @@
   "hud.newspaper.publish_rumor": "{{source}} spread a rumor. Check today's newspaper.",
   "hud.newspaper.publish_article": "{{source}} filed a story: {{title}}",
   "hud.newspaper.title.fallback": "New article",
+  "hud.ambient.overheard": "Overheard: {{speaker}} and {{listener}} - \"{{snippet}}\"",
 
   "rumor_board.title": "Town Request Board",
   "rumor_board.section.available": "Available",
