@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 0.8.2 - 2026-03-01
+
+### Changed
+- External NPC autodiscovery now uses social-signal gating (friendships plus NPC gift-taste data) to reduce noisy false-positive candidates from broad disposition/runtime scans.
+- Runtime autodiscovery now skips monster entities and prioritizes socially grounded NPC names for cleaner external NPC candidate lists.
+- Manifest version bumped to `0.8.2`.
+
 ## 0.8.1 - 2026-02-28
 
 ### Added
