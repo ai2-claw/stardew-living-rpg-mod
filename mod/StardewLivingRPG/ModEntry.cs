@@ -14925,8 +14925,38 @@ public sealed class ModEntry : Mod
         }
 
         var discovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var friendshipNpcKeys = (Game1.player?.friendshipData?.Keys ?? Enumerable.Empty<string>()).ToList();
+        var socialSignalNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        void AddCandidate(string? rawName)
+        foreach (var friendshipNpc in friendshipNpcKeys)
+        {
+            var normalized = NormalizeExternalNpcName(friendshipNpc);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                socialSignalNames.Add(normalized);
+        }
+
+        try
+        {
+            var giftTastes = Game1.content.Load<Dictionary<string, string>>("Data\\NPCGiftTastes");
+            foreach (var key in giftTastes.Keys)
+            {
+                var normalized = NormalizeExternalNpcName(key);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    socialSignalNames.Add(normalized);
+            }
+        }
+        catch
+        {
+            // Missing/rewired gift taste data is acceptable; discovery falls back to friendship/runtime sources.
+        }
+
+        bool HasSocialSignal(string? rawName)
+        {
+            var normalized = NormalizeExternalNpcName(rawName);
+            return !string.IsNullOrWhiteSpace(normalized) && socialSignalNames.Contains(normalized);
+        }
+
+        void AddCandidate(string? rawName, bool requireSocialSignal = false)
         {
             var name = NormalizeExternalNpcName(rawName);
             if (string.IsNullOrWhiteSpace(name))
@@ -14939,6 +14969,8 @@ public sealed class ModEntry : Mod
             {
                 return;
             }
+            if (requireSocialSignal && !HasSocialSignal(name))
+                return;
 
             discovered.Add(name);
         }
@@ -14947,7 +14979,7 @@ public sealed class ModEntry : Mod
         {
             var dispositions = Game1.content.Load<Dictionary<string, string>>("Data\\NPCDispositions");
             foreach (var key in dispositions.Keys)
-                AddCandidate(key);
+                AddCandidate(key, requireSocialSignal: true);
         }
         catch
         {
@@ -14958,12 +14990,15 @@ public sealed class ModEntry : Mod
         {
             foreach (var npc in location?.characters ?? Enumerable.Empty<NPC>())
             {
-                AddCandidate(npc?.Name);
-                AddCandidate(npc?.displayName);
+                if (npc is StardewValley.Monsters.Monster)
+                    continue;
+
+                AddCandidate(npc?.Name, requireSocialSignal: true);
+                AddCandidate(npc?.displayName, requireSocialSignal: true);
             }
         }
 
-        foreach (var friendshipNpc in Game1.player?.friendshipData?.Keys ?? Enumerable.Empty<string>())
+        foreach (var friendshipNpc in friendshipNpcKeys)
             AddCandidate(friendshipNpc);
 
         var changed = !_externalAutoDiscoveredNpcNames.SetEquals(discovered);
