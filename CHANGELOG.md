@@ -14,6 +14,8 @@
 ### Changed
 - `TownMemoryService.RecordEvent(...)` now returns the resolved event id (new or deduped) to support deterministic awareness seeding.
 - Internal save-state schema version updated from `0.2.0` to `0.3.0` for player-family compatibility migration.
+- Player2 integration now sends an automatic `/health` ping every 60 seconds while connected, improving persistent Player2 connection tracking during long play sessions.
+- `slrpg_p2_health` now reports `pingAttemptAgo` and `pingOkAgo` to make persistent-connection heartbeat status visible in one line.
 
 ## 0.8.0 - 2026-02-28
 

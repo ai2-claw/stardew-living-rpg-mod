@@ -691,6 +691,16 @@ public sealed class Player2Client
         return data ?? new JoulesResponse();
     }
 
+    public async Task PingHealthAsync(string apiBaseUrl, string p2Key, CancellationToken ct)
+    {
+        var url = $"{apiBaseUrl.TrimEnd('/')}/health";
+        using var msg = new HttpRequestMessage(HttpMethod.Get, url);
+        msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
+        using var res = await _http.SendAsync(msg, ct);
+        res.EnsureSuccessStatusCode();
+    }
+
     public async Task<string> GenerateSensationalHeadlineAsync(string apiBaseUrl, string p2Key, string articleTitle, string articleCategory, string articleContent, CancellationToken ct)
     {
         var headline = await TryGenerateSensationalHeadlineAsync(apiBaseUrl, p2Key, articleTitle, articleCategory, articleContent, ct);
