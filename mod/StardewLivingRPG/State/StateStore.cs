@@ -1,4 +1,4 @@
-using StardewModdingAPI;
+﻿using StardewModdingAPI;
 
 namespace StardewLivingRPG.State;
 
@@ -224,6 +224,16 @@ public static class StateStore
             state.Telemetry.Daily.AmbientCommandDuplicateByType = new Dictionary<string, int>();
             changed = true;
         }
+        if (state.Telemetry.Daily.RomanceAxisUpdatesByType is null)
+        {
+            state.Telemetry.Daily.RomanceAxisUpdatesByType = new Dictionary<string, int>();
+            changed = true;
+        }
+        if (state.Telemetry.Daily.RomanceRejectByReason is null)
+        {
+            state.Telemetry.Daily.RomanceRejectByReason = new Dictionary<string, int>();
+            changed = true;
+        }
 
         if (state.NpcMemory is null)
         {
@@ -288,6 +298,62 @@ public static class StateStore
             if (knowledge.ByEventId is null)
             {
                 knowledge.ByEventId = new Dictionary<string, TownKnowledgeEntry>(StringComparer.OrdinalIgnoreCase);
+                changed = true;
+            }
+        }
+
+        if (state.Romance is null)
+        {
+            state.Romance = new RomanceState();
+            changed = true;
+        }
+        if (state.Romance.Profiles is null)
+        {
+            state.Romance.Profiles = new Dictionary<string, LoveLanguageProfile>(StringComparer.OrdinalIgnoreCase);
+            changed = true;
+        }
+        if (state.Romance.ActiveMicroDates is null)
+        {
+            state.Romance.ActiveMicroDates = new Dictionary<string, MicroDateState>(StringComparer.OrdinalIgnoreCase);
+            changed = true;
+        }
+        foreach (var profile in state.Romance.Profiles.Values)
+        {
+            if (profile is null)
+                continue;
+            if (profile.Axes is null)
+            {
+                profile.Axes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                changed = true;
+            }
+            if (profile.RecentSignals is null)
+            {
+                profile.RecentSignals = new List<RomanceSignalEntry>();
+                changed = true;
+            }
+            if (string.IsNullOrWhiteSpace(profile.NextBeat))
+            {
+                profile.NextBeat = "warmth";
+                changed = true;
+            }
+        }
+        foreach (var key in state.Romance.ActiveMicroDates.Keys.ToArray())
+        {
+            var microDate = state.Romance.ActiveMicroDates[key];
+            if (microDate is null)
+            {
+                state.Romance.ActiveMicroDates.Remove(key);
+                changed = true;
+                continue;
+            }
+            if (string.IsNullOrWhiteSpace(microDate.Status))
+            {
+                microDate.Status = "active";
+                changed = true;
+            }
+            if (microDate.ExpiresDay < microDate.IssuedDay)
+            {
+                microDate.ExpiresDay = microDate.IssuedDay;
                 changed = true;
             }
         }
@@ -393,3 +459,6 @@ public static class StateStore
         return current.CompareTo(target) < 0;
     }
 }
+
+
+

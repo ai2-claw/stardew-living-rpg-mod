@@ -1,4 +1,4 @@
-using Microsoft.Xna.Framework;
+ï»¿using Microsoft.Xna.Framework;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
@@ -652,6 +652,7 @@ public sealed class ModEntry : Mod
     private NpcSpeechStyleService? _npcSpeechStyleService;
     private NpcAskGateService? _npcAskGateService;
     private CommandPolicyService? _commandPolicyService;
+    private LoveLanguageEngineService? _loveLanguageEngineService;
     private CanonBaselineService? _customNpcCanonBaselineService;
     private NpcRegistry? _customNpcRegistry;
     private NpcPackLoader? _customNpcPackLoader;
@@ -793,6 +794,19 @@ public sealed class ModEntry : Mod
     private DateTime _player2DeviceAuthExpiresUtc;
     private CancellationTokenSource? _player2DeviceAuthCts;
 
+    private LoveLanguageNpcConfig? TryResolveLoveLanguageConfig(string? npcName)
+    {
+        if (!_config.EnableLoveLanguageEngine
+            || _customNpcRegistry is null
+            || string.IsNullOrWhiteSpace(npcName))
+        {
+            return null;
+        }
+
+        return _customNpcRegistry.TryGetLoveLanguageConfig(npcName, out var config)
+            ? config
+            : null;
+    }
     private TownProfile ResolveActiveTownProfile(string? locationName = null)
     {
         return TownProfileResolver.ResolveForLocation(locationName ?? Game1.currentLocation?.Name);
@@ -814,7 +828,19 @@ public sealed class ModEntry : Mod
         _townMemoryService = new TownMemoryService();
         _ambientConsequenceService = new AmbientConsequenceService();
         _npcConversationService = new NpcConversationService();
-        _intentResolver = new NpcIntentResolver(_rumorBoardService, _npcMemoryService, _townMemoryService, _config.StrictNpcTemplateValidation);
+        _loveLanguageEngineService = _config.EnableLoveLanguageEngine
+            ? new LoveLanguageEngineService(
+                TryResolveLoveLanguageConfig,
+                Monitor,
+                _config.LoveLanguageMaxFriendshipPointsPerChat,
+                _config.LoveLanguageFriendshipDailyCap)
+            : null;
+        _intentResolver = new NpcIntentResolver(
+            _rumorBoardService,
+            _npcMemoryService,
+            _townMemoryService,
+            _config.StrictNpcTemplateValidation,
+            _loveLanguageEngineService);
         _anchorEventService = new AnchorEventService();
         var speechStyleConfig = helper.Data.ReadJsonFile<NpcSpeechStyleConfig>("npc_speech_profiles.json")
             ?? NpcSpeechStyleConfig.CreateDefault();
@@ -889,6 +915,9 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_customnpc_validate", "Validate integrated custom-NPC content packs.", OnCustomNpcValidatePacksCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_list", "List loaded integrated custom NPCs.", OnCustomNpcListCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_dump", "Dump integrated custom NPC lore: slrpg_customnpc_dump <npc>", OnCustomNpcDumpCommand);
+        helper.ConsoleCommands.Add("slrpg_romance_validate_packs", "Validate loaded LoveLanguageEngine romance config mappings.", OnRomanceValidatePacksCommand);
+        helper.ConsoleCommands.Add("slrpg_romance_dump", "Dump romance profile + config: slrpg_romance_dump <npc>", OnRomanceDumpCommand);
+        helper.ConsoleCommands.Add("slrpg_romance_reset", "Reset romance profile + micro-date: slrpg_romance_reset <npc>", OnRomanceResetCommand);
         helper.ConsoleCommands.Add("slrpg_externalnpc_list", "List auto-discovered external NPCs and lore source.", OnExternalNpcListCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_reload", "Reload integrated custom-NPC packs.", OnCustomNpcReloadCommand);
         helper.ConsoleCommands.Add("slrpg_vanilla_lore_validate", "Validate built-in vanilla canon lore entries.", OnVanillaLoreValidateCommand);
@@ -992,6 +1021,14 @@ public sealed class ModEntry : Mod
         RefreshExternalAutoDiscoveredNpcs("SaveLoaded");
         InjectExternalNpcTargetsIntoRumorBoard("SaveLoaded");
         ReloadPortraitProfiles();
+
+        if (_config.EnableLoveLanguageEngine && _loveLanguageEngineService is not null)
+        {
+            var expiredMicroDates = _loveLanguageEngineService.ExpireMicroDates(_state, _state.Calendar.Day);
+            if (expiredMicroDates > 0)
+                _state.Telemetry.Daily.RomanceMicroDatesExpired += expiredMicroDates;
+        }
+
         Monitor.Log($"State loaded (version={_state.Version}, mode={_state.Config.Mode}).", LogLevel.Info);
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
@@ -1024,6 +1061,13 @@ public sealed class ModEntry : Mod
         RefreshExternalAutoDiscoveredNpcs("DayStarted");
         InjectExternalNpcTargetsIntoRumorBoard("DayStarted");
         TryRefreshPlayerFamilyLoreFromWorld("day-start", logNoChange: true);
+
+        if (_config.EnableLoveLanguageEngine && _loveLanguageEngineService is not null)
+        {
+            var expiredMicroDates = _loveLanguageEngineService.ExpireMicroDates(_state, _state.Calendar.Day);
+            if (expiredMicroDates > 0)
+                _state.Telemetry.Daily.RomanceMicroDatesExpired += expiredMicroDates;
+        }
 
         // Give auto-connect a brief head start so day-start newspaper can use Player2 when available.
         if (_config.EnablePlayer2
@@ -10031,6 +10075,7 @@ public sealed class ModEntry : Mod
 
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
+        var romanceContext = string.Empty;
         var ambientGossipCue = string.Empty;
         var liveNpcWhereabouts = string.Empty;
         var newsContext = BuildNewsAwarenessBlock();
@@ -10089,6 +10134,12 @@ public sealed class ModEntry : Mod
                 npcMemory = _npcMemoryService.BuildMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
             if (_townMemoryService is not null)
                 townMemory = _townMemoryService.BuildTownMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
+            if (_config.EnableLoveLanguageEngine
+                && _loveLanguageEngineService is not null
+                && _loveLanguageEngineService.TryBuildPromptBlock(_state, npcName, _state.Calendar.Day, out var romanceBlock))
+            {
+                romanceContext = romanceBlock;
+            }
             ambientGossipCue = BuildAmbientOverheardGossipCueBlock(effectiveContextTag, npcName, playerText);
             if (!string.IsNullOrWhiteSpace(ambientGossipCue))
                 ambientGossipRule = "AMBIENT_GOSSIP_RULE: If AMBIENT_GOSSIP_CUE exists and the player's tone is casual, naturally mention it as brief town chatter in your own words (do not quote verbatim).";
@@ -10195,6 +10246,7 @@ public sealed class ModEntry : Mod
             $"STATE: ActiveTownRequests {_state.Quests.Active.Count} by_template=[{activeQuestTemplateCounts}].",
             npcMemory,
             townMemory,
+            romanceContext,
             locationContextBlock,
             vanillaDialogueContext,
             sourceDialogueContext
@@ -10474,10 +10526,10 @@ public sealed class ModEntry : Mod
         var npcDisplayName = string.IsNullOrWhiteSpace(context.NpcDisplayName)
             ? context.NpcName
             : context.NpcDisplayName;
-        var safeLine = TrimForContext(context.LastDialogueLine, 130, "none").Replace("'", "’", StringComparison.Ordinal);
+        var safeLine = TrimForContext(context.LastDialogueLine, 130, "none").Replace("'", "â€™", StringComparison.Ordinal);
         var sequence = context.DialogueSequence
             .TakeLast(4)
-            .Select(line => TrimForContext(line, 96, "none").Replace("'", "’", StringComparison.Ordinal))
+            .Select(line => TrimForContext(line, 96, "none").Replace("'", "â€™", StringComparison.Ordinal))
             .ToArray();
         return $"VANILLA_DIALOGUE_CONTEXT[{npcDisplayName}]: day={context.Day} time={context.TimeOfDay:0000} last_line='{safeLine}' sequence=[{JoinContextItems(sequence)}].";
     }
@@ -15450,6 +15502,196 @@ public sealed class ModEntry : Mod
         Monitor.Log($"ForbiddenClaims: {string.Join(", ", npc.Lore.ForbiddenClaims)}", LogLevel.Info);
     }
 
+    private void OnRomanceValidatePacksCommand(string command, string[] args)
+    {
+        if (!_config.EnableLoveLanguageEngine)
+        {
+            Monitor.Log("LoveLanguageEngine is disabled by config.", LogLevel.Info);
+            return;
+        }
+
+        if (!_config.EnableCustomNpcFramework || _customNpcRegistry is null)
+        {
+            Monitor.Log("Custom NPC framework is not active, so romance pack mappings are unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        var romanceConfigs = _customNpcRegistry.RomanceLlmByToken
+            .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (romanceConfigs.Length == 0)
+        {
+            Monitor.Log("No LoveLanguageEngine romance config entries are currently loaded.", LogLevel.Warn);
+        }
+        else
+        {
+            Monitor.Log($"Loaded LoveLanguageEngine romance config entries: {romanceConfigs.Length}.", LogLevel.Info);
+            foreach (var (npcToken, config) in romanceConfigs)
+            {
+                var axes = config.ProfileAxes.Count == 0 ? "none" : string.Join(", ", config.ProfileAxes);
+                var beats = config.LLMOutputContract.NextBeatAllowed.Count == 0
+                    ? "none"
+                    : string.Join(", ", config.LLMOutputContract.NextBeatAllowed);
+                var objectives = config.MicroDateWhitelist.ObjectiveTypes.Count == 0
+                    ? "none"
+                    : string.Join(", ", config.MicroDateWhitelist.ObjectiveTypes);
+                var rewards = config.MicroDateWhitelist.RewardBundles.Count == 0
+                    ? "none"
+                    : string.Join(", ", config.MicroDateWhitelist.RewardBundles);
+                Monitor.Log(
+                    $"- npc={npcToken} axes=[{axes}] beats=[{beats}] objectiveTypes=[{objectives}] rewardBundles=[{rewards}] stateKey={config.StateKey}",
+                    LogLevel.Info);
+            }
+        }
+
+        var romanceIssues = _customNpcValidationIssues
+            .Where(i =>
+                (!string.IsNullOrWhiteSpace(i.Code) && i.Code.Contains("ROMANCE", StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrWhiteSpace(i.SourcePath) && i.SourcePath.Contains("romance-llm", StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(i => i.Severity)
+            .ThenBy(i => i.PackId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (romanceIssues.Length == 0)
+        {
+            Monitor.Log("No romance config validation issues were reported.", LogLevel.Info);
+            return;
+        }
+
+        foreach (var issue in romanceIssues)
+        {
+            var level = issue.Severity == ValidationSeverity.Error ? LogLevel.Warn : LogLevel.Info;
+            Monitor.Log(
+                $"[{issue.Severity}:{issue.Code}] pack={issue.PackId} npc={issue.NpcId} file={issue.SourcePath} -> {issue.Message}",
+                level);
+        }
+    }
+
+    private void OnRomanceDumpCommand(string command, string[] args)
+    {
+        if (_loveLanguageEngineService is null)
+        {
+            Monitor.Log("LoveLanguageEngine service is unavailable.", LogLevel.Warn);
+            return;
+        }
+
+        if (args.Length == 0)
+        {
+            Monitor.Log("Usage: slrpg_romance_dump <npc>", LogLevel.Info);
+            return;
+        }
+
+        var rawNpc = string.Join(" ", args);
+        if (!TryResolveRomanceNpcToken(rawNpc, out var npcToken, out var npcLabel))
+        {
+            Monitor.Log($"Could not resolve NPC token from '{rawNpc}'.", LogLevel.Warn);
+            return;
+        }
+
+        var config = _loveLanguageEngineService.TryGetConfig(rawNpc)
+            ?? _loveLanguageEngineService.TryGetConfig(npcToken);
+        if (config is null)
+        {
+            Monitor.Log($"No LoveLanguageEngine config found for '{rawNpc}' ({npcToken}).", LogLevel.Warn);
+        }
+        else
+        {
+            var axes = config.ProfileAxes.Count == 0 ? "none" : string.Join(", ", config.ProfileAxes);
+            var requiredFields = config.LLMOutputContract.RequiredFields.Count == 0
+                ? "none"
+                : string.Join(", ", config.LLMOutputContract.RequiredFields);
+            var beats = config.LLMOutputContract.NextBeatAllowed.Count == 0
+                ? "none"
+                : string.Join(", ", config.LLMOutputContract.NextBeatAllowed);
+            var objectiveTypes = config.MicroDateWhitelist.ObjectiveTypes.Count == 0
+                ? "none"
+                : string.Join(", ", config.MicroDateWhitelist.ObjectiveTypes);
+            var rewardBundles = config.MicroDateWhitelist.RewardBundles.Count == 0
+                ? "none"
+                : string.Join(", ", config.MicroDateWhitelist.RewardBundles);
+
+            Monitor.Log(
+                $"ROMANCE_CONFIG npc={npcLabel} token={npcToken} stateKey={config.StateKey} axes=[{axes}] requiredFields=[{requiredFields}] nextBeatAllowed=[{beats}] objectiveTypes=[{objectiveTypes}] rewardBundles=[{rewardBundles}]",
+                LogLevel.Info);
+        }
+
+        if (_state.Romance.Profiles.TryGetValue(npcToken, out var profile) && profile is not null)
+        {
+            var axesText = profile.Axes.Count == 0
+                ? "none"
+                : string.Join(", ", profile.Axes.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).Select(kv => $"{kv.Key}:{kv.Value}"));
+            Monitor.Log(
+                $"ROMANCE_PROFILE npc={npcLabel} token={npcToken} trust={profile.Trust} safety={profile.Safety} nextBeat={profile.NextBeat} lastUpdatedDay={profile.LastUpdatedDay} axes=[{axesText}] recentSignals={profile.RecentSignals.Count}",
+                LogLevel.Info);
+        }
+        else
+        {
+            Monitor.Log($"ROMANCE_PROFILE npc={npcLabel} token={npcToken} is not initialized yet.", LogLevel.Info);
+        }
+
+        if (_state.Romance.ActiveMicroDates.TryGetValue(npcToken, out var microDate) && microDate is not null)
+        {
+            Monitor.Log(
+                $"ROMANCE_MICRO_DATE npc={npcLabel} token={npcToken} status={microDate.Status} objectiveType={microDate.ObjectiveType} payload={microDate.ObjectivePayload} reward={microDate.RewardBundle} issuedDay={microDate.IssuedDay} expiresDay={microDate.ExpiresDay}",
+                LogLevel.Info);
+        }
+        else
+        {
+            Monitor.Log($"ROMANCE_MICRO_DATE npc={npcLabel} token={npcToken} none.", LogLevel.Info);
+        }
+    }
+
+    private void OnRomanceResetCommand(string command, string[] args)
+    {
+        if (args.Length == 0)
+        {
+            Monitor.Log("Usage: slrpg_romance_reset <npc>", LogLevel.Info);
+            return;
+        }
+
+        var rawNpc = string.Join(" ", args);
+        if (!TryResolveRomanceNpcToken(rawNpc, out var npcToken, out var npcLabel))
+        {
+            Monitor.Log($"Could not resolve NPC token from '{rawNpc}'.", LogLevel.Warn);
+            return;
+        }
+
+        var removedProfile = _state.Romance.Profiles.Remove(npcToken);
+        var removedMicroDate = _state.Romance.ActiveMicroDates.Remove(npcToken);
+        var removedFacts = _state.Facts.Facts.Keys
+            .Where(key =>
+                key.StartsWith("romance:", StringComparison.OrdinalIgnoreCase)
+                && key.Contains($":{npcToken}:", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        foreach (var key in removedFacts)
+            _state.Facts.Facts.Remove(key);
+
+        if (!removedProfile && !removedMicroDate && removedFacts.Length == 0)
+        {
+            Monitor.Log($"No romance state found for npc={npcLabel} token={npcToken}.", LogLevel.Info);
+            return;
+        }
+
+        Monitor.Log(
+            $"Reset romance state for npc={npcLabel} token={npcToken}: profileRemoved={removedProfile}, microDateRemoved={removedMicroDate}, factsRemoved={removedFacts.Length}.",
+            LogLevel.Info);
+    }
+
+    private bool TryResolveRomanceNpcToken(string rawNpc, out string npcToken, out string npcLabel)
+    {
+        npcToken = NormalizeTargetToken(rawNpc);
+        npcLabel = rawNpc;
+
+        if (_customNpcRegistry is not null && _customNpcRegistry.TryGetNpcByName(rawNpc, out var npc))
+        {
+            npcToken = npc.NpcToken;
+            npcLabel = npc.DisplayName;
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(npcToken);
+    }
+
     private void OnVanillaLoreValidateCommand(string command, string[] args)
     {
         ReloadVanillaCanonLore();
@@ -15544,6 +15786,14 @@ public sealed class ModEntry : Mod
         InjectExternalNpcTargetsIntoRumorBoard("ReloadCommand");
     }
 }
+
+
+
+
+
+
+
+
 
 
 

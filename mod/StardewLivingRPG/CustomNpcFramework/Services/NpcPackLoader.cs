@@ -1,4 +1,6 @@
 using System.Collections;
+using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 using StardewModdingAPI;
 using StardewLivingRPG.CustomNpcFramework.Models;
@@ -15,6 +17,22 @@ internal sealed class NpcPackLoader
         new(@"out of character", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled),
         new(@"game mechanic", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled),
         new(@"assistant", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled)
+    };
+    private static readonly HashSet<string> KnownRomanceAxes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "acts_of_service",
+        "words_of_affirmation",
+        "quality_time",
+        "gift_focus",
+        "touch_affinity"
+    };
+    private static readonly HashSet<string> KnownRomanceNextBeats = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "warmth",
+        "vulnerability",
+        "conflict",
+        "repair",
+        "milestone"
     };
 
     private readonly IModHelper _helper;
@@ -98,6 +116,7 @@ internal sealed class NpcPackLoader
             var modules = pack.ReadJsonFile<NpcModulesFile>("content/modules.json") ?? new NpcModulesFile();
             var canonDelta = pack.ReadJsonFile<CanonDeltaFile>("content/canon-delta.json") ?? new CanonDeltaFile();
             var lore = MergeLocaleOverlay(pack, loreBase ?? new NpcLoreFile(), locale);
+            var romanceByToken = LoadRomanceLlmConfigs(pack, packId, packIssues);
 
             if (packIssues.Any(i => i.Severity == ValidationSeverity.Error))
             {
@@ -119,6 +138,7 @@ internal sealed class NpcPackLoader
                 lore,
                 modules,
                 canonDelta,
+                romanceByToken,
                 packIssues);
 
             allIssues.AddRange(packIssues);
@@ -139,6 +159,7 @@ internal sealed class NpcPackLoader
         NpcLoreFile loreFile,
         NpcModulesFile modulesFile,
         CanonDeltaFile deltaFile,
+        IReadOnlyDictionary<string, LoveLanguageNpcConfig> romanceByToken,
         List<ValidationIssue> issues)
     {
         var packId = pack.Manifest.UniqueID ?? string.Empty;
@@ -305,8 +326,227 @@ internal sealed class NpcPackLoader
             PackVersion = packFormatVersion,
             FrameworkMinVersion = frameworkMinVersion,
             NpcsByToken = npcRecords,
-            LocationLoreByToken = mergedLocations
+            LocationLoreByToken = mergedLocations,
+            RomanceLlmByNpcToken = romanceByToken
         };
+    }
+
+    private Dictionary<string, LoveLanguageNpcConfig> LoadRomanceLlmConfigs(IContentPack pack, string packId, List<ValidationIssue> issues)
+    {
+        var merged = new Dictionary<string, LoveLanguageNpcConfig>(StringComparer.OrdinalIgnoreCase);
+
+        void MergeFromPath(string relativePath)
+        {
+            var file = pack.ReadJsonFile<NpcRomanceLlmFile>(relativePath);
+            if (file is null || file.Npcs.Count == 0)
+                return;
+
+            foreach (var (rawNpcKey, rawConfig) in file.Npcs)
+            {
+                var npcToken = TextTokenUtility.NormalizeToken(rawNpcKey);
+                if (string.IsNullOrWhiteSpace(npcToken))
+                {
+                    issues.Add(Warning(packId, string.Empty, relativePath, "W_ROMANCE_NPC_KEY_INVALID", "Skipped romance entry with an empty NPC key."));
+                    continue;
+                }
+
+                var config = rawConfig ?? new LoveLanguageNpcConfig();
+                if (!ValidateAndNormalizeRomanceConfig(packId, npcToken, relativePath, config, issues))
+                    continue;
+
+                merged[npcToken] = config;
+            }
+        }
+
+        MergeFromPath("content/romance-llm.json");
+
+        var contentDir = Path.Combine(pack.DirectoryPath, "content");
+        if (Directory.Exists(contentDir))
+        {
+            foreach (var filePath in Directory
+                         .GetFiles(contentDir, "romance-llm-*.json", SearchOption.TopDirectoryOnly)
+                         .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+            {
+                var fileName = Path.GetFileName(filePath);
+                if (string.Equals(fileName, "romance-llm.json", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                MergeFromPath($"content/{fileName}");
+            }
+        }
+
+        return merged;
+    }
+
+    private static bool ValidateAndNormalizeRomanceConfig(
+        string packId,
+        string npcToken,
+        string sourcePath,
+        LoveLanguageNpcConfig config,
+        List<ValidationIssue> issues)
+    {
+        config.Mechanic = string.IsNullOrWhiteSpace(config.Mechanic)
+            ? "LoveLanguageEngine"
+            : config.Mechanic.Trim();
+
+        if (!string.Equals(config.Mechanic, "LoveLanguageEngine", StringComparison.OrdinalIgnoreCase))
+        {
+            issues.Add(Error(
+                packId,
+                npcToken,
+                sourcePath,
+                "E_ROMANCE_MECHANIC_UNSUPPORTED",
+                $"Romance mechanic '{config.Mechanic}' is unsupported. Expected 'LoveLanguageEngine'."));
+            return false;
+        }
+
+        config.ProfileAxes = NormalizeTokenList(config.ProfileAxes);
+        if (config.ProfileAxes.Count == 0)
+        {
+            issues.Add(Error(
+                packId,
+                npcToken,
+                sourcePath,
+                "E_ROMANCE_AXES_MISSING",
+                "LoveLanguageEngine ProfileAxes must contain at least one axis."));
+            return false;
+        }
+        foreach (var axis in config.ProfileAxes)
+        {
+            if (!KnownRomanceAxes.Contains(axis))
+            {
+                issues.Add(Warning(
+                    packId,
+                    npcToken,
+                    sourcePath,
+                    "W_ROMANCE_AXIS_UNKNOWN",
+                    $"ProfileAxes contains uncommon axis '{axis}'."));
+            }
+        }
+
+        config.LLMOutputContract ??= new LoveLanguageOutputContract();
+        config.LLMOutputContract.RequiredFields = NormalizeTokenList(config.LLMOutputContract.RequiredFields);
+        config.LLMOutputContract.NextBeatAllowed = NormalizeTokenList(config.LLMOutputContract.NextBeatAllowed);
+        if (config.LLMOutputContract.RequiredFields.Count == 0)
+        {
+            issues.Add(Error(
+                packId,
+                npcToken,
+                sourcePath,
+                "E_ROMANCE_REQUIRED_FIELDS_MISSING",
+                "LLMOutputContract.RequiredFields must include at least one field."));
+            return false;
+        }
+        foreach (var nextBeat in config.LLMOutputContract.NextBeatAllowed)
+        {
+            if (!KnownRomanceNextBeats.Contains(nextBeat))
+            {
+                issues.Add(Error(
+                    packId,
+                    npcToken,
+                    sourcePath,
+                    "E_ROMANCE_NEXT_BEAT_INVALID",
+                    $"NextBeatAllowed contains invalid value '{nextBeat}'."));
+                return false;
+            }
+        }
+
+        config.MicroDateWhitelist ??= new LoveLanguageMicroDateWhitelist();
+        config.MicroDateWhitelist.ObjectiveTypes = NormalizeTokenList(config.MicroDateWhitelist.ObjectiveTypes);
+        config.MicroDateWhitelist.RewardBundles = NormalizeTrimmedList(config.MicroDateWhitelist.RewardBundles);
+        if (config.MicroDateWhitelist.ObjectiveTypes.Count == 0)
+        {
+            issues.Add(Warning(
+                packId,
+                npcToken,
+                sourcePath,
+                "W_ROMANCE_OBJECTIVES_EMPTY",
+                "MicroDateWhitelist.ObjectiveTypes is empty; objective whitelist checks will be skipped for this NPC."));
+        }
+        if (config.MicroDateWhitelist.RewardBundles.Count == 0)
+        {
+            issues.Add(Warning(
+                packId,
+                npcToken,
+                sourcePath,
+                "W_ROMANCE_REWARDS_EMPTY",
+                "MicroDateWhitelist.RewardBundles is empty; reward whitelist checks will be skipped for this NPC."));
+        }
+
+        config.FallbackTopics = NormalizeTrimmedList(config.FallbackTopics);
+        config.StateKey = (config.StateKey ?? string.Empty).Trim();
+        config.Version = string.IsNullOrWhiteSpace(config.Version) ? "1.0.0" : config.Version.Trim();
+
+        return true;
+    }
+
+    private static List<string> NormalizeTokenList(IEnumerable<string>? values)
+    {
+        var result = new List<string>();
+        if (values is null)
+            return result;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values)
+        {
+            var token = NormalizeStrictToken(value);
+            if (string.IsNullOrWhiteSpace(token))
+                continue;
+            if (seen.Add(token))
+                result.Add(token);
+        }
+
+        return result;
+    }
+
+    private static string NormalizeStrictToken(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var input = value.Trim().ToLowerInvariant();
+        var builder = new StringBuilder(input.Length);
+        var lastUnderscore = false;
+
+        foreach (var ch in input)
+        {
+            if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))
+            {
+                builder.Append(ch);
+                lastUnderscore = false;
+                continue;
+            }
+
+            if (ch is ' ' or '-' or '_' or '.')
+            {
+                if (builder.Length > 0 && !lastUnderscore)
+                {
+                    builder.Append('_');
+                    lastUnderscore = true;
+                }
+            }
+        }
+
+        return builder.ToString().Trim('_');
+    }
+
+    private static List<string> NormalizeTrimmedList(IEnumerable<string>? values)
+    {
+        var result = new List<string>();
+        if (values is null)
+            return result;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values)
+        {
+            var normalized = (value ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+                continue;
+            if (seen.Add(normalized))
+                result.Add(normalized);
+        }
+
+        return result;
     }
 
     private NpcLoreFile MergeLocaleOverlay(IContentPack pack, NpcLoreFile baseLore, string locale)
@@ -500,6 +740,19 @@ internal sealed class NpcPackLoader
         return Regex.IsMatch(text, pattern, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
     }
 
+    private static ValidationIssue Warning(string packId, string npcId, string sourcePath, string code, string message)
+    {
+        return new ValidationIssue
+        {
+            Severity = ValidationSeverity.Warning,
+            Code = code,
+            Message = message,
+            PackId = packId,
+            NpcId = npcId,
+            SourcePath = sourcePath
+        };
+    }
+
     private static ValidationIssue Error(string packId, string npcId, string sourcePath, string code, string message)
     {
         return new ValidationIssue
@@ -586,4 +839,14 @@ internal sealed class NpcPackLoader
         return null;
     }
 }
+
+
+
+
+
+
+
+
+
+
 

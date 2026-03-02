@@ -1,0 +1,47 @@
+{
+  "Npcs": {
+    "silas": {
+      "Mechanic": "LoveLanguageEngine",
+      "Version": "1.0.0",
+      "StateKey": "Template.Silas.RomanceProfile",
+      "ProfileAxes": [
+        "acts_of_service",
+        "words_of_affirmation",
+        "quality_time",
+        "gift_focus",
+        "touch_affinity"
+      ],
+      "LLMOutputContract": {
+        "RequiredFields": [
+          "signal_deltas",
+          "trust_delta",
+          "safety_delta",
+          "next_beat",
+          "confidence"
+        ],
+        "NextBeatAllowed": [
+          "warmth",
+          "vulnerability",
+          "conflict",
+          "repair",
+          "milestone"
+        ]
+      },
+      "MicroDateWhitelist": {
+        "ObjectiveTypes": [
+          "bring_item",
+          "meet_time_location",
+          "say_phrase",
+          "complete_action_tag"
+        ],
+        "RewardBundles": [
+          "SILAS_ARCHIVE_TOKEN",
+          "SILAS_FRIENDSHIP_NOTE"
+        ]
+      },
+      "FallbackTopics": [
+        "TEMPLATE.Silas.Romance"
+      ]
+    }
+  }
+}

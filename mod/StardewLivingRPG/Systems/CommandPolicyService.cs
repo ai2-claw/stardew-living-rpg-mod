@@ -12,7 +12,9 @@ public sealed class CommandPolicyService
         "publish_article",
         "record_memory_fact",
         "record_town_event",
-        "adjust_town_sentiment"
+        "adjust_town_sentiment",
+        "update_romance_profile",
+        "propose_micro_date"
     };
     private static readonly string[] AmbientPrimaryAllowedCommands =
     {
@@ -25,7 +27,9 @@ public sealed class CommandPolicyService
         "adjust_reputation",
         "shift_interest_influence",
         "apply_market_modifier",
-        "adjust_town_sentiment"
+        "adjust_town_sentiment",
+        "update_romance_profile",
+        "propose_micro_date"
     };
 
     private readonly Dictionary<string, CommandPolicyRule> _rules = new(StringComparer.OrdinalIgnoreCase);

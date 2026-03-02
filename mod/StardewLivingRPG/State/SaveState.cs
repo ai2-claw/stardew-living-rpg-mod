@@ -1,4 +1,4 @@
-using StardewLivingRPG.Config;
+﻿using StardewLivingRPG.Config;
 
 namespace StardewLivingRPG.State;
 
@@ -15,6 +15,7 @@ public sealed class SaveState
     public TelemetryState Telemetry { get; set; } = new();
     public NpcMemoryState NpcMemory { get; set; } = new();
     public TownMemoryState TownMemory { get; set; } = new();
+    public RomanceState Romance { get; set; } = new();
     public PlayerFamilyState PlayerFamily { get; set; } = new();
 
     public static SaveState CreateDefault() => new();
@@ -42,3 +43,4 @@ public sealed class CalendarState
     public string Season { get; set; } = "spring";
     public int Year { get; set; } = 1;
 }
+

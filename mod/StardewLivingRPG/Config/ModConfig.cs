@@ -1,4 +1,4 @@
-namespace StardewLivingRPG.Config;
+﻿namespace StardewLivingRPG.Config;
 
 using StardewModdingAPI;
 
@@ -59,8 +59,14 @@ public sealed class ModConfig
     public bool LogCustomNpcPromptInjectionPreview { get; set; } = false;
     public bool LogVanillaCanonLoreInjectionPreview { get; set; } = false;
 
+    // Love language romance engine (LLM-driven overlay on top of vanilla hearts).
+    public bool EnableLoveLanguageEngine { get; set; } = true;
+    public int LoveLanguageMaxFriendshipPointsPerChat { get; set; } = 20;
+    public int LoveLanguageFriendshipDailyCap { get; set; } = 40;
+
     // Portrait emotion profile framework (per-NPC/per-variant frame mapping).
     public bool EnablePortraitEmotionProfiles { get; set; } = true;
     public bool PortraitProfileStrictMode { get; set; } = false;
     public bool LogPortraitProfileResolution { get; set; } = false;
 }
+

@@ -1,4 +1,4 @@
-namespace StardewLivingRPG.State;
+﻿namespace StardewLivingRPG.State;
 
 public sealed class TelemetryState
 {
@@ -30,4 +30,13 @@ public sealed class DailyTelemetry
     public Dictionary<string, int> AmbientCommandDuplicateByType { get; set; } = new();
     public int AmbientLowInfoSuppressed { get; set; }
     public int AmbientCadenceSkips { get; set; }
+
+    public int RomanceCommandsApplied { get; set; }
+    public int RomanceCommandsRejected { get; set; }
+    public int RomanceMicroDatesIssued { get; set; }
+    public int RomanceMicroDatesCompleted { get; set; }
+    public int RomanceMicroDatesExpired { get; set; }
+    public Dictionary<string, int> RomanceAxisUpdatesByType { get; set; } = new();
+    public Dictionary<string, int> RomanceRejectByReason { get; set; } = new();
 }
+

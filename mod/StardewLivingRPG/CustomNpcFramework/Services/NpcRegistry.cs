@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using StardewLivingRPG.CustomNpcFramework.Models;
 using StardewLivingRPG.CustomNpcFramework.Utilities;
 
@@ -9,15 +9,18 @@ internal sealed class NpcRegistry
     private readonly Dictionary<string, FrameworkNpcRecord> _npcsByToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _aliasToNpcToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _locationLoreByToken = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, LoveLanguageNpcConfig> _romanceLlmByToken = new(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlyDictionary<string, FrameworkNpcRecord> NpcsByToken => _npcsByToken;
     public IReadOnlyDictionary<string, string> LocationLoreByToken => _locationLoreByToken;
+    public IReadOnlyDictionary<string, LoveLanguageNpcConfig> RomanceLlmByToken => _romanceLlmByToken;
 
     public IReadOnlyList<ValidationIssue> BuildFromPacks(IReadOnlyList<LoadedNpcPack> packs)
     {
         _npcsByToken.Clear();
         _aliasToNpcToken.Clear();
         _locationLoreByToken.Clear();
+        _romanceLlmByToken.Clear();
 
         var issues = new List<ValidationIssue>();
 
@@ -54,6 +57,28 @@ internal sealed class NpcRegistry
                     continue;
 
                 _locationLoreByToken[location] = loreText;
+            }
+
+            foreach (var (npcToken, config) in pack.RomanceLlmByNpcToken)
+            {
+                if (config is null)
+                    continue;
+
+                if (!_npcsByToken.ContainsKey(npcToken))
+                {
+                    issues.Add(new ValidationIssue
+                    {
+                        Severity = ValidationSeverity.Warning,
+                        Code = "W_ROMANCE_NPC_UNKNOWN",
+                        Message = $"Romance config references unknown npc token '{npcToken}' and will be ignored.",
+                        PackId = pack.PackId,
+                        NpcId = npcToken,
+                        SourcePath = "content/romance-llm.json"
+                    });
+                    continue;
+                }
+
+                _romanceLlmByToken[npcToken] = config;
             }
         }
 
@@ -99,6 +124,32 @@ internal sealed class NpcRegistry
         if (_aliasToNpcToken.TryGetValue(token, out var mapped) && _npcsByToken.TryGetValue(mapped, out var aliased))
         {
             npc = aliased;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool TryGetLoveLanguageConfig(string? rawName, out LoveLanguageNpcConfig config)
+    {
+        config = null!;
+        if (string.IsNullOrWhiteSpace(rawName))
+            return false;
+
+        var token = TextTokenUtility.NormalizeToken(rawName);
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        if (_romanceLlmByToken.TryGetValue(token, out var direct))
+        {
+            config = direct;
+            return true;
+        }
+
+        if (_aliasToNpcToken.TryGetValue(token, out var mapped)
+            && _romanceLlmByToken.TryGetValue(mapped, out var mappedConfig))
+        {
+            config = mappedConfig;
             return true;
         }
 
@@ -311,4 +362,9 @@ internal sealed class NpcRegistry
         return found;
     }
 }
+
+
+
+
+
 

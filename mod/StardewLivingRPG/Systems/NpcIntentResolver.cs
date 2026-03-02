@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using StardewLivingRPG.State;
@@ -17,7 +17,9 @@ public sealed class NpcIntentResolver
         "publish_article",
         "record_memory_fact",
         "record_town_event",
-        "adjust_town_sentiment"
+        "adjust_town_sentiment",
+        "update_romance_profile",
+        "propose_micro_date"
     };
 
     private static readonly HashSet<string> AllowedTemplates = new(StringComparer.OrdinalIgnoreCase)
@@ -48,13 +50,20 @@ public sealed class NpcIntentResolver
     private readonly NpcMemoryService _npcMemoryService;
     private readonly TownMemoryService _townMemoryService;
     private readonly bool _strictTemplateValidation;
+    private readonly LoveLanguageEngineService? _loveLanguageEngineService;
 
-    public NpcIntentResolver(RumorBoardService rumorBoardService, NpcMemoryService npcMemoryService, TownMemoryService townMemoryService, bool strictTemplateValidation = false)
+    public NpcIntentResolver(
+        RumorBoardService rumorBoardService,
+        NpcMemoryService npcMemoryService,
+        TownMemoryService townMemoryService,
+        bool strictTemplateValidation = false,
+        LoveLanguageEngineService? loveLanguageEngineService = null)
     {
         _rumorBoardService = rumorBoardService;
         _npcMemoryService = npcMemoryService;
         _townMemoryService = townMemoryService;
         _strictTemplateValidation = strictTemplateValidation;
+        _loveLanguageEngineService = loveLanguageEngineService;
     }
 
     public NpcIntentResolveResult ResolveFromStreamLine(SaveState state, string line, string? npcIdOverride = null)
@@ -126,6 +135,8 @@ public sealed class NpcIntentResolver
             "record_memory_fact" => ResolveRecordMemoryFact(state, npcId, intentId, args),
             "record_town_event" => ResolveRecordTownEvent(state, npcId, intentId, args),
             "adjust_town_sentiment" => ResolveAdjustTownSentiment(state, npcId, intentId, args),
+            "update_romance_profile" => ResolveUpdateRomanceProfile(state, npcId, intentId, args),
+            "propose_micro_date" => ResolveProposeMicroDate(state, npcId, intentId, args),
             _ => NpcIntentResolveResult.Rejected($"unhandled command '{command}'")
         };
     }
@@ -789,6 +800,130 @@ public sealed class NpcIntentResolver
         return value.Trim('_');
     }
 
+    private NpcIntentResolveResult ResolveUpdateRomanceProfile(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (_loveLanguageEngineService is null)
+            return NpcIntentResolveResult.Rejected("romance engine unavailable", "E_ROMANCE_ENGINE_UNAVAILABLE");
+
+        if (HasUnexpectedArgs(args, "detected_signals", "signal_deltas", "trust_delta", "safety_delta", "next_beat", "confidence", "evidence"))
+            return NpcIntentResolveResult.Rejected("update_romance_profile contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
+
+        if (!args.TryGetProperty("signal_deltas", out var signalDeltasEl) || signalDeltasEl.ValueKind != JsonValueKind.Object)
+            return NpcIntentResolveResult.Rejected("update_romance_profile missing signal_deltas object", "E_ROMANCE_SIGNAL_DELTAS_MISSING");
+
+        var signalDeltas = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var axisProperty in signalDeltasEl.EnumerateObject())
+        {
+            if (axisProperty.Value.ValueKind != JsonValueKind.Number || !axisProperty.Value.TryGetInt32(out var axisDelta))
+                return NpcIntentResolveResult.Rejected($"signal_deltas.{axisProperty.Name} must be an integer", "E_ROMANCE_SIGNAL_DELTA_INVALID");
+
+            var axis = axisProperty.Name.Trim();
+            if (string.IsNullOrWhiteSpace(axis))
+                continue;
+
+            signalDeltas[axis] = Math.Clamp(axisDelta, -5, 5);
+        }
+
+        if (signalDeltas.Count == 0)
+            return NpcIntentResolveResult.Rejected("update_romance_profile requires at least one signal delta", "E_ROMANCE_SIGNAL_DELTAS_EMPTY");
+
+        if (!args.TryGetProperty("trust_delta", out var trustDeltaEl) || trustDeltaEl.ValueKind != JsonValueKind.Number || !trustDeltaEl.TryGetInt32(out var trustDelta))
+            return NpcIntentResolveResult.Rejected("update_romance_profile missing integer trust_delta", "E_ROMANCE_TRUST_DELTA_INVALID");
+
+        if (!args.TryGetProperty("safety_delta", out var safetyDeltaEl) || safetyDeltaEl.ValueKind != JsonValueKind.Number || !safetyDeltaEl.TryGetInt32(out var safetyDelta))
+            return NpcIntentResolveResult.Rejected("update_romance_profile missing integer safety_delta", "E_ROMANCE_SAFETY_DELTA_INVALID");
+
+        if (!args.TryGetProperty("next_beat", out var nextBeatEl) || nextBeatEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("update_romance_profile missing next_beat", "E_ROMANCE_NEXT_BEAT_INVALID");
+
+        var confidence = 1f;
+        if (args.TryGetProperty("confidence", out var confidenceEl))
+        {
+            if (confidenceEl.ValueKind != JsonValueKind.Number || !confidenceEl.TryGetSingle(out confidence))
+                return NpcIntentResolveResult.Rejected("update_romance_profile confidence must be numeric", "E_ROMANCE_CONFIDENCE_RANGE");
+        }
+
+        var evidence = args.TryGetProperty("evidence", out var evidenceEl) && evidenceEl.ValueKind == JsonValueKind.String
+            ? evidenceEl.GetString() ?? string.Empty
+            : string.Empty;
+
+        var command = new RomanceProfileUpdateCommand
+        {
+            SignalDeltas = signalDeltas,
+            TrustDelta = trustDelta,
+            SafetyDelta = safetyDelta,
+            NextBeat = nextBeatEl.GetString() ?? string.Empty,
+            Confidence = confidence,
+            Evidence = evidence
+        };
+
+        var applyResult = _loveLanguageEngineService.ApplyProfileUpdate(state, npcId, intentId, command);
+        if (!applyResult.Applied)
+        {
+            state.Telemetry.Daily.RomanceCommandsRejected += 1;
+            IncrementCounter(state.Telemetry.Daily.RomanceRejectByReason, applyResult.ReasonCode);
+            return NpcIntentResolveResult.Rejected(applyResult.Reason, applyResult.ReasonCode);
+        }
+
+        MarkIntentProcessed(state, intentId, npcId, "update_romance_profile");
+        state.Telemetry.Daily.WorldMutations += 1;
+        state.Telemetry.Daily.RomanceCommandsApplied += 1;
+        foreach (var axis in applyResult.AppliedAxisDeltas.Keys)
+            IncrementCounter(state.Telemetry.Daily.RomanceAxisUpdatesByType, axis);
+
+        var outcomeId = string.IsNullOrWhiteSpace(applyResult.OutcomeId) ? $"romance_profile:{npcId}" : applyResult.OutcomeId;
+        return NpcIntentResolveResult.Applied(intentId, "update_romance_profile", outcomeId, fallbackUsed: false, proposal: null);
+    }
+
+    private NpcIntentResolveResult ResolveProposeMicroDate(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (_loveLanguageEngineService is null)
+            return NpcIntentResolveResult.Rejected("romance engine unavailable", "E_ROMANCE_ENGINE_UNAVAILABLE");
+
+        if (HasUnexpectedArgs(args, "objective_type", "objective_payload", "reward_bundle", "expiry_days", "tone"))
+            return NpcIntentResolveResult.Rejected("propose_micro_date contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
+
+        if (!args.TryGetProperty("objective_type", out var objectiveTypeEl) || objectiveTypeEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("propose_micro_date missing objective_type", "E_ROMANCE_MICRO_DATE_OBJECTIVE_INVALID");
+
+        if (!args.TryGetProperty("objective_payload", out var objectivePayloadEl) || objectivePayloadEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("propose_micro_date missing objective_payload", "E_ROMANCE_MICRO_DATE_PAYLOAD_INVALID");
+
+        if (!args.TryGetProperty("reward_bundle", out var rewardBundleEl) || rewardBundleEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("propose_micro_date missing reward_bundle", "E_ROMANCE_MICRO_DATE_REWARD_INVALID");
+
+        var expiryDays = 2;
+        if (args.TryGetProperty("expiry_days", out var expiryEl))
+        {
+            if (expiryEl.ValueKind != JsonValueKind.Number || !expiryEl.TryGetInt32(out expiryDays))
+                return NpcIntentResolveResult.Rejected("propose_micro_date expiry_days must be an integer", "E_ROMANCE_MICRO_DATE_EXPIRY_INVALID");
+        }
+
+        var command = new MicroDateProposalCommand
+        {
+            ObjectiveType = objectiveTypeEl.GetString() ?? string.Empty,
+            ObjectivePayload = objectivePayloadEl.GetString() ?? string.Empty,
+            RewardBundle = rewardBundleEl.GetString() ?? string.Empty,
+            ExpiryDays = expiryDays
+        };
+
+        var applyResult = _loveLanguageEngineService.ApplyMicroDateProposal(state, npcId, intentId, command);
+        if (!applyResult.Applied)
+        {
+            state.Telemetry.Daily.RomanceCommandsRejected += 1;
+            IncrementCounter(state.Telemetry.Daily.RomanceRejectByReason, applyResult.ReasonCode);
+            return NpcIntentResolveResult.Rejected(applyResult.Reason, applyResult.ReasonCode);
+        }
+
+        MarkIntentProcessed(state, intentId, npcId, "propose_micro_date");
+        state.Telemetry.Daily.WorldMutations += 1;
+        state.Telemetry.Daily.RomanceCommandsApplied += 1;
+        state.Telemetry.Daily.RomanceMicroDatesIssued += 1;
+
+        var outcomeId = string.IsNullOrWhiteSpace(applyResult.OutcomeId) ? $"micro_date:{npcId}:{state.Calendar.Day}" : applyResult.OutcomeId;
+        return NpcIntentResolveResult.Applied(intentId, "propose_micro_date", outcomeId, fallbackUsed: false, proposal: null);
+    }
+
     private static NpcIntentResolveResult ResolveAdjustTownSentiment(SaveState state, string npcId, string intentId, JsonElement args)
     {
         if (!args.TryGetProperty("axis", out var axisEl) || axisEl.ValueKind != JsonValueKind.String)
@@ -856,6 +991,16 @@ public sealed class NpcIntentResolver
 
         state.Telemetry.Daily.WorldMutations += 1;
         return NpcIntentResolveResult.Applied(intentId, "adjust_town_sentiment", axis, fallbackUsed: false, proposal: null);
+    }
+
+    private static void IncrementCounter(Dictionary<string, int> counters, string key)
+    {
+        if (counters is null)
+            return;
+
+        var normalizedKey = string.IsNullOrWhiteSpace(key) ? "(unknown)" : key.Trim().ToLowerInvariant();
+        counters.TryGetValue(normalizedKey, out var count);
+        counters[normalizedKey] = count + 1;
     }
 
     private static bool HasUnexpectedArgs(JsonElement args, params string[] allowedKeys)
@@ -1121,3 +1266,12 @@ public sealed class NpcIntentResolveResult
             Proposal = proposal
         };
 }
+
+
+
+
+
+
+
+
+

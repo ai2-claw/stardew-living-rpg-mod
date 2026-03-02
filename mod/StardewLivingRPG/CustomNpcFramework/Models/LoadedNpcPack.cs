@@ -1,4 +1,4 @@
-namespace StardewLivingRPG.CustomNpcFramework.Models;
+﻿namespace StardewLivingRPG.CustomNpcFramework.Models;
 
 public sealed class LoadedNpcPack
 {
@@ -10,5 +10,8 @@ public sealed class LoadedNpcPack
         = new Dictionary<string, FrameworkNpcRecord>(StringComparer.OrdinalIgnoreCase);
     public IReadOnlyDictionary<string, string> LocationLoreByToken { get; init; }
         = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyDictionary<string, LoveLanguageNpcConfig> RomanceLlmByNpcToken { get; init; }
+        = new Dictionary<string, LoveLanguageNpcConfig>(StringComparer.OrdinalIgnoreCase);
 }
+
 

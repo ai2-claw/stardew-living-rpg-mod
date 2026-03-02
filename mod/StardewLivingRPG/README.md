@@ -120,6 +120,9 @@ Config knobs:
 - `CustomNpcLoreLocaleOverride` (default empty; optional locale override for custom-NPC lore overlays)
 - `LogCustomNpcPromptInjectionPreview` (default `false`; trace-level logs when lore blocks are appended)
 - `LogVanillaCanonLoreInjectionPreview` (default `false`; trace-level logs when vanilla lore blocks are appended)
+- `EnableLoveLanguageEngine` (default `true`; enables LLM-native romance command handling for NPCs with romance config)
+- `LoveLanguageMaxFriendshipPointsPerChat` (default `20`; per-chat cap for vanilla friendship sync from romance updates)
+- `LoveLanguageFriendshipDailyCap` (default `40`; per-NPC daily friendship sync cap from romance updates)
 - `EnablePortraitEmotionProfiles` (default `true`; enables per-NPC/per-variant portrait emotion profile resolution)
 - `PortraitProfileStrictMode` (default `false`; if `true`, require stricter portrait profile definitions)
 - `LogPortraitProfileResolution` (default `false`; trace log resolved portrait frame source/index at runtime)
@@ -135,12 +138,33 @@ Config knobs:
 - Optional portrait emotion profile injections are read from:
   - `content/portrait-profiles.json`
   - `assets/portrait-profiles.json` (for dependency DLL mods, e.g. compatibility mods)
+- Optional LoveLanguageEngine romance config is read from:
+  - `content/romance-llm.json`
+  - `content/romance-llm-*.json` (modular files like `romance-llm-chloe.json`)
+- Template romance config example:
+  - `custom_npc_pack_template/content/romance-llm-silas.json`
 - Canon baseline rules for strict validation are in:
   - `assets/tlv-custom-npc-canon-baseline.json`
 - Built-in vanilla canon lore grounding is in:
   - `assets/vanilla-canon-lore.json`
 - Built-in portrait profile defaults are in:
   - `assets/portrait-emotion-profiles.json`
+
+### LoveLanguageEngine command contracts
+- `update_romance_profile` arguments:
+  - `signal_deltas` object, each axis delta clamped to `-5..+5`
+  - `trust_delta` integer `-5..+5`
+  - `safety_delta` integer `-5..+5`
+  - `next_beat` in `warmth|vulnerability|conflict|repair|milestone`
+  - optional `confidence` `0..1` and short `evidence`
+- `propose_micro_date` arguments:
+  - `objective_type` and `reward_bundle` must match NPC whitelist
+  - `objective_payload` short text objective
+  - `expiry_days` integer (clamped to `1..3`)
+- Developer commands:
+  - `slrpg_romance_validate_packs`
+  - `slrpg_romance_dump <npc>`
+  - `slrpg_romance_reset <npc>`
 
 ## In-game
 - Press `K` (default) to open the Market Board menu (configurable via `config.json`).
