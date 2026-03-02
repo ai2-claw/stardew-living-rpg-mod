@@ -66,6 +66,7 @@ public sealed class ModEntry : Mod
     private static readonly TimeSpan NpcManualFollowUpNoVanillaDelay = TimeSpan.FromMilliseconds(40);
     private static readonly TimeSpan PendingFallbackQuestOfferMaxAge = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan VanillaDialogueContextMaxAge = TimeSpan.FromMinutes(12);
+    private static readonly TimeSpan Player2HealthPingInterval = TimeSpan.FromSeconds(60);
     private const int VanillaDialogueContextSequenceMaxLines = 6;
     private const string InitialNpcChatPrompt = "Let's chat.";
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
@@ -687,6 +688,11 @@ public sealed class ModEntry : Mod
     private const string BoardSearchStatusNoRequest = "No one has a new posting right now.";
     private const string BoardSearchStatusNoPostingCreated = "No posting was added from that reply.";
     private DateTime _player2LastAutoConnectAttemptUtc;
+    private DateTime _player2LastHealthPingAttemptUtc;
+    private DateTime _player2LastHealthPingSuccessUtc;
+    private DateTime _player2LastHealthPingFailureUtc;
+    private DateTime _player2LastHealthPingErrorLogUtc;
+    private int _player2HealthPingInFlight;
     private string? _pendingUiMayorWorkRequest;
     private string? _pendingUiRequesterShortName;
     private string? _lastUiWorkPrompt;
@@ -2475,6 +2481,7 @@ public sealed class ModEntry : Mod
                 StartPlayer2AutoConnect("auto-retry", force: false);
         }
 
+        TrySchedulePlayer2HealthPing();
         TryTriggerAmbientNpcConversation();
         TryApplyPendingAmbientConversationCompletions();
 
@@ -9567,11 +9574,63 @@ public sealed class ModEntry : Mod
         var running = Interlocked.CompareExchange(ref _player2StreamRunning, 0, 0) == 1;
         var lineAgo = _player2LastLineUtc == default ? "never" : $"{(int)(DateTime.UtcNow - _player2LastLineUtc).TotalSeconds}s";
         var cmdAgo = _player2LastCommandAppliedUtc == default ? "never" : $"{(int)(DateTime.UtcNow - _player2LastCommandAppliedUtc).TotalSeconds}s";
+        var pingAttemptAgo = _player2LastHealthPingAttemptUtc == default ? "never" : $"{(int)(DateTime.UtcNow - _player2LastHealthPingAttemptUtc).TotalSeconds}s";
+        var pingSuccessAgo = _player2LastHealthPingSuccessUtc == default ? "never" : $"{(int)(DateTime.UtcNow - _player2LastHealthPingSuccessUtc).TotalSeconds}s";
+        var pingFailureAgo = _player2LastHealthPingFailureUtc == default ? "never" : $"{(int)(DateTime.UtcNow - _player2LastHealthPingFailureUtc).TotalSeconds}s";
+        var pingInFlight = Interlocked.CompareExchange(ref _player2HealthPingInFlight, 0, 0) == 1;
 
         var joules = TryGetJoules(out var j);
         var joulesText = joules.HasValue && j is not null ? joules.Value.ToString() : "n/a";
 
-        Monitor.Log($"P2 health | login={loggedIn} npc={npc} stream={running}/{_player2StreamDesired} joules={joulesText} pending={_player2PendingResponseCount} lastLineAgo={lineAgo} lastCmd={_player2LastCommandApplied} lastCmdAgo={cmdAgo}", LogLevel.Info);
+        Monitor.Log($"P2 health | login={loggedIn} npc={npc} stream={running}/{_player2StreamDesired} joules={joulesText} pending={_player2PendingResponseCount} lastLineAgo={lineAgo} lastCmd={_player2LastCommandApplied} lastCmdAgo={cmdAgo} pingInFlight={pingInFlight} pingAttemptAgo={pingAttemptAgo} pingOkAgo={pingSuccessAgo} pingFailAgo={pingFailureAgo}", LogLevel.Info);
+    }
+
+    private void TrySchedulePlayer2HealthPing()
+    {
+        if (!_config.EnablePlayer2 || string.IsNullOrWhiteSpace(_player2Key))
+            return;
+
+        var client = _authenticatedPlayer2Client ?? _player2Client;
+        if (client is null || string.IsNullOrWhiteSpace(_config.Player2ApiBaseUrl))
+            return;
+
+        var nowUtc = DateTime.UtcNow;
+        if (_player2LastHealthPingAttemptUtc != default
+            && nowUtc - _player2LastHealthPingAttemptUtc < Player2HealthPingInterval)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _player2HealthPingInFlight, 1, 0) == 1)
+            return;
+
+        _player2LastHealthPingAttemptUtc = nowUtc;
+        var apiBaseUrl = _config.Player2ApiBaseUrl;
+        var p2Key = _player2Key!;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                await client.PingHealthAsync(apiBaseUrl, p2Key, cts.Token);
+                _player2LastHealthPingSuccessUtc = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                _player2LastHealthPingFailureUtc = DateTime.UtcNow;
+                if (_player2LastHealthPingErrorLogUtc == default
+                    || DateTime.UtcNow - _player2LastHealthPingErrorLogUtc > TimeSpan.FromMinutes(5))
+                {
+                    _player2LastHealthPingErrorLogUtc = DateTime.UtcNow;
+                    Monitor.Log("Player2 health ping failed: " + ex.Message, LogLevel.Trace);
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _player2HealthPingInFlight, 0);
+            }
+        });
     }
 
     private void OnDebugAmbientPairChatCommand(string name, string[] args)
@@ -14866,8 +14925,38 @@ public sealed class ModEntry : Mod
         }
 
         var discovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var friendshipNpcKeys = (Game1.player?.friendshipData?.Keys ?? Enumerable.Empty<string>()).ToList();
+        var socialSignalNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        void AddCandidate(string? rawName)
+        foreach (var friendshipNpc in friendshipNpcKeys)
+        {
+            var normalized = NormalizeExternalNpcName(friendshipNpc);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                socialSignalNames.Add(normalized);
+        }
+
+        try
+        {
+            var giftTastes = Game1.content.Load<Dictionary<string, string>>("Data\\NPCGiftTastes");
+            foreach (var key in giftTastes.Keys)
+            {
+                var normalized = NormalizeExternalNpcName(key);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    socialSignalNames.Add(normalized);
+            }
+        }
+        catch
+        {
+            // Missing/rewired gift taste data is acceptable; discovery falls back to friendship/runtime sources.
+        }
+
+        bool HasSocialSignal(string? rawName)
+        {
+            var normalized = NormalizeExternalNpcName(rawName);
+            return !string.IsNullOrWhiteSpace(normalized) && socialSignalNames.Contains(normalized);
+        }
+
+        void AddCandidate(string? rawName, bool requireSocialSignal = false)
         {
             var name = NormalizeExternalNpcName(rawName);
             if (string.IsNullOrWhiteSpace(name))
@@ -14880,6 +14969,8 @@ public sealed class ModEntry : Mod
             {
                 return;
             }
+            if (requireSocialSignal && !HasSocialSignal(name))
+                return;
 
             discovered.Add(name);
         }
@@ -14888,7 +14979,7 @@ public sealed class ModEntry : Mod
         {
             var dispositions = Game1.content.Load<Dictionary<string, string>>("Data\\NPCDispositions");
             foreach (var key in dispositions.Keys)
-                AddCandidate(key);
+                AddCandidate(key, requireSocialSignal: true);
         }
         catch
         {
@@ -14899,12 +14990,15 @@ public sealed class ModEntry : Mod
         {
             foreach (var npc in location?.characters ?? Enumerable.Empty<NPC>())
             {
-                AddCandidate(npc?.Name);
-                AddCandidate(npc?.displayName);
+                if (npc is StardewValley.Monsters.Monster)
+                    continue;
+
+                AddCandidate(npc?.Name, requireSocialSignal: true);
+                AddCandidate(npc?.displayName, requireSocialSignal: true);
             }
         }
 
-        foreach (var friendshipNpc in Game1.player?.friendshipData?.Keys ?? Enumerable.Empty<string>())
+        foreach (var friendshipNpc in friendshipNpcKeys)
             AddCandidate(friendshipNpc);
 
         var changed = !_externalAutoDiscoveredNpcNames.SetEquals(discovered);
