@@ -12,6 +12,8 @@ public sealed class LoadedNpcPack
         = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     public IReadOnlyDictionary<string, LoveLanguageNpcConfig> RomanceLlmByNpcToken { get; init; }
         = new Dictionary<string, LoveLanguageNpcConfig>(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyDictionary<string, NpcActivityContextConfig> ActivityContextByNpcToken { get; init; }
+        = new Dictionary<string, NpcActivityContextConfig>(StringComparer.OrdinalIgnoreCase);
 }
 
 

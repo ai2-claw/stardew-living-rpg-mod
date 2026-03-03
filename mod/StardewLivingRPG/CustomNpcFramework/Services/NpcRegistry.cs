@@ -10,10 +10,12 @@ internal sealed class NpcRegistry
     private readonly Dictionary<string, string> _aliasToNpcToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _locationLoreByToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LoveLanguageNpcConfig> _romanceLlmByToken = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, NpcActivityContextConfig> _activityContextByToken = new(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlyDictionary<string, FrameworkNpcRecord> NpcsByToken => _npcsByToken;
     public IReadOnlyDictionary<string, string> LocationLoreByToken => _locationLoreByToken;
     public IReadOnlyDictionary<string, LoveLanguageNpcConfig> RomanceLlmByToken => _romanceLlmByToken;
+    public IReadOnlyDictionary<string, NpcActivityContextConfig> ActivityContextByToken => _activityContextByToken;
 
     public IReadOnlyList<ValidationIssue> BuildFromPacks(IReadOnlyList<LoadedNpcPack> packs)
     {
@@ -21,6 +23,7 @@ internal sealed class NpcRegistry
         _aliasToNpcToken.Clear();
         _locationLoreByToken.Clear();
         _romanceLlmByToken.Clear();
+        _activityContextByToken.Clear();
 
         var issues = new List<ValidationIssue>();
 
@@ -79,6 +82,28 @@ internal sealed class NpcRegistry
                 }
 
                 _romanceLlmByToken[npcToken] = config;
+            }
+
+            foreach (var (npcToken, config) in pack.ActivityContextByNpcToken)
+            {
+                if (config is null)
+                    continue;
+
+                if (!_npcsByToken.ContainsKey(npcToken))
+                {
+                    issues.Add(new ValidationIssue
+                    {
+                        Severity = ValidationSeverity.Warning,
+                        Code = "W_ACTIVITY_NPC_UNKNOWN",
+                        Message = $"Activity context references unknown npc token '{npcToken}' and will be ignored.",
+                        PackId = pack.PackId,
+                        NpcId = npcToken,
+                        SourcePath = "content/activity-context.json"
+                    });
+                    continue;
+                }
+
+                _activityContextByToken[npcToken] = config;
             }
         }
 
@@ -148,6 +173,32 @@ internal sealed class NpcRegistry
 
         if (_aliasToNpcToken.TryGetValue(token, out var mapped)
             && _romanceLlmByToken.TryGetValue(mapped, out var mappedConfig))
+        {
+            config = mappedConfig;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool TryGetActivityContextConfig(string? rawName, out NpcActivityContextConfig config)
+    {
+        config = null!;
+        if (string.IsNullOrWhiteSpace(rawName))
+            return false;
+
+        var token = TextTokenUtility.NormalizeToken(rawName);
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        if (_activityContextByToken.TryGetValue(token, out var direct))
+        {
+            config = direct;
+            return true;
+        }
+
+        if (_aliasToNpcToken.TryGetValue(token, out var mapped)
+            && _activityContextByToken.TryGetValue(mapped, out var mappedConfig))
         {
             config = mappedConfig;
             return true;

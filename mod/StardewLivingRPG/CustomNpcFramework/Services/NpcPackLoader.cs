@@ -117,6 +117,7 @@ internal sealed class NpcPackLoader
             var canonDelta = pack.ReadJsonFile<CanonDeltaFile>("content/canon-delta.json") ?? new CanonDeltaFile();
             var lore = MergeLocaleOverlay(pack, loreBase ?? new NpcLoreFile(), locale);
             var romanceByToken = LoadRomanceLlmConfigs(pack, packId, packIssues);
+            var activityContextByToken = LoadActivityContextConfigs(pack, packId, packIssues);
 
             if (packIssues.Any(i => i.Severity == ValidationSeverity.Error))
             {
@@ -139,6 +140,7 @@ internal sealed class NpcPackLoader
                 modules,
                 canonDelta,
                 romanceByToken,
+                activityContextByToken,
                 packIssues);
 
             allIssues.AddRange(packIssues);
@@ -160,6 +162,7 @@ internal sealed class NpcPackLoader
         NpcModulesFile modulesFile,
         CanonDeltaFile deltaFile,
         IReadOnlyDictionary<string, LoveLanguageNpcConfig> romanceByToken,
+        IReadOnlyDictionary<string, NpcActivityContextConfig> activityContextByToken,
         List<ValidationIssue> issues)
     {
         var packId = pack.Manifest.UniqueID ?? string.Empty;
@@ -327,7 +330,8 @@ internal sealed class NpcPackLoader
             FrameworkMinVersion = frameworkMinVersion,
             NpcsByToken = npcRecords,
             LocationLoreByToken = mergedLocations,
-            RomanceLlmByNpcToken = romanceByToken
+            RomanceLlmByNpcToken = romanceByToken,
+            ActivityContextByNpcToken = activityContextByToken
         };
     }
 
@@ -376,6 +380,117 @@ internal sealed class NpcPackLoader
         }
 
         return merged;
+    }
+
+    private Dictionary<string, NpcActivityContextConfig> LoadActivityContextConfigs(IContentPack pack, string packId, List<ValidationIssue> issues)
+    {
+        var merged = new Dictionary<string, NpcActivityContextConfig>(StringComparer.OrdinalIgnoreCase);
+
+        void MergeFromPath(string relativePath)
+        {
+            var file = pack.ReadJsonFile<NpcActivityContextFile>(relativePath);
+            if (file is null || file.Npcs.Count == 0)
+                return;
+
+            foreach (var (rawNpcKey, rawConfig) in file.Npcs)
+            {
+                var npcToken = TextTokenUtility.NormalizeToken(rawNpcKey);
+                if (string.IsNullOrWhiteSpace(npcToken))
+                {
+                    issues.Add(Warning(packId, string.Empty, relativePath, "W_ACTIVITY_NPC_KEY_INVALID", "Skipped activity context entry with an empty NPC key."));
+                    continue;
+                }
+
+                var config = rawConfig ?? new NpcActivityContextConfig();
+                if (!ValidateAndNormalizeActivityContextConfig(packId, npcToken, relativePath, config, issues))
+                    continue;
+
+                merged[npcToken] = config;
+            }
+        }
+
+        MergeFromPath("content/activity-context.json");
+
+        var contentDir = Path.Combine(pack.DirectoryPath, "content");
+        if (Directory.Exists(contentDir))
+        {
+            foreach (var filePath in Directory
+                         .GetFiles(contentDir, "activity-context-*.json", SearchOption.TopDirectoryOnly)
+                         .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+            {
+                var fileName = Path.GetFileName(filePath);
+                if (string.Equals(fileName, "activity-context.json", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                MergeFromPath($"content/{fileName}");
+            }
+        }
+
+        return merged;
+    }
+
+    private static bool ValidateAndNormalizeActivityContextConfig(
+        string packId,
+        string npcToken,
+        string sourcePath,
+        NpcActivityContextConfig config,
+        List<ValidationIssue> issues)
+    {
+        config.FallbackActivity = TextTokenUtility.CompactWhitespace(config.FallbackActivity);
+        config.Hotspots ??= new List<NpcActivityHotspotConfig>();
+
+        var sanitized = new List<NpcActivityHotspotConfig>(config.Hotspots.Count);
+        foreach (var rawSpot in config.Hotspots)
+        {
+            if (rawSpot is null)
+                continue;
+
+            var location = TextTokenUtility.CompactWhitespace(rawSpot.Location);
+            var activity = TextTokenUtility.CompactWhitespace(rawSpot.Activity);
+            if (string.IsNullOrWhiteSpace(location))
+            {
+                issues.Add(Warning(
+                    packId,
+                    npcToken,
+                    sourcePath,
+                    "W_ACTIVITY_LOCATION_MISSING",
+                    "Skipped activity hotspot with empty location."));
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(activity))
+            {
+                issues.Add(Warning(
+                    packId,
+                    npcToken,
+                    sourcePath,
+                    "W_ACTIVITY_TEXT_MISSING",
+                    $"Skipped activity hotspot at '{location}' with empty activity text."));
+                continue;
+            }
+
+            sanitized.Add(new NpcActivityHotspotConfig
+            {
+                Location = location,
+                TileX = Math.Max(0, rawSpot.TileX),
+                TileY = Math.Max(0, rawSpot.TileY),
+                Radius = Math.Clamp(rawSpot.Radius, 1, 8),
+                Activity = activity
+            });
+        }
+
+        if (sanitized.Count == 0 && string.IsNullOrWhiteSpace(config.FallbackActivity))
+        {
+            issues.Add(Warning(
+                packId,
+                npcToken,
+                sourcePath,
+                "W_ACTIVITY_EMPTY",
+                "Activity context config has no usable hotspots and no fallback activity."));
+        }
+
+        config.Hotspots = sanitized;
+        return true;
     }
 
     private static bool ValidateAndNormalizeRomanceConfig(

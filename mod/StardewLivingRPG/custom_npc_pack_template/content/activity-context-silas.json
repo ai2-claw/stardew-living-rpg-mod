@@ -1,0 +1,24 @@
+{
+  "Npcs": {
+    "silas": {
+      "FallbackActivity": "between archive tasks",
+      "Hotspots": [
+        {
+          "Location": "LibraryMuseum",
+          "TileX": 3,
+          "TileY": 9,
+          "Radius": 2,
+          "Activity": "cataloging old letters and maps at the museum desk"
+        },
+        {
+          "Location": "Town",
+          "TileX": 49,
+          "TileY": 69,
+          "Radius": 3,
+          "Activity": "collecting local stories in the town square"
+        }
+      ]
+    }
+  }
+}
+
