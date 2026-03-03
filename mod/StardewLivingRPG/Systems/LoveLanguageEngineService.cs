@@ -8,6 +8,10 @@ namespace StardewLivingRPG.Systems;
 public sealed class LoveLanguageEngineService
 {
     private const int MaxRecentSignals = 40;
+    private const int MicroDateSignalWindowDays = 14;
+    private const int MinMicroDatePositiveSignals = 2;
+    private const int MinMicroDateTrust = 8;
+    private const int MinMicroDateSafety = 8;
     private readonly Func<string, LoveLanguageNpcConfig?> _configResolver;
     private readonly IMonitor? _monitor;
     private readonly int _maxFriendshipPointsPerChat;
@@ -74,6 +78,8 @@ public sealed class LoveLanguageEngineService
             $"ROMANCE_PROFILE[{token}]: axes=[{axesText}] trust={profile.Trust} safety={profile.Safety} nextBeat={profile.NextBeat}.",
             $"ROMANCE_WHITELIST[{token}]: objectiveTypes=[{string.Join(", ", objectiveTypes)}] rewardBundles=[{string.Join(", ", rewardBundles)}] nextBeatAllowed=[{string.Join(", ", nextBeats)}] requiredFields=[{string.Join(", ", requiredFields)}].",
             $"ROMANCE_MICRO_DATE[{token}]: {microDateText}.",
+            $"ROMANCE_GATE[{token}]: propose_micro_date requires trust>={MinMicroDateTrust}, safety>={MinMicroDateSafety}, positiveSignals(last{MicroDateSignalWindowDays}d)>={MinMicroDatePositiveSignals}, nextBeat!=conflict, and no active micro-date.",
+            "ROMANCE_RULES: If ROMANCE_GATE is unmet, do not promise date plans, meet times, or meet locations. Decline or defer naturally in-character.",
             "ROMANCE_RULES: Emit at most one romance command in a reply. Use romance commands only when context is genuinely relational and avoid forced progression.",
             "ROMANCE_RULES: signal_deltas values and trust/safety deltas must stay within -5..+5. Emit no romance command when confidence < 0.55.");
 
@@ -168,6 +174,10 @@ public sealed class LoveLanguageEngineService
         if (config is null)
             return LoveLanguageApplyResult.Rejected($"romance config missing for '{npcName}'", "E_ROMANCE_CONFIG_MISSING");
 
+        var eligibility = EvaluateMicroDateEligibility(state, npcName);
+        if (!eligibility.Eligible)
+            return LoveLanguageApplyResult.Rejected(eligibility.Reason, eligibility.ReasonCode);
+
         var objectiveType = NormalizeToken(command.ObjectiveType);
         var rewardBundle = (command.RewardBundle ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(objectiveType))
@@ -207,6 +217,76 @@ public sealed class LoveLanguageEngineService
         };
 
         return LoveLanguageApplyResult.Success($"micro_date:{token}:{state.Calendar.Day}", 0, new Dictionary<string, int>());
+    }
+
+    public MicroDateEligibilityResult EvaluateMicroDateEligibility(SaveState state, string npcName)
+    {
+        if (state is null)
+            return MicroDateEligibilityResult.Denied("E_ROMANCE_STATE_MISSING", "state missing");
+
+        var config = TryGetConfig(npcName);
+        if (config is null)
+            return MicroDateEligibilityResult.Denied("E_ROMANCE_CONFIG_MISSING", $"romance config missing for '{npcName}'");
+
+        var token = NormalizeToken(npcName);
+        var profile = GetOrCreateProfile(state, token, config.ProfileAxes, state.Calendar.Day);
+        var recentWindowStart = Math.Max(1, state.Calendar.Day - MicroDateSignalWindowDays + 1);
+        var positiveSignals = profile.RecentSignals.Count(signal =>
+            signal is not null
+            && signal.Delta > 0
+            && signal.Day >= recentWindowStart);
+        var hasActiveMicroDate = state.Romance.ActiveMicroDates.TryGetValue(token, out var activeMicroDate)
+            && activeMicroDate is not null
+            && string.Equals(activeMicroDate.Status, "active", StringComparison.OrdinalIgnoreCase)
+            && activeMicroDate.ExpiresDay >= state.Calendar.Day;
+        var nextBeat = NormalizeToken(profile.NextBeat);
+
+        if (hasActiveMicroDate)
+        {
+            return MicroDateEligibilityResult.Denied(
+                "E_ROMANCE_MICRO_DATE_ALREADY_ACTIVE",
+                "an active micro-date already exists",
+                trust: profile.Trust,
+                safety: profile.Safety,
+                positiveSignals: positiveSignals,
+                nextBeat: nextBeat,
+                hasActiveMicroDate: true);
+        }
+
+        if (nextBeat.Equals("conflict", StringComparison.OrdinalIgnoreCase))
+        {
+            return MicroDateEligibilityResult.Denied(
+                "E_ROMANCE_MICRO_DATE_BEAT_CONFLICT",
+                "micro-date blocked while relationship beat is conflict",
+                trust: profile.Trust,
+                safety: profile.Safety,
+                positiveSignals: positiveSignals,
+                nextBeat: nextBeat,
+                hasActiveMicroDate: false);
+        }
+
+        if (profile.Trust < MinMicroDateTrust
+            || profile.Safety < MinMicroDateSafety
+            || positiveSignals < MinMicroDatePositiveSignals)
+        {
+            var reason =
+                $"micro-date gate unmet: trust={profile.Trust}/{MinMicroDateTrust}, safety={profile.Safety}/{MinMicroDateSafety}, positiveSignals={positiveSignals}/{MinMicroDatePositiveSignals} (last {MicroDateSignalWindowDays} days)";
+            return MicroDateEligibilityResult.Denied(
+                "E_ROMANCE_MICRO_DATE_RELATIONSHIP_LOW",
+                reason,
+                trust: profile.Trust,
+                safety: profile.Safety,
+                positiveSignals: positiveSignals,
+                nextBeat: nextBeat,
+                hasActiveMicroDate: false);
+        }
+
+        return MicroDateEligibilityResult.Allowed(
+            trust: profile.Trust,
+            safety: profile.Safety,
+            positiveSignals: positiveSignals,
+            nextBeat: nextBeat,
+            hasActiveMicroDate: false);
     }
 
     public int ExpireMicroDates(SaveState state, int currentDay)
@@ -427,6 +507,56 @@ public sealed class MicroDateProposalCommand
     public string ObjectivePayload { get; init; } = string.Empty;
     public string RewardBundle { get; init; } = string.Empty;
     public int ExpiryDays { get; init; } = 2;
+}
+
+public sealed class MicroDateEligibilityResult
+{
+    public bool Eligible { get; init; }
+    public string ReasonCode { get; init; } = "OK";
+    public string Reason { get; init; } = string.Empty;
+    public int Trust { get; init; }
+    public int Safety { get; init; }
+    public int PositiveSignals { get; init; }
+    public string NextBeat { get; init; } = string.Empty;
+    public bool HasActiveMicroDate { get; init; }
+
+    public static MicroDateEligibilityResult Allowed(
+        int trust,
+        int safety,
+        int positiveSignals,
+        string nextBeat,
+        bool hasActiveMicroDate)
+        => new()
+        {
+            Eligible = true,
+            ReasonCode = "OK",
+            Reason = string.Empty,
+            Trust = trust,
+            Safety = safety,
+            PositiveSignals = positiveSignals,
+            NextBeat = nextBeat,
+            HasActiveMicroDate = hasActiveMicroDate
+        };
+
+    public static MicroDateEligibilityResult Denied(
+        string reasonCode,
+        string reason,
+        int trust = 0,
+        int safety = 0,
+        int positiveSignals = 0,
+        string nextBeat = "",
+        bool hasActiveMicroDate = false)
+        => new()
+        {
+            Eligible = false,
+            ReasonCode = string.IsNullOrWhiteSpace(reasonCode) ? "E_ROMANCE_MICRO_DATE_GATE" : reasonCode,
+            Reason = reason ?? string.Empty,
+            Trust = trust,
+            Safety = safety,
+            PositiveSignals = positiveSignals,
+            NextBeat = nextBeat ?? string.Empty,
+            HasActiveMicroDate = hasActiveMicroDate
+        };
 }
 
 public sealed class LoveLanguageApplyResult

@@ -807,6 +807,19 @@ public sealed class ModEntry : Mod
             ? config
             : null;
     }
+
+    private bool ShouldExposeRomanceCommandsForNpc(string? npcName)
+    {
+        if (!_config.EnableLoveLanguageEngine
+            || _loveLanguageEngineService is null
+            || string.IsNullOrWhiteSpace(npcName))
+        {
+            return false;
+        }
+
+        return _loveLanguageEngineService.TryGetConfig(npcName) is not null;
+    }
+
     private TownProfile ResolveActiveTownProfile(string? locationName = null)
     {
         return TownProfileResolver.ResolveForLocation(locationName ?? Game1.currentLocation?.Name);
@@ -2196,13 +2209,17 @@ public sealed class ModEntry : Mod
             "lewis" => $"You are Mayor Lewis of {townName} in Stardew Valley.",
             _ => $"You are {shortName} of {townName} in Stardew Valley. Never claim to be another NPC."
         };
+        var includeRomanceCommands = ShouldExposeRomanceCommandsForNpc(shortName);
+        var romanceCommandPromptRule = includeRomanceCommands
+            ? "Use update_romance_profile or propose_micro_date only when relationship context is clearly relevant; avoid romance commands in unrelated chats. "
+            : string.Empty;
 
-        return new SpawnNpcRequest
+        var req = new SpawnNpcRequest
         {
             ShortName = shortName,
             Name = shortName,
             CharacterDescription = $"{shortName} in {townName}, practical and grounded.",
-            SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
+            SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. " + romanceCommandPromptRule + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
             KeepGameState = true,
             Commands = new List<SpawnNpcCommand>
             {
@@ -2311,9 +2328,68 @@ public sealed class ModEntry : Mod
                         required = new[] { "topic", "confidence", "target_group" },
                         additionalProperties = false
                     }
+                },
+                new()
+                {
+                    Name = "update_romance_profile",
+                    Description = "Apply a bounded romance profile update when relational context is meaningful",
+                    Parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            signal_deltas = new
+                            {
+                                type = "object",
+                                additionalProperties = new { type = "integer", minimum = -5, maximum = 5 }
+                            },
+                            trust_delta = new { type = "integer", minimum = -5, maximum = 5 },
+                            safety_delta = new { type = "integer", minimum = -5, maximum = 5 },
+                            next_beat = new { type = "string", @enum = new[] { "warmth", "vulnerability", "conflict", "repair", "milestone" } },
+                            confidence = new { type = "number", minimum = 0.0, maximum = 1.0 },
+                            evidence = new { type = "string" }
+                        },
+                        required = new[] { "signal_deltas", "trust_delta", "safety_delta", "next_beat" },
+                        additionalProperties = false
+                    }
+                },
+                new()
+                {
+                    Name = "propose_micro_date",
+                    Description = "Propose a whitelisted micro-date objective tied to current relationship context",
+                    Parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            objective_type = new { type = "string" },
+                            objective_payload = new { type = "string" },
+                            reward_bundle = new { type = "string" },
+                            expiry_days = new { type = "integer", minimum = 1, maximum = 3 },
+                            tone = new { type = "string" }
+                        },
+                        required = new[] { "objective_type", "objective_payload", "reward_bundle" },
+                        additionalProperties = false
+                    }
                 }
             }
         };
+
+        if (!includeRomanceCommands)
+        {
+            req.Commands.RemoveAll(command =>
+                command.Name.Equals("update_romance_profile", StringComparison.OrdinalIgnoreCase)
+                || command.Name.Equals("propose_micro_date", StringComparison.OrdinalIgnoreCase));
+        }
+
+        var hasRomanceCommands = req.Commands.Any(command =>
+            command.Name.Equals("update_romance_profile", StringComparison.OrdinalIgnoreCase)
+            || command.Name.Equals("propose_micro_date", StringComparison.OrdinalIgnoreCase));
+        Monitor.Log(
+            $"Player2 spawn command set ({shortName}): romanceCommands={(hasRomanceCommands ? "enabled" : "disabled")}, totalCommands={req.Commands.Count}.",
+            LogLevel.Trace);
+
+        return req;
     }
 
     private bool HasPendingQuestForNpc(string npcName)
@@ -2765,11 +2841,16 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            Monitor.Log($"Player2 chat line: {line}", LogLevel.Trace);
-            CaptureNpcUiMessage(line, allowPlayerChatRouting: true, forcePlayerChatRouting: true);
-            var appliedNpcCommand = TryApplyNpcCommandFromLine(line);
+            var effectiveLine = RewriteIneligibleDateInviteChatLine(line);
+            Monitor.Log($"Player2 chat line: {effectiveLine}", LogLevel.Trace);
+            CaptureNpcUiMessage(effectiveLine, allowPlayerChatRouting: true, forcePlayerChatRouting: true);
+            var appliedNpcCommand = TryApplyNpcCommandFromLine(effectiveLine);
             if (!appliedNpcCommand)
-                TryApplyFallbackQuestFromPlayerChatLine(line);
+            {
+                var appliedMicroDateFallback = TryApplyFallbackMicroDateFromPlayerChatLine(effectiveLine);
+                if (!appliedMicroDateFallback)
+                    TryApplyFallbackQuestFromPlayerChatLine(effectiveLine);
+            }
         }
     }
 
@@ -4154,14 +4235,94 @@ public sealed class ModEntry : Mod
                 && string.Equals(npcLocation.InternalName, speakerLocationInternalName, StringComparison.OrdinalIgnoreCase);
             var resolvedName = string.IsNullOrWhiteSpace(npc.displayName) ? npc.Name : npc.displayName;
             var safeName = string.IsNullOrWhiteSpace(resolvedName) ? name : resolvedName;
+            var activity = ResolveNpcCurrentActivity(npc, npcLocation);
+            var activityLabel = string.IsNullOrWhiteSpace(activity) ? "unknown" : TrimForContext(activity, 120, "unknown");
             parts.Add(
-                $"{safeName}: exact='{npcLocation.ExactPhrase}' internal='{npcLocation.InternalName}' same_location_as_speaker={sameLocationAsSpeaker} tile=({npcLocation.TileX},{npcLocation.TileY})");
+                $"{safeName}: exact='{npcLocation.ExactPhrase}' internal='{npcLocation.InternalName}' same_location_as_speaker={sameLocationAsSpeaker} tile=({npcLocation.TileX},{npcLocation.TileY}) activity='{activityLabel}'");
         }
 
         if (parts.Count == 0)
             return string.Empty;
 
         return $"LIVE_NPC_WHEREABOUTS: [{string.Join("; ", parts)}].";
+    }
+
+    private string BuildSpeakerCurrentActivityBlock(string? npcName, string effectiveContextTag)
+    {
+        if (string.IsNullOrWhiteSpace(npcName)
+            || !Context.IsWorldReady
+            || !effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        var npc = ResolveNpcByName(npcName);
+        if (npc is null)
+            return string.Empty;
+
+        var npcLocation = BuildPromptLocationContextForNpc(npc);
+        var activity = ResolveNpcCurrentActivity(npc, npcLocation);
+        if (string.IsNullOrWhiteSpace(activity))
+            return string.Empty;
+
+        var resolvedName = string.IsNullOrWhiteSpace(npc.displayName) ? npc.Name : npc.displayName;
+        var safeName = string.IsNullOrWhiteSpace(resolvedName) ? npcName.Trim() : resolvedName;
+        return $"NPC_CURRENT_ACTIVITY[{safeName}]: {TrimForContext(activity, 140, "working")}.";
+    }
+
+    private string ResolveNpcCurrentActivity(NPC npc, PromptLocationContext npcLocation)
+    {
+        if (npc is null)
+            return string.Empty;
+
+        var npcName = string.IsNullOrWhiteSpace(npc.Name) ? npc.displayName : npc.Name;
+        var locationToken = (npcLocation.InternalName ?? string.Empty).Trim();
+        var tileX = npcLocation.TileX;
+        var tileY = npcLocation.TileY;
+        NpcActivityContextConfig? activityContext = null;
+        if (_config.EnableCustomNpcFramework
+            && _customNpcRegistry is not null
+            && _customNpcRegistry.TryGetActivityContextConfig(npcName, out var foundContext))
+        {
+            activityContext = foundContext;
+        }
+
+        if (activityContext is not null && activityContext.Hotspots.Count > 0)
+        {
+            var bestMatch = activityContext.Hotspots
+                .Where(spot => string.Equals((spot.Location ?? string.Empty).Trim(), locationToken, StringComparison.OrdinalIgnoreCase))
+                .Select(spot => new
+                {
+                    Spot = spot,
+                    Distance = Math.Abs(spot.TileX - tileX) + Math.Abs(spot.TileY - tileY)
+                })
+                .OrderBy(match => match.Distance)
+                .FirstOrDefault();
+
+            if (bestMatch is not null && bestMatch.Distance <= Math.Max(1, bestMatch.Spot.Radius))
+                return bestMatch.Spot.Activity;
+        }
+
+        if (activityContext is not null && !string.IsNullOrWhiteSpace(activityContext.FallbackActivity))
+            return activityContext.FallbackActivity.Trim();
+
+        if (string.Equals(locationToken, "DH.Arthur.House", StringComparison.OrdinalIgnoreCase))
+            return "at Arthur's house";
+        if (string.Equals(locationToken, "Downhill", StringComparison.OrdinalIgnoreCase))
+            return "out in Downhill between repair tasks";
+        if (string.Equals(locationToken, "DH.Mine", StringComparison.OrdinalIgnoreCase))
+            return "working in the mine area";
+        if (string.Equals(locationToken, "Saloon", StringComparison.OrdinalIgnoreCase))
+            return "at the saloon";
+        if (string.Equals(locationToken, "Hospital", StringComparison.OrdinalIgnoreCase))
+            return "doing maintenance at the clinic";
+        if (string.Equals(locationToken, "Fix.BusStop", StringComparison.OrdinalIgnoreCase))
+            return "handling maintenance near the bus stop";
+
+        if (!string.IsNullOrWhiteSpace(npcLocation.ExactPhrase))
+            return $"at {npcLocation.ExactPhrase}";
+
+        return "between tasks";
     }
 
     private List<string> FindReferencedNpcNamesForWhereabouts(string? playerText, string? referencedNpcName, int maxMatches)
@@ -8471,12 +8632,16 @@ public sealed class ModEntry : Mod
         {
             var promptLanguageRule = I18n.BuildPromptLanguageInstruction();
             var townProfile = ResolveActiveTownProfile();
+            var includeRomanceCommands = ShouldExposeRomanceCommandsForNpc("Lewis");
+            var romanceCommandPromptRule = includeRomanceCommands
+                ? "Use update_romance_profile or propose_micro_date only when relationship context is clearly relevant; avoid romance commands in unrelated chats. "
+                : string.Empty;
             var req = new SpawnNpcRequest
             {
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
                 CharacterDescription = $"Mayor Lewis of {townProfile.CanonTown} in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = $"You are Mayor Lewis from Stardew Valley ({townProfile.CanonTown}). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For social outcomes, you may use adjust_reputation sparingly for meaningful shifts only. For town-group dynamics, you may use shift_interest_influence only when discussion clearly concerns a town group priority. For market dynamics, use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
+                SystemPrompt = $"You are Mayor Lewis from Stardew Valley ({townProfile.CanonTown}). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For social outcomes, you may use adjust_reputation sparingly for meaningful shifts only. For town-group dynamics, you may use shift_interest_influence only when discussion clearly concerns a town group priority. For market dynamics, use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. " + romanceCommandPromptRule + "IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -8591,9 +8756,68 @@ public sealed class ModEntry : Mod
                             additionalProperties = false
                         },
                         NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "update_romance_profile",
+                        Description = "Apply a bounded romance profile update when relational context is meaningful",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                signal_deltas = new
+                                {
+                                    type = "object",
+                                    additionalProperties = new { type = "integer", minimum = -5, maximum = 5 }
+                                },
+                                trust_delta = new { type = "integer", minimum = -5, maximum = 5 },
+                                safety_delta = new { type = "integer", minimum = -5, maximum = 5 },
+                                next_beat = new { type = "string", @enum = new[] { "warmth", "vulnerability", "conflict", "repair", "milestone" } },
+                                confidence = new { type = "number", minimum = 0.0, maximum = 1.0 },
+                                evidence = new { type = "string" }
+                            },
+                            required = new[] { "signal_deltas", "trust_delta", "safety_delta", "next_beat" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "propose_micro_date",
+                        Description = "Propose a whitelisted micro-date objective tied to current relationship context",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                objective_type = new { type = "string" },
+                                objective_payload = new { type = "string" },
+                                reward_bundle = new { type = "string" },
+                                expiry_days = new { type = "integer", minimum = 1, maximum = 3 },
+                                tone = new { type = "string" }
+                            },
+                            required = new[] { "objective_type", "objective_payload", "reward_bundle" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
                     }
                 }
             };
+
+            if (!includeRomanceCommands)
+            {
+                req.Commands.RemoveAll(command =>
+                    command.Name.Equals("update_romance_profile", StringComparison.OrdinalIgnoreCase)
+                    || command.Name.Equals("propose_micro_date", StringComparison.OrdinalIgnoreCase));
+            }
+
+            var hasRomanceCommands = req.Commands.Any(command =>
+                command.Name.Equals("update_romance_profile", StringComparison.OrdinalIgnoreCase)
+                || command.Name.Equals("propose_micro_date", StringComparison.OrdinalIgnoreCase));
+            Monitor.Log(
+                $"Player2 spawn command set ({req.ShortName}): romanceCommands={(hasRomanceCommands ? "enabled" : "disabled")}, totalCommands={req.Commands.Count}.",
+                LogLevel.Trace);
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             _activeNpcId = _player2Client
@@ -8787,6 +9011,8 @@ public sealed class ModEntry : Mod
                 effectiveContextTag = inferredManualTag;
             }
             var playerAskedForQuest = IsPlayerAskingForQuest(message);
+            var hasPendingQuestOffer = _npcPendingFallbackQuestOfferById.ContainsKey(npcId);
+            var playerAcceptingQuest = IsPlayerAcceptingQuest(message, hasPendingQuestOffer);
             if (string.IsNullOrWhiteSpace(effectiveContextTag) && playerAskedForQuest)
                 effectiveContextTag = "player_chat_quest_request";
 
@@ -8860,7 +9086,14 @@ public sealed class ModEntry : Mod
             _npcLastPlayerChatRequestUtcById[npcId] = DateTime.UtcNow;
             _npcLastPlayerPromptById[npcId] = message;
             if (playerAskedForQuest)
+            {
                 _npcLastPlayerQuestAskUtcById[npcId] = DateTime.UtcNow;
+            }
+            else if (!playerAcceptingQuest)
+            {
+                _npcLastPlayerQuestAskUtcById.TryRemove(npcId, out _);
+                _npcPendingFallbackQuestOfferById.TryRemove(npcId, out _);
+            }
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             var immediatePayload = _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, npcId, req, cts.Token)
@@ -10076,6 +10309,7 @@ public sealed class ModEntry : Mod
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
         var romanceContext = string.Empty;
+        var speakerCurrentActivity = string.Empty;
         var ambientGossipCue = string.Empty;
         var liveNpcWhereabouts = string.Empty;
         var newsContext = BuildNewsAwarenessBlock();
@@ -10107,6 +10341,7 @@ public sealed class ModEntry : Mod
             : string.Empty;
         var ambientGossipRule = string.Empty;
         var liveWhereaboutsRule = string.Empty;
+        var currentActivityRule = string.Empty;
         var commandPolicyRule = _commandPolicyService?.BuildPromptRule(effectiveContextTag) ?? string.Empty;
         var ambientEventFirstRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
             ? "AMBIENT_EVENT_RULE: Prefer record_town_event first when anything notable happened; keep command use sparse and skip commands when nothing meaningful occurred."
@@ -10139,6 +10374,11 @@ public sealed class ModEntry : Mod
                 && _loveLanguageEngineService.TryBuildPromptBlock(_state, npcName, _state.Calendar.Day, out var romanceBlock))
             {
                 romanceContext = romanceBlock;
+            }
+            speakerCurrentActivity = BuildSpeakerCurrentActivityBlock(npcName, effectiveContextTag);
+            if (!string.IsNullOrWhiteSpace(speakerCurrentActivity))
+            {
+                currentActivityRule = "CURRENT_ACTIVITY_RULE: If the player asks what you're doing right now, answer from NPC_CURRENT_ACTIVITY first and do not replace it with a different task.";
             }
             ambientGossipCue = BuildAmbientOverheardGossipCueBlock(effectiveContextTag, npcName, playerText);
             if (!string.IsNullOrWhiteSpace(ambientGossipCue))
@@ -10191,6 +10431,7 @@ public sealed class ModEntry : Mod
             "TIME_RULE: If asked for time, answer with hour and minute plus AM/PM (for example: 6:30 AM). Never answer with minutes only.",
             locationAwarenessRule,
             locationPrecisionRule,
+            currentActivityRule,
             "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
             "QUEST_RULE: Never give text-only task offers without propose_quest.",
             "QUEST_RULE: If your request includes an exact amount, set propose_quest.count to that number and keep target as only the item/resource/NPC name.",
@@ -10247,6 +10488,7 @@ public sealed class ModEntry : Mod
             npcMemory,
             townMemory,
             romanceContext,
+            speakerCurrentActivity,
             locationContextBlock,
             vanillaDialogueContext,
             sourceDialogueContext
@@ -13338,6 +13580,279 @@ public sealed class ModEntry : Mod
         return total;
     }
 
+    private bool TryApplyFallbackMicroDateFromPlayerChatLine(string line)
+    {
+        if (_intentResolver is null || _loveLanguageEngineService is null)
+            return false;
+
+        if (!TryExtractNpcIdAndMessage(line, out var npcId, out var message))
+            return false;
+
+        if (!_npcLastPlayerChatRequestUtcById.TryGetValue(npcId, out var lastPlayerChatUtc))
+            return false;
+
+        if (DateTime.UtcNow - lastPlayerChatUtc > TimeSpan.FromSeconds(45))
+            return false;
+
+        var npcName = GetNpcShortNameById(npcId);
+        if (!ShouldExposeRomanceCommandsForNpc(npcName))
+            return false;
+
+        var config = _loveLanguageEngineService.TryGetConfig(npcName);
+        if (config is null)
+            return false;
+
+        _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPlayerPrompt);
+        if (!IsPlayerAskingForDate(lastPlayerPrompt))
+            return false;
+
+        if (LooksLikeDateDecline(message))
+            return true;
+
+        if (!LooksLikeDateInvite(message))
+            return false;
+
+        var eligibility = _loveLanguageEngineService.EvaluateMicroDateEligibility(_state, npcName);
+        if (!eligibility.Eligible)
+        {
+            Monitor.Log(
+                $"Skipped fallback propose_micro_date for {npcName}: {eligibility.ReasonCode} ({eligibility.Reason}).",
+                LogLevel.Trace);
+            return true;
+        }
+
+        if (!TryBuildMicroDateObjectivePayloadFromMessage(npcName, message, out var objectivePayload))
+            return false;
+
+        var objectiveType = config.MicroDateWhitelist.ObjectiveTypes
+            .FirstOrDefault(t => t.Equals("meet_time_location", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(objectiveType))
+            return false;
+
+        var rewardBundle = config.MicroDateWhitelist.RewardBundles.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(rewardBundle))
+            return false;
+
+        var intentId = BuildSyntheticMicroDateIntentId(npcId, objectivePayload, _state.Calendar.Day);
+        if (_state.Facts.ProcessedIntents.ContainsKey(intentId))
+            return false;
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            intent_id = intentId,
+            npc_id = npcId,
+            command = "propose_micro_date",
+            arguments = new
+            {
+                objective_type = objectiveType,
+                objective_payload = objectivePayload,
+                reward_bundle = rewardBundle,
+                expiry_days = 2
+            }
+        });
+
+        if (!TryApplyNpcCommandFromLine(payload))
+            return false;
+
+        Monitor.Log(
+            $"Applied fallback propose_micro_date from plain chat text: objectiveType={objectiveType} payload={objectivePayload} reward={rewardBundle}.",
+            LogLevel.Warn);
+        return true;
+    }
+
+    private static bool IsPlayerAskingForDate(string? playerText)
+    {
+        if (string.IsNullOrWhiteSpace(playerText))
+            return false;
+
+        var text = playerText.Trim().ToLowerInvariant();
+        return ContainsAny(
+            text,
+            "date",
+            "go out",
+            "hang out",
+            "spend time",
+            "meet up",
+            "meet me",
+            "coffee",
+            "dinner",
+            "lunch",
+            "walk with me",
+            "go with me");
+    }
+
+    private static bool LooksLikeDateDecline(string message)
+    {
+        var text = message.Trim().ToLowerInvariant();
+        return ContainsAny(
+            text,
+            "i'm busy",
+            "im busy",
+            "too busy",
+            "not today",
+            "can't",
+            "cannot",
+            "another time",
+            "maybe later",
+            "rain check",
+            "not free");
+    }
+
+    private static bool LooksLikeDateInvite(string message)
+    {
+        var text = message.Trim().ToLowerInvariant();
+        return ContainsAny(
+            text,
+            "let's meet",
+            "lets meet",
+            "meet me",
+            "see you at",
+            "meet at",
+            "how about we meet",
+            "great, see you",
+            "great see you");
+    }
+
+    private static bool TryBuildMicroDateObjectivePayloadFromMessage(string npcName, string message, out string objectivePayload)
+    {
+        objectivePayload = string.Empty;
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var cleaned = Regex.Replace(message, @"<[^>]+>", " ", RegexOptions.CultureInvariant).Trim();
+        if (string.IsNullOrWhiteSpace(cleaned))
+            return false;
+
+        var timeMatch = Regex.Match(
+            cleaned,
+            @"\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)\b",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        if (!timeMatch.Success)
+            return false;
+
+        var hourText = timeMatch.Groups[1].Value;
+        var minuteText = timeMatch.Groups[2].Success ? timeMatch.Groups[2].Value : "00";
+        var meridiem = timeMatch.Groups[3].Value
+            .Replace(".", string.Empty, StringComparison.Ordinal)
+            .ToUpperInvariant();
+        if (meridiem.Length > 2)
+            meridiem = meridiem[..2];
+        var prettyTime = $"{hourText}:{minuteText} {meridiem}";
+
+        var locationMatch = Regex.Match(
+            cleaned,
+            @"\b(?:at|in|by)\s+([a-z][a-z\s'\.-]{2,50}?)(?:\s+(?:around|at|by)\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b|[,\.\!\?]|$)",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        if (!locationMatch.Success)
+            return false;
+
+        var location = locationMatch.Groups[1].Value.Trim();
+        location = Regex.Replace(location, @"\s+", " ", RegexOptions.CultureInvariant);
+        location = location.Trim(' ', ',', '.', ';', ':');
+        if (string.IsNullOrWhiteSpace(location))
+            return false;
+
+        if (location.StartsWith("the ", StringComparison.OrdinalIgnoreCase))
+            location = location[4..].Trim();
+        if (location.StartsWith("a ", StringComparison.OrdinalIgnoreCase))
+            location = location[2..].Trim();
+        if (location.StartsWith("an ", StringComparison.OrdinalIgnoreCase))
+            location = location[3..].Trim();
+        if (string.IsNullOrWhiteSpace(location))
+            return false;
+
+        objectivePayload = $"Meet {npcName} at {location} around {prettyTime}.";
+        return objectivePayload.Length >= 8;
+    }
+
+    private static string BuildSyntheticMicroDateIntentId(string npcId, string objectivePayload, int day)
+    {
+        var baseText = $"synth_mdate_{day}_{npcId}_{objectivePayload}".ToLowerInvariant();
+        var sanitized = Regex.Replace(baseText, @"[^a-z0-9_]+", "_", RegexOptions.CultureInvariant).Trim('_');
+        return sanitized.Length <= 120 ? sanitized : sanitized[..120];
+    }
+
+    private string RewriteIneligibleDateInviteChatLine(string line)
+    {
+        if (_loveLanguageEngineService is null)
+            return line;
+
+        if (!TryExtractNpcIdAndMessage(line, out var npcId, out var message))
+            return line;
+
+        _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPlayerPrompt);
+        if (!IsPlayerAskingForDate(lastPlayerPrompt))
+            return line;
+        if (LooksLikeDateDecline(message) || !LooksLikeDateInvite(message))
+            return line;
+
+        var npcName = GetNpcShortNameById(npcId);
+        if (!ShouldExposeRomanceCommandsForNpc(npcName))
+            return line;
+
+        var eligibility = _loveLanguageEngineService.EvaluateMicroDateEligibility(_state, npcName);
+        if (eligibility.Eligible)
+            return line;
+
+        var rewrittenMessage = BuildDateDeferralMessage(message);
+        var rewrittenLine = ReplaceMessagePropertyInJsonLine(line, rewrittenMessage);
+        Monitor.Log(
+            $"Rewrote ineligible date promise for {npcName}: {eligibility.ReasonCode} ({eligibility.Reason}).",
+            LogLevel.Trace);
+        return rewrittenLine;
+    }
+
+    private static string BuildDateDeferralMessage(string originalMessage)
+    {
+        var text = originalMessage?.Trim() ?? string.Empty;
+        var cueMatch = Regex.Match(
+            text,
+            @"^\s*(<emotion:(?:neutral|happy|content|blush|sad|angry|surprised|worried)>)",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        var cue = cueMatch.Success ? cueMatch.Groups[1].Value : "<emotion:neutral>";
+        return $"{cue}I like your company, but we ain't ready to set a date just yet. Give us a little more time together first.";
+    }
+
+    private static string ReplaceMessagePropertyInJsonLine(string line, string replacementMessage)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return line;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return line;
+
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                writer.WriteStartObject();
+                foreach (var prop in root.EnumerateObject())
+                {
+                    if (prop.NameEquals("message"))
+                    {
+                        writer.WriteString("message", replacementMessage ?? string.Empty);
+                        continue;
+                    }
+
+                    writer.WritePropertyName(prop.Name);
+                    prop.Value.WriteTo(writer);
+                }
+
+                writer.WriteEndObject();
+                writer.Flush();
+            }
+
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+        catch
+        {
+            return line;
+        }
+    }
+
     private void TryApplyFallbackQuestFromPlayerChatLine(string line)
     {
         if (_intentResolver is null)
@@ -13351,6 +13866,15 @@ public sealed class ModEntry : Mod
 
         if (DateTime.UtcNow - lastPlayerChatUtc > TimeSpan.FromSeconds(45))
             return;
+
+        _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPlayerPrompt);
+        if (IsPlayerAskingForDate(lastPlayerPrompt)
+            || LooksLikeDateInvite(message)
+            || LooksLikeDateDecline(message))
+        {
+            _npcPendingFallbackQuestOfferById.TryRemove(npcId, out _);
+            return;
+        }
 
         if (LooksLikeQuestDecline(message))
         {
@@ -13368,14 +13892,14 @@ public sealed class ModEntry : Mod
         var playerAskedForQuestRecently = _npcLastPlayerQuestAskUtcById.TryGetValue(npcId, out var questAskUtc)
             && DateTime.UtcNow - questAskUtc <= TimeSpan.FromSeconds(60);
 
-        _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPlayerPrompt);
-        var playerAcceptedQuest = IsPlayerAcceptingQuest(lastPlayerPrompt);
+        var hasPendingOffer = _npcPendingFallbackQuestOfferById.ContainsKey(npcId);
+        var playerAcceptedQuest = IsPlayerAcceptingQuest(lastPlayerPrompt, hasPendingOffer);
 
         // Only synthesize propose_quest when the player either asked for work or explicitly accepted.
         if (!playerAskedForQuestRecently && !playerAcceptedQuest)
             return;
 
-        PendingFallbackQuestOffer? offerToApply = offerFromCurrentLine;
+        PendingFallbackQuestOffer? offerToApply = playerAskedForQuestRecently ? offerFromCurrentLine : null;
         var usedPendingOffer = false;
         if (offerToApply is null
             && playerAcceptedQuest
@@ -13530,19 +14054,13 @@ public sealed class ModEntry : Mod
         return true;
     }
 
-    private static bool IsPlayerAcceptingQuest(string? playerText)
+    private static bool IsPlayerAcceptingQuest(string? playerText, bool hasPendingOffer)
     {
         if (string.IsNullOrWhiteSpace(playerText))
             return false;
 
         var text = playerText.Trim().ToLowerInvariant();
-        return text == "yes"
-            || text == "yep"
-            || text == "yeah"
-            || text == "sure"
-            || text == "ok"
-            || text == "okay"
-            || text.Contains("i can help", StringComparison.Ordinal)
+        if (text.Contains("i can help", StringComparison.Ordinal)
             || text.Contains("i'll help", StringComparison.Ordinal)
             || text.Contains("i will help", StringComparison.Ordinal)
             || text.Contains("count me in", StringComparison.Ordinal)
@@ -13555,7 +14073,18 @@ public sealed class ModEntry : Mod
             || text.Contains("sounds good", StringComparison.Ordinal)
             || text.Contains("i can take it", StringComparison.Ordinal)
             || text.Contains("i'll take it", StringComparison.Ordinal)
-            || text.Contains("i will take it", StringComparison.Ordinal);
+            || text.Contains("i will take it", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (!hasPendingOffer)
+            return false;
+
+        return text == "yes"
+            || text == "yep"
+            || text == "yeah"
+            || text == "sure";
     }
 
     private bool TryInferQuestProposalFromMessage(string npcId, string message, out string templateId, out string target, out string urgency, out int requestedCount)
@@ -15639,6 +16168,11 @@ public sealed class ModEntry : Mod
         {
             Monitor.Log($"ROMANCE_MICRO_DATE npc={npcLabel} token={npcToken} none.", LogLevel.Info);
         }
+
+        var microDateGate = _loveLanguageEngineService.EvaluateMicroDateEligibility(_state, npcToken);
+        Monitor.Log(
+            $"ROMANCE_MICRO_DATE_GATE npc={npcLabel} token={npcToken} eligible={microDateGate.Eligible} reason={microDateGate.ReasonCode} trust={microDateGate.Trust} safety={microDateGate.Safety} positiveSignals={microDateGate.PositiveSignals} nextBeat={microDateGate.NextBeat} activeMicroDate={microDateGate.HasActiveMicroDate}",
+            LogLevel.Info);
     }
 
     private void OnRomanceResetCommand(string command, string[] args)
