@@ -59,6 +59,7 @@ M0 + M1 scaffold includes:
 Player-facing Player2 UX:
 - auto-connect on save load (config: `AutoConnectPlayer2OnLoad`, default `true`)
 - HUD status badge in top-left: click `Town AI: Reconnect` to trigger login -> spawn -> stream pipeline
+- optional GMCM integration (`spacechase0.GenericModConfigMenu`) exposes in-game config editing for chat/hud toggles, mode/economy settings, and keybinds
 - stream watchdog now retries the last player-triggered "New Postings" request right after stream restarts
 - if repeated stalls persist, watchdog escalates to full NPC session refresh and re-queues the request again
 - in-world "New Postings" action in Town Request Board triggers resolver-safe request generation via Player2
@@ -98,6 +99,15 @@ NPC grounding polish:
 - reward dialogue is constrained to configured payout bands to avoid mismatch with deterministic rewards
 
 Config knobs:
+- `Mode` (default `cozy_canon`; allowed `cozy_canon|story_depth|living_chaos`)
+- `PriceFloorPct` (default `0.80`)
+- `PriceCeilingPct` (default `1.40`)
+- `DailyPriceDeltaCapPct` (default `0.10`)
+- `OpenBoardKey` (default `K`)
+- `OpenNewspaperKey` (default `J`)
+- `OpenRumorBoardKey` (default `L`)
+- `EnablePlayerChatMenu` (default `true`; disables mod NPC chat menu entry points/cursor indicator when `false`)
+- `ShowPlayer2ConnectionHud` (default `true`; hides top-left Player2 HUD badge/click target when `false`)
 - `Player2DeviceAuthBaseUrl` (default `https://api.player2.game/v1`)
 - `Player2DeviceAuthTimeoutSeconds` (default `120`)
 - `Player2BlockChatWhenLowJoules` (default `true`)
@@ -141,8 +151,13 @@ Config knobs:
 - Optional LoveLanguageEngine romance config is read from:
   - `content/romance-llm.json`
   - `content/romance-llm-*.json` (modular files like `romance-llm-chloe.json`)
+- Optional live activity context is read from:
+  - `content/activity-context.json`
+  - `content/activity-context-*.json` (modular files like `activity-context-chloe.json`)
 - Template romance config example:
   - `custom_npc_pack_template/content/romance-llm-silas.json`
+- Template activity context example:
+  - `custom_npc_pack_template/content/activity-context-silas.json`
 - Canon baseline rules for strict validation are in:
   - `assets/tlv-custom-npc-canon-baseline.json`
 - Built-in vanilla canon lore grounding is in:

@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## 0.9.0 - 2026-03-04
+
+### Added
+- Optional Generic Mod Config Menu (GMCM) integration (`spacechase0.GenericModConfigMenu`) for in-game configuration.
+- New GMCM options with tooltips for:
+  - `EnablePlayerChatMenu`
+  - `ShowPlayer2ConnectionHud`
+  - `Mode`
+  - `PriceFloorPct`
+  - `PriceCeilingPct`
+  - `DailyPriceDeltaCapPct`
+  - `OpenBoardKey`
+  - `OpenNewspaperKey`
+  - `OpenRumorBoardKey`
+- New config keys:
+  - `EnablePlayerChatMenu` (default `true`)
+  - `ShowPlayer2ConnectionHud` (default `true`)
+
+### Changed
+- Player chat entry paths now honor `EnablePlayerChatMenu` (menu open path, fallback path, and chat cursor indicator).
+- Player2 HUD rendering and HUD click-to-connect now honor `ShowPlayer2ConnectionHud`.
+- GMCM save/reset flow now normalizes mode/economy values and enforces `PriceFloorPct <= PriceCeilingPct`.
+- Manifest version bumped to `0.9.0`.
+
 ## 0.8.2 - 2026-03-01
 
 ### Changed

@@ -38,6 +38,8 @@ public sealed class ModConfig
 
     // Player-facing auto-connect UX
     public bool AutoConnectPlayer2OnLoad { get; set; } = true;
+    public bool EnablePlayerChatMenu { get; set; } = true;
+    public bool ShowPlayer2ConnectionHud { get; set; } = true;
     public bool ShowDeveloperConsoleCommands { get; set; } = false;
 
     // In-world work request anti-spam

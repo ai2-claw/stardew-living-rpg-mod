@@ -76,6 +76,14 @@ public sealed class ModEntry : Mod
     private const string PlayerFamilyChildFactPrefix = "player_family:child:";
     private const string PlayerFamilyLoreTag = "player_family";
     private const string CreatorPlayer2GameClientId = "019c4693-2a12-7ef5-bae2-ff29ee9fa674";
+    private const string GenericModConfigMenuUniqueId = "spacechase0.GenericModConfigMenu";
+    private const float GmcmPriceFloorMin = 0.10f;
+    private const float GmcmPriceFloorMax = 2.00f;
+    private const float GmcmPriceCeilingMin = 0.10f;
+    private const float GmcmPriceCeilingMax = 3.00f;
+    private const float GmcmDailyDeltaCapMin = 0.01f;
+    private const float GmcmDailyDeltaCapMax = 1.00f;
+    private static readonly string[] AllowedModeValues = { "cozy_canon", "story_depth", "living_chaos" };
 
     private static readonly string[] ShopMenuOwnerMemberCandidates =
     {
@@ -828,6 +836,8 @@ public sealed class ModEntry : Mod
     public override void Entry(IModHelper helper)
     {
         _config = helper.ReadConfig<ModConfig>();
+        if (NormalizeGmcmConfigValues())
+            helper.WriteConfig(_config);
         I18n.Initialize(helper.Translation);
         TryMigrateLegacyPlayer2Config(helper);
         EnsureRequiredPlayer2Enabled(helper);
@@ -872,6 +882,7 @@ public sealed class ModEntry : Mod
             Monitor.Log("Developer console commands enabled (ShowDeveloperConsoleCommands=true).", LogLevel.Debug);
         }
 
+        helper.Events.GameLoop.GameLaunched += OnGameLaunched;
         helper.Events.GameLoop.SaveLoaded += OnSaveLoaded;
         helper.Events.GameLoop.Saving += OnSaving;
         helper.Events.GameLoop.DayEnding += OnDayEnding;
@@ -882,6 +893,217 @@ public sealed class ModEntry : Mod
         helper.Events.Input.ButtonPressed += OnButtonPressed;
 
         Monitor.Log("The Living Valley loaded.", LogLevel.Info);
+    }
+
+    private void OnGameLaunched(object? sender, GameLaunchedEventArgs e)
+    {
+        RegisterGenericModConfigMenu();
+    }
+
+    private void RegisterGenericModConfigMenu()
+    {
+        var gmcm = Helper.ModRegistry.GetApi<IGenericModConfigMenuApi>(GenericModConfigMenuUniqueId);
+        if (gmcm is null)
+        {
+            Monitor.Log("Generic Mod Config Menu not found. Config.json remains the active config surface.", LogLevel.Trace);
+            return;
+        }
+
+        gmcm.Register(
+            mod: ModManifest,
+            reset: ResetGmcmOptions,
+            save: SaveGmcmOptions);
+
+        gmcm.AddSectionTitle(
+            mod: ModManifest,
+            text: () => I18n.Get("gmcm.section.chat_hud", "Chat & HUD"));
+
+        gmcm.AddBoolOption(
+            mod: ModManifest,
+            getValue: () => _config.EnablePlayerChatMenu,
+            setValue: value => _config.EnablePlayerChatMenu = value,
+            name: () => I18n.Get("gmcm.option.enable_player_chat_menu.name", "Enable Player Chat Menu"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.enable_player_chat_menu.tooltip",
+                "Enable in-world NPC chat menu follow-ups. Disable to keep NPC interactions vanilla-only."));
+
+        gmcm.AddBoolOption(
+            mod: ModManifest,
+            getValue: () => _config.ShowPlayer2ConnectionHud,
+            setValue: value => _config.ShowPlayer2ConnectionHud = value,
+            name: () => I18n.Get("gmcm.option.show_player2_connection_hud.name", "Show Player2 Connection HUD"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.show_player2_connection_hud.tooltip",
+                "Show the top-left Player2 status badge and click-to-connect button."));
+
+        gmcm.AddSectionTitle(
+            mod: ModManifest,
+            text: () => I18n.Get("gmcm.section.economy", "Economy"));
+
+        gmcm.AddTextOption(
+            mod: ModManifest,
+            getValue: () => NormalizeModeValue(_config.Mode),
+            setValue: value => _config.Mode = NormalizeModeValue(value),
+            name: () => I18n.Get("gmcm.option.mode.name", "Simulation Mode"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.mode.tooltip",
+                "Select world simulation intensity: cozy_canon (gentle), story_depth (stronger consequences), living_chaos (high volatility)."),
+            allowedValues: AllowedModeValues,
+            formatAllowedValue: FormatModeValueLabel);
+
+        gmcm.AddNumberOption(
+            mod: ModManifest,
+            getValue: () => _config.PriceFloorPct,
+            setValue: value => _config.PriceFloorPct = value,
+            name: () => I18n.Get("gmcm.option.price_floor_pct.name", "Price Floor %"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.price_floor_pct.tooltip",
+                "Minimum crop price as a fraction of base price. Example: 0.80 means 80% floor."),
+            min: GmcmPriceFloorMin,
+            max: GmcmPriceFloorMax,
+            interval: 0.01f,
+            formatValue: value => value.ToString("0.00", CultureInfo.InvariantCulture));
+
+        gmcm.AddNumberOption(
+            mod: ModManifest,
+            getValue: () => _config.PriceCeilingPct,
+            setValue: value => _config.PriceCeilingPct = value,
+            name: () => I18n.Get("gmcm.option.price_ceiling_pct.name", "Price Ceiling %"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.price_ceiling_pct.tooltip",
+                "Maximum crop price as a fraction of base price. Example: 1.40 means 140% ceiling."),
+            min: GmcmPriceCeilingMin,
+            max: GmcmPriceCeilingMax,
+            interval: 0.01f,
+            formatValue: value => value.ToString("0.00", CultureInfo.InvariantCulture));
+
+        gmcm.AddNumberOption(
+            mod: ModManifest,
+            getValue: () => _config.DailyPriceDeltaCapPct,
+            setValue: value => _config.DailyPriceDeltaCapPct = value,
+            name: () => I18n.Get("gmcm.option.daily_price_delta_cap_pct.name", "Daily Price Delta Cap"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.daily_price_delta_cap_pct.tooltip",
+                "Maximum single-day price movement as a fraction of current price. Example: 0.10 means +/-10% per day."),
+            min: GmcmDailyDeltaCapMin,
+            max: GmcmDailyDeltaCapMax,
+            interval: 0.01f,
+            formatValue: value => value.ToString("0.00", CultureInfo.InvariantCulture));
+
+        gmcm.AddSectionTitle(
+            mod: ModManifest,
+            text: () => I18n.Get("gmcm.section.hotkeys", "Hotkeys"));
+
+        gmcm.AddKeybind(
+            mod: ModManifest,
+            getValue: () => _config.OpenBoardKey,
+            setValue: value => _config.OpenBoardKey = value,
+            name: () => I18n.Get("gmcm.option.open_board_key.name", "Open Market Board Key"),
+            tooltip: () => I18n.Get("gmcm.option.open_board_key.tooltip", "Keybind to open the Market Board."));
+
+        gmcm.AddKeybind(
+            mod: ModManifest,
+            getValue: () => _config.OpenNewspaperKey,
+            setValue: value => _config.OpenNewspaperKey = value,
+            name: () => I18n.Get("gmcm.option.open_newspaper_key.name", "Open Newspaper Key"),
+            tooltip: () => I18n.Get("gmcm.option.open_newspaper_key.tooltip", "Keybind to open the daily Newspaper."));
+
+        gmcm.AddKeybind(
+            mod: ModManifest,
+            getValue: () => _config.OpenRumorBoardKey,
+            setValue: value => _config.OpenRumorBoardKey = value,
+            name: () => I18n.Get("gmcm.option.open_rumor_board_key.name", "Open Rumor Board Key"),
+            tooltip: () => I18n.Get("gmcm.option.open_rumor_board_key.tooltip", "Keybind to open the Rumor Board."));
+    }
+
+    private void ResetGmcmOptions()
+    {
+        var defaults = new ModConfig();
+        _config.EnablePlayerChatMenu = defaults.EnablePlayerChatMenu;
+        _config.ShowPlayer2ConnectionHud = defaults.ShowPlayer2ConnectionHud;
+        _config.Mode = defaults.Mode;
+        _config.PriceFloorPct = defaults.PriceFloorPct;
+        _config.PriceCeilingPct = defaults.PriceCeilingPct;
+        _config.DailyPriceDeltaCapPct = defaults.DailyPriceDeltaCapPct;
+        _config.OpenBoardKey = defaults.OpenBoardKey;
+        _config.OpenNewspaperKey = defaults.OpenNewspaperKey;
+        _config.OpenRumorBoardKey = defaults.OpenRumorBoardKey;
+        NormalizeGmcmConfigValues();
+    }
+
+    private void SaveGmcmOptions()
+    {
+        NormalizeGmcmConfigValues();
+        Helper.WriteConfig(_config);
+        _state.ApplyConfig(_config);
+
+        if (!_config.EnablePlayerChatMenu)
+        {
+            ClearNpcDialogueHook();
+            ClearManualNpcFollowUpState();
+        }
+    }
+
+    private bool NormalizeGmcmConfigValues()
+    {
+        var changed = false;
+
+        var normalizedMode = NormalizeModeValue(_config.Mode);
+        if (!string.Equals(_config.Mode, normalizedMode, StringComparison.Ordinal))
+        {
+            _config.Mode = normalizedMode;
+            changed = true;
+        }
+
+        var clampedFloor = Math.Clamp(_config.PriceFloorPct, GmcmPriceFloorMin, GmcmPriceFloorMax);
+        if (_config.PriceFloorPct != clampedFloor)
+        {
+            _config.PriceFloorPct = clampedFloor;
+            changed = true;
+        }
+
+        var clampedCeiling = Math.Clamp(_config.PriceCeilingPct, GmcmPriceCeilingMin, GmcmPriceCeilingMax);
+        if (_config.PriceCeilingPct != clampedCeiling)
+        {
+            _config.PriceCeilingPct = clampedCeiling;
+            changed = true;
+        }
+
+        var clampedDeltaCap = Math.Clamp(_config.DailyPriceDeltaCapPct, GmcmDailyDeltaCapMin, GmcmDailyDeltaCapMax);
+        if (_config.DailyPriceDeltaCapPct != clampedDeltaCap)
+        {
+            _config.DailyPriceDeltaCapPct = clampedDeltaCap;
+            changed = true;
+        }
+
+        if (_config.PriceFloorPct > _config.PriceCeilingPct)
+        {
+            _config.PriceFloorPct = _config.PriceCeilingPct;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static string NormalizeModeValue(string? mode)
+    {
+        var normalized = (mode ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "story_depth" => "story_depth",
+            "living_chaos" => "living_chaos",
+            _ => "cozy_canon"
+        };
+    }
+
+    private static string FormatModeValueLabel(string value)
+    {
+        return NormalizeModeValue(value) switch
+        {
+            "story_depth" => I18n.Get("gmcm.mode.story_depth", "Story Depth"),
+            "living_chaos" => I18n.Get("gmcm.mode.living_chaos", "Living Chaos"),
+            _ => I18n.Get("gmcm.mode.cozy_canon", "Cozy Canon")
+        };
     }
 
     private void RegisterPlayerConsoleCommands(IModHelper helper)
@@ -1155,7 +1377,7 @@ public sealed class ModEntry : Mod
         if (TryHandleNpcWorkDialogueHook(e))
             return;
 
-        if (e.Button == SButton.MouseLeft)
+        if (_config.ShowPlayer2ConnectionHud && e.Button == SButton.MouseLeft)
         {
             var point = new Point(Game1.getMouseX(), Game1.getMouseY());
             if (GetPlayer2HudRect().Contains(point) && !IsLocalInsightHudActive())
@@ -1235,6 +1457,13 @@ public sealed class ModEntry : Mod
 
         if (!e.Button.IsActionButton())
             return false;
+
+        if (!_config.EnablePlayerChatMenu)
+        {
+            ClearNpcDialogueHook();
+            ClearManualNpcFollowUpState();
+            return false;
+        }
 
         if (DateTime.UtcNow < _manualNpcFollowUpSuppressUntilUtc)
             return true;
@@ -1592,7 +1821,8 @@ public sealed class ModEntry : Mod
 
     private void TryApplyNpcChatCursorIndicator()
     {
-        if (Game1.currentLocation is null
+        if (!_config.EnablePlayerChatMenu
+            || Game1.currentLocation is null
             || Game1.dialogueUp
             || (Game1.eventUp && !IsFestivalInteractionEventActive())
             || Game1.activeClickableMenu is not null)
@@ -2080,6 +2310,9 @@ public sealed class ModEntry : Mod
         bool autoSendInitialPlayerMessage = false,
         string? defaultContextTag = null)
     {
+        if (!_config.EnablePlayerChatMenu)
+            return;
+
         var npcName = npc.Name ?? npc.displayName;
         var heartLevel = GetNpcHeartLevel(npcName);
 
@@ -5962,6 +6195,13 @@ public sealed class ModEntry : Mod
 
     private void TryHandleNpcDialogueHookFallback()
     {
+        if (!_config.EnablePlayerChatMenu)
+        {
+            ClearNpcDialogueHook();
+            ClearManualNpcFollowUpState();
+            return;
+        }
+
         if (!_npcDialogueHookArmed || _npcDialogueHookMenuOpened)
             return;
 
@@ -6059,7 +6299,10 @@ public sealed class ModEntry : Mod
 
     private void OnRenderedHud(object? sender, RenderedHudEventArgs e)
     {
-        if (!Context.IsWorldReady || Game1.eventUp || Game1.activeClickableMenu is not null)
+        if (!Context.IsWorldReady
+            || !_config.ShowPlayer2ConnectionHud
+            || Game1.eventUp
+            || Game1.activeClickableMenu is not null)
             return;
 
         var connected = IsLocalInsightHudActive();
