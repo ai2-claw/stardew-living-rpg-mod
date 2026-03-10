@@ -251,6 +251,7 @@
   - response normalization fallback when a child NPC claims adult ages
 
 ### Changed
+- Manifest version bumped to `0.9.1`.
 - External NPC support is additive and compatibility-safe: integrated custom NPC content pack lore remains authoritative and overrides generated fallback lore.
 - Player2 roster readiness now tracks only required spawn roster entries, so auto-discovered external NPCs do not stall auto-connect/session health checks.
 - Expanded NPC targeting, social-visit inference, and prompt canon lists now include auto-discovered external NPCs when enabled.
@@ -275,6 +276,7 @@
 - Prevented hanging behavior in Player2 one-off read flow.
 - Added missing UI text wrapping helper used by menu screens.
 - Reduced assistant-like NPC phrasing with stricter in-character instructions.
+- Town Request Board progress now correctly counts carried items when target names differ between display/internal forms (for example, Coconut), and uses the same matching rules for completion item consumption.
 - Fixed follow-up chat opening the wrong nearby NPC when multiple NPCs were in similar range.
 - Fixed missing follow-up chat for Morris/Joja shop interactions.
 - Fixed child NPCs (Jas/Vincent) incorrectly claiming adult ages.

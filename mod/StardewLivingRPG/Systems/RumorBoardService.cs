@@ -560,13 +560,13 @@ public sealed class RumorBoardService
 
         var total = 0;
         var normalizedTarget = NormalizeItemKey(target);
+        var canonicalTarget = NormalizeSupplyCandidate(target);
         foreach (var item in player.Items)
         {
             if (item is null)
                 continue;
 
-            var itemName = NormalizeItemKey(item.DisplayName);
-            if (!string.Equals(itemName, normalizedTarget, StringComparison.Ordinal))
+            if (!ItemMatchesTarget(item, normalizedTarget, canonicalTarget))
                 continue;
 
             total += Math.Max(1, item.Stack);
@@ -581,6 +581,7 @@ public sealed class RumorBoardService
             return;
 
         var normalizedTarget = NormalizeItemKey(target);
+        var canonicalTarget = NormalizeSupplyCandidate(target);
 
         for (var i = 0; i < player.Items.Count && needed > 0; i++)
         {
@@ -588,8 +589,7 @@ public sealed class RumorBoardService
             if (item is null)
                 continue;
 
-            var itemName = NormalizeItemKey(item.DisplayName);
-            if (!string.Equals(itemName, normalizedTarget, StringComparison.Ordinal))
+            if (!ItemMatchesTarget(item, normalizedTarget, canonicalTarget))
                 continue;
 
             var take = Math.Min(needed, Math.Max(1, item.Stack));
@@ -606,7 +606,39 @@ public sealed class RumorBoardService
         if (string.IsNullOrWhiteSpace(value))
             return string.Empty;
 
-        return value.Trim().ToLowerInvariant().Replace(" ", "_");
+        var normalized = value
+            .Trim()
+            .ToLowerInvariant()
+            .Replace("_", " ", StringComparison.Ordinal)
+            .Replace("-", " ", StringComparison.Ordinal);
+
+        normalized = Regex.Replace(normalized, @"[^\p{L}\p{Nd}]+", "_", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"_+", "_", RegexOptions.CultureInvariant);
+        return normalized.Trim('_');
+    }
+
+    private static bool ItemMatchesTarget(Item item, string normalizedTarget, string canonicalTarget)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedTarget))
+            return false;
+
+        var displayKey = NormalizeItemKey(item.DisplayName);
+        if (string.Equals(displayKey, normalizedTarget, StringComparison.Ordinal))
+            return true;
+
+        var internalNameKey = NormalizeItemKey(item.Name);
+        if (string.Equals(internalNameKey, normalizedTarget, StringComparison.Ordinal))
+            return true;
+
+        if (string.IsNullOrWhiteSpace(canonicalTarget))
+            return false;
+
+        var canonicalDisplay = NormalizeSupplyCandidate(item.DisplayName);
+        if (string.Equals(canonicalDisplay, canonicalTarget, StringComparison.Ordinal))
+            return true;
+
+        var canonicalInternal = NormalizeSupplyCandidate(item.Name);
+        return string.Equals(canonicalInternal, canonicalTarget, StringComparison.Ordinal);
     }
 
     private static string NormalizeTemplate(string templateId)
