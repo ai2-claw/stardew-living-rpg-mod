@@ -288,6 +288,7 @@
 - Prevented hanging behavior in Player2 one-off read flow.
 - Added missing UI text wrapping helper used by menu screens.
 - Reduced assistant-like NPC phrasing with stricter in-character instructions.
+- Gossip and referenced-NPC prompt grounding now treat explicit family and household ties as authoritative, preventing false romance implications from co-presence alone (for example, parent/child festival sightings).
 - Town Request Board progress now correctly counts carried items when target names differ between display/internal forms (for example, Coconut), and uses the same matching rules for completion item consumption.
 - Fixed follow-up chat opening the wrong nearby NPC when multiple NPCs were in similar range.
 - Fixed missing follow-up chat for Morris/Joja shop interactions.
