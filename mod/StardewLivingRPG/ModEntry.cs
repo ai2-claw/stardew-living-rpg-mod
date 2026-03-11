@@ -62,10 +62,12 @@ public sealed class ModEntry : Mod
     private const float NpcManualFollowUpActivationRadiusTiles = 1f;
     private const float VanillaDialogueContextVicinityRadiusTiles = 5.5f;
     private static readonly TimeSpan NpcManualFollowUpWindow = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan NpcGiftSelectionWindow = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan NpcManualFollowUpSuppressDuration = TimeSpan.FromMilliseconds(160);
     private static readonly TimeSpan NpcManualFollowUpNoVanillaDelay = TimeSpan.FromMilliseconds(40);
     private static readonly TimeSpan PendingFallbackQuestOfferMaxAge = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan VanillaDialogueContextMaxAge = TimeSpan.FromMinutes(12);
+    private static readonly TimeSpan RecentGiftContextMaxAge = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan Player2HealthPingInterval = TimeSpan.FromSeconds(60);
     private const int VanillaDialogueContextSequenceMaxLines = 6;
     private const string InitialNpcChatPrompt = "Let's chat.";
@@ -295,6 +297,23 @@ public sealed class ModEntry : Mod
         public int Day { get; set; }
         public int TimeOfDay { get; set; }
         public DateTime CapturedUtc { get; set; }
+    }
+
+    private sealed class RecentNpcGiftContext
+    {
+        public string NpcName { get; set; } = string.Empty;
+        public string NpcDisplayName { get; set; } = string.Empty;
+        public string ItemDisplayName { get; set; } = string.Empty;
+        public string QualifiedItemId { get; set; } = string.Empty;
+        public string QualityLabel { get; set; } = "normal";
+        public bool Accepted { get; set; }
+        public int Day { get; set; }
+        public DateTime CapturedUtc { get; set; }
+    }
+
+    private sealed class DialogueCountProbe
+    {
+        public object? CurrentDialogue { get; set; }
     }
 
     private sealed class PromptLocationContext
@@ -776,6 +795,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentQueue<AmbientConversationCompletion> _pendingAmbientConversationCompletions = new();
     private int _ambientLastOverhearDay = -9999;
     private readonly Dictionary<string, RecentVanillaDialogueContext> _recentVanillaDialogueByNpcToken = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, RecentNpcGiftContext> _recentGiftContextByNpcToken = new(StringComparer.OrdinalIgnoreCase);
 
     private string? _pendingNpcDialogueHookName;
     private NPC? _pendingNpcDialogueHookNpc;
@@ -787,6 +807,14 @@ public sealed class ModEntry : Mod
     private string _manualNpcFollowUpContextTag = "player_chat";
     private DateTime _manualNpcFollowUpReadyUtc;
     private DateTime _manualNpcFollowUpSuppressUntilUtc;
+    private string? _pendingNpcGiftSelectionName;
+    private NPC? _pendingNpcGiftSelectionNpc;
+    private string _pendingNpcGiftSelectionSourceContextTag = "player_chat_followup";
+    private DateTime _pendingNpcGiftSelectionReadyUtc;
+    private Item? _pendingNpcGiftSelectionObservedItem;
+    private string? _pendingNpcGiftReactionAutoOpenName;
+    private NPC? _pendingNpcGiftReactionAutoOpenNpc;
+    private DateTime _pendingNpcGiftReactionAutoOpenUtc;
     private bool _player2AutoConnectSuppressedByUser;
     private string _ambientConditionalUnlockSummary = "(none)";
     private int _ambientConditionalUnlockSummaryDay = -1;
@@ -1242,8 +1270,11 @@ public sealed class ModEntry : Mod
         _state = StateStore.LoadOrCreate(Helper, Monitor);
         _state.ApplyConfig(_config);
         _recentVanillaDialogueByNpcToken.Clear();
+        _recentGiftContextByNpcToken.Clear();
         ClearNpcDialogueHook();
         ClearManualNpcFollowUpState();
+        ClearPendingNpcGiftSelectionState();
+        ClearPendingNpcGiftReactionAutoOpen();
         SyncCalendarSeasonFromWorld();
         TryRefreshPlayerFamilyLoreFromWorld("save-loaded", logNoChange: false);
         _economyService?.EnsureInitialized(_state.Economy);
@@ -1288,8 +1319,11 @@ public sealed class ModEntry : Mod
         SyncCalendarSeasonFromWorld();
         _pendingDayStartStreamRecycleDay = -1;
         _recentVanillaDialogueByNpcToken.Clear();
+        _recentGiftContextByNpcToken.Clear();
         ClearNpcDialogueHook();
         ClearManualNpcFollowUpState();
+        ClearPendingNpcGiftSelectionState();
+        ClearPendingNpcGiftReactionAutoOpen();
         TryCapturePendingLateNightPassOut();
         _lastNpcPublishAppliedDay = -1;
         _lastNpcPublishAppliedTimeOfDay = -1;
@@ -1468,6 +1502,9 @@ public sealed class ModEntry : Mod
         if (DateTime.UtcNow < _manualNpcFollowUpSuppressUntilUtc)
             return true;
 
+        if (TryHandlePendingNpcGiftSelectionFromAction(e))
+            return true;
+
         if (TryOpenNpcManualFollowUpFromAction(e))
             return true;
 
@@ -1507,15 +1544,172 @@ public sealed class ModEntry : Mod
 
         ClearNpcDialogueHook();
         ClearManualNpcFollowUpState();
-        TryRecordSocialVisitProgress(hoveredNpc.Name);
         Helper.Input.Suppress(e.Button);
-        OpenNpcChatMenu(
-            hoveredNpc,
-            initialPlayerMessage: InitialNpcChatPrompt,
-            autoSendInitialPlayerMessage: true,
-            defaultContextTag: contextTag);
-        _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
+        OpenNpcFollowUpChoiceDialogue(hoveredNpc, contextTag);
         return true;
+    }
+
+    private void OpenNpcFollowUpChoiceDialogue(NPC npc, string contextTag)
+    {
+        var loc = Game1.currentLocation;
+        if (loc is null)
+            return;
+
+        var responses = new[]
+        {
+            new Response("talk", "Talk"),
+            new Response("quest", "Quest"),
+            new Response("bye", "Bye")
+        };
+
+        var flavorText = BuildNpcFollowUpFlavorText(npc);
+        loc.createQuestionDialogue(
+            flavorText,
+            responses,
+            (_, answer) =>
+            {
+                if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
+                {
+                    TryRecordSocialVisitProgress(npc.Name);
+                    OpenNpcChatMenu(
+                        npc,
+                        initialPlayerMessage: InitialNpcChatPrompt,
+                        autoSendInitialPlayerMessage: true,
+                        defaultContextTag: contextTag);
+                    _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
+                    return;
+                }
+
+                if (string.Equals(answer, "quest", StringComparison.OrdinalIgnoreCase))
+                    OpenRumorBoard(npc);
+            },
+            npc);
+    }
+
+    private string BuildNpcFollowUpFlavorText(NPC npc)
+    {
+        if (npc is null)
+            return string.Empty;
+
+        var displayName = string.IsNullOrWhiteSpace(npc.displayName) ? npc.Name : npc.displayName;
+        if (string.IsNullOrWhiteSpace(displayName))
+            displayName = "The villager";
+
+        var npcLocation = BuildPromptLocationContextForNpc(npc);
+        var activity = ResolveNpcFollowUpFlavorActivity(npc, npcLocation);
+        var moodClause = ResolveNpcFollowUpFlavorMoodClause(npcLocation);
+        var activityClause = ResolveNpcFollowUpFlavorActivityClause(activity, npcLocation);
+        return $"{displayName} {moodClause}, {activityClause}.";
+    }
+
+    private string ResolveNpcFollowUpFlavorActivity(NPC npc, PromptLocationContext npcLocation)
+    {
+        if (npc is null)
+            return string.Empty;
+
+        var rawActivity = TrimTrailingSentencePunctuation(ResolveNpcCurrentActivity(npc, npcLocation));
+        if (string.IsNullOrWhiteSpace(rawActivity))
+            return string.Empty;
+
+        var npcName = string.IsNullOrWhiteSpace(npc.Name) ? npc.displayName : npc.Name;
+        var hasAuthoredActivityContext =
+            _config.EnableCustomNpcFramework
+            && _customNpcRegistry is not null
+            && _customNpcRegistry.TryGetActivityContextConfig(npcName, out _);
+        if (hasAuthoredActivityContext)
+            return rawActivity;
+
+        if (ContainsAny(rawActivity, "maintenance", "repair", "handling", "working"))
+            return string.Empty;
+
+        if (rawActivity.StartsWith("at ", StringComparison.OrdinalIgnoreCase)
+            || rawActivity.StartsWith("inside ", StringComparison.OrdinalIgnoreCase)
+            || rawActivity.StartsWith("near ", StringComparison.OrdinalIgnoreCase))
+        {
+            return rawActivity;
+        }
+
+        if (rawActivity.StartsWith("out ", StringComparison.OrdinalIgnoreCase)
+            && !ContainsAny(rawActivity, "repair", "working", "handling"))
+        {
+            return rawActivity;
+        }
+
+        if (rawActivity.StartsWith("between ", StringComparison.OrdinalIgnoreCase))
+            return rawActivity;
+
+        return string.Empty;
+    }
+
+    private string ResolveNpcFollowUpFlavorMoodClause(PromptLocationContext npcLocation)
+    {
+        var time = Game1.timeOfDay;
+
+        if (time >= 2200)
+            return "looks ready to call it a night";
+
+        if (time < 900)
+            return "looks like they're easing into the day";
+
+        if (time >= 1800)
+            return "seems settled into the evening";
+
+        if (time >= 1200 && time < 1400)
+            return "looks caught in the middle of the day";
+
+        return string.Equals(npcLocation.Exposure, "indoors", StringComparison.OrdinalIgnoreCase)
+            ? "seems settled in"
+            : "looks comfortable out in the open";
+    }
+
+    private string ResolveNpcFollowUpFlavorActivityClause(string? activity, PromptLocationContext npcLocation)
+    {
+        var locationCategory = ResolveNpcFollowUpFlavorLocationCategory(npcLocation, activity);
+        return locationCategory switch
+        {
+            "home" => "spending a quiet moment at home",
+            "indoors" => "spending a quiet moment indoors",
+            "below_ground" => "keeping to the quieter paths below ground",
+            _ => "lingering outdoors nearby"
+        };
+    }
+
+    private string ResolveNpcFollowUpFlavorLocationCategory(PromptLocationContext npcLocation, string? activity)
+    {
+        var locationToken = (npcLocation.InternalName ?? string.Empty).Trim();
+        var cleanActivity = (activity ?? string.Empty).Trim();
+
+        if (IsNpcFollowUpFlavorHomeLocation(locationToken))
+            return "home";
+
+        if (ContainsAny(locationToken, "Mine", "Cave", "Skull", "Volcano")
+            || ContainsAny(cleanActivity, "mine", "cave", "tunnel"))
+        {
+            return "below_ground";
+        }
+
+        if (string.Equals(npcLocation.Exposure, "indoors", StringComparison.OrdinalIgnoreCase))
+            return "indoors";
+
+        return "outdoors";
+    }
+
+    private static bool IsNpcFollowUpFlavorHomeLocation(string locationToken)
+    {
+        if (string.IsNullOrWhiteSpace(locationToken))
+            return false;
+
+        return locationToken.Contains("House", StringComparison.OrdinalIgnoreCase)
+            || locationToken.Contains("FarmHouse", StringComparison.OrdinalIgnoreCase)
+            || locationToken.Contains("Cabin", StringComparison.OrdinalIgnoreCase)
+            || locationToken.Contains("Trailer", StringComparison.OrdinalIgnoreCase)
+            || locationToken.Contains("Cottage", StringComparison.OrdinalIgnoreCase)
+            || locationToken.Contains("Manor", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string TrimTrailingSentencePunctuation(string? value)
+    {
+        return (value ?? string.Empty).Trim().TrimEnd('.', '!', '?');
     }
 
     private bool TryResolveActiveManualNpcFollowUp(out NPC npc, out string contextTag)
@@ -1577,6 +1771,411 @@ public sealed class ModEntry : Mod
         _manualNpcFollowUpNpc = null;
         _manualNpcFollowUpContextTag = "player_chat";
         _manualNpcFollowUpReadyUtc = default;
+    }
+
+    private void BeginNpcGiftSelection(NPC npc, string contextTag)
+    {
+        if (npc is null || string.IsNullOrWhiteSpace(npc.Name))
+            return;
+
+        _pendingNpcGiftSelectionName = npc.Name;
+        _pendingNpcGiftSelectionNpc = npc;
+        _pendingNpcGiftSelectionSourceContextTag = string.IsNullOrWhiteSpace(contextTag)
+            ? "player_chat_followup"
+            : contextTag;
+        _pendingNpcGiftSelectionReadyUtc = DateTime.UtcNow;
+        _pendingNpcGiftSelectionObservedItem = Game1.player?.CurrentItem;
+        Game1.addHUDMessage(new HUDMessage(
+            $"Choose a hotbar item for {npc.displayName}. It will be given automatically.",
+            HUDMessage.newQuest_type));
+    }
+
+    private void ClearPendingNpcGiftSelectionState()
+    {
+        _pendingNpcGiftSelectionName = null;
+        _pendingNpcGiftSelectionNpc = null;
+        _pendingNpcGiftSelectionSourceContextTag = "player_chat_followup";
+        _pendingNpcGiftSelectionReadyUtc = default;
+        _pendingNpcGiftSelectionObservedItem = null;
+    }
+
+    private void TryExpirePendingNpcGiftSelectionState()
+    {
+        if (string.IsNullOrWhiteSpace(_pendingNpcGiftSelectionName))
+            return;
+
+        if (DateTime.UtcNow - _pendingNpcGiftSelectionReadyUtc > NpcGiftSelectionWindow)
+        {
+            ClearPendingNpcGiftSelectionState();
+            return;
+        }
+
+        if (Game1.currentLocation is null)
+        {
+            ClearPendingNpcGiftSelectionState();
+            return;
+        }
+
+        var currentNpc = GetRosterNpcInteractionCandidates(Game1.currentLocation).FirstOrDefault(candidate =>
+            candidate is not null
+            && !string.IsNullOrWhiteSpace(candidate.Name)
+            && string.Equals(candidate.Name, _pendingNpcGiftSelectionName, StringComparison.OrdinalIgnoreCase))
+            ?? _pendingNpcGiftSelectionNpc;
+        if (currentNpc is null)
+        {
+            ClearPendingNpcGiftSelectionState();
+            return;
+        }
+
+        if (Vector2.Distance(currentNpc.Tile, Game1.player.Tile) > NpcDialogueHookInteractionRadiusTiles)
+            ClearPendingNpcGiftSelectionState();
+    }
+
+    private bool TryResolvePendingNpcGiftSelection(out NPC npc, out string sourceContextTag)
+    {
+        npc = null!;
+        sourceContextTag = "player_chat_followup";
+
+        if (string.IsNullOrWhiteSpace(_pendingNpcGiftSelectionName) || _pendingNpcGiftSelectionReadyUtc == default)
+            return false;
+
+        if (DateTime.UtcNow - _pendingNpcGiftSelectionReadyUtc > NpcGiftSelectionWindow)
+        {
+            ClearPendingNpcGiftSelectionState();
+            return false;
+        }
+
+        if (Game1.currentLocation is null)
+            return false;
+
+        npc = Game1.currentLocation.characters.FirstOrDefault(candidate =>
+            candidate is not null
+            && !string.IsNullOrWhiteSpace(candidate.Name)
+            && string.Equals(candidate.Name, _pendingNpcGiftSelectionName, StringComparison.OrdinalIgnoreCase))
+            ?? _pendingNpcGiftSelectionNpc!;
+        if (npc is null || !IsRosterNpc(npc))
+        {
+            ClearPendingNpcGiftSelectionState();
+            return false;
+        }
+
+        if (!IsSameNpcName(npc, _pendingNpcGiftSelectionName))
+        {
+            ClearPendingNpcGiftSelectionState();
+            return false;
+        }
+
+        sourceContextTag = string.IsNullOrWhiteSpace(_pendingNpcGiftSelectionSourceContextTag)
+            ? "player_chat_followup"
+            : _pendingNpcGiftSelectionSourceContextTag;
+        return true;
+    }
+
+    private bool TryHandlePendingNpcGiftSelectionFromAction(ButtonPressedEventArgs e)
+    {
+        if (Game1.currentLocation is null)
+            return false;
+
+        if (!TryResolvePendingNpcGiftSelection(out var targetNpc, out var sourceContextTag))
+            return false;
+
+        var hoveredNpc = TryResolveNpcDialogueHookTargetForAction(e, Game1.currentLocation);
+        if (hoveredNpc is null)
+            return false;
+
+        if (!IsSameNpcIdentity(hoveredNpc, targetNpc))
+        {
+            ClearPendingNpcGiftSelectionState();
+            return false;
+        }
+
+        if (!IsWithinTileStepRange(Game1.player.Tile, hoveredNpc.Tile, NpcManualFollowUpActivationRadiusTiles))
+            return false;
+
+        Helper.Input.Suppress(e.Button);
+        return TryGivePendingNpcGiftSelection(hoveredNpc, sourceContextTag);
+    }
+
+    private void TryAutoGivePendingNpcGiftSelectionFromHotbarSelection()
+    {
+        if (Game1.player is null
+            || Game1.currentLocation is null
+            || Game1.activeClickableMenu is not null
+            || Game1.dialogueUp
+            || Game1.eventUp)
+        {
+            return;
+        }
+
+        if (!TryResolvePendingNpcGiftSelection(out var targetNpc, out var sourceContextTag))
+            return;
+
+        var currentItem = Game1.player.CurrentItem;
+        if (ReferenceEquals(currentItem, _pendingNpcGiftSelectionObservedItem))
+            return;
+
+        _pendingNpcGiftSelectionObservedItem = currentItem;
+        if (currentItem is null)
+            return;
+
+        if (!IsWithinTileStepRange(Game1.player.Tile, targetNpc.Tile, NpcManualFollowUpActivationRadiusTiles))
+            return;
+
+        TryGivePendingNpcGiftSelection(targetNpc, sourceContextTag);
+    }
+
+    private bool TryGivePendingNpcGiftSelection(NPC npc, string sourceContextTag)
+    {
+        var heldItem = Game1.player.CurrentItem;
+        if (heldItem is null)
+        {
+            Game1.addHUDMessage(new HUDMessage(
+                $"Pick a hotbar item for {npc.displayName} first.",
+                HUDMessage.newQuest_type));
+            return true;
+        }
+
+        var giftDisplayName = heldItem.DisplayName ?? "gift";
+        var qualifiedItemId = heldItem.QualifiedItemId ?? giftDisplayName;
+        var qualityLabel = GetGiftQualityLabel(heldItem);
+
+        var vanillaAccepted = TryGiveActiveItemToNpcViaVanilla(npc, Game1.player, out var itemConsumed);
+        var giftAccepted = vanillaAccepted || itemConsumed;
+        if (!giftAccepted)
+        {
+            Game1.addHUDMessage(new HUDMessage(
+                $"{npc.displayName} is not ready to take that right now.",
+                HUDMessage.newQuest_type));
+            return true;
+        }
+
+        RecordRecentNpcGiftContext(npc, giftDisplayName, qualifiedItemId, qualityLabel, accepted: true);
+        ArmPendingNpcGiftReactionAutoOpen(npc);
+        ClearPendingNpcGiftSelectionState();
+        return true;
+    }
+
+    private void ArmPendingNpcGiftReactionAutoOpen(NPC npc)
+    {
+        if (npc is null || string.IsNullOrWhiteSpace(npc.Name))
+            return;
+
+        _pendingNpcGiftReactionAutoOpenName = npc.Name;
+        _pendingNpcGiftReactionAutoOpenNpc = npc;
+        _pendingNpcGiftReactionAutoOpenUtc = DateTime.UtcNow;
+    }
+
+    private void ClearPendingNpcGiftReactionAutoOpen()
+    {
+        _pendingNpcGiftReactionAutoOpenName = null;
+        _pendingNpcGiftReactionAutoOpenNpc = null;
+        _pendingNpcGiftReactionAutoOpenUtc = default;
+    }
+
+    private void TryExpirePendingNpcGiftReactionAutoOpen()
+    {
+        if (string.IsNullOrWhiteSpace(_pendingNpcGiftReactionAutoOpenName))
+            return;
+
+        if (DateTime.UtcNow - _pendingNpcGiftReactionAutoOpenUtc > NpcGiftSelectionWindow)
+            ClearPendingNpcGiftReactionAutoOpen();
+    }
+
+    private bool TryOpenPendingNpcGiftReactionChat(NPC npc)
+    {
+        if (npc is null
+            || string.IsNullOrWhiteSpace(_pendingNpcGiftReactionAutoOpenName)
+            || !IsSameNpcName(npc, _pendingNpcGiftReactionAutoOpenName))
+        {
+            return false;
+        }
+
+        ClearPendingNpcGiftReactionAutoOpen();
+        ClearManualNpcFollowUpState();
+        TryRecordSocialVisitProgress(npc.Name);
+        OpenNpcChatMenu(
+            npc,
+            initialPlayerMessage: InitialNpcChatPrompt,
+            autoSendInitialPlayerMessage: true,
+            defaultContextTag: "player_chat_gift_followup");
+        _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
+        return true;
+    }
+
+    private void RecordRecentNpcGiftContext(NPC npc, string itemDisplayName, string qualifiedItemId, string qualityLabel, bool accepted)
+    {
+        if (npc is null || string.IsNullOrWhiteSpace(npc.Name))
+            return;
+
+        RecordRecentNpcGiftContext(
+            npc.Name,
+            string.IsNullOrWhiteSpace(npc.displayName) ? npc.Name : npc.displayName,
+            itemDisplayName,
+            qualifiedItemId,
+            qualityLabel,
+            accepted);
+    }
+
+    private void RecordRecentNpcGiftContext(string npcName, string npcDisplayName, string itemDisplayName, string qualifiedItemId, string qualityLabel, bool accepted)
+    {
+        if (string.IsNullOrWhiteSpace(npcName))
+            return;
+
+        var context = new RecentNpcGiftContext
+        {
+            NpcName = npcName,
+            NpcDisplayName = string.IsNullOrWhiteSpace(npcDisplayName) ? npcName : npcDisplayName,
+            ItemDisplayName = itemDisplayName ?? "gift",
+            QualifiedItemId = qualifiedItemId ?? itemDisplayName ?? "gift",
+            QualityLabel = string.IsNullOrWhiteSpace(qualityLabel) ? "normal" : qualityLabel,
+            Accepted = accepted,
+            Day = _state.Calendar.Day,
+            CapturedUtc = DateTime.UtcNow
+        };
+
+        var npcToken = NormalizeTargetToken(context.NpcName);
+        if (!string.IsNullOrWhiteSpace(npcToken))
+            _recentGiftContextByNpcToken[npcToken] = context;
+
+        var displayToken = NormalizeTargetToken(context.NpcDisplayName);
+        if (!string.IsNullOrWhiteSpace(displayToken))
+            _recentGiftContextByNpcToken[displayToken] = context;
+    }
+
+    private bool TryGetRecentNpcGiftContext(string? npcName, out RecentNpcGiftContext context)
+    {
+        context = null!;
+        if (string.IsNullOrWhiteSpace(npcName) || _recentGiftContextByNpcToken.Count == 0)
+            return false;
+
+        PruneStaleRecentGiftContext();
+
+        var lookupTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var rawNpcToken = NormalizeTargetToken(npcName);
+        if (!string.IsNullOrWhiteSpace(rawNpcToken))
+            lookupTokens.Add(rawNpcToken);
+
+        var resolvedNpc = ResolveNpcByName(npcName);
+        if (resolvedNpc is not null)
+        {
+            var nameToken = NormalizeTargetToken(resolvedNpc.Name ?? string.Empty);
+            if (!string.IsNullOrWhiteSpace(nameToken))
+                lookupTokens.Add(nameToken);
+
+            var displayToken = NormalizeTargetToken(resolvedNpc.displayName ?? string.Empty);
+            if (!string.IsNullOrWhiteSpace(displayToken))
+                lookupTokens.Add(displayToken);
+        }
+
+        foreach (var token in lookupTokens)
+        {
+            if (_recentGiftContextByNpcToken.TryGetValue(token, out var found))
+            {
+                context = found;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void PruneStaleRecentGiftContext()
+    {
+        if (_recentGiftContextByNpcToken.Count == 0)
+            return;
+
+        var nowUtc = DateTime.UtcNow;
+        var staleKeys = _recentGiftContextByNpcToken
+            .Where(kv => nowUtc - kv.Value.CapturedUtc > RecentGiftContextMaxAge)
+            .Select(kv => kv.Key)
+            .ToArray();
+        foreach (var key in staleKeys)
+            _recentGiftContextByNpcToken.Remove(key);
+    }
+
+    private string BuildRecentNpcGiftContextBlock(string? npcName)
+    {
+        if (!TryGetRecentNpcGiftContext(npcName, out var context))
+            return string.Empty;
+
+        var npcDisplayName = string.IsNullOrWhiteSpace(context.NpcDisplayName)
+            ? context.NpcName
+            : context.NpcDisplayName;
+        var safeItem = TrimForContext(context.ItemDisplayName, 72, "gift").Replace("'", "’", StringComparison.Ordinal);
+        var safeQuality = TrimForContext(context.QualityLabel, 18, "normal").Replace("'", "’", StringComparison.Ordinal);
+        return $"RECENT_GIFT_CONTEXT[{npcDisplayName}]: day={context.Day} item='{safeItem}' item_id='{context.QualifiedItemId}' quality={safeQuality} accepted={context.Accepted}.";
+    }
+
+    private static string GetGiftQualityLabel(Item item)
+    {
+        var quality = item is StardewValley.Object obj ? obj.Quality : 0;
+        return quality switch
+        {
+            4 => "iridium",
+            2 => "gold",
+            1 => "silver",
+            _ => "normal"
+        };
+    }
+
+    private static bool TryGiveActiveItemToNpcViaVanilla(NPC npc, Farmer player, out bool itemConsumed)
+    {
+        itemConsumed = false;
+        if (npc is null || player is null)
+            return false;
+
+        var beforeItem = player.CurrentItem;
+        if (beforeItem is null)
+            return false;
+
+        var beforeStack = beforeItem.Stack;
+        var candidateNames = new[]
+        {
+            "tryToReceiveActiveObject",
+            "receiveGift",
+            "tryToReceiveGift"
+        };
+
+        foreach (var name in candidateNames)
+        {
+            var method = typeof(NPC).GetMethod(
+                name,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                types: new[] { typeof(Farmer) },
+                modifiers: null);
+            if (method is null)
+                continue;
+
+            try
+            {
+                var result = method.Invoke(npc, new object[] { player });
+                itemConsumed = DidPlayerCurrentItemChange(player, beforeItem, beforeStack);
+                var accepted = result is bool acceptedBool
+                    ? acceptedBool || itemConsumed
+                    : itemConsumed;
+                if (accepted)
+                    return true;
+            }
+            catch
+            {
+            }
+        }
+
+        itemConsumed = DidPlayerCurrentItemChange(player, beforeItem, beforeStack);
+        return false;
+    }
+
+    private static bool DidPlayerCurrentItemChange(Farmer player, Item beforeItem, int beforeStack)
+    {
+        var afterItem = player.CurrentItem;
+        if (afterItem is null)
+            return true;
+
+        if (!ReferenceEquals(afterItem, beforeItem))
+            return true;
+
+        return afterItem.Stack < beforeStack;
     }
 
     private void TryExpireManualNpcFollowUpState()
@@ -2359,6 +2958,7 @@ public sealed class ModEntry : Mod
             initialPlayerMessage,
             autoSendInitialPlayerMessage,
             portraitAssetName: npcName,
+            npcKey: npcName,
             resolveLiveNpc: () => ResolveNpcByName(npcName) ?? ResolveNpcByName(npc.displayName) ?? npc,
             resolveProfilePortraitIndex: ResolvePortraitProfileFrameIndex);
     }
@@ -2820,6 +3420,9 @@ public sealed class ModEntry : Mod
         TryCaptureTownIncidents();
         TryCaptureLiveWorldEvents();
         TryExpireManualNpcFollowUpState();
+        TryExpirePendingNpcGiftSelectionState();
+        TryAutoGivePendingNpcGiftSelectionFromHotbarSelection();
+        TryExpirePendingNpcGiftReactionAutoOpen();
         TryApplyNpcChatCursorIndicator();
         TryCaptureVanillaDialogueContextFromMenu(Game1.activeClickableMenu, _pendingNpcDialogueHookName);
         TryHandleNpcDialogueHookFallback();
@@ -6151,8 +6754,14 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
+        if (e.OldMenu is NpcChatInputMenu chatMenu && e.NewMenu is null)
+            TryMarkManualNpcFollowUpReadyFromChatMenu(chatMenu);
+
         if (e.NewMenu is not null && e.NewMenu is not NpcChatInputMenu)
+        {
             ClearManualNpcFollowUpState();
+            ClearPendingNpcGiftSelectionState();
+        }
 
         if (e.NewMenu is not null)
         {
@@ -6183,13 +6792,162 @@ public sealed class ModEntry : Mod
         var loc = Game1.currentLocation;
         var npc = ResolvePendingNpcDialogueHookNpc(requesterName, loc);
         var sawVanillaMenu = _npcDialogueHookMenuOpened;
+        if (npc is not null && HasPendingVanillaDialogueContinuation(npc))
+            return;
+
         ClearNpcDialogueHook();
         if (npc is null)
+            return;
+
+        if (TryOpenPendingNpcGiftReactionChat(npc))
             return;
 
         if (!sawVanillaMenu)
             return;
 
+        MarkManualNpcFollowUpReady(npc);
+    }
+
+    private bool HasPendingVanillaDialogueContinuation(NPC npc)
+    {
+        if (npc is null)
+            return false;
+
+        return TryGetDialogueQueueDepth(
+                npc,
+                out var queueDepth,
+                "CurrentDialogue",
+                "currentDialogue",
+                "TemporaryDialogue",
+                "Dialogue",
+                "dialogue")
+            && queueDepth > 0;
+    }
+
+    private static bool TryGetDialogueQueueDepth(object source, out int depth, params string[] memberNames)
+    {
+        depth = 0;
+        if (source is null || memberNames is null || memberNames.Length == 0)
+            return false;
+
+        foreach (var memberName in memberNames)
+        {
+            if (TryGetDialogueMemberValue(source, memberName, out var memberValue)
+                && TryEstimateDialogueEntryCount(memberValue, out depth))
+            {
+                return true;
+            }
+
+            if (TryGetParameterlessMethodValue(source, memberName, out var methodValue)
+                && TryEstimateDialogueEntryCount(methodValue, out depth))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryEstimateDialogueEntryCount(object? value, out int count, int depth = 0)
+    {
+        count = 0;
+        if (value is null || depth > 3)
+            return false;
+
+        if (value is string str)
+        {
+            count = string.IsNullOrWhiteSpace(str) ? 0 : 1;
+            return true;
+        }
+
+        if (value is System.Collections.ICollection collection)
+        {
+            count = collection.Count;
+            return true;
+        }
+
+        if (TryGetDialogueMemberValue(value, "Count", out var countValue) && TryConvertToInt(countValue, out count))
+            return true;
+        if (TryGetDialogueMemberValue(value, "count", out countValue) && TryConvertToInt(countValue, out count))
+            return true;
+
+        if (value is System.Collections.IEnumerable enumerable)
+        {
+            var observed = 0;
+            foreach (var _ in enumerable)
+            {
+                observed++;
+                if (observed >= 2)
+                    break;
+            }
+
+            count = observed;
+            return true;
+        }
+
+        var memberCandidates = new[]
+        {
+            "CurrentDialogue",
+            "currentDialogue",
+            "Dialogue",
+            "dialogue",
+            "TemporaryDialogue",
+            "Text",
+            "text",
+            "Message",
+            "message"
+        };
+        foreach (var memberName in memberCandidates)
+        {
+            if (TryGetDialogueMemberValue(value, memberName, out var memberValue)
+                && memberValue is not null
+                && !ReferenceEquals(memberValue, value)
+                && TryEstimateDialogueEntryCount(memberValue, out count, depth + 1))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryConvertToInt(object? value, out int result)
+    {
+        result = 0;
+        if (value is null)
+            return false;
+
+        try
+        {
+            result = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void TryMarkManualNpcFollowUpReadyFromChatMenu(NpcChatInputMenu chatMenu)
+    {
+        if (chatMenu is null)
+            return;
+
+        var npcKey = string.IsNullOrWhiteSpace(chatMenu.NpcKey)
+            ? chatMenu.NpcName
+            : chatMenu.NpcKey;
+        if (string.IsNullOrWhiteSpace(npcKey))
+            return;
+
+        var loc = Game1.currentLocation;
+        var npc = ResolvePendingNpcDialogueHookNpc(npcKey, loc)
+            ?? ResolveNpcByName(npcKey)
+            ?? ResolveNpcByName(chatMenu.NpcName);
+        if (npc is null || !IsRosterNpc(npc))
+            return;
+
+        ClearNpcDialogueHook();
+        _manualNpcFollowUpSuppressUntilUtc = default;
         MarkManualNpcFollowUpReady(npc);
     }
 
@@ -6232,13 +6990,7 @@ public sealed class ModEntry : Mod
 
         ClearNpcDialogueHook();
         ClearManualNpcFollowUpState();
-        TryRecordSocialVisitProgress(npc.Name);
-        OpenNpcChatMenu(
-            npc,
-            initialPlayerMessage: InitialNpcChatPrompt,
-            autoSendInitialPlayerMessage: true,
-            defaultContextTag: "player_chat");
-        _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
+        OpenNpcFollowUpChoiceDialogue(npc, "player_chat");
     }
 
     private void OpenNpcFollowUpDialogue(GameLocation loc, NPC npc, bool suppressFirstInteractionGreeting = false)
@@ -6300,9 +7052,13 @@ public sealed class ModEntry : Mod
     private void OnRenderedHud(object? sender, RenderedHudEventArgs e)
     {
         if (!Context.IsWorldReady
-            || !_config.ShowPlayer2ConnectionHud
             || Game1.eventUp
             || Game1.activeClickableMenu is not null)
+            return;
+
+        TryDrawPendingNpcGiftSelectionHud(e);
+
+        if (!_config.ShowPlayer2ConnectionHud)
             return;
 
         var connected = IsLocalInsightHudActive();
@@ -6330,6 +7086,28 @@ public sealed class ModEntry : Mod
                 : I18n.Get("hud.local_insight.dormant", "Local Insight: Dormant (click to connect)");
             IClickableMenu.drawHoverText(e.SpriteBatch, tooltip, Game1.smallFont);
         }
+    }
+
+    private void TryDrawPendingNpcGiftSelectionHud(RenderedHudEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_pendingNpcGiftSelectionName)
+            || _pendingNpcGiftSelectionReadyUtc == default)
+        {
+            return;
+        }
+
+        var toolbar = Game1.onScreenMenus.OfType<Toolbar>().FirstOrDefault();
+        if (toolbar is null)
+            return;
+
+        var rect = new Rectangle(toolbar.xPositionOnScreen - 8, toolbar.yPositionOnScreen - 8, toolbar.width + 16, toolbar.height + 16);
+        var border = new Color(196, 160, 74);
+        var fill = new Color(247, 229, 173) * 0.16f;
+        e.SpriteBatch.Draw(Game1.staminaRect, rect, fill);
+        e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, rect.Width, 4), border);
+        e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Bottom - 4, rect.Width, 4), border);
+        e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, 4, rect.Height), border);
+        e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.Right - 4, rect.Y, 4, rect.Height), border);
     }
 
     private Rectangle GetPlayer2HudRect()
@@ -7086,14 +7864,17 @@ public sealed class ModEntry : Mod
         Game1.activeClickableMenu = new NewspaperMenu(issue);
     }
 
-    private void OpenRumorBoard()
+    private void OpenRumorBoard(NPC? focusNpc = null)
     {
         if (_rumorBoardService is null)
             return;
 
         SyncCalendarSeasonFromWorld();
         _rumorBoardService.ExpireOverdueQuests(_state);
-        Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor, () => OnUiAskMayorForWork(), () => _player2UiStatus);
+        var focusContext = focusNpc is not null && !string.IsNullOrWhiteSpace(focusNpc.Name)
+            ? new RumorBoardFocusContext(focusNpc.Name, string.IsNullOrWhiteSpace(focusNpc.displayName) ? focusNpc.Name : focusNpc.displayName)
+            : null;
+        Game1.activeClickableMenu = new RumorBoardMenu(_state, _rumorBoardService, Monitor, () => OnUiAskMayorForWork(), () => _player2UiStatus, focusContext);
     }
 
     private void OnSellCommand(string name, string[] args)
@@ -8020,6 +8801,16 @@ public sealed class ModEntry : Mod
         fail += vanillaLore.Fail;
         total += vanillaLore.Total;
 
+        var promptGrounding = RunPlayerChatGroundingRegressionChecks();
+        pass += promptGrounding.Pass;
+        fail += promptGrounding.Fail;
+        total += promptGrounding.Total;
+
+        var pendingDialogue = RunPendingVanillaDialogueRegressionChecks();
+        pass += pendingDialogue.Pass;
+        fail += pendingDialogue.Fail;
+        total += pendingDialogue.Total;
+
         return (pass, fail, total);
     }
 
@@ -8585,6 +9376,122 @@ public sealed class ModEntry : Mod
         }
 
         return (pass, fail, 3);
+    }
+
+    private (int Pass, int Fail, int Total) RunPlayerChatGroundingRegressionChecks()
+    {
+        var pass = 0;
+        var fail = 0;
+
+        _state.Calendar.Day = Math.Max(5, _state.Calendar.Day);
+        _state.TownMemory.Events.Add(new TownMemoryEvent
+        {
+            EventId = $"regression_chat_passout_{_state.Calendar.Day}",
+            Kind = "pass_out",
+            Summary = "Farmer John was found passed out near the bus stop.",
+            Day = _state.Calendar.Day,
+            Location = "Bus Stop",
+            Severity = 3,
+            Visibility = "public",
+            Tags = new[] { "player", "pass-out", "rescue" }
+        });
+
+        SeedRecentVanillaDialogueContextForRegression("Lewis", "Don't stay out too late.");
+        RecordRecentNpcGiftContext(
+            "Lewis",
+            "Lewis",
+            "Parsnip",
+            "(O)24",
+            "normal",
+            accepted: true);
+
+        var prompt = BuildCompactGameStateInfo(
+            "Lewis",
+            playerText: InitialNpcChatPrompt,
+            contextTag: "player_chat_gift_followup");
+
+        if (prompt.Contains("PLAYER_CHAT_GROUNDING_RULE:", StringComparison.Ordinal)
+            && prompt.Contains("PASS_OUT_CONTEXT:", StringComparison.Ordinal)
+            && prompt.Contains("RECENT_GIFT_CONTEXT[Lewis]:", StringComparison.Ordinal))
+        {
+            pass++;
+            Monitor.Log("[PASS] player chat grounding regression includes pass-out priority, grounding rule, and recent gift context", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] player chat grounding regression missing pass-out priority or recent gift context", LogLevel.Warn);
+        }
+
+        if (prompt.Contains("FOLLOWUP_DIALOGUE_RULE:", StringComparison.Ordinal)
+            && prompt.Contains("GIFT_FOLLOWUP_RULE:", StringComparison.Ordinal))
+        {
+            pass++;
+            Monitor.Log("[PASS] player chat grounding regression preserves follow-up and gift follow-up rules", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] player chat grounding regression missing follow-up or gift follow-up rule", LogLevel.Warn);
+        }
+
+        return (pass, fail, 2);
+    }
+
+    private (int Pass, int Fail, int Total) RunPendingVanillaDialogueRegressionChecks()
+    {
+        var pass = 0;
+        var fail = 0;
+
+        var pendingProbe = new DialogueCountProbe
+        {
+            CurrentDialogue = new Queue<string>(new[] { "First line", "Second line" })
+        };
+        if (TryGetDialogueQueueDepth(pendingProbe, out var pendingDepth, "CurrentDialogue") && pendingDepth >= 2)
+        {
+            pass++;
+            Monitor.Log("[PASS] pending vanilla dialogue regression detects queued continuation and defers follow-up menu", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log($"[FAIL] pending vanilla dialogue regression expected queued continuation depth >= 2, got {pendingDepth}", LogLevel.Warn);
+        }
+
+        var emptyProbe = new DialogueCountProbe
+        {
+            CurrentDialogue = new Queue<string>()
+        };
+        if (TryGetDialogueQueueDepth(emptyProbe, out var emptyDepth, "CurrentDialogue") && emptyDepth == 0)
+        {
+            pass++;
+            Monitor.Log("[PASS] pending vanilla dialogue regression allows follow-up menu when no vanilla continuation remains", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log($"[FAIL] pending vanilla dialogue regression expected empty continuation depth 0, got {emptyDepth}", LogLevel.Warn);
+        }
+
+        return (pass, fail, 2);
+    }
+
+    private void SeedRecentVanillaDialogueContextForRegression(string npcName, string dialogueLine)
+    {
+        var context = new RecentVanillaDialogueContext
+        {
+            NpcName = npcName,
+            NpcDisplayName = npcName,
+            LastDialogueLine = dialogueLine,
+            Day = _state.Calendar.Day,
+            TimeOfDay = Game1.timeOfDay,
+            CapturedUtc = DateTime.UtcNow
+        };
+        context.DialogueSequence.Add(dialogueLine);
+
+        var npcToken = NormalizeTargetToken(npcName);
+        if (!string.IsNullOrWhiteSpace(npcToken))
+            _recentVanillaDialogueByNpcToken[npcToken] = context;
     }
 
     private void ResetNpcRoutingSmokeState(string npcId)
@@ -10557,6 +11464,7 @@ public sealed class ModEntry : Mod
         var liveNpcWhereabouts = string.Empty;
         var newsContext = BuildNewsAwarenessBlock();
         var eventsContext = BuildRecentEventAwarenessBlock(playerText);
+        var passOutContext = BuildRecentPlayerPassOutContextBlock();
         var effectiveContextTag = string.IsNullOrWhiteSpace(contextTag) ? "player_chat" : contextTag!;
         var loreReferenceText = string.IsNullOrWhiteSpace(referencedNpcName)
             ? playerText
@@ -10566,10 +11474,12 @@ public sealed class ModEntry : Mod
         var locationContextBlock = $"LOCATION_CONTEXT: exact='{locationContext.ExactPhrase}' exposure={locationContext.Exposure} internal='{locationContext.InternalName}' landmark='{locationContext.NearbyLandmark}' tile=({locationContext.TileX},{locationContext.TileY}) micro_area='{locationContext.MicroArea}' precision={locationContext.Precision}.";
         var locationAwarenessRule = "LOCATION_AWARENESS_RULE: Treat LOCATION_CONTEXT as ground truth. If exposure=indoors, do not describe rain, snow, wet boots, or wet clothes. If exposure=outdoors, weather sensations are allowed when relevant.";
         var locationPrecisionRule = "LOCATION_PRECISION_RULE: If LocationPrecision is low, keep phrasing general and do not assert an exact street/block name.";
-        if (string.Equals(effectiveContextTag, "player_chat_followup", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(effectiveContextTag, "player_chat_followup", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(effectiveContextTag, "player_chat_gift_followup", StringComparison.OrdinalIgnoreCase))
             TryEnsureRecentVanillaDialogueContextForNpc(npcName);
 
         var vanillaDialogueContext = BuildRecentVanillaDialogueContextBlock(npcName);
+        var recentGiftContext = BuildRecentNpcGiftContextBlock(npcName);
         var sourceDialogueContext = BuildSourceModDialogueContextBlock(npcName, playerText);
         var vanillaDialogueFollowUpRule = string.IsNullOrWhiteSpace(vanillaDialogueContext)
             ? string.Empty
@@ -10578,6 +11488,12 @@ public sealed class ModEntry : Mod
         var questDiversityContext = BuildQuestDiversityBlock(npcName, playerAskedForRequest);
         var followUpContextRule = string.Equals(effectiveContextTag, "player_chat_followup", StringComparison.OrdinalIgnoreCase)
             ? "FOLLOWUP_CONTEXT_RULE: This chat started immediately after vanilla NPC dialogue; prioritize continuity with VANILLA_DIALOGUE_CONTEXT."
+            : string.Empty;
+        var giftFollowUpRule = string.Equals(effectiveContextTag, "player_chat_gift_followup", StringComparison.OrdinalIgnoreCase)
+            ? "GIFT_FOLLOWUP_RULE: The player just gave you the item in RECENT_GIFT_CONTEXT. Acknowledge the gift naturally, but if PASS_OUT_CONTEXT exists it takes priority over gift chatter."
+            : string.Empty;
+        var playerChatGroundingRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
+            ? "PLAYER_CHAT_GROUNDING_RULE: Treat low-information openers like 'Let's chat.' as a trigger only, not the true topic. Ground the first reply in this priority order: PASS_OUT_CONTEXT first, then VANILLA_DIALOGUE_CONTEXT, then NEWS_CONTEXT and RECENT_EVENTS, then TOWN_MEMORY, then NPC_MEMORY. Use generic small talk only if none of those provide useful grounding."
             : string.Empty;
         var playerAmbientIsolationRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
             ? "PLAYER_CHAT_ISOLATION_RULE: Treat this as direct player conversation. Do not repeat or continue offscreen NPC-to-NPC ambient lines verbatim."
@@ -10656,6 +11572,8 @@ public sealed class ModEntry : Mod
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
             vanillaDialogueFollowUpRule,
             followUpContextRule,
+            giftFollowUpRule,
+            playerChatGroundingRule,
             playerAmbientIsolationRule,
             ambientGossipRule,
             liveWhereaboutsRule,
@@ -10724,6 +11642,7 @@ public sealed class ModEntry : Mod
             questDiversityContext,
             newsContext,
             eventsContext,
+            passOutContext,
             ambientGossipCue,
             liveNpcWhereabouts,
             $"STATE: AvailableTownRequests {_state.Quests.Available.Count} by_template=[{availableQuestTemplateCounts}].",
@@ -10734,6 +11653,7 @@ public sealed class ModEntry : Mod
             speakerCurrentActivity,
             locationContextBlock,
             vanillaDialogueContext,
+            recentGiftContext,
             sourceDialogueContext
         );
 
@@ -10999,6 +11919,28 @@ public sealed class ModEntry : Mod
             .ToArray();
 
         return $"RECENT_EVENTS: [{JoinContextItems(recentEvents)}]. UPCOMING_EVENTS: [{JoinContextItems(upcomingEvents)}].";
+    }
+
+    private string BuildRecentPlayerPassOutContextBlock()
+    {
+        var day = _state.Calendar.Day;
+        var currentTimeOfDay = Game1.timeOfDay;
+        var passOutEvent = _state.TownMemory.Events
+            .Where(ev =>
+                string.Equals(ev.Kind, "pass_out", StringComparison.OrdinalIgnoreCase)
+                && ev.Day >= day - 3
+                && ev.Day <= day + 1
+                && ev.Tags.Any(tag => string.Equals(tag, "player", StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .FirstOrDefault();
+        if (passOutEvent is null)
+            return string.Empty;
+
+        var temporal = TownEventTemporalHelper.BuildTemporalLabel(passOutEvent, day, currentTimeOfDay);
+        var summary = TrimForContext(passOutEvent.Summary, 96, "player passed out").Replace("'", "’", StringComparison.Ordinal);
+        var location = TrimForContext(passOutEvent.Location, 48, "town").Replace("'", "’", StringComparison.Ordinal);
+        return $"PASS_OUT_CONTEXT: when={temporal} location='{location}' summary='{summary}' severity={passOutEvent.Severity}.";
     }
 
     private string BuildRecentVanillaDialogueContextBlock(string? npcName)
