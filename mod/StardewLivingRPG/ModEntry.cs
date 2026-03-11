@@ -8877,6 +8877,16 @@ public sealed class ModEntry : Mod
         fail += socialVisit.Fail;
         total += socialVisit.Total;
 
+        var nonHumanSpeech = RunNonHumanSpeechStyleRegressionChecks();
+        pass += nonHumanSpeech.Pass;
+        fail += nonHumanSpeech.Fail;
+        total += nonHumanSpeech.Total;
+
+        var relationshipInference = RunRelationshipInferenceRegressionChecks();
+        pass += relationshipInference.Pass;
+        fail += relationshipInference.Fail;
+        total += relationshipInference.Total;
+
         return (pass, fail, total);
     }
 
@@ -9501,7 +9511,34 @@ public sealed class ModEntry : Mod
             Monitor.Log("[FAIL] player chat grounding regression missing follow-up or gift follow-up rule", LogLevel.Warn);
         }
 
-        return (pass, fail, 2);
+        if (prompt.Contains("LOW_INFO_OPENER_RULE:", StringComparison.Ordinal)
+            && prompt.Contains("do not reply with generic helper questions", StringComparison.OrdinalIgnoreCase))
+        {
+            pass++;
+            Monitor.Log("[PASS] player chat grounding regression explicitly blocks canned helper-question replies on low-information openers", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] player chat grounding regression missing low-information opener anti-canned-reply rule", LogLevel.Warn);
+        }
+
+        _npcLastContextTagById["grounding_regression_npc"] = "player_chat_followup";
+        _npcLastPlayerPromptById["grounding_regression_npc"] = InitialNpcChatPrompt;
+        var groundedReply = NormalizeGroundedLowInfoInitialReply("grounding_regression_npc", "Lewis", "What's on your mind?");
+        if (!groundedReply.Contains("what's on your mind", StringComparison.OrdinalIgnoreCase)
+            && groundedReply.Contains("passed out", StringComparison.OrdinalIgnoreCase))
+        {
+            pass++;
+            Monitor.Log("[PASS] player chat grounding regression rewrites canned helper replies into contextual first replies", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] player chat grounding regression did not rewrite a canned helper reply into contextual grounding", LogLevel.Warn);
+        }
+
+        return (pass, fail, 4);
     }
 
     private (int Pass, int Fail, int Total) RunPendingVanillaDialogueRegressionChecks()
@@ -9602,6 +9639,241 @@ public sealed class ModEntry : Mod
         _state.Quests.Active.RemoveAll(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
         _state.Facts.Facts.Remove($"quest:{questId}:social_visit:visited");
         return passed ? (1, 0, 1) : (0, 1, 1);
+    }
+
+    private (int Pass, int Fail, int Total) RunNonHumanSpeechStyleRegressionChecks()
+    {
+        var pass = 0;
+        var fail = 0;
+        var total = 0;
+
+        var mapleLikeNpc = new FrameworkNpcRecord
+        {
+            DisplayName = "Maple",
+            Tags = new[] { "pet", "rabbit", "companion" },
+            Lore = new NpcLoreEntry
+            {
+                Speech = "Communicates through body language, ear positions, thumps, jumps, and judgmental stares."
+            }
+        };
+
+        var mapleBlock = BuildNpcNonHumanSpeechStyleBlock(mapleLikeNpc);
+        if (mapleBlock.Contains("NON_HUMAN_SPEECH_RULE[Maple]", StringComparison.Ordinal)
+            && mapleBlock.Contains("non-human rabbit", StringComparison.OrdinalIgnoreCase)
+            && mapleBlock.Contains("Do not write polished human dialogue", StringComparison.OrdinalIgnoreCase))
+        {
+            Monitor.Log("[PASS] non-human speech regression gives Maple-like NPCs a non-verbal speech override", LogLevel.Info);
+            pass++;
+        }
+        else
+        {
+            Monitor.Log("[FAIL] non-human speech regression did not produce the expected Maple-style override block", LogLevel.Warn);
+            fail++;
+        }
+        total++;
+
+        var daultonLikeNpc = new FrameworkNpcRecord
+        {
+            DisplayName = "Daulton",
+            Tags = new[] { "dockhand", "musician" },
+            Lore = new NpcLoreEntry
+            {
+                Speech = "Straightforward and casual, with occasional dry humor and self-deprecating comments."
+            }
+        };
+
+        var daultonBlock = BuildNpcNonHumanSpeechStyleBlock(daultonLikeNpc);
+        if (string.IsNullOrWhiteSpace(daultonBlock))
+        {
+            Monitor.Log("[PASS] non-human speech regression leaves human custom NPCs on the normal speech-style path", LogLevel.Info);
+            pass++;
+        }
+        else
+        {
+            Monitor.Log("[FAIL] non-human speech regression incorrectly flagged a human custom NPC as non-human", LogLevel.Warn);
+            fail++;
+        }
+        total++;
+
+        var mapleReply = SanitizeNonHumanNpcReplyContent("Maple", "Maple gives a brisk hop and flicks an ear. What's on your mind?");
+        if (mapleReply.Contains("gives a brisk hop", StringComparison.OrdinalIgnoreCase)
+            && !mapleReply.Contains("what's on your mind", StringComparison.OrdinalIgnoreCase))
+        {
+            Monitor.Log("[PASS] non-human speech regression strips canned human helper questions after non-human gesture cues", LogLevel.Info);
+            pass++;
+        }
+        else
+        {
+            Monitor.Log("[FAIL] non-human speech regression left a canned human helper question attached to a non-human cue", LogLevel.Warn);
+            fail++;
+        }
+        total++;
+
+        _npcLastPlayerPromptById["maple_question_regression"] = "Can you talk?";
+        var mapleTalkReply = NormalizeNonHumanNpcReply("maple_question_regression", "Maple", "Yes, I can talk if I want to.");
+        if (!mapleTalkReply.Contains("yes, i can talk", StringComparison.OrdinalIgnoreCase)
+            && mapleTalkReply.Contains("No words", StringComparison.OrdinalIgnoreCase))
+        {
+            Monitor.Log("[PASS] non-human speech regression rewrites human speech answers to talk-questions into non-verbal replies", LogLevel.Info);
+            pass++;
+        }
+        else
+        {
+            Monitor.Log("[FAIL] non-human speech regression did not rewrite a human-style answer to a talk-question", LogLevel.Warn);
+            fail++;
+        }
+        total++;
+
+        _npcLastPlayerPromptById["maple_food_regression"] = "Do you want food?";
+        var mapleFoodReply = NormalizeNonHumanNpcReply("maple_food_regression", "Maple", "Yes, I do. Do you have any treats?");
+        if (!mapleFoodReply.Contains("do you have any treats", StringComparison.OrdinalIgnoreCase)
+            && mapleFoodReply.Contains("interested in food", StringComparison.OrdinalIgnoreCase))
+        {
+            Monitor.Log("[PASS] non-human speech regression rewrites human speech answers to food-questions into body-language replies", LogLevel.Info);
+            pass++;
+        }
+        else
+        {
+            Monitor.Log("[FAIL] non-human speech regression did not rewrite a human-style answer to a food-question", LogLevel.Warn);
+            fail++;
+        }
+        total++;
+
+        var mapleQuestionOnlyReply = SanitizeNonHumanNpcReplyContent("Maple", "Do you need anything?");
+        if (!mapleQuestionOnlyReply.Contains("do you need anything", StringComparison.OrdinalIgnoreCase)
+            && mapleQuestionOnlyReply.Contains("Maple gives a small, intent tilt", StringComparison.OrdinalIgnoreCase))
+        {
+            Monitor.Log("[PASS] non-human speech regression replaces question-only human follow-up replies with a non-verbal fallback", LogLevel.Info);
+            pass++;
+        }
+        else
+        {
+            Monitor.Log("[FAIL] non-human speech regression did not replace a question-only human follow-up reply for a non-human NPC", LogLevel.Warn);
+            fail++;
+        }
+        total++;
+
+        var mapleGestureOnlyReply = SanitizeNonHumanNpcReplyContent("Maple", "Maple gives a brisk hop and flicks an ear.");
+        if (mapleGestureOnlyReply.Contains("gives a brisk hop", StringComparison.OrdinalIgnoreCase)
+            && !mapleGestureOnlyReply.Contains("intent tilt", StringComparison.OrdinalIgnoreCase))
+        {
+            Monitor.Log("[PASS] non-human speech regression preserves gesture-only non-human replies without injecting extra fallback text", LogLevel.Info);
+            pass++;
+        }
+        else
+        {
+            Monitor.Log("[FAIL] non-human speech regression altered a valid gesture-only non-human reply unexpectedly", LogLevel.Warn);
+            fail++;
+        }
+        total++;
+
+        return (pass, fail, total);
+    }
+
+    private (int Pass, int Fail, int Total) RunRelationshipInferenceRegressionChecks()
+    {
+        var pass = 0;
+        var fail = 0;
+        var total = 0;
+
+        var prompt = BuildCompactGameStateInfo(
+            "Lewis",
+            playerText: "Did you see Olivia and Victor together at the festival?",
+            contextTag: "player_chat");
+        if (prompt.Contains("RELATIONSHIP_INFERENCE_RULE:", StringComparison.Ordinal)
+            && prompt.Contains("KINSHIP_AUTHORITY_RULE:", StringComparison.Ordinal)
+            && prompt.Contains("do not imply romance", StringComparison.OrdinalIgnoreCase))
+        {
+            Monitor.Log("[PASS] relationship inference regression injects non-romantic co-presence guardrails into player chat prompts", LogLevel.Info);
+            pass++;
+        }
+        else
+        {
+            Monitor.Log("[FAIL] relationship inference regression missing co-presence anti-romance guardrails in player chat prompt", LogLevel.Warn);
+            fail++;
+        }
+        total++;
+
+        if (_vanillaCanonLoreService is not null)
+        {
+            var referencedVanillaLore = _vanillaCanonLoreService.BuildReferencedNpcLorePromptBlock(
+                "Did you see Caroline and Abigail together at the festival?",
+                speakingNpcName: "Lewis",
+                maxMatches: 2);
+            if (referencedVanillaLore.Contains("VANILLA_RELATIONSHIP_RULE:", StringComparison.Ordinal)
+                && referencedVanillaLore.Contains("family and household ties first", StringComparison.OrdinalIgnoreCase))
+            {
+                Monitor.Log("[PASS] relationship inference regression keeps referenced vanilla NPC lore on the family-first path", LogLevel.Info);
+                pass++;
+            }
+            else
+            {
+                Monitor.Log("[FAIL] relationship inference regression missing family-first guidance in referenced vanilla NPC lore", LogLevel.Warn);
+                fail++;
+            }
+            total++;
+        }
+
+        var hadOlivia = _externalAutoLoreByToken.TryGetValue("olivia", out var previousOlivia);
+        var hadVictor = _externalAutoLoreByToken.TryGetValue("victor", out var previousVictor);
+
+        try
+        {
+            _externalAutoLoreByToken["olivia"] = new ExternalNpcLoreProfile
+            {
+                Token = "olivia",
+                DisplayName = "Olivia",
+                RoleHint = "Affluent resident and Victor's mother.",
+                SpeechHint = "Refined and confident.",
+                Boundaries = "Treat family ties as authoritative; do not imply romance with Victor.",
+                Confidence = 0.82f
+            };
+            _externalAutoLoreByToken["victor"] = new ExternalNpcLoreProfile
+            {
+                Token = "victor",
+                DisplayName = "Victor",
+                RoleHint = "Olivia's son with engineering interests.",
+                SpeechHint = "Polite and analytical.",
+                Boundaries = "Treat family ties as authoritative; do not imply romance with Olivia.",
+                Confidence = 0.82f
+            };
+            _externalAutoLoreByToken["olivia"].Aliases.Add("Olivia");
+            _externalAutoLoreByToken["victor"].Aliases.Add("Victor");
+            _externalAutoLoreByToken["olivia"].TiesToNpcs.Add("Victor");
+            _externalAutoLoreByToken["victor"].TiesToNpcs.Add("Olivia");
+
+            var referencedExternalLore = BuildReferencedExternalNpcLorePromptBlock(
+                "Did you see Olivia and Victor together at the festival?",
+                speakingNpcName: "Lewis",
+                maxMatches: 2);
+            if (referencedExternalLore.Contains("EXTERNAL_NPC_RELATIONSHIP_RULE:", StringComparison.Ordinal)
+                && referencedExternalLore.Contains("do not infer romance", StringComparison.OrdinalIgnoreCase)
+                && referencedExternalLore.Contains("boundaries=", StringComparison.Ordinal))
+            {
+                Monitor.Log("[PASS] relationship inference regression keeps external referenced NPC lore on the non-romantic/family-safe path", LogLevel.Info);
+                pass++;
+            }
+            else
+            {
+                Monitor.Log("[FAIL] relationship inference regression missing external referenced NPC anti-romance guidance", LogLevel.Warn);
+                fail++;
+            }
+            total++;
+        }
+        finally
+        {
+            if (hadOlivia && previousOlivia is not null)
+                _externalAutoLoreByToken["olivia"] = previousOlivia;
+            else
+                _externalAutoLoreByToken.Remove("olivia");
+
+            if (hadVictor && previousVictor is not null)
+                _externalAutoLoreByToken["victor"] = previousVictor;
+            else
+                _externalAutoLoreByToken.Remove("victor");
+        }
+
+        return (pass, fail, total);
     }
 
     private void SeedRecentVanillaDialogueContextForRegression(string npcName, string dialogueLine)
@@ -11338,6 +11610,8 @@ public sealed class ModEntry : Mod
             {
                 _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
                 playerFacingMsg = NormalizeNpcTimeReply(npcId, playerFacingMsg);
+                playerFacingMsg = NormalizeNonHumanNpcReply(npcId, npcName, playerFacingMsg);
+                playerFacingMsg = NormalizeGroundedLowInfoInitialReply(npcId, npcName, playerFacingMsg);
                 var playerFacingUiMsg = EnsurePlayerFacingEmotionTag(playerFacingMsg);
                 var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
                 q.Enqueue(playerFacingUiMsg);
@@ -11407,6 +11681,564 @@ public sealed class ModEntry : Mod
         var split = canonical.Split(" (", 2, StringSplitOptions.None);
         var clockTime = split[0];
         return $"It's {clockTime}.";
+    }
+
+    private string NormalizeNonHumanNpcReply(string npcId, string? npcName, string message)
+    {
+        if (string.IsNullOrWhiteSpace(message) || !IsNonHumanCustomNpcName(npcName))
+            return message;
+
+        _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPrompt);
+        var sanitized = SanitizeNonHumanNpcReplyContent(npcName, message);
+        if (!string.IsNullOrWhiteSpace(lastPrompt)
+            && IsLikelyPlayerQuestion(lastPrompt)
+            && LooksLikeHumanSpokenNonHumanReply(sanitized))
+        {
+            return BuildQuestionAwareNonHumanReplyFallback(npcName, lastPrompt, sanitized);
+        }
+
+        return string.IsNullOrWhiteSpace(sanitized) ? BuildDefaultNonHumanReplyFallback(npcName) : sanitized;
+    }
+
+    private bool IsNonHumanCustomNpcName(string? npcName)
+    {
+        if (!_config.EnableCustomNpcFramework
+            || _customNpcRegistry is null
+            || string.IsNullOrWhiteSpace(npcName)
+            || !_customNpcRegistry.TryGetNpcByName(npcName, out var customNpc))
+        {
+            return false;
+        }
+
+        return IsLikelyNonHumanCustomNpc(customNpc);
+    }
+
+    private string SanitizeNonHumanNpcReplyContent(string? npcName, string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return string.Empty;
+
+        var normalized = Regex.Replace(message.Trim(), @"\s+", " ", RegexOptions.CultureInvariant);
+        var sentenceMatches = Regex.Matches(normalized, @"[^.!?]+[.!?]?", RegexOptions.CultureInvariant);
+        if (sentenceMatches.Count == 0)
+            return normalized;
+
+        var kept = new List<string>(sentenceMatches.Count);
+        var sawGestureCue = false;
+        var removedHumanQuestion = false;
+
+        foreach (Match match in sentenceMatches)
+        {
+            var sentence = match.Value.Trim();
+            if (string.IsNullOrWhiteSpace(sentence))
+                continue;
+
+            var gestureCue = LooksLikeNonHumanGestureSentence(sentence);
+            var humanQuestion = LooksLikeHumanQuestionSentence(sentence);
+            if (humanQuestion)
+            {
+                removedHumanQuestion = true;
+                continue;
+            }
+
+            kept.Add(sentence);
+            sawGestureCue = sawGestureCue || gestureCue;
+        }
+
+        if (kept.Count == 0)
+            return removedHumanQuestion ? BuildDefaultNonHumanReplyFallback(npcName) : normalized;
+
+        var rebuilt = Regex.Replace(string.Join(" ", kept), @"\s+([,.!?])", "$1", RegexOptions.CultureInvariant).Trim();
+        if (removedHumanQuestion && !sawGestureCue)
+            return $"{rebuilt} {BuildDefaultNonHumanReplyFallback(npcName)}".Trim();
+
+        return rebuilt;
+    }
+
+    private static bool LooksLikeHumanQuestionSentence(string sentence)
+    {
+        if (string.IsNullOrWhiteSpace(sentence))
+            return false;
+
+        var normalized = sentence.Trim();
+        if (normalized.Contains('?', StringComparison.Ordinal))
+            return true;
+
+        return ContainsAnyInvariant(normalized,
+            "what's on your mind",
+            "what is on your mind",
+            "need something",
+            "what do you need",
+            "how can i help",
+            "anything you need",
+            "what brings you here",
+            "what can i do for you",
+            "how are you",
+            "what's up",
+            "what is up",
+            "would you",
+            "could you",
+            "can you",
+            "shall we");
+    }
+
+    private static bool LooksLikeNonHumanGestureSentence(string sentence)
+    {
+        if (string.IsNullOrWhiteSpace(sentence))
+            return false;
+
+        return ContainsAnyInvariant(sentence,
+            "thump",
+            "hop",
+            "ear",
+            "flick",
+            "nose",
+            "paw",
+            "tail",
+            "stare",
+            "sniff",
+            "nuzzle",
+            "whisker",
+            "chirp",
+            "squeak",
+            "trill",
+            "rumble",
+            "growl",
+            "purr",
+            "ruffle",
+            "tilt");
+    }
+
+    private static bool IsLikelyPlayerQuestion(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var normalized = text.Trim();
+        if (normalized.Contains('?', StringComparison.Ordinal))
+            return true;
+
+        var lower = normalized.ToLowerInvariant();
+        return lower.StartsWith("can ", StringComparison.Ordinal)
+            || lower.StartsWith("could ", StringComparison.Ordinal)
+            || lower.StartsWith("do ", StringComparison.Ordinal)
+            || lower.StartsWith("did ", StringComparison.Ordinal)
+            || lower.StartsWith("will ", StringComparison.Ordinal)
+            || lower.StartsWith("would ", StringComparison.Ordinal)
+            || lower.StartsWith("are ", StringComparison.Ordinal)
+            || lower.StartsWith("is ", StringComparison.Ordinal)
+            || lower.StartsWith("have ", StringComparison.Ordinal)
+            || lower.StartsWith("what ", StringComparison.Ordinal)
+            || lower.StartsWith("why ", StringComparison.Ordinal)
+            || lower.StartsWith("how ", StringComparison.Ordinal);
+    }
+
+    private static bool LooksLikeHumanSpokenNonHumanReply(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var normalized = Regex.Replace(message.Trim(), @"\s+", " ", RegexOptions.CultureInvariant);
+        if (ContainsAnyInvariant(normalized,
+                "thump",
+                "hop",
+                "ear",
+                "flick",
+                "nose",
+                "paw",
+                "tail",
+                "stare",
+                "sniff",
+                "nuzzle",
+                "whisker",
+                "chirp",
+                "squeak",
+                "trill",
+                "rumble",
+                "growl",
+                "purr",
+                "ruffle",
+                "tilt"))
+        {
+            return false;
+        }
+
+        var words = Regex.Matches(normalized, @"\b[a-zA-Z']+\b", RegexOptions.CultureInvariant).Count;
+        if (words <= 3)
+            return false;
+
+        return ContainsAnyInvariant(normalized,
+            " i ",
+            " i'm",
+            " i’d",
+            " i will",
+            " i want",
+            " i can",
+            " yes",
+            " no",
+            " sure",
+            " of course",
+            " maybe",
+            " probably",
+            " think",
+            " know",
+            " help",
+            " talk",
+            " food",
+            " hungry",
+            " want");
+    }
+
+    private string BuildQuestionAwareNonHumanReplyFallback(string? npcName, string playerPrompt, string currentReply)
+    {
+        var displayName = ResolveNpcDisplayNameOrFallback(npcName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(displayName))
+            displayName = "The animal";
+
+        var prompt = (playerPrompt ?? string.Empty).Trim().ToLowerInvariant();
+        if (ContainsAnyInvariant(prompt, "talk", "speak", "say", "words", "understand"))
+            return $"{displayName} gives you a long look and a sharp ear flick. No words, just a very clear opinion.";
+
+        if (ContainsAnyInvariant(prompt, "food", "treat", "eat", "hungry", "feed", "carrot", "snack"))
+            return $"{displayName}'s ears shoot up and her nose twitches fast as she hops closer, plainly interested in food.";
+
+        if (ContainsAnyInvariant(prompt, "follow", "come", "go", "here"))
+            return $"{displayName} pauses, then answers with a cautious hop and a watchful stare instead of words.";
+
+        if (ContainsAnyInvariant(prompt, "like", "want", "okay", "alright", "yes", "no"))
+            return $"{displayName} answers with a small shift of posture and an intent stare, making the point without words.";
+
+        return string.IsNullOrWhiteSpace(currentReply)
+            ? BuildDefaultNonHumanReplyFallback(npcName)
+            : BuildDefaultNonHumanReplyFallback(npcName);
+    }
+
+    private string BuildDefaultNonHumanReplyFallback(string? npcName)
+    {
+        var displayName = ResolveNpcDisplayNameOrFallback(npcName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(displayName))
+            displayName = "The animal";
+
+        return $"{displayName} gives a small, intent tilt and watches you closely.";
+    }
+
+    private string NormalizeGroundedLowInfoInitialReply(string npcId, string? npcName, string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return message;
+
+        if (!_npcLastContextTagById.TryGetValue(npcId, out var contextTag)
+            || string.IsNullOrWhiteSpace(contextTag)
+            || !contextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase))
+        {
+            return message;
+        }
+
+        if (!_npcLastPlayerPromptById.TryGetValue(npcId, out var lastPrompt)
+            || !IsLowInformationChatOpener(lastPrompt)
+            || !LooksLikeCannedHelperQuestionReply(message))
+        {
+            return message;
+        }
+
+        return TryBuildGroundedLowInfoReply(npcName, out var grounded)
+            ? grounded
+            : message;
+    }
+
+    private bool TryBuildGroundedLowInfoReply(string? npcName, out string reply)
+    {
+        reply = string.Empty;
+
+        if (TryBuildPassOutGroundedReply(npcName, out reply))
+            return true;
+        if (TryBuildVanillaDialogueGroundedReply(npcName, out reply))
+            return true;
+        if (TryBuildNewsOrRecentEventGroundedReply(npcName, out reply))
+            return true;
+        if (TryBuildTownMemoryGroundedReply(npcName, out reply))
+            return true;
+        if (TryBuildNpcMemoryGroundedReply(npcName, out reply))
+            return true;
+
+        return false;
+    }
+
+    private bool TryBuildPassOutGroundedReply(string? npcName, out string reply)
+    {
+        reply = string.Empty;
+        if (!TryGetRecentPlayerPassOutEvent(out var passOutEvent))
+            return false;
+
+        var location = TrimForContext(passOutEvent.Location, 40, "town");
+        var displayName = ResolveNpcDisplayNameOrFallback(npcName ?? string.Empty);
+        if (IsNonHumanCustomNpcName(npcName))
+        {
+            reply = $"{displayName} gives a worried twitch, still keyed to you passing out near {location}.";
+            return true;
+        }
+
+        reply = $"I heard you passed out near {location}. Take it a little easier today.";
+        return true;
+    }
+
+    private bool TryBuildVanillaDialogueGroundedReply(string? npcName, out string reply)
+    {
+        reply = string.Empty;
+        if (!TryGetRecentVanillaDialogueContext(npcName, out var context)
+            || string.IsNullOrWhiteSpace(context.LastDialogueLine))
+        {
+            return false;
+        }
+
+        var lastLine = EnsureSentenceTerminal(TrimForContext(context.LastDialogueLine, 100, "We were just talking."));
+        var displayName = ResolveNpcDisplayNameOrFallback(npcName ?? string.Empty);
+        if (IsNonHumanCustomNpcName(npcName))
+        {
+            reply = $"{displayName} gives a small, insistent motion, still keyed to the exchange from a moment ago.";
+            return true;
+        }
+
+        reply = $"About what we were just talking about: {lastLine}";
+        return true;
+    }
+
+    private bool TryBuildNewsOrRecentEventGroundedReply(string? npcName, out string reply)
+    {
+        reply = string.Empty;
+        if (TryGetLatestGroundingArticle(out var article))
+        {
+            var title = EnsureSentenceTerminal(TrimForContext(article.Title, 90, "town news"));
+            var displayName = ResolveNpcDisplayNameOrFallback(npcName ?? string.Empty);
+            if (IsNonHumanCustomNpcName(npcName))
+            {
+                reply = $"{displayName}'s ears perk at the sound of fresh town talk making the rounds.";
+                return true;
+            }
+
+            reply = $"People have still been talking about {title}";
+            return true;
+        }
+
+        if (TryGetRecentGroundingTownEvent(npcName, out var recentEvent))
+        {
+            var summary = EnsureSentenceTerminal(TrimForContext(recentEvent.Summary, 96, "something around town"));
+            var displayName = ResolveNpcDisplayNameOrFallback(npcName ?? string.Empty);
+            if (IsNonHumanCustomNpcName(npcName))
+            {
+                reply = $"{displayName} goes alert at the memory of recent town commotion.";
+                return true;
+            }
+
+            reply = $"There's still talk around town about {summary}";
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryBuildTownMemoryGroundedReply(string? npcName, out string reply)
+    {
+        reply = string.Empty;
+        if (!TryGetTopTownMemoryEventForNpc(npcName, out var townEvent))
+            return false;
+
+        var summary = EnsureSentenceTerminal(TrimForContext(townEvent.Summary, 96, "something the town has been carrying around"));
+        var displayName = ResolveNpcDisplayNameOrFallback(npcName ?? string.Empty);
+        if (IsNonHumanCustomNpcName(npcName))
+        {
+            reply = $"{displayName} gives a knowing look, still keyed to the mood around town.";
+            return true;
+        }
+
+        reply = $"I've still been thinking about {summary}";
+        return true;
+    }
+
+    private bool TryBuildNpcMemoryGroundedReply(string? npcName, out string reply)
+    {
+        reply = string.Empty;
+        if (string.IsNullOrWhiteSpace(npcName)
+            || !_state.NpcMemory.Profiles.TryGetValue(npcName, out var profile))
+        {
+            return false;
+        }
+
+        var recentNpcTurn = profile.RecentTurns
+            .Where(turn => !string.IsNullOrWhiteSpace(turn.NpcText) && !LooksLikeCannedHelperQuestionReply(turn.NpcText))
+            .OrderByDescending(turn => turn.Day)
+            .FirstOrDefault();
+        if (recentNpcTurn is not null)
+        {
+            var snippet = EnsureSentenceTerminal(TrimForContext(recentNpcTurn.NpcText, 96, "we were talking a moment ago"));
+            var displayName = ResolveNpcDisplayNameOrFallback(npcName);
+            if (IsNonHumanCustomNpcName(npcName))
+            {
+                reply = $"{displayName} settles into a familiar posture, remembering the thread from before.";
+                return true;
+            }
+
+            reply = $"We were on this a moment ago: {snippet}";
+            return true;
+        }
+
+        var fact = profile.Facts
+            .OrderByDescending(f => f.Day)
+            .ThenByDescending(f => f.Weight)
+            .FirstOrDefault(f => !string.IsNullOrWhiteSpace(f.Text));
+        if (fact is null)
+            return false;
+
+        var factText = EnsureSentenceTerminal(TrimForContext(fact.Text, 96, "something you've been carrying lately"));
+        var npcDisplayName = ResolveNpcDisplayNameOrFallback(npcName);
+        if (IsNonHumanCustomNpcName(npcName))
+        {
+            reply = $"{npcDisplayName} gives a familiar, expectant look, as if picking up an old thread again.";
+            return true;
+        }
+
+        reply = $"You've had enough on your plate already. {factText}";
+        return true;
+    }
+
+    private bool TryGetRecentPlayerPassOutEvent(out TownMemoryEvent passOutEvent)
+    {
+        var day = _state.Calendar.Day;
+        passOutEvent = _state.TownMemory.Events
+            .Where(ev =>
+                string.Equals(ev.Kind, "pass_out", StringComparison.OrdinalIgnoreCase)
+                && ev.Day >= day - 3
+                && ev.Day <= day + 1
+                && ev.Tags.Any(tag => string.Equals(tag, "player", StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .FirstOrDefault()!;
+
+        return passOutEvent is not null;
+    }
+
+    private bool TryGetLatestGroundingArticle(out NewspaperArticle article)
+    {
+        var day = _state.Calendar.Day;
+        article = _state.Newspaper.Articles
+            .Where(a =>
+                !string.IsNullOrWhiteSpace(a.Title)
+                && a.Day <= day
+                && a.ExpirationDay >= day)
+            .OrderByDescending(a => a.Day)
+            .FirstOrDefault()!;
+
+        if (article is not null)
+            return true;
+
+        var latestIssue = _state.Newspaper.Issues
+            .OrderByDescending(i => i.Day)
+            .FirstOrDefault();
+        article = latestIssue?.Articles.FirstOrDefault(a => !string.IsNullOrWhiteSpace(a.Title))!;
+        return article is not null;
+    }
+
+    private bool TryGetRecentGroundingTownEvent(string? npcName, out TownMemoryEvent townEvent)
+    {
+        var day = _state.Calendar.Day;
+        var candidates = _state.TownMemory.Events
+            .Where(ev =>
+                !string.IsNullOrWhiteSpace(ev.Summary)
+                && ev.Day >= day - 3
+                && ev.Day <= day + 1
+                && !string.Equals(ev.Kind, "pass_out", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(npcName)
+            && _state.TownMemory.KnowledgeByNpc.TryGetValue(npcName, out var knowledge))
+        {
+            townEvent = candidates.FirstOrDefault(ev =>
+                knowledge.ByEventId.TryGetValue(ev.EventId, out var entry)
+                && entry.Knows)!;
+            if (townEvent is not null)
+                return true;
+        }
+
+        townEvent = candidates.FirstOrDefault(ev =>
+            string.Equals(ev.Visibility, "public", StringComparison.OrdinalIgnoreCase))!;
+        return townEvent is not null;
+    }
+
+    private bool TryGetTopTownMemoryEventForNpc(string? npcName, out TownMemoryEvent townEvent)
+    {
+        townEvent = null!;
+        if (string.IsNullOrWhiteSpace(npcName)
+            || !_state.TownMemory.KnowledgeByNpc.TryGetValue(npcName, out var knowledge))
+        {
+            return false;
+        }
+
+        var day = _state.Calendar.Day;
+        townEvent = _state.TownMemory.Events
+            .Where(ev =>
+                !string.IsNullOrWhiteSpace(ev.Summary)
+                && knowledge.ByEventId.TryGetValue(ev.EventId, out var entry)
+                && entry.Knows)
+            .OrderByDescending(ev =>
+            {
+                var score = ev.Severity * 6 + Math.Max(0, 10 - Math.Abs(day - ev.Day));
+                if (string.Equals(ev.Kind, "pass_out", StringComparison.OrdinalIgnoreCase))
+                    score += 8;
+                return score;
+            })
+            .FirstOrDefault()!;
+
+        return townEvent is not null;
+    }
+
+    private static bool IsLowInformationChatOpener(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var normalized = Regex.Replace(text.Trim().ToLowerInvariant(), @"[^a-z]+", string.Empty, RegexOptions.CultureInvariant);
+        return normalized is "letschat" or "letstalk" or "chat";
+    }
+
+    private static bool LooksLikeCannedHelperQuestionReply(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var normalized = message.Trim();
+        if (normalized.Length > 160)
+            return false;
+
+        return ContainsAnyInvariant(normalized,
+            "what's on your mind",
+            "what is on your mind",
+            "need something",
+            "what do you need",
+            "how can i help",
+            "anything you need",
+            "what brings you here",
+            "what can i do for you",
+            "how are you holding up",
+            "how are you",
+            "what's up",
+            "what is up");
+    }
+
+    private static string EnsureSentenceTerminal(string? text)
+    {
+        var value = (text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+        if (value.EndsWith(".", StringComparison.Ordinal)
+            || value.EndsWith("!", StringComparison.Ordinal)
+            || value.EndsWith("?", StringComparison.Ordinal))
+        {
+            return value;
+        }
+
+        return value + ".";
     }
 
     private string? DequeueNpcUiMessage(string npcId)
@@ -11550,6 +12382,7 @@ public sealed class ModEntry : Mod
             Game1.isRaining,
             charismaStat,
             socialStat) ?? string.Empty;
+        var nonHumanSpeechStyleBlock = BuildNpcNonHumanSpeechStyleBlock(npcName);
         var movers = _state.Economy.Crops
             .OrderByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
             .Take(3)
@@ -11620,6 +12453,10 @@ public sealed class ModEntry : Mod
         var giftFollowUpRule = string.Equals(effectiveContextTag, "player_chat_gift_followup", StringComparison.OrdinalIgnoreCase)
             ? "GIFT_FOLLOWUP_RULE: The player just gave you the item in RECENT_GIFT_CONTEXT. Acknowledge the gift naturally, but if PASS_OUT_CONTEXT exists it takes priority over gift chatter."
             : string.Empty;
+        var lowInfoOpenerRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
+            && IsLowInformationChatOpener(playerText)
+                ? "LOW_INFO_OPENER_RULE: If the player's opener is only low-information small talk like 'Let's chat.', do not reply with generic helper questions like 'What's on your mind?' or 'Need something?' when PASS_OUT_CONTEXT, VANILLA_DIALOGUE_CONTEXT, NEWS_CONTEXT, RECENT_EVENTS, TOWN_MEMORY, or NPC_MEMORY provides usable grounding. Open with the strongest available context directly."
+                : string.Empty;
         var playerChatGroundingRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
             ? "PLAYER_CHAT_GROUNDING_RULE: Treat low-information openers like 'Let's chat.' as a trigger only, not the true topic. Ground the first reply in this priority order: PASS_OUT_CONTEXT first, then VANILLA_DIALOGUE_CONTEXT, then NEWS_CONTEXT and RECENT_EVENTS, then TOWN_MEMORY, then NPC_MEMORY. Use generic small talk only if none of those provide useful grounding."
             : string.Empty;
@@ -11639,6 +12476,8 @@ public sealed class ModEntry : Mod
                 ? "AMBIENT_UNLOCK_RULE: Additional mutation commands are currently locked in ambient context; stay with event/memory/publish commands."
                 : $"AMBIENT_UNLOCK_RULE: Additional mutation commands currently unlocked: {string.Join(", ", ambientConditional)}. Use them only when evidence is strong."
             : string.Empty;
+        var relationshipInferenceRule = "RELATIONSHIP_INFERENCE_RULE: If two NPCs are seen together in gossip, news, schedules, festivals, memories, or events, do not imply romance, attraction, scandal, or dating from co-presence alone. Prefer explicit canon ties first: family, parent/child, siblings, household, work, mentorship, friendship, or routine festival attendance. Only use romantic framing if canon lore, boundaries, or explicit relationship state clearly supports it.";
+        var kinshipAuthorityRule = "KINSHIP_AUTHORITY_RULE: If role, ties, boundaries, forbidden_claims, or referenced lore indicates mother/father/son/daughter/parent/child/sibling/family/step-family relations, treat that kinship as authoritative and non-romantic.";
         var ambientFamiliarityRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase) && heartLevel <= 2
             ? "AMBIENT_TONE_RULE: Low-heart references to the player must stay neutral and guarded; avoid affectionate, over-familiar, or intimate framing."
             : string.Empty;
@@ -11701,16 +12540,20 @@ public sealed class ModEntry : Mod
             vanillaDialogueFollowUpRule,
             followUpContextRule,
             giftFollowUpRule,
+            lowInfoOpenerRule,
             playerChatGroundingRule,
             playerAmbientIsolationRule,
             ambientGossipRule,
             liveWhereaboutsRule,
+            relationshipInferenceRule,
+            kinshipAuthorityRule,
             vanillaTownBlendRule,
             commandPolicyRule,
             ambientEventFirstRule,
             ambientUnlockRule,
             ambientFamiliarityRule,
             speechStyleBlock,
+            nonHumanSpeechStyleBlock,
             "RELATIONSHIP_RULE: Match familiarity to STATE: RelationshipHearts. At 0-2 hearts, keep distance, be concise, and avoid affectionate language.",
             "RELATIONSHIP_RULE: At 0-1 hearts, avoid warm enthusiasm and long monologues; answer briefly and cautiously unless the player asks follow-up details.",
             "TRUST_RULE: Use STATE: NpcReputation as reliability/trust for commitments only; do not use it to override warmth from hearts.",
@@ -12627,6 +13470,126 @@ public sealed class ModEntry : Mod
             : string.Join(", ", focusCustomNpcNames.Take(2));
 
         return $"SOURCE_MOD_DIALOGUE[{speakerNpcName.Trim()}]: mentions=[{mentions}] lines=[{JoinContextItems(snippets)}].";
+    }
+
+    private string BuildNpcNonHumanSpeechStyleBlock(string? npcName)
+    {
+        if (!_config.EnableCustomNpcFramework
+            || _customNpcRegistry is null
+            || string.IsNullOrWhiteSpace(npcName)
+            || !_customNpcRegistry.TryGetNpcByName(npcName, out var customNpc))
+        {
+            return string.Empty;
+        }
+
+        return BuildNpcNonHumanSpeechStyleBlock(customNpc);
+    }
+
+    private static string BuildNpcNonHumanSpeechStyleBlock(FrameworkNpcRecord? customNpc)
+    {
+        if (!IsLikelyNonHumanCustomNpc(customNpc))
+            return string.Empty;
+
+        var species = ResolveCustomNpcSpeciesLabel(customNpc!);
+        var speech = TrimForContext(customNpc!.Lore.Speech, 180, "Communicates through non-verbal cues.");
+        return
+            $"NON_HUMAN_SPEECH_RULE[{customNpc.DisplayName}]: {customNpc.DisplayName} is a non-human {species}. " +
+            "Treat CUSTOM_NPC_LORE speech as authoritative. Do not write polished human dialogue, normal village small talk, or fluent conversational paragraphs in a human voice. " +
+            "Express meaning through species-appropriate sounds, body language, reactions, and short stylized cues first. " +
+            "Do not append human helper questions like 'What's on your mind?', 'Need something?', or 'How can I help?' after a gesture or sound cue. " +
+            "If the player asks a direct question, answer it through body language, sounds, posture, movement, or other non-verbal cues rather than fluent human speech. " +
+            "Do not ask direct follow-up questions in ordinary human language at all unless the pack lore explicitly makes that behavior canonical. " +
+            "If any words appear, keep them extremely minimal and clearly non-fluent rather than full human speech. " +
+            $"AUTHORITATIVE_SPEECH: {speech}.";
+    }
+
+    private static bool IsLikelyNonHumanCustomNpc(FrameworkNpcRecord? customNpc)
+    {
+        if (customNpc is null)
+            return false;
+
+        var tags = customNpc.Tags ?? Array.Empty<string>();
+        if (tags.Any(IsNonHumanNpcTag))
+            return true;
+
+        var loreComposite = string.Join(" ",
+            customNpc.Lore.Role,
+            customNpc.Lore.Persona,
+            customNpc.Lore.Speech,
+            customNpc.Lore.Boundaries);
+
+        return ContainsAnyInvariant(loreComposite,
+            "non-verbal",
+            "non verbal",
+            "body language",
+            "ear positions",
+            "judgmental stares",
+            "rabbit sounds",
+            "thumps",
+            "text bubbles",
+            "domestic rabbit",
+            "companion animal");
+    }
+
+    private static bool IsNonHumanNpcTag(string? rawTag)
+    {
+        if (string.IsNullOrWhiteSpace(rawTag))
+            return false;
+
+        return rawTag.Trim().ToLowerInvariant() switch
+        {
+            "animal" => true,
+            "pet" => true,
+            "rabbit" => true,
+            "cat" => true,
+            "dog" => true,
+            "horse" => true,
+            "bird" => true,
+            "bear" => true,
+            "creature" => true,
+            _ => false
+        };
+    }
+
+    private static string ResolveCustomNpcSpeciesLabel(FrameworkNpcRecord customNpc)
+    {
+        var tags = customNpc.Tags ?? Array.Empty<string>();
+        if (tags.Any(tag => string.Equals(tag, "rabbit", StringComparison.OrdinalIgnoreCase)))
+            return "rabbit";
+        if (tags.Any(tag => string.Equals(tag, "cat", StringComparison.OrdinalIgnoreCase)))
+            return "cat";
+        if (tags.Any(tag => string.Equals(tag, "dog", StringComparison.OrdinalIgnoreCase)))
+            return "dog";
+        if (tags.Any(tag => string.Equals(tag, "bird", StringComparison.OrdinalIgnoreCase)))
+            return "bird";
+        if (tags.Any(tag => string.Equals(tag, "horse", StringComparison.OrdinalIgnoreCase)))
+            return "horse";
+        if (tags.Any(tag => string.Equals(tag, "bear", StringComparison.OrdinalIgnoreCase)))
+            return "bear";
+        if (tags.Any(tag => string.Equals(tag, "animal", StringComparison.OrdinalIgnoreCase))
+            || tags.Any(tag => string.Equals(tag, "pet", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "animal";
+        }
+
+        return "creature";
+    }
+
+    private static bool ContainsAnyInvariant(string? value, params string[] needles)
+    {
+        if (string.IsNullOrWhiteSpace(value) || needles is null || needles.Length == 0)
+            return false;
+
+        foreach (var needle in needles)
+        {
+            if (!string.IsNullOrWhiteSpace(needle)
+                && value.Contains(needle, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private List<string> LoadSourceDialogueLinesForNpc(string speakerNpcName)
@@ -17173,7 +18136,8 @@ public sealed class ModEntry : Mod
 
         var parts = new List<string>
         {
-            "EXTERNAL_NPC_REFERENCE_RULE: If a referenced external NPC has limited evidence, answer with partial certainty and avoid fabricated specifics."
+            "EXTERNAL_NPC_REFERENCE_RULE: If a referenced external NPC has limited evidence, answer with partial certainty and avoid fabricated specifics.",
+            "EXTERNAL_NPC_RELATIONSHIP_RULE: Do not infer romance from two external NPCs simply being seen together; prefer neutral explanations like family, household, work, friendship, or shared festival attendance unless stronger canon evidence exists."
         };
         foreach (var profile in matches)
         {
@@ -17183,7 +18147,8 @@ public sealed class ModEntry : Mod
             parts.Add(
                 $"EXTERNAL_NPC_REFERENCE_LORE[{profile.DisplayName}]: role={TrimForContext(profile.RoleHint, 100, "resident")}; " +
                 $"speech={TrimForContext(profile.SpeechHint, 90, "grounded")}; " +
-                $"ties={TrimForContext(ties, 100, "uncertain")}; confidence={profile.Confidence:F2}.");
+                $"ties={TrimForContext(ties, 100, "uncertain")}; " +
+                $"boundaries={TrimForContext(profile.Boundaries, 120, "avoid invention")}; confidence={profile.Confidence:F2}.");
         }
 
         return string.Join(" ", parts);

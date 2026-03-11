@@ -127,7 +127,8 @@ internal sealed class VanillaCanonLoreService
 
         var parts = new List<string>
         {
-            "VANILLA_CANON_REFERENCE_RULE: For referenced vanilla NPCs, do not contradict explicit family/job/canon constraints. If uncertain, answer partially without contradiction."
+            "VANILLA_CANON_REFERENCE_RULE: For referenced vanilla NPCs, do not contradict explicit family/job/canon constraints. If uncertain, answer partially without contradiction.",
+            "VANILLA_RELATIONSHIP_RULE: Do not infer romance from two vanilla NPCs simply being seen together; honor family and household ties first."
         };
 
         foreach (var record in references)

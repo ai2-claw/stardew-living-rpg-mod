@@ -297,7 +297,8 @@ internal sealed class NpcRegistry
 
         var parts = new List<string>
         {
-            "CUSTOM_NPC_REFERENCE_RULE: If the player asks about a referenced custom NPC, use CUSTOM_NPC_REFERENCE_LORE and avoid inventing details."
+            "CUSTOM_NPC_REFERENCE_RULE: If the player asks about a referenced custom NPC, use CUSTOM_NPC_REFERENCE_LORE and avoid inventing details.",
+            "CUSTOM_NPC_RELATIONSHIP_RULE: Do not infer romance from two custom NPCs merely being seen together; honor explicit family, household, work, and friendship ties first."
         };
 
         foreach (var npc in referenced)
