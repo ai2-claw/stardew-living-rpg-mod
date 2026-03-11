@@ -293,6 +293,7 @@ public sealed class ModEntry : Mod
         public string NpcName { get; set; } = string.Empty;
         public string NpcDisplayName { get; set; } = string.Empty;
         public string LastDialogueLine { get; set; } = string.Empty;
+        public string InteractionStartLastDialogueLine { get; set; } = string.Empty;
         public List<string> DialogueSequence { get; } = new();
         public int Day { get; set; }
         public int TimeOfDay { get; set; }
@@ -1555,11 +1556,13 @@ public sealed class ModEntry : Mod
         if (loc is null)
             return;
 
+        TryRecordSocialVisitProgress(npc.Name);
+
         var responses = new[]
         {
-            new Response("talk", "Talk"),
-            new Response("quest", "Quest"),
-            new Response("bye", "Bye")
+            new Response("talk", I18n.Get("npc_followup.option.talk", "Talk")),
+            new Response("quest", I18n.Get("npc_followup.option.quest", "Quest")),
+            new Response("bye", I18n.Get("npc_followup.option.bye", "Bye"))
         };
 
         var flavorText = BuildNpcFollowUpFlavorText(npc);
@@ -1593,13 +1596,18 @@ public sealed class ModEntry : Mod
 
         var displayName = string.IsNullOrWhiteSpace(npc.displayName) ? npc.Name : npc.displayName;
         if (string.IsNullOrWhiteSpace(displayName))
-            displayName = "The villager";
+            displayName = I18n.Get("npc_followup.flavor.fallback_name", "The villager");
 
         var npcLocation = BuildPromptLocationContextForNpc(npc);
         var activity = ResolveNpcFollowUpFlavorActivity(npc, npcLocation);
         var moodClause = ResolveNpcFollowUpFlavorMoodClause(npcLocation);
         var activityClause = ResolveNpcFollowUpFlavorActivityClause(activity, npcLocation);
-        return $"{displayName} {moodClause}, {activityClause}.";
+        return I18n.Get("npc_followup.flavor.template", "{{npc}} {{mood}}, {{activity}}.", new
+        {
+            npc = displayName,
+            mood = moodClause,
+            activity = activityClause
+        });
     }
 
     private string ResolveNpcFollowUpFlavorActivity(NPC npc, PromptLocationContext npcLocation)
@@ -1646,20 +1654,20 @@ public sealed class ModEntry : Mod
         var time = Game1.timeOfDay;
 
         if (time >= 2200)
-            return "looks ready to call it a night";
+            return I18n.Get("npc_followup.flavor.mood.night", "looks ready to call it a night");
 
         if (time < 900)
-            return "looks like they're easing into the day";
+            return I18n.Get("npc_followup.flavor.mood.morning", "looks like they're easing into the day");
 
         if (time >= 1800)
-            return "seems settled into the evening";
+            return I18n.Get("npc_followup.flavor.mood.evening", "seems settled into the evening");
 
         if (time >= 1200 && time < 1400)
-            return "looks caught in the middle of the day";
+            return I18n.Get("npc_followup.flavor.mood.midday", "looks caught in the middle of the day");
 
         return string.Equals(npcLocation.Exposure, "indoors", StringComparison.OrdinalIgnoreCase)
-            ? "seems settled in"
-            : "looks comfortable out in the open";
+            ? I18n.Get("npc_followup.flavor.mood.indoors", "seems settled in")
+            : I18n.Get("npc_followup.flavor.mood.outdoors", "looks comfortable out in the open");
     }
 
     private string ResolveNpcFollowUpFlavorActivityClause(string? activity, PromptLocationContext npcLocation)
@@ -1667,10 +1675,10 @@ public sealed class ModEntry : Mod
         var locationCategory = ResolveNpcFollowUpFlavorLocationCategory(npcLocation, activity);
         return locationCategory switch
         {
-            "home" => "spending a quiet moment at home",
-            "indoors" => "spending a quiet moment indoors",
-            "below_ground" => "keeping to the quieter paths below ground",
-            _ => "lingering outdoors nearby"
+            "home" => I18n.Get("npc_followup.flavor.activity.home", "spending a quiet moment at home"),
+            "indoors" => I18n.Get("npc_followup.flavor.activity.indoors", "spending a quiet moment indoors"),
+            "below_ground" => I18n.Get("npc_followup.flavor.activity.below_ground", "keeping to the quieter paths below ground"),
+            _ => I18n.Get("npc_followup.flavor.activity.outdoors", "lingering outdoors nearby")
         };
     }
 
@@ -2861,9 +2869,9 @@ public sealed class ModEntry : Mod
         var prompt = BuildNpcFollowUpGreeting(npc, suppressFirstInteractionGreeting);
         var responses = new List<Response>();
         if (HasPendingQuestForNpc(name))
-            responses.Add(new Response("town_word", "What's the word around town?"));
-        responses.Add(new Response("talk", "Let's chat."));
-        responses.Add(new Response("later", "Catch you later!"));
+            responses.Add(new Response("town_word", I18n.Get("npc_followup.option.town_word", "What's the word around town?")));
+        responses.Add(new Response("talk", I18n.Get("npc_followup.option.lets_chat", "Let's chat.")));
+        responses.Add(new Response("later", I18n.Get("npc_followup.option.later", "Catch you later!")));
 
         loc.createQuestionDialogue(
             $"{npc.displayName}: {prompt}",
@@ -6776,6 +6784,7 @@ public sealed class ModEntry : Mod
         if (e.NewMenu is not null)
         {
             _npcDialogueHookMenuOpened = true;
+            TryRecordSocialVisitProgressFromVanillaMenu(e.NewMenu);
             TryCaptureVanillaDialogueContextFromMenu(e.NewMenu, _pendingNpcDialogueHookName);
             return;
         }
@@ -6813,15 +6822,67 @@ public sealed class ModEntry : Mod
         if (npc is null)
             return false;
 
-        return TryGetDialogueQueueDepth(
+        if (!TryGetDialogueQueueDepth(
                 npc,
                 out var queueDepth,
                 "CurrentDialogue",
                 "currentDialogue",
                 "TemporaryDialogue",
                 "Dialogue",
-                "dialogue")
-            && queueDepth > 0;
+                "dialogue"))
+        {
+            return false;
+        }
+
+        var queuedLine = string.Empty;
+        if (queueDepth > 0
+            && TryExtractDialogueLineFromMembers(
+                npc,
+                out var rawDialogueLine,
+                "CurrentDialogue",
+                "currentDialogue",
+                "getCurrentDialogue",
+                "GetCurrentDialogue",
+                "TemporaryDialogue",
+                "Dialogue",
+                "dialogue"))
+        {
+            queuedLine = NormalizeLiveDialogueLineForContext(rawDialogueLine);
+        }
+
+        var interactionStartLine = string.Empty;
+        if (TryGetRecentVanillaDialogueContext(npc.Name, out var context))
+            interactionStartLine = context.InteractionStartLastDialogueLine;
+
+        return IsLikelyVanillaDialogueContinuation(queueDepth, queuedLine, interactionStartLine);
+    }
+
+    private static bool IsLikelyVanillaDialogueContinuation(int queueDepth, string? queuedLine, string? interactionStartLine)
+    {
+        if (queueDepth <= 0)
+            return false;
+
+        if (queueDepth >= 2)
+            return true;
+
+        var normalizedQueued = (queuedLine ?? string.Empty).Trim();
+        var normalizedInteractionStart = (interactionStartLine ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedQueued) || string.IsNullOrWhiteSpace(normalizedInteractionStart))
+            return true;
+
+        return !string.Equals(normalizedQueued, normalizedInteractionStart, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void TryRecordSocialVisitProgressFromVanillaMenu(IClickableMenu menu)
+    {
+        if (menu is not DialogueBox && menu is not ShopMenu)
+            return;
+
+        var npc = TryResolveNpcFromOpenedMenu(menu);
+        if (npc is null || !IsRosterNpc(npc))
+            return;
+
+        TryRecordSocialVisitProgress(npc.Name);
     }
 
     private static bool TryGetDialogueQueueDepth(object source, out int depth, params string[] memberNames)
@@ -7000,9 +7061,9 @@ public sealed class ModEntry : Mod
 
         var responses = new List<Response>();
         if (HasPendingQuestForNpc(npc.Name ?? npc.displayName))
-            responses.Add(new Response("town_word", "What's the word around town?"));
-        responses.Add(new Response("talk", "Let's chat."));
-        responses.Add(new Response("later", "Catch you later!"));
+            responses.Add(new Response("town_word", I18n.Get("npc_followup.option.town_word", "What's the word around town?")));
+        responses.Add(new Response("talk", I18n.Get("npc_followup.option.lets_chat", "Let's chat.")));
+        responses.Add(new Response("later", I18n.Get("npc_followup.option.later", "Catch you later!")));
 
         loc.createQuestionDialogue(
             $"{npc.displayName}: {BuildNpcFollowUpGreeting(npc, suppressFirstInteractionGreeting)}",
@@ -8811,6 +8872,11 @@ public sealed class ModEntry : Mod
         fail += pendingDialogue.Fail;
         total += pendingDialogue.Total;
 
+        var socialVisit = RunSocialVisitInteractionRegressionChecks();
+        pass += socialVisit.Pass;
+        fail += socialVisit.Fail;
+        total += socialVisit.Total;
+
         return (pass, fail, total);
     }
 
@@ -9473,7 +9539,69 @@ public sealed class ModEntry : Mod
             Monitor.Log($"[FAIL] pending vanilla dialogue regression expected empty continuation depth 0, got {emptyDepth}", LogLevel.Warn);
         }
 
-        return (pass, fail, 2);
+        if (!IsLikelyVanillaDialogueContinuation(1, "Hi! Please relax and enjoy yourself.", "Hi! Please relax and enjoy yourself."))
+        {
+            pass++;
+            Monitor.Log("[PASS] pending vanilla dialogue regression allows follow-up menu after repeated single-line bark", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] pending vanilla dialogue regression incorrectly blocks repeated single-line bark as continuation", LogLevel.Warn);
+        }
+
+        if (IsLikelyVanillaDialogueContinuation(1, "I should check the kitchen before supper.", "Good evening."))
+        {
+            pass++;
+            Monitor.Log("[PASS] pending vanilla dialogue regression still blocks distinct single-line continuation", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] pending vanilla dialogue regression incorrectly allowed distinct single-line continuation", LogLevel.Warn);
+        }
+
+        return (pass, fail, 4);
+    }
+
+    private (int Pass, int Fail, int Total) RunSocialVisitInteractionRegressionChecks()
+    {
+        if (_rumorBoardService is null)
+        {
+            Monitor.Log("[FAIL] social visit interaction regression -> RumorBoardService unavailable", LogLevel.Warn);
+            return (0, 1, 1);
+        }
+
+        var questId = "regression_social_visit_vanilla";
+        _state.Quests.Active.Add(new QuestEntry
+        {
+            QuestId = questId,
+            TemplateId = "social_visit",
+            Status = "active",
+            Issuer = "Lewis",
+            TargetItem = "Abigail",
+            TargetCount = 1,
+            RewardGold = 150,
+            Summary = "Stop by and say hello."
+        });
+
+        var before = _rumorBoardService.GetQuestProgress(_state, questId, Game1.player);
+        TryRecordSocialVisitProgress("Abigail");
+        var after = _rumorBoardService.GetQuestProgress(_state, questId, Game1.player);
+
+        var passed = before.Exists
+            && !before.IsReadyToComplete
+            && after.Exists
+            && after.IsReadyToComplete
+            && after.HaveCount >= 1;
+        if (passed)
+            Monitor.Log("[PASS] social visit interaction regression counts vanilla NPC interaction without requiring AI chat", LogLevel.Info);
+        else
+            Monitor.Log("[FAIL] social visit interaction regression did not mark visit progress from vanilla interaction path", LogLevel.Warn);
+
+        _state.Quests.Active.RemoveAll(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
+        _state.Facts.Facts.Remove($"quest:{questId}:social_visit:visited");
+        return passed ? (1, 0, 1) : (0, 1, 1);
     }
 
     private void SeedRecentVanillaDialogueContextForRegression(string npcName, string dialogueLine)
@@ -12035,9 +12163,11 @@ public sealed class ModEntry : Mod
         {
             // Preserve continuity within the same day; reset across day boundaries.
             session.LastDialogueLine = string.Empty;
+            session.InteractionStartLastDialogueLine = string.Empty;
             session.DialogueSequence.Clear();
         }
 
+        session.InteractionStartLastDialogueLine = session.LastDialogueLine;
         session.NpcName = npc.Name;
         session.NpcDisplayName = npcDisplayName;
         session.Day = _state.Calendar.Day;

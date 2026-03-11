@@ -246,7 +246,7 @@ public sealed class RumorBoardMenu : IClickableMenu
             return I18n.Get("rumor_board.button.new_postings", "New Postings");
 
         return IsNpcFocusActive
-            ? I18n.Get("rumor_board.button.show_all", "Show All Town Requests")
+            ? I18n.Get("rumor_board.button.show_all", "Show All")
             : I18n.Get("rumor_board.button.back_to_npc", $"Back to {_focusContext.NpcDisplayName}", new { npc = _focusContext.NpcDisplayName });
     }
 
