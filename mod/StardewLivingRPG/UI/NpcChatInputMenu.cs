@@ -104,7 +104,8 @@ public sealed class NpcChatInputMenu : IClickableMenu
         surprised: DefaultPortraitIndexSurprised,
         worried: DefaultPortraitIndexSad);
 
-    private readonly string _npcName;
+    private readonly string _npcDisplayName;
+    private readonly string _npcKey;
     private readonly string _portraitAssetName;
     private readonly int _heartLevel;
     private readonly Action<string> _onSend;
@@ -158,6 +159,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
     private int _scrollThumbDragOffset = 0;
     private string? _lastNpcMessageForScroll;
 
+    public string NpcName => _npcDisplayName;
+    public string NpcKey => _npcKey;
+
     public NpcChatInputMenu(
         string npcName,
         Action<string> onSend,
@@ -167,6 +171,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
         string? initialPlayerMessage = null,
         bool autoSendInitialPlayerMessage = false,
         string? portraitAssetName = null,
+        string? npcKey = null,
         Func<NPC?>? resolveLiveNpc = null,
         Func<NPC?, string?, string, int?>? resolveProfilePortraitIndex = null)
         : base(
@@ -176,8 +181,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
             MenuHeight,
             true)
     {
-        _npcName = npcName;
-        _portraitAssetName = string.IsNullOrWhiteSpace(portraitAssetName) ? npcName : portraitAssetName.Trim();
+        _npcDisplayName = npcName;
+        _npcKey = string.IsNullOrWhiteSpace(npcKey) ? npcName : npcKey.Trim();
+        _portraitAssetName = string.IsNullOrWhiteSpace(portraitAssetName) ? _npcKey : portraitAssetName.Trim();
         _heartLevel = Math.Max(0, heartLevel);
         _onSend = onSend;
         _pollIncoming = pollIncoming;
@@ -506,9 +512,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
         }
 
         clean = StripInlineEmotionTags(clean, ref explicitEmotion);
-        if (!string.IsNullOrWhiteSpace(_npcName))
+        if (!string.IsNullOrWhiteSpace(_npcDisplayName))
         {
-            var label = _npcName.Trim();
+            var label = _npcDisplayName.Trim();
             if (!string.IsNullOrWhiteSpace(label)
                 && clean.StartsWith(label + ":", StringComparison.OrdinalIgnoreCase))
             {
@@ -893,9 +899,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
     private void DrawNpcHeader(SpriteBatch b)
     {
-        var nameLabel = string.IsNullOrWhiteSpace(_npcName)
+        var nameLabel = string.IsNullOrWhiteSpace(_npcDisplayName)
             ? I18n.Get("npc_chat.npc.fallback_name", "Villager")
-            : _npcName;
+            : _npcDisplayName;
         var textSize = Game1.smallFont.MeasureString(nameLabel);
 
         float x = _portraitRegion.X + (_portraitRegion.Width - textSize.X) / 2f;

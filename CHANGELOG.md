@@ -203,6 +203,15 @@
 ## Unreleased
 
 ### Added
+- Post-vanilla NPC follow-up menu now uses a 3-option `Talk / Quest / Bye` choice instead of opening AI chat immediately.
+- New NPC-focused Town Request Board flow from the follow-up `Quest` option:
+  - opens the board pre-focused on the clicked NPC
+  - shows NPC-specific empty-state text with a `Show All` toggle back to the full board
+  - keeps the `L` hotkey as the normal unfiltered board entry point
+- New one-line activity/context-aware flavor description above the NPC follow-up options.
+- New localization coverage for NPC follow-up flavor text, option labels, and focused request-board strings.
+- New player-chat grounding regression coverage for post-dialogue opener handling.
+- New social-visit regression coverage so vanilla NPC interactions count visit progress without requiring AI chat.
 - Multi-turn ambient NPC-to-NPC chat orchestration with mode-based default depths (`cozy=2`, `story=3`, `chaos=4`, max `4`).
 - New ambient debugging command: `slrpg_debug_ambient_pair_chat <speaker> <listener> [topic]`.
 - Optional overhear HUD moments for public ambient exchanges with cadence gating.
@@ -251,7 +260,10 @@
   - response normalization fallback when a child NPC claims adult ages
 
 ### Changed
-- Manifest version bumped to `0.9.1`.
+- Manifest version bumped to `0.9.2`.
+- Auto-sent player chat openers like `Let's chat.` are now treated as low-information triggers; first NPC replies prioritize grounded context with recent player pass-out awareness first, then vanilla dialogue continuity, then news, town memory, and NPC memory.
+- Social-visit quests now progress from vanilla NPC interaction and follow-up menu entry, not only after entering AI chat.
+- NPC follow-up flavor text now uses generic, broad location wording such as `at home`, `indoors`, and `outdoors nearby` instead of over-specific building or role-assuming activity text.
 - External NPC support is additive and compatibility-safe: integrated custom NPC content pack lore remains authoritative and overrides generated fallback lore.
 - Player2 roster readiness now tracks only required spawn roster entries, so auto-discovered external NPCs do not stall auto-connect/session health checks.
 - Expanded NPC targeting, social-visit inference, and prompt canon lists now include auto-discovered external NPCs when enabled.
@@ -276,6 +288,7 @@
 - Prevented hanging behavior in Player2 one-off read flow.
 - Added missing UI text wrapping helper used by menu screens.
 - Reduced assistant-like NPC phrasing with stricter in-character instructions.
+- Gossip and referenced-NPC prompt grounding now treat explicit family and household ties as authoritative, preventing false romance implications from co-presence alone (for example, parent/child festival sightings).
 - Town Request Board progress now correctly counts carried items when target names differ between display/internal forms (for example, Coconut), and uses the same matching rules for completion item consumption.
 - Fixed follow-up chat opening the wrong nearby NPC when multiple NPCs were in similar range.
 - Fixed missing follow-up chat for Morris/Joja shop interactions.

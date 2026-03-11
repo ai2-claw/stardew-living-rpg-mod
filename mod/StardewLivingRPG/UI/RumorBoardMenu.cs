@@ -13,6 +13,18 @@ using StardewLivingRPG.Utils;
 
 namespace StardewLivingRPG.UI;
 
+public sealed class RumorBoardFocusContext
+{
+    public RumorBoardFocusContext(string npcName, string npcDisplayName)
+    {
+        NpcName = (npcName ?? string.Empty).Trim();
+        NpcDisplayName = string.IsNullOrWhiteSpace(npcDisplayName) ? NpcName : npcDisplayName.Trim();
+    }
+
+    public string NpcName { get; }
+    public string NpcDisplayName { get; }
+}
+
 public sealed class RumorBoardMenu : IClickableMenu
 {
     private static string DefaultDetailMessage => I18n.Get("rumor_board.detail.default", "Select a request to view details.");
@@ -26,6 +38,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private readonly IMonitor _monitor;
     private readonly Action _onAskMayorForWork;
     private readonly Func<string>? _getExternalStatus;
+    private readonly RumorBoardFocusContext? _focusContext;
 
     private readonly List<(QuestEntry Quest, Rectangle Rect)> _availableRows = new();
     private readonly List<(QuestEntry Quest, Rectangle Rect)> _activeRows = new();
@@ -46,6 +59,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private int _lastAvailableCount;
     private int _lastActiveCount;
     private int _lastCalendarDay;
+    private bool _showAllTownRequestsFromFocus;
 
     private Rectangle _acceptButton;
     private Rectangle _completeButton;
@@ -65,7 +79,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private const int DetailScrollbarWidth = 14;
     private const int DetailScrollbarGap = 8;
 
-    public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork, Func<string>? getExternalStatus = null)
+    public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork, Func<string>? getExternalStatus = null, RumorBoardFocusContext? focusContext = null)
         : base(
             Game1.uiViewport.Width / 2 - 520,
             Game1.uiViewport.Height / 2 - 300,
@@ -78,6 +92,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         _monitor = monitor;
         _onAskMayorForWork = onAskMayorForWork;
         _getExternalStatus = getExternalStatus;
+        _focusContext = focusContext;
         _closeButton = new ClickableTextureComponent(
             new Rectangle(xPositionOnScreen + width - 68, yPositionOnScreen + 20, 48, 48),
             Game1.mouseCursors,
@@ -86,7 +101,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         _lastAvailableCount = _state.Quests.Available.Count;
         _lastActiveCount = _state.Quests.Active.Count;
         _lastCalendarDay = _state.Calendar.Day;
-        _statusMessage = DefaultDetailMessage;
+        _statusMessage = IsNpcFocusActive ? BuildNpcFocusStatusMessage() : DefaultDetailMessage;
         BuildLayout();
     }
 
@@ -99,11 +114,11 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         var leftX = xPositionOnScreen + SectionLeftMargin;
         var topY = yPositionOnScreen + SectionTopY;
+        var availableQuests = GetAvailableQuestsForCurrentView().ToList();
+        var activeQuests = GetActiveQuestsForCurrentView().ToList();
 
         var ay = topY + SectionRowsStartOffset;
-        foreach (var q in _state.Quests.Available
-                     .Where(q => q.Status.Equals("available", StringComparison.OrdinalIgnoreCase))
-                     .Where(q => q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day)
+        foreach (var q in availableQuests
                      .Skip(_availableScrollOffset)
                      .Take(VisibleQuestRows))
         {
@@ -113,9 +128,7 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         var rightX = xPositionOnScreen + width - SectionWidth - SectionLeftMargin  - 20;
         var ry = topY + SectionRowsStartOffset;
-        foreach (var q in _state.Quests.Active
-                     .Where(q => q.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
-                     .Where(q => q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day)
+        foreach (var q in activeQuests
                      .Skip(_activeScrollOffset)
                      .Take(VisibleQuestRows))
         {
@@ -128,20 +141,127 @@ public sealed class RumorBoardMenu : IClickableMenu
         _acceptButton = new Rectangle(xPositionOnScreen + 50, buttonY, 160, 44);
         _completeButton = new Rectangle(xPositionOnScreen + 225, buttonY, 190, 44);
         _askWorkButton = new Rectangle(xPositionOnScreen + width - 265, buttonY, 210, 44);
+        SyncSelectionForCurrentView(availableQuests, activeQuests);
     }
 
     private void ClampScrollOffsets()
     {
-        var visibleAvailableCount = _state.Quests.Available.Count(q =>
-            q.Status.Equals("available", StringComparison.OrdinalIgnoreCase)
-            && (q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day));
-        var visibleActiveCount = _state.Quests.Active.Count(q =>
-            q.Status.Equals("active", StringComparison.OrdinalIgnoreCase)
-            && (q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day));
+        var visibleAvailableCount = GetAvailableQuestsForCurrentView().Count();
+        var visibleActiveCount = GetActiveQuestsForCurrentView().Count();
         var maxAvailableOffset = Math.Max(0, visibleAvailableCount - VisibleQuestRows);
         var maxActiveOffset = Math.Max(0, visibleActiveCount - VisibleQuestRows);
         _availableScrollOffset = Math.Clamp(_availableScrollOffset, 0, maxAvailableOffset);
         _activeScrollOffset = Math.Clamp(_activeScrollOffset, 0, maxActiveOffset);
+    }
+
+    private bool IsNpcFocusActive => _focusContext is not null && !_showAllTownRequestsFromFocus;
+
+    private IEnumerable<QuestEntry> GetAvailableQuestsForCurrentView()
+    {
+        var available = _state.Quests.Available
+            .Where(q => q.Status.Equals("available", StringComparison.OrdinalIgnoreCase))
+            .Where(q => q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day);
+        return IsNpcFocusActive
+            ? available.Where(IsQuestRelevantToFocusedNpc)
+            : available;
+    }
+
+    private IEnumerable<QuestEntry> GetActiveQuestsForCurrentView()
+    {
+        var active = _state.Quests.Active
+            .Where(q => q.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
+            .Where(q => q.ExpiresDay <= 0 || q.ExpiresDay >= _state.Calendar.Day);
+        return IsNpcFocusActive
+            ? active.Where(IsQuestRelevantToFocusedNpc)
+            : active;
+    }
+
+    private bool IsQuestRelevantToFocusedNpc(QuestEntry quest)
+    {
+        if (_focusContext is null)
+            return true;
+
+        if (MatchesFocusedNpc(quest.Issuer))
+            return true;
+
+        return quest.Status.Equals("active", StringComparison.OrdinalIgnoreCase)
+            && quest.TemplateId.Equals("social_visit", StringComparison.OrdinalIgnoreCase)
+            && MatchesFocusedNpc(quest.TargetItem);
+    }
+
+    private bool MatchesFocusedNpc(string? rawValue)
+    {
+        if (_focusContext is null || string.IsNullOrWhiteSpace(rawValue))
+            return false;
+
+        var value = rawValue.Trim();
+        return value.Equals(_focusContext.NpcName, StringComparison.OrdinalIgnoreCase)
+            || value.Equals(_focusContext.NpcDisplayName, StringComparison.OrdinalIgnoreCase)
+            || QuestTextHelper.PrettyName(value).Equals(_focusContext.NpcDisplayName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SyncSelectionForCurrentView(IReadOnlyList<QuestEntry> availableQuests, IReadOnlyList<QuestEntry> activeQuests)
+    {
+        var visibleQuestIds = new HashSet<string>(
+            activeQuests.Select(q => q.QuestId).Concat(availableQuests.Select(q => q.QuestId)),
+            StringComparer.OrdinalIgnoreCase);
+
+        if (_selectedQuest is not null && !visibleQuestIds.Contains(_selectedQuest.QuestId))
+            _selectedQuest = null;
+
+        if (_selectedQuest is null && IsNpcFocusActive)
+            _selectedQuest = activeQuests.FirstOrDefault() ?? availableQuests.FirstOrDefault();
+
+        if (IsNpcFocusActive && _selectedQuest is null)
+            _statusMessage = BuildNpcFocusStatusMessage();
+        else if (!IsNpcFocusActive && string.IsNullOrWhiteSpace(_statusMessage))
+            _statusMessage = DefaultDetailMessage;
+    }
+
+    private string BuildNpcFocusStatusMessage()
+    {
+        if (_focusContext is null)
+            return DefaultDetailMessage;
+
+        return I18n.Get(
+            "rumor_board.detail.focus_none",
+            $"Nothing from {_focusContext.NpcDisplayName} right now. You can still open all town requests from here.",
+            new { npc = _focusContext.NpcDisplayName });
+    }
+
+    private string GetBoardTitle()
+    {
+        if (!IsNpcFocusActive || _focusContext is null)
+            return I18n.Get("rumor_board.title", "Town Request Board");
+
+        return I18n.Get(
+            "rumor_board.title.focused",
+            $"Town Requests: {_focusContext.NpcDisplayName}",
+            new { npc = _focusContext.NpcDisplayName });
+    }
+
+    private string GetViewToggleLabel()
+    {
+        if (_focusContext is null)
+            return I18n.Get("rumor_board.button.new_postings", "New Postings");
+
+        return IsNpcFocusActive
+            ? I18n.Get("rumor_board.button.show_all", "Show All")
+            : I18n.Get("rumor_board.button.back_to_npc", $"Back to {_focusContext.NpcDisplayName}", new { npc = _focusContext.NpcDisplayName });
+    }
+
+    private string GetEmptySectionText(bool isActiveSection)
+    {
+        if (!IsNpcFocusActive || _focusContext is null)
+        {
+            return isActiveSection
+                ? I18n.Get("rumor_board.empty.active", "No active requests.")
+                : I18n.Get("rumor_board.empty.available", "No requests posted today.");
+        }
+
+        return isActiveSection
+            ? I18n.Get("rumor_board.empty.focus_active", $"No active tasks tied to {_focusContext.NpcDisplayName}.", new { npc = _focusContext.NpcDisplayName })
+            : I18n.Get("rumor_board.empty.focus_available", $"No requests from {_focusContext.NpcDisplayName} right now.", new { npc = _focusContext.NpcDisplayName });
     }
 
     private Rectangle GetAvailableListBounds()
@@ -323,6 +443,18 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         if (_askWorkButton.Contains(x, y))
         {
+            if (_focusContext is not null)
+            {
+                _showAllTownRequestsFromFocus = !_showAllTownRequestsFromFocus;
+                _selectedQuest = null;
+                _detailScrollOffset = 0;
+                _detailScrollThumbHeld = false;
+                _statusMessage = IsNpcFocusActive ? BuildNpcFocusStatusMessage() : DefaultDetailMessage;
+                BuildLayout();
+                Game1.playSound("smallSelect");
+                return;
+            }
+
             // If an active quest is selected, check its progress instead of searching for new postings
             if (_selectedQuest is not null && _selectedQuest.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
             {
@@ -490,7 +622,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         // Ribbon Header
         SpriteText.drawStringWithScrollCenteredAt(
             b,
-            I18n.Get("rumor_board.title", "Town Request Board"),
+            GetBoardTitle(),
             xPositionOnScreen + (width / 2),
             yPositionOnScreen + 16);
 
@@ -573,9 +705,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         }
         else
         {
-            var text = isActiveSection
-                ? I18n.Get("rumor_board.empty.active", "No active requests.")
-                : I18n.Get("rumor_board.empty.available", "No requests posted today.");
+            var text = GetEmptySectionText(isActiveSection);
             b.DrawString(Game1.smallFont, text, new Vector2(labelX, labelY + 45), Game1.textColor * 0.7f);
         }
     }
@@ -594,7 +724,7 @@ public sealed class RumorBoardMenu : IClickableMenu
             _detailScrollThumbRegion = Rectangle.Empty;
             _detailScrollThumbHeld = false;
             DrawWrappedStatusMessage(b, panel, _statusMessage);
-            DrawButton(b, _askWorkButton, I18n.Get("rumor_board.button.new_postings", "New Postings"), enabled: true);
+            DrawButton(b, _askWorkButton, GetViewToggleLabel(), enabled: true);
             return;
         }
 
@@ -654,7 +784,13 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         DrawButton(b, _acceptButton, I18n.Get("rumor_board.button.accept", "Accept"), enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
         DrawButton(b, _completeButton, I18n.Get("rumor_board.button.complete", "Complete"), enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
-        DrawButton(b, _askWorkButton, I18n.Get("rumor_board.button.refresh", "Refresh"), enabled: true);
+        DrawButton(
+            b,
+            _askWorkButton,
+            _focusContext is null
+                ? I18n.Get("rumor_board.button.refresh", "Refresh")
+                : GetViewToggleLabel(),
+            enabled: true);
     }
 
     private static void DrawWrappedStatusMessage(SpriteBatch b, Rectangle panel, string message)
@@ -733,7 +869,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     private void SyncDetailMessageFromExternalStatus()
     {
         // Only sync when we're actually awaiting a board search result
-        if (!_awaitingBoardSearchResult)
+        if (!_awaitingBoardSearchResult || _focusContext is not null)
             return;
 
         var external = (_getExternalStatus?.Invoke() ?? string.Empty).Trim();
