@@ -11200,7 +11200,7 @@ public sealed class ModEntry : Mod
                 "hud.simulation.market_shift",
                 $"Market shift: {QuestTextHelper.PrettyName(result.OutcomeId)} prices moved.",
                 new { target = QuestTextHelper.PrettyName(result.OutcomeId) }),
-            "shift_interest_influence" => I18n.Get("hud.simulation.interest_shift", "Town groups shifted their focus."),
+            "shift_interest_influence" => InterestTextHelper.BuildShiftToast(result.OutcomeId),
             "adjust_town_sentiment" => I18n.Get(
                 "hud.simulation.sentiment_shift",
                 $"Town mood shifted around {result.OutcomeId}.",
@@ -16573,6 +16573,26 @@ public sealed class ModEntry : Mod
         if (string.IsNullOrWhiteSpace(text))
             return null;
 
+        var requestScopedMatch = Regex.Match(
+            text,
+            @"\b(?:bring|deliver|drop off|supply|gather|collect|harvest|pick)\b(?:\s+\w+){0,4}?\s+(?<count>\d{1,3}|a dozen|dozen|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|twenty[\s-]one|twenty[\s-]two|twenty[\s-]three|twenty[\s-]four|twenty[\s-]five|twenty[\s-]six|twenty[\s-]seven|twenty[\s-]eight|twenty[\s-]nine|thirty)\b",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        if (requestScopedMatch.Success
+            && TryParseRequestedCountToken(requestScopedMatch.Groups["count"].Value, out var scopedCount))
+        {
+            return scopedCount;
+        }
+
+        var nounScopedMatch = Regex.Match(
+            text,
+            @"\b(?<count>\d{1,3}|a dozen|dozen|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|twenty[\s-]one|twenty[\s-]two|twenty[\s-]three|twenty[\s-]four|twenty[\s-]five|twenty[\s-]six|twenty[\s-]seven|twenty[\s-]eight|twenty[\s-]nine|thirty)\b\s+[a-z_]+\b",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        if (nounScopedMatch.Success
+            && TryParseRequestedCountToken(nounScopedMatch.Groups["count"].Value, out var nounCount))
+        {
+            return nounCount;
+        }
+
         var matches = Regex.Matches(
             text,
             @"\b(?:x\s*)?(\d{1,3})(?:\s*x)?\b",
@@ -16592,6 +16612,67 @@ public sealed class ModEntry : Mod
         }
 
         return null;
+    }
+
+    private static bool TryParseRequestedCountToken(string rawToken, out int count)
+    {
+        count = 0;
+        if (string.IsNullOrWhiteSpace(rawToken))
+            return false;
+
+        var token = rawToken.Trim().ToLowerInvariant();
+        if (int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var numeric))
+        {
+            if (numeric is > 0 and <= 30)
+            {
+                count = numeric;
+                return true;
+            }
+
+            return false;
+        }
+
+        token = token.Replace("-", " ", StringComparison.Ordinal);
+        token = Regex.Replace(token, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+
+        count = token switch
+        {
+            "a dozen" => 12,
+            "dozen" => 12,
+            "one" => 1,
+            "two" => 2,
+            "three" => 3,
+            "four" => 4,
+            "five" => 5,
+            "six" => 6,
+            "seven" => 7,
+            "eight" => 8,
+            "nine" => 9,
+            "ten" => 10,
+            "eleven" => 11,
+            "twelve" => 12,
+            "thirteen" => 13,
+            "fourteen" => 14,
+            "fifteen" => 15,
+            "sixteen" => 16,
+            "seventeen" => 17,
+            "eighteen" => 18,
+            "nineteen" => 19,
+            "twenty" => 20,
+            "twenty one" => 21,
+            "twenty two" => 22,
+            "twenty three" => 23,
+            "twenty four" => 24,
+            "twenty five" => 25,
+            "twenty six" => 26,
+            "twenty seven" => 27,
+            "twenty eight" => 28,
+            "twenty nine" => 29,
+            "thirty" => 30,
+            _ => 0
+        };
+
+        return count > 0;
     }
 
     private static string InferUrgency(string text)

@@ -486,6 +486,9 @@ public sealed class RumorBoardMenu : IClickableMenu
                 : I18n.Get("rumor_board.status.accept_failed", "Could not accept request.");
             if (ok)
             {
+                var flavor = InterestTextHelper.BuildQuestAcceptLine(_selectedQuest);
+                if (!string.IsNullOrWhiteSpace(flavor))
+                    _statusMessage = $"{_statusMessage} {flavor}";
                 _monitor.Log(_statusMessage, LogLevel.Info);
                 Game1.playSound("coin");
             }
@@ -507,6 +510,9 @@ public sealed class RumorBoardMenu : IClickableMenu
             _statusMessage = result.Message;
             if (result.Success)
             {
+                var flavor = InterestTextHelper.BuildQuestCompleteLine(_selectedQuest);
+                if (!string.IsNullOrWhiteSpace(flavor))
+                    _statusMessage = $"{_statusMessage} {flavor}";
                 _monitor.Log(result.Message, LogLevel.Info);
                 Game1.playSound("reward");
             }
@@ -829,6 +835,10 @@ public sealed class RumorBoardMenu : IClickableMenu
                 }),
             q.Summary
         };
+
+        var interestFlavor = InterestTextHelper.BuildQuestDetailLine(q);
+        if (!string.IsNullOrWhiteSpace(interestFlavor))
+            lines.Add(interestFlavor);
 
         if (progress.Exists && progress.RequiresItems)
         {
