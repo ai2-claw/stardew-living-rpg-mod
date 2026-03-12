@@ -25,6 +25,8 @@ public sealed class Player2Client
     private string? _p2Key;
     private string? _headlineEditorNpcId;
     private readonly SemaphoreSlim _headlineEditorNpcLock = new(1, 1);
+    private string? _magicianFlavorNpcId;
+    private readonly SemaphoreSlim _magicianFlavorNpcLock = new(1, 1);
 
     public Player2Client(HttpClient? httpClient = null)
     {
@@ -890,6 +892,101 @@ public sealed class Player2Client
         return $"You are a tabloid newspaper editor. Convert this article into one sensational but concise headline. Keep it short and punchy (roughly 4-10 words), with no extra commentary. {languageRule}\n\nTitle: {articleTitle}\nCategory: {articleCategory}\nContent: {articleContent}\n\nRespond with ONLY the headline. Make it exciting and exaggerated like a small-town tabloid.";
     }
 
+    public async Task<string?> TryGenerateMagicianFlavorAsync(GenerateMagicianFlavorRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_apiBaseUrl) || string.IsNullOrWhiteSpace(_p2Key))
+            return null;
+
+        return await TryGenerateMagicianFlavorAsync(_apiBaseUrl, _p2Key, request, ct);
+    }
+
+    public async Task<string?> TryGenerateMagicianFlavorAsync(string apiBaseUrl, string p2Key, GenerateMagicianFlavorRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(p2Key))
+            return null;
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                var npcId = await EnsureMagicianFlavorNpcIdAsync(apiBaseUrl, p2Key, ct);
+                var previousHistoryMessage = await TryGetLatestNpcMessageFromHistoryAsync(apiBaseUrl, p2Key, npcId, ct);
+                var townProfile = ResolveActiveTownProfile();
+                var url = $"{apiBaseUrl.TrimEnd('/')}/npcs/{Uri.EscapeDataString(npcId)}/chat";
+                using var msg = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new NpcChatRequest
+                    {
+                        SenderName = townProfile.NewspaperDeskName,
+                        SenderMessage = BuildMagicianFlavorPrompt(request),
+                        GameStateInfo = BuildMagicianFlavorStateInfo(request.Context)
+                    }, _jsonOptions), Encoding.UTF8, "application/json")
+                };
+                msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", p2Key);
+
+                using var res = await _http.SendAsync(msg, ct);
+                var body = await res.Content.ReadAsStringAsync(ct);
+                res.EnsureSuccessStatusCode();
+
+                var immediate = SanitizeMagicianFlavor(TryExtractLatestMessage(body));
+                if (!string.IsNullOrWhiteSpace(immediate))
+                    return immediate;
+
+                var direct = SanitizeMagicianFlavor(body);
+                if (!string.IsNullOrWhiteSpace(direct))
+                    return direct;
+
+                var fromHistory = await WaitForFreshHeadlineFromHistoryAsync(apiBaseUrl, p2Key, npcId, previousHistoryMessage, ct);
+                var historyFlavor = SanitizeMagicianFlavor(fromHistory);
+                if (!string.IsNullOrWhiteSpace(historyFlavor))
+                    return historyFlavor;
+            }
+            catch (HttpRequestException ex) when (attempt == 0 && IsNpcMissing(ex))
+            {
+                _magicianFlavorNpcId = null;
+                continue;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Player2Client] TryGenerateMagicianFlavorAsync EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+                break;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<string> EnsureMagicianFlavorNpcIdAsync(string apiBaseUrl, string p2Key, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(_magicianFlavorNpcId))
+            return _magicianFlavorNpcId;
+
+        await _magicianFlavorNpcLock.WaitAsync(ct);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_magicianFlavorNpcId))
+                return _magicianFlavorNpcId;
+
+            var languageRule = I18n.BuildPromptLanguageInstruction();
+            var req = new SpawnNpcRequest
+            {
+                ShortName = "Stagehand",
+                Name = "Morrow's Stagehand",
+                CharacterDescription = "A backstage writer for a shabby town-square magician. Supplies short theatrical asides only.",
+                SystemPrompt = $"Write one short magician aside per request. Keep it brief, plain text only, no quotes, no JSON, no speaker labels, and no explanations. Never change puzzle facts, numbers, clues, rewards, or outcomes. {languageRule}",
+                KeepGameState = true,
+                Commands = new List<SpawnNpcCommand>()
+            };
+
+            _magicianFlavorNpcId = await SpawnNpcAsync(apiBaseUrl, p2Key, req, ct);
+            return _magicianFlavorNpcId;
+        }
+        finally
+        {
+            _magicianFlavorNpcLock.Release();
+        }
+    }
+
     private static bool IsNpcMissing(HttpRequestException ex)
     {
         return ex.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone;
@@ -932,6 +1029,81 @@ public sealed class Player2Client
             return null;
 
         return string.IsNullOrWhiteSpace(headline) ? null : headline;
+    }
+
+    private static string BuildMagicianFlavorPrompt(GenerateMagicianFlavorRequest request)
+    {
+        var context = request.Context ?? new MagicianFlavorContext();
+        var languageRule = I18n.BuildPromptLanguageInstruction();
+        return
+            $"You are writing one short spoken aside for Morrow, a homeless street magician in Stardew Valley. " +
+            $"Return one short plain-text line only, under 8 words, easy to understand, no quotes, no JSON, no speaker labels. " +
+            $"Use plain everyday words. Do not be poetic, mystical, vague, or dramatic. Do not restate the gameplay line. " +
+            $"Do not invent rewards, rules, answers, or clues. {languageRule}\n\n" +
+            $"Intent: {context.Intent}\n" +
+            $"Round mode: {context.RoundMode}\n" +
+            $"Arc stage: {context.ArcStageId}\n" +
+            $"Play style: {context.PlayStyleTag}\n" +
+            $"Theatrical mode: {context.TheatricalMode}\n" +
+            $"Reward claimed today: {context.RewardClaimedToday}\n" +
+            $"Bonus round: {context.IsBonusRound}\n" +
+            $"Consecutive wins: {context.ConsecutiveWins}\n" +
+            $"Consecutive losses: {context.ConsecutiveLosses}\n" +
+            $"Attempts used: {context.AttemptsUsed}\n" +
+            $"Hints used: {context.HintsUsed}\n" +
+            $"Latest newspaper headline: {context.LatestHeadline}\n" +
+            $"Recent town rumor: {context.RecentTownEventSummary}\n" +
+            $"Gameplay line that must remain true elsewhere: {context.CoreText}\n\n" +
+            "Return only the short aside.";
+    }
+
+    private static string BuildMagicianFlavorStateInfo(MagicianFlavorContext? context)
+    {
+        if (context is null)
+            return "magician_flavor";
+
+        return $"magician_flavor:{context.Intent}:{context.RoundMode}:{context.ArcStageId}:{context.PlayStyleTag}:{context.TheatricalMode}";
+    }
+
+    private static string? SanitizeMagicianFlavor(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        var value = raw
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim()
+            .Trim('"')
+            .Trim('\'')
+            .Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        if (value.StartsWith("{", StringComparison.Ordinal) || value.StartsWith("[", StringComparison.Ordinal))
+            return null;
+        if (value.StartsWith("<", StringComparison.Ordinal))
+        {
+            var closing = value.IndexOf('>');
+            if (closing > 0 && closing + 1 < value.Length)
+                value = value[(closing + 1)..].Trim();
+        }
+
+        if (value.StartsWith("aside:", StringComparison.OrdinalIgnoreCase))
+            value = value["aside:".Length..].Trim();
+        if (value.Contains("Return only the short aside", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (!value.Any(char.IsLetter))
+            return null;
+        while (value.Contains("  ", StringComparison.Ordinal))
+            value = value.Replace("  ", " ", StringComparison.Ordinal);
+        if (value.Length > 48)
+            return null;
+        if (value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Length > 8)
+            return null;
+        if (value.Count(ch => ch is '.' or '!' or '?') > 1)
+            return null;
+        value = value.TrimEnd('.', '!', '?').Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private static bool TryExtractStructuredHeadline(string raw, out string headline)
@@ -2205,6 +2377,57 @@ public sealed class GenerateArticlesRequest
 
     [JsonPropertyName("context")]
     public ArticleGenerationContext? Context { get; set; }
+}
+
+public sealed class GenerateMagicianFlavorRequest
+{
+    [JsonPropertyName("context")]
+    public MagicianFlavorContext Context { get; set; } = new();
+}
+
+public sealed class MagicianFlavorContext
+{
+    [JsonPropertyName("intent")]
+    public string Intent { get; set; } = string.Empty;
+
+    [JsonPropertyName("core_text")]
+    public string CoreText { get; set; } = string.Empty;
+
+    [JsonPropertyName("round_mode")]
+    public string RoundMode { get; set; } = string.Empty;
+
+    [JsonPropertyName("arc_stage_id")]
+    public string ArcStageId { get; set; } = "street_smoke";
+
+    [JsonPropertyName("play_style_tag")]
+    public string PlayStyleTag { get; set; } = "steady";
+
+    [JsonPropertyName("theatrical_mode")]
+    public string TheatricalMode { get; set; } = "busker";
+
+    [JsonPropertyName("reward_claimed_today")]
+    public bool RewardClaimedToday { get; set; }
+
+    [JsonPropertyName("is_bonus_round")]
+    public bool IsBonusRound { get; set; }
+
+    [JsonPropertyName("consecutive_wins")]
+    public int ConsecutiveWins { get; set; }
+
+    [JsonPropertyName("consecutive_losses")]
+    public int ConsecutiveLosses { get; set; }
+
+    [JsonPropertyName("attempts_used")]
+    public int AttemptsUsed { get; set; }
+
+    [JsonPropertyName("hints_used")]
+    public int HintsUsed { get; set; }
+
+    [JsonPropertyName("latest_headline")]
+    public string LatestHeadline { get; set; } = string.Empty;
+
+    [JsonPropertyName("recent_town_event_summary")]
+    public string RecentTownEventSummary { get; set; } = string.Empty;
 }
 
 public sealed class ArticleGenerationContext

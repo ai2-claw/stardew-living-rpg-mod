@@ -452,6 +452,46 @@ public static class StateStore
             state.MiniGames.TownSquareMagician.HintsUsed = 0;
             changed = true;
         }
+        if (state.MiniGames.TownSquareMagician.LifetimeLosses < 0)
+        {
+            state.MiniGames.TownSquareMagician.LifetimeLosses = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.LifetimeHintsUsed < 0)
+        {
+            state.MiniGames.TownSquareMagician.LifetimeHintsUsed = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.LifetimeBonusRoundsPlayed < 0)
+        {
+            state.MiniGames.TownSquareMagician.LifetimeBonusRoundsPlayed = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.RareDryRewardDays < 0)
+        {
+            state.MiniGames.TownSquareMagician.RareDryRewardDays = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.GrandDryRewardDays < 0)
+        {
+            state.MiniGames.TownSquareMagician.GrandDryRewardDays = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.ConsecutiveWins < 0)
+        {
+            state.MiniGames.TownSquareMagician.ConsecutiveWins = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.ConsecutiveLosses < 0)
+        {
+            state.MiniGames.TownSquareMagician.ConsecutiveLosses = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.ArcProgressPoints < 0)
+        {
+            state.MiniGames.TownSquareMagician.ArcProgressPoints = 0;
+            changed = true;
+        }
         if (state.MiniGames.TownSquareMagician.SessionsStartedToday < 0)
         {
             state.MiniGames.TownSquareMagician.SessionsStartedToday = 0;
@@ -460,6 +500,16 @@ public static class StateStore
         if (state.MiniGames.TownSquareMagician.PlayedRoundIdsToday is null)
         {
             state.MiniGames.TownSquareMagician.PlayedRoundIdsToday = new List<string>();
+            changed = true;
+        }
+        if (string.IsNullOrWhiteSpace(state.MiniGames.TownSquareMagician.ArcStageId))
+        {
+            state.MiniGames.TownSquareMagician.ArcStageId = "street_smoke";
+            changed = true;
+        }
+        if (string.IsNullOrWhiteSpace(state.MiniGames.TownSquareMagician.LastPlayStyleTag))
+        {
+            state.MiniGames.TownSquareMagician.LastPlayStyleTag = "steady";
             changed = true;
         }
 

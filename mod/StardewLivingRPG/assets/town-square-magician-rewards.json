@@ -1,0 +1,45 @@
+{
+  "Rewards": [
+    { "Id": "quartz", "QualifiedItemId": "(O)80", "DisplayName": "Quartz", "Stack": 1, "Tier": "common", "Weight": 10 },
+    { "Id": "earth_crystal", "QualifiedItemId": "(O)86", "DisplayName": "Earth Crystal", "Stack": 1, "Tier": "common", "Weight": 8 },
+    { "Id": "frozen_tear", "QualifiedItemId": "(O)84", "DisplayName": "Frozen Tear", "Stack": 1, "Tier": "common", "Weight": 7 },
+    { "Id": "wild_horseradish", "QualifiedItemId": "(O)16", "DisplayName": "Wild Horseradish", "Stack": 1, "Tier": "common", "Weight": 10 },
+    { "Id": "daffodil", "QualifiedItemId": "(O)18", "DisplayName": "Daffodil", "Stack": 2, "Tier": "common", "Weight": 10 },
+    { "Id": "leek", "QualifiedItemId": "(O)20", "DisplayName": "Leek", "Stack": 1, "Tier": "common", "Weight": 8 },
+    { "Id": "dandelion", "QualifiedItemId": "(O)22", "DisplayName": "Dandelion", "Stack": 2, "Tier": "common", "Weight": 10 },
+    { "Id": "spice_berry", "QualifiedItemId": "(O)396", "DisplayName": "Spice Berry", "Stack": 1, "Tier": "common", "Weight": 8 },
+    { "Id": "blackberry", "QualifiedItemId": "(O)410", "DisplayName": "Blackberry", "Stack": 2, "Tier": "common", "Weight": 8 },
+    { "Id": "hazelnut", "QualifiedItemId": "(O)408", "DisplayName": "Hazelnut", "Stack": 2, "Tier": "common", "Weight": 8 },
+    { "Id": "crocus", "QualifiedItemId": "(O)418", "DisplayName": "Crocus", "Stack": 1, "Tier": "common", "Weight": 7 },
+    { "Id": "common_mushroom", "QualifiedItemId": "(O)404", "DisplayName": "Common Mushroom", "Stack": 1, "Tier": "common", "Weight": 8 },
+    { "Id": "joja_cola", "QualifiedItemId": "(O)167", "DisplayName": "Joja Cola", "Stack": 1, "Tier": "common", "Weight": 6 },
+
+    { "Id": "topaz", "QualifiedItemId": "(O)68", "DisplayName": "Topaz", "Stack": 1, "Tier": "uncommon", "Weight": 8 },
+    { "Id": "jade", "QualifiedItemId": "(O)70", "DisplayName": "Jade", "Stack": 1, "Tier": "uncommon", "Weight": 7 },
+    { "Id": "amethyst", "QualifiedItemId": "(O)66", "DisplayName": "Amethyst", "Stack": 1, "Tier": "uncommon", "Weight": 7 },
+    { "Id": "aquamarine", "QualifiedItemId": "(O)62", "DisplayName": "Aquamarine", "Stack": 1, "Tier": "uncommon", "Weight": 7 },
+    { "Id": "fire_quartz", "QualifiedItemId": "(O)82", "DisplayName": "Fire Quartz", "Stack": 1, "Tier": "uncommon", "Weight": 6 },
+    { "Id": "frozen_geode", "QualifiedItemId": "(O)536", "DisplayName": "Frozen Geode", "Stack": 1, "Tier": "uncommon", "Weight": 6 },
+    { "Id": "omni_geode", "QualifiedItemId": "(O)749", "DisplayName": "Omni Geode", "Stack": 1, "Tier": "uncommon", "Weight": 5 },
+    { "Id": "rainbow_shell", "QualifiedItemId": "(O)394", "DisplayName": "Rainbow Shell", "Stack": 1, "Tier": "uncommon", "Weight": 4 },
+    { "Id": "sea_urchin", "QualifiedItemId": "(O)397", "DisplayName": "Sea Urchin", "Stack": 1, "Tier": "uncommon", "Weight": 5 },
+
+    { "Id": "diamond", "QualifiedItemId": "(O)72", "DisplayName": "Diamond", "Stack": 1, "Tier": "rare", "Weight": 4 },
+    { "Id": "rabbits_foot", "QualifiedItemId": "(O)446", "DisplayName": "Rabbit's Foot", "Stack": 1, "Tier": "rare", "Weight": 3 },
+    { "Id": "pearl", "QualifiedItemId": "(O)797", "DisplayName": "Pearl", "Stack": 1, "Tier": "rare", "Weight": 2 },
+    { "Id": "iridium_bar", "QualifiedItemId": "(O)337", "DisplayName": "Iridium Bar", "Stack": 1, "Tier": "rare", "Weight": 2 },
+
+    { "Id": "golden_pumpkin", "QualifiedItemId": "(O)373", "DisplayName": "Golden Pumpkin", "Stack": 1, "Tier": "grand", "Weight": 4, "RequiresGrandUnlock": false },
+    { "Id": "stardrop_tea", "QualifiedItemId": "(O)StardropTea", "DisplayName": "Stardrop Tea", "Stack": 1, "Tier": "grand", "Weight": 3, "RequiresGrandUnlock": false },
+    { "Id": "diamond_cache", "QualifiedItemId": "(O)72", "DisplayName": "Diamond", "Stack": 5, "Tier": "grand", "Weight": 4, "RequiresGrandUnlock": false },
+    { "Id": "iridium_bar_cache", "QualifiedItemId": "(O)337", "DisplayName": "Iridium Bar", "Stack": 3, "Tier": "grand", "Weight": 3, "RequiresGrandUnlock": false },
+    { "Id": "auto_petter", "QualifiedItemId": "(BC)272", "DisplayName": "Auto-Petter", "Stack": 1, "Tier": "grand", "Weight": 1, "RequiresGrandUnlock": false },
+    { "Id": "frog_egg", "QualifiedItemId": "(TR)FrogEgg", "DisplayName": "Frog Egg", "Stack": 1, "Tier": "grand", "Weight": 1, "RequiresGrandUnlock": true },
+    { "Id": "magic_quiver", "QualifiedItemId": "(TR)MagicQuiver", "DisplayName": "Magic Quiver", "Stack": 1, "Tier": "grand", "Weight": 1, "RequiresGrandUnlock": true },
+    { "Id": "fairy_box", "QualifiedItemId": "(TR)FairyBox", "DisplayName": "Fairy Box", "Stack": 1, "Tier": "grand", "Weight": 1, "RequiresGrandUnlock": true },
+    { "Id": "parrot_egg", "QualifiedItemId": "(TR)ParrotEgg", "DisplayName": "Parrot Egg", "Stack": 1, "Tier": "grand", "Weight": 1, "RequiresGrandUnlock": true },
+    { "Id": "ice_rod", "QualifiedItemId": "(TR)IceRod", "DisplayName": "Ice Rod", "Stack": 1, "Tier": "grand", "Weight": 1, "RequiresGrandUnlock": true },
+    { "Id": "iridium_spur", "QualifiedItemId": "(TR)IridiumSpur", "DisplayName": "Iridium Spur", "Stack": 1, "Tier": "grand", "Weight": 1, "RequiresGrandUnlock": true },
+    { "Id": "basilisk_paw", "QualifiedItemId": "(TR)BasiliskPaw", "DisplayName": "Basilisk Paw", "Stack": 1, "Tier": "grand", "Weight": 1, "RequiresGrandUnlock": true }
+  ]
+}

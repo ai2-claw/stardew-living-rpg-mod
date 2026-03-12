@@ -690,6 +690,7 @@ public sealed class ModEntry : Mod
     private NpcAskGateService? _npcAskGateService;
     private CommandPolicyService? _commandPolicyService;
     private TownSquareMagicianService? _townSquareMagicianService;
+    private TownSquareMagicianFlavorService? _townSquareMagicianFlavorService;
     private NPC? _townSquareMagicianHudNpc;
     private TextBox? _townSquareMagicianHudInput;
     private Rectangle _townSquareMagicianHudInputBounds;
@@ -916,6 +917,7 @@ public sealed class ModEntry : Mod
         _npcAskGateService = new NpcAskGateService();
         _commandPolicyService = new CommandPolicyService();
         _townSquareMagicianService = new TownSquareMagicianService(helper, Monitor);
+        _townSquareMagicianFlavorService = new TownSquareMagicianFlavorService(Monitor);
         _player2Client = new Player2Client();
         InitializeCustomNpcFramework(helper);
         InitializeVanillaCanonLoreFramework(helper);
@@ -1384,6 +1386,7 @@ public sealed class ModEntry : Mod
         _economyService?.RunDailyPricing(_state);
         _dailyTickService.Run(_state);
         _townSquareMagicianService?.SyncForToday(_state);
+        _townSquareMagicianFlavorService?.ResetForDay(_state.Calendar.Day);
 
         _rumorBoardService?.ExpireOverdueQuests(_state);
         _rumorBoardService?.RefreshDailyRumors(_state);
@@ -1687,25 +1690,39 @@ public sealed class ModEntry : Mod
         RebuildTownSquareMagicianHudLayout();
         SetTownSquareMagicianHudFocus(true);
 
-        var openingText = string.IsNullOrWhiteSpace(round.Prompt)
-            ? round.OpeningLine
-            : round.Prompt;
+        var openingIntroText = BuildTownSquareMagicianOpeningIntroText(round);
+        var questionText = string.IsNullOrWhiteSpace(round.Prompt) ? round.OpeningLine : round.Prompt;
         DelayedAction.functionAfterDelay(
             () =>
             {
-                if (_townSquareMagicianHudActive)
-                    ShowTownSquareMagicianBubble(npc, openingText);
+                if (!_townSquareMagicianHudActive)
+                    return;
+
+                if (string.IsNullOrWhiteSpace(openingIntroText))
+                {
+                    ShowTownSquareMagicianBubble(npc, questionText);
+                    return;
+                }
+
+                ShowTownSquareMagicianBubble(npc, openingIntroText);
+                DelayedAction.functionAfterDelay(
+                    () =>
+                    {
+                        if (_townSquareMagicianHudActive)
+                            ShowTownSquareMagicianBubble(npc, questionText);
+                    },
+                    GetTownSquareMagicianBubbleDurationMs(openingIntroText) + 150);
             },
             75);
     }
 
     private void ShowTownSquareMagicianBubble(NPC sourceNpc, string? text)
     {
-        var cleanText = (text ?? string.Empty).Trim();
+        var cleanText = TownSquareMagicianService.ClampBubbleText(text);
         if (string.IsNullOrWhiteSpace(cleanText))
             return;
 
-        var desiredDurationMs = Math.Clamp(2200 + (cleanText.Length * 35), 2200, 5200);
+        var desiredDurationMs = GetTownSquareMagicianBubbleDurationMs(cleanText);
         var liveNpc = ResolveNpcByName(sourceNpc.Name)
             ?? ResolveNpcByName(sourceNpc.displayName)
             ?? sourceNpc;
@@ -1717,6 +1734,12 @@ public sealed class ModEntry : Mod
         }
 
         Game1.drawObjectDialogue(cleanText);
+    }
+
+    private static int GetTownSquareMagicianBubbleDurationMs(string? text)
+    {
+        var cleanText = TownSquareMagicianService.ClampBubbleText(text);
+        return Math.Clamp(2200 + (cleanText.Length * 35), 2200, 5200);
     }
 
     private void EnsureTownSquareMagicianHud()
@@ -1841,22 +1864,38 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        var result = _townSquareMagicianService.SubmitGuess(_state, _townSquareMagicianHudInput.Text);
-        if (result.RewardGranted && result.RewardGoldGranted > 0)
+        var submittedText = _townSquareMagicianHudInput.Text;
+        var result = _townSquareMagicianService.SubmitGuess(_state, submittedText);
+        if (result.RewardGranted)
+            GrantTownSquareMagicianReward(result.RewardGrant);
+
+        var feedbackFlavorText = BuildTownSquareMagicianFeedbackFlavorText(result, submittedText);
+        var feedbackText = BuildTownSquareMagicianFeedbackBubbleText(result);
+        var bubbleNpc = _townSquareMagicianHudNpc;
+        if (bubbleNpc is not null)
         {
-            Game1.player.Money += result.RewardGoldGranted;
-            Game1.addHUDMessage(new HUDMessage(
-                I18n.Get(
-                    "magician.hud.reward",
-                    $"Won {result.RewardGoldGranted}g from today's trick.",
-                    new { reward = result.RewardGoldGranted }),
-                HUDMessage.newQuest_type));
+            if (string.IsNullOrWhiteSpace(feedbackFlavorText))
+            {
+                ShowTownSquareMagicianBubble(bubbleNpc, feedbackText);
+            }
+            else
+            {
+                ShowTownSquareMagicianBubble(bubbleNpc, feedbackFlavorText);
+                DelayedAction.functionAfterDelay(
+                    () =>
+                    {
+                        if (_townSquareMagicianHudActive || result.SessionEnded)
+                            ShowTownSquareMagicianBubble(bubbleNpc, feedbackText);
+                    },
+                    GetTownSquareMagicianBubbleDurationMs(feedbackFlavorText) + 150);
+            }
+        }
+        else
+        {
+            Game1.drawObjectDialogue(feedbackText);
         }
 
-        if (_townSquareMagicianHudNpc is not null)
-            ShowTownSquareMagicianBubble(_townSquareMagicianHudNpc, result.Feedback);
-        else
-            Game1.drawObjectDialogue(result.Feedback);
+        QueueTownSquareMagicianFollowUpPrefetch(result, submittedText);
 
         _townSquareMagicianHudInput.Text = string.Empty;
         _townSquareMagicianHudSessionEnded = result.SessionEnded;
@@ -1866,6 +1905,179 @@ public sealed class ModEntry : Mod
 
         if (result.SessionEnded)
             CloseTownSquareMagicianHud(playSound: false);
+    }
+
+    private string BuildTownSquareMagicianOpeningIntroText(TownSquareMagicianRoundView round)
+    {
+        if (_townSquareMagicianFlavorService is null)
+            return round.OpeningLine;
+
+        var request = _townSquareMagicianFlavorService.BuildOpeningRequest(_state, round);
+        return _townSquareMagicianFlavorService.BuildOpeningIntroText(request);
+    }
+
+    private string BuildTownSquareMagicianFeedbackFlavorText(TownSquareMagicianGuessResult result, string submittedText)
+    {
+        if (_townSquareMagicianFlavorService is null)
+            return string.Empty;
+
+        var request = _townSquareMagicianFlavorService.BuildFeedbackRequest(_state, result, submittedText);
+        return _townSquareMagicianFlavorService.BuildFeedbackFlavorText(request);
+    }
+
+    private static string BuildTownSquareMagicianFeedbackBubbleText(TownSquareMagicianGuessResult result)
+    {
+        return result.Feedback;
+    }
+
+    private void GrantTownSquareMagicianReward(TownSquareMagicianRewardGrant? rewardGrant)
+    {
+        if (rewardGrant is null)
+            return;
+
+        if (string.Equals(rewardGrant.RewardType, "item", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(rewardGrant.QualifiedItemId))
+        {
+            try
+            {
+                var rewardItem = ItemRegistry.Create(rewardGrant.QualifiedItemId, rewardGrant.Stack);
+                if (rewardItem is not null)
+                {
+                    var hudKey = string.Equals(rewardGrant.Tier, "grand", StringComparison.OrdinalIgnoreCase)
+                        ? "magician.hud.reward_grand"
+                        : "magician.hud.reward_item";
+                    Game1.player.addItemByMenuIfNecessary(rewardItem);
+                    Game1.addHUDMessage(new HUDMessage(
+                        I18n.Get(
+                            hudKey,
+                            $"Received {TownSquareMagicianService.BuildRewardDisplayText(rewardGrant)}.",
+                            new { reward = TownSquareMagicianService.BuildRewardDisplayText(rewardGrant) }),
+                        HUDMessage.newQuest_type));
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"Failed to grant magician item reward '{rewardGrant.QualifiedItemId}': {ex.Message}", LogLevel.Warn);
+            }
+        }
+
+        if (rewardGrant.GoldAmount <= 0)
+            return;
+
+        Game1.player.Money += rewardGrant.GoldAmount;
+        Game1.addHUDMessage(new HUDMessage(
+            I18n.Get(
+                "magician.hud.reward",
+                $"Won {rewardGrant.GoldAmount}g.",
+                new { reward = rewardGrant.GoldAmount }),
+            HUDMessage.newQuest_type));
+    }
+
+    private void QueueTownSquareMagicianFollowUpPrefetch(TownSquareMagicianGuessResult result, string submittedText)
+    {
+        if (_townSquareMagicianFlavorService is null || _townSquareMagicianService is null)
+            return;
+
+        TownSquareMagicianFlavorRequest? request = null;
+        if (result.RewardGranted)
+        {
+            var nextRound = _townSquareMagicianService.PeekUpcomingRound(_state);
+            if (nextRound is not null)
+                request = _townSquareMagicianFlavorService.BuildOpeningRequest(_state, nextRound);
+        }
+        else if (result.SessionEnded)
+        {
+            request = null;
+        }
+        else if (result.CurrentRound is not null)
+        {
+            var trimmedInput = (submittedText ?? string.Empty).Trim();
+            if (!string.Equals(trimmedInput, "hint", StringComparison.OrdinalIgnoreCase)
+                && result.CurrentRound.AttemptsRemaining <= 1)
+            {
+                request = _townSquareMagicianFlavorService.BuildIntentRequest(_state, result.CurrentRound, "consolation_sting", result.Feedback);
+            }
+        }
+
+        QueueTownSquareMagicianFlavorPrefetch(request);
+    }
+
+    private void QueueTownSquareMagicianFlavorPrefetch(TownSquareMagicianFlavorRequest? request)
+    {
+        if (request is null || _townSquareMagicianFlavorService is null)
+            return;
+        if (!CanUseTownSquareMagicianFlavorGenerator())
+        {
+            _townSquareMagicianFlavorService.LogFlavorFallback("player2-unavailable", request);
+            return;
+        }
+
+        var client = _authenticatedPlayer2Client ?? _player2Client;
+        var apiBaseUrl = _config.Player2ApiBaseUrl;
+        var player2Key = _player2Key;
+        if (client is null || string.IsNullOrWhiteSpace(apiBaseUrl) || string.IsNullOrWhiteSpace(player2Key))
+            return;
+        if (!_townSquareMagicianFlavorService.TryReservePrefetch(request))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            string? aside = null;
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                aside = await client.TryGenerateMagicianFlavorAsync(
+                    apiBaseUrl,
+                    player2Key,
+                    BuildTownSquareMagicianGenerateRequest(request),
+                    cts.Token);
+            }
+            catch (Exception ex)
+            {
+                _townSquareMagicianFlavorService.LogFlavorFallback(ex.Message, request);
+            }
+            finally
+            {
+                _townSquareMagicianFlavorService.CompletePrefetch(request, aside);
+            }
+        });
+    }
+
+    private GenerateMagicianFlavorRequest BuildTownSquareMagicianGenerateRequest(TownSquareMagicianFlavorRequest request)
+    {
+        return new GenerateMagicianFlavorRequest
+        {
+            Context = new MagicianFlavorContext
+            {
+                Intent = request.Intent,
+                CoreText = request.CoreText,
+                RoundMode = request.RoundMode,
+                ArcStageId = request.ArcStageId,
+                PlayStyleTag = request.PlayStyleTag,
+                TheatricalMode = request.TheatricalMode,
+                RewardClaimedToday = request.RewardClaimedToday,
+                IsBonusRound = request.IsBonusRound,
+                ConsecutiveWins = request.ConsecutiveWins,
+                ConsecutiveLosses = request.ConsecutiveLosses,
+                AttemptsUsed = request.AttemptsUsed,
+                HintsUsed = request.HintsUsed,
+                LatestHeadline = request.LatestHeadline ?? string.Empty,
+                RecentTownEventSummary = request.RecentTownEventSummary ?? string.Empty
+            }
+        };
+    }
+
+    private void TryWarmTownSquareMagicianDailyIntro()
+    {
+        if (_townSquareMagicianService is null || _townSquareMagicianFlavorService is null)
+            return;
+
+        var round = _townSquareMagicianService.PeekCurrentRound(_state);
+        if (round is null)
+            return;
+
+        QueueTownSquareMagicianFlavorPrefetch(_townSquareMagicianFlavorService.BuildOpeningRequest(_state, round));
     }
 
     private string BuildNpcFollowUpFlavorText(NPC npc)
@@ -11522,6 +11734,7 @@ public sealed class ModEntry : Mod
 
             _pendingNewspaperRefreshDay = -1;
             Monitor.Log($"Newspaper build completed: day={issue.Day}, headline='{issue.Headline}'", LogLevel.Debug);
+            TryWarmTownSquareMagicianDailyIntro();
 
             if (_pendingDayStartStreamRecycleDay == issue.Day)
             {
@@ -17932,6 +18145,17 @@ public sealed class ModEntry : Mod
     private bool CanUsePlayer2HeadlineGenerator()
     {
         if (!_config.EnablePlayer2)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(_config.Player2ApiBaseUrl) || string.IsNullOrWhiteSpace(_player2Key))
+            return false;
+
+        return _authenticatedPlayer2Client is not null || _player2Client is not null;
+    }
+
+    private bool CanUseTownSquareMagicianFlavorGenerator()
+    {
+        if (!_config.EnablePlayer2 || _townSquareMagicianFlavorService is null)
             return false;
 
         if (string.IsNullOrWhiteSpace(_config.Player2ApiBaseUrl) || string.IsNullOrWhiteSpace(_player2Key))

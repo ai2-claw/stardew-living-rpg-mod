@@ -2,20 +2,28 @@ using System.Globalization;
 using StardewModdingAPI;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Utils;
+using StardewValley;
 
 namespace StardewLivingRPG.Systems;
 
 public sealed class TownSquareMagicianService
 {
     public const string MagicianNpcName = "Morrow";
+    public const int MaxBubbleTextLength = 50;
+    private const int RarePityThreshold = 7;
+    private const int GrandPityThreshold = 120;
+    private const int GrandTrinketUnlockYear = 2;
+    private const int BottomOfMinesLevel = 120;
 
     private readonly IMonitor _monitor;
     private readonly List<TownSquareMagicianRoundDefinition> _rounds;
+    private readonly List<TownSquareMagicianRewardDefinition> _rewardPool;
 
     public TownSquareMagicianService(IModHelper helper, IMonitor monitor)
     {
         _monitor = monitor;
         _rounds = LoadCatalog(helper);
+        _rewardPool = LoadRewardPool(helper);
     }
 
     public bool IsMagicianNpc(string? rawName)
@@ -35,6 +43,38 @@ public sealed class TownSquareMagicianService
         return round is null ? null : BuildRoundView(state.MiniGames.TownSquareMagician, round);
     }
 
+    public TownSquareMagicianRoundView? PeekUpcomingRound(SaveState state)
+    {
+        var featuredRound = EnsureRoundForToday(state, resetProgressIfRoundChanged: true);
+        if (featuredRound is null)
+            return null;
+
+        var progress = state.MiniGames.TownSquareMagician;
+        var finishedRound = string.Equals(progress.LastOutcome, "won", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(progress.LastOutcome, "lost", StringComparison.OrdinalIgnoreCase);
+
+        var round = GetRoundById(progress.RoundId) ?? featuredRound;
+        if (progress.RewardClaimedToday && finishedRound)
+            round = SelectNextBonusRound(state, featuredRound) ?? round;
+        else if (string.IsNullOrWhiteSpace(progress.RoundId))
+            round = featuredRound;
+
+        var previewProgress = new TownSquareMagicianState
+        {
+            Day = progress.Day,
+            Season = progress.Season,
+            FeaturedRoundId = progress.FeaturedRoundId,
+            RoundId = round.Id,
+            RoundMode = round.Mode,
+            RewardClaimedToday = progress.RewardClaimedToday,
+            SolvedToday = progress.SolvedToday,
+            LastFeedback = progress.LastFeedback,
+            LastOutcome = "fresh"
+        };
+
+        return BuildRoundView(previewProgress, round);
+    }
+
     public TownSquareMagicianRoundView? BeginRoundSession(SaveState state)
     {
         var round = PrepareRoundForSession(state);
@@ -42,8 +82,17 @@ public sealed class TownSquareMagicianService
             return null;
 
         var progress = state.MiniGames.TownSquareMagician;
+        var isBonusRound = IsBonusRound(progress, round);
+        if (progress.SessionsStartedToday == 0)
+            AwardArcProgress(progress, 1);
+        if (isBonusRound)
+        {
+            progress.LifetimeBonusRoundsPlayed += 1;
+            AwardArcProgress(progress, 1);
+        }
         progress.SessionsStartedToday += 1;
         state.Telemetry.Daily.TownSquareMagicianSessions += 1;
+        progress.LastPlayStyleTag = ResolvePlayStyleTag(progress, round, solved: false);
         return BuildRoundView(progress, round);
     }
 
@@ -55,7 +104,7 @@ public sealed class TownSquareMagicianService
             return new TownSquareMagicianGuessResult
             {
                 Accepted = false,
-                Feedback = I18n.Get("magician.feedback.unavailable", "No riddle is ready today.")
+                Feedback = ClampBubbleText(I18n.Get("magician.feedback.unavailable", "No riddle is ready today."))
             };
         }
 
@@ -64,8 +113,8 @@ public sealed class TownSquareMagicianService
         if (progress.AttemptsUsed >= round.MaxAttempts)
         {
             progress.LastOutcome = "lost";
-            progress.LastFeedback = I18n.Get("magician.feedback.session_locked", "That round is spent. Ask again if you want another go.");
-            return BuildResult(progress, round, false, false, false, true, 0, progress.LastFeedback);
+            progress.LastFeedback = ClampBubbleText(I18n.Get("magician.feedback.session_locked", "That round is spent. Ask again if you want another go."));
+            return BuildResult(progress, round, false, false, false, true, null, progress.LastFeedback);
         }
 
         if (string.Equals(normalizedGuess, "hint", StringComparison.OrdinalIgnoreCase))
@@ -94,6 +143,7 @@ public sealed class TownSquareMagicianService
         progress.LastOutcome = "fresh";
         progress.LastFeedback = string.Empty;
         progress.SessionsStartedToday = 0;
+        progress.LastPlayStyleTag = "steady";
         progress.PlayedRoundIdsToday.Clear();
     }
 
@@ -104,7 +154,7 @@ public sealed class TownSquareMagicianService
             return "Magician | no round loaded";
 
         var progress = state.MiniGames.TownSquareMagician;
-        return $"Magician | npc={MagicianNpcName}, featured={progress.FeaturedRoundId}, active={round.Id}, mode={round.Mode}, attempts={progress.AttemptsUsed}/{round.MaxAttempts}, solved={progress.SolvedToday}, rewardClaimed={progress.RewardClaimedToday}, lastOutcome={progress.LastOutcome}";
+        return $"Magician | npc={MagicianNpcName}, featured={progress.FeaturedRoundId}, active={round.Id}, mode={round.Mode}, attempts={progress.AttemptsUsed}/{round.MaxAttempts}, solved={progress.SolvedToday}, rewardClaimed={progress.RewardClaimedToday}, rarePity={progress.RareDryRewardDays}, grandPity={progress.GrandDryRewardDays}, lastOutcome={progress.LastOutcome}, arc={progress.ArcStageId}, style={progress.LastPlayStyleTag}";
     }
 
     private TownSquareMagicianGuessResult SubmitNumberGuess(
@@ -123,8 +173,8 @@ public sealed class TownSquareMagicianService
                 solved: false,
                 rewardGranted: false,
                 sessionEnded: false,
-                rewardGoldGranted: 0,
-                feedback: I18n.Get("magician.feedback.invalid_number", "Speak a whole number, not smoke."));
+                rewardGrant: null,
+                feedback: ClampBubbleText(I18n.Get("magician.feedback.invalid_number", "Speak a whole number, not smoke.")));
         }
 
         if (guessedNumber < round.MinNumber || guessedNumber > round.MaxNumber)
@@ -136,11 +186,11 @@ public sealed class TownSquareMagicianService
                 solved: false,
                 rewardGranted: false,
                 sessionEnded: false,
-                rewardGoldGranted: 0,
-                feedback: I18n.Get(
+                rewardGrant: null,
+                feedback: ClampBubbleText(I18n.Get(
                     "magician.feedback.out_of_range",
                     $"Keep it between {round.MinNumber} and {round.MaxNumber}.",
-                    new { min = round.MinNumber, max = round.MaxNumber }));
+                    new { min = round.MinNumber, max = round.MaxNumber })));
         }
 
         progress.AttemptsUsed += 1;
@@ -152,7 +202,7 @@ public sealed class TownSquareMagicianService
         if (guessedNumber == answerNumber)
             return ResolveWin(state, progress, round);
 
-        var clue = GetClueForAttempt(round, progress.AttemptsUsed - 1);
+        var clue = GetClueForAttempt(round, progress.AttemptsUsed + progress.HintsUsed - 1);
         var directionKey = guessedNumber < answerNumber ? "magician.feedback.number.higher" : "magician.feedback.number.lower";
         var fallback = guessedNumber < answerNumber ? "Higher." : "Lower.";
 
@@ -163,9 +213,10 @@ public sealed class TownSquareMagicianService
                 $"The number was {answerNumber}. Come back if you want another crack at it.",
                 new { answer = answerNumber });
             MarkRoundPlayed(progress, round.Id);
+            RecordLoss(progress, round);
             progress.LastOutcome = "lost";
             progress.LastFeedback = answerText;
-            return BuildResult(progress, round, true, false, false, true, 0, answerText);
+            return BuildResult(progress, round, true, false, false, true, null, answerText);
         }
 
         var hintText = string.IsNullOrWhiteSpace(clue)
@@ -181,7 +232,7 @@ public sealed class TownSquareMagicianService
 
         progress.LastOutcome = "in_progress";
         progress.LastFeedback = hintText;
-        return BuildResult(progress, round, true, false, false, false, 0, hintText);
+        return BuildResult(progress, round, true, false, false, false, null, hintText);
     }
 
     private TownSquareMagicianGuessResult SubmitHintRequest(
@@ -194,14 +245,17 @@ public sealed class TownSquareMagicianService
             var noHintText = I18n.Get("magician.feedback.hint.none", "That is all the free smoke I can spare.");
             progress.LastOutcome = progress.AttemptsUsed > 0 ? "in_progress" : "fresh";
             progress.LastFeedback = noHintText;
-            return BuildResult(progress, round, true, false, false, false, 0, noHintText);
+            return BuildResult(progress, round, true, false, false, false, null, noHintText);
         }
 
         var clue = GetClueForAttempt(round, clueIndex);
         progress.HintsUsed += 1;
+        progress.LifetimeHintsUsed += 1;
+        AwardArcProgress(progress, 1);
         progress.LastOutcome = progress.AttemptsUsed > 0 || progress.HintsUsed > 0 ? "in_progress" : "fresh";
+        progress.LastPlayStyleTag = ResolvePlayStyleTag(progress, round, solved: false);
         progress.LastFeedback = I18n.Get("magician.feedback.hint.clue", $"Hint: {clue}", new { clue });
-        return BuildResult(progress, round, true, false, false, false, 0, progress.LastFeedback);
+        return BuildResult(progress, round, true, false, false, false, null, progress.LastFeedback);
     }
 
     private TownSquareMagicianGuessResult SubmitWordGuess(
@@ -220,8 +274,8 @@ public sealed class TownSquareMagicianService
                 solved: false,
                 rewardGranted: false,
                 sessionEnded: false,
-                rewardGoldGranted: 0,
-                feedback: I18n.Get("magician.feedback.invalid_word", "Give me a word, plain and clear."));
+                rewardGrant: null,
+                feedback: ClampBubbleText(I18n.Get("magician.feedback.invalid_word", "Give me a word, plain and clear.")));
         }
 
         progress.AttemptsUsed += 1;
@@ -235,19 +289,20 @@ public sealed class TownSquareMagicianService
                 $"The word was {round.Answer}. Ask again if you want another try.",
                 new { answer = round.Answer });
             MarkRoundPlayed(progress, round.Id);
+            RecordLoss(progress, round);
             progress.LastOutcome = "lost";
             progress.LastFeedback = answerText;
-            return BuildResult(progress, round, true, false, false, true, 0, answerText);
+            return BuildResult(progress, round, true, false, false, true, null, answerText);
         }
 
-        var clue = GetClueForAttempt(round, progress.AttemptsUsed - 1);
+        var clue = GetClueForAttempt(round, progress.AttemptsUsed + progress.HintsUsed - 1);
         var hintText = string.IsNullOrWhiteSpace(clue)
             ? I18n.Get("magician.feedback.word.retry", "Not that one. Listen close and try again.")
             : I18n.Get("magician.feedback.word.clue", $"Not quite. Clue: {clue}", new { clue });
 
         progress.LastOutcome = "in_progress";
         progress.LastFeedback = hintText;
-        return BuildResult(progress, round, true, false, false, false, 0, hintText);
+        return BuildResult(progress, round, true, false, false, false, null, hintText);
     }
 
     private TownSquareMagicianGuessResult ResolveWin(
@@ -255,28 +310,37 @@ public sealed class TownSquareMagicianService
         TownSquareMagicianState progress,
         TownSquareMagicianRoundDefinition round)
     {
-        var rewardGranted = !progress.RewardClaimedToday && round.RewardGold > 0;
+        var rewardGrant = !progress.RewardClaimedToday ? ResolveRewardGrant(state, progress, round) : null;
+        var rewardGranted = rewardGrant is not null;
         if (rewardGranted)
         {
             progress.RewardClaimedToday = true;
             progress.LifetimeRewardClaims += 1;
             state.Telemetry.Daily.TownSquareMagicianRewardClaims += 1;
+            UpdateRewardPity(progress, rewardGrant!);
         }
 
         MarkRoundPlayed(progress, round.Id);
         progress.SolvedToday = true;
         progress.LifetimeWins += 1;
+        progress.ConsecutiveWins += 1;
+        progress.ConsecutiveLosses = 0;
+        progress.LastPlayStyleTag = ResolvePlayStyleTag(progress, round, solved: true);
+        AwardArcProgress(progress, rewardGranted ? 3 : 2);
         progress.LastOutcome = "won";
         state.Telemetry.Daily.TownSquareMagicianWins += 1;
 
+        var rewardText = BuildRewardWinText(rewardGrant);
+        var rewardSuffix = BuildRewardWinSuffix(rewardGrant);
+        var combinedRewardText = string.IsNullOrWhiteSpace(round.VictoryLine)
+            ? rewardText
+            : $"{round.VictoryLine} {rewardSuffix}";
         var feedback = rewardGranted
-            ? string.IsNullOrWhiteSpace(round.VictoryLine)
-                ? I18n.Get("magician.feedback.win_reward", $"Well struck. Your prize is {round.RewardGold}g.", new { reward = round.RewardGold })
-                : $"{round.VictoryLine} {I18n.Get("magician.feedback.win_reward_suffix", $"Your prize is {round.RewardGold}g.", new { reward = round.RewardGold })}"
-            : I18n.Get("magician.feedback.win_no_reward", "You have already claimed today's reward, but the trick still bowed to you.");
+            ? (combinedRewardText.Length <= MaxBubbleTextLength ? combinedRewardText : rewardText)
+            : I18n.Get("magician.feedback.win_no_reward", "Prize is claimed, but you still got it.");
 
         progress.LastFeedback = feedback;
-        return BuildResult(progress, round, true, true, rewardGranted, true, rewardGranted ? round.RewardGold : 0, feedback);
+        return BuildResult(progress, round, true, true, rewardGranted, true, rewardGrant, feedback);
     }
 
     private TownSquareMagicianGuessResult BuildResult(
@@ -286,7 +350,7 @@ public sealed class TownSquareMagicianService
         bool solved,
         bool rewardGranted,
         bool sessionEnded,
-        int rewardGoldGranted,
+        TownSquareMagicianRewardGrant? rewardGrant,
         string feedback)
     {
         return new TownSquareMagicianGuessResult
@@ -295,8 +359,8 @@ public sealed class TownSquareMagicianService
             Solved = solved,
             RewardGranted = rewardGranted,
             SessionEnded = sessionEnded,
-            RewardGoldGranted = rewardGoldGranted,
-            Feedback = feedback,
+            RewardGrant = rewardGrant,
+            Feedback = ClampBubbleText(feedback),
             CurrentRound = BuildRoundView(progress, round)
         };
     }
@@ -310,15 +374,17 @@ public sealed class TownSquareMagicianService
             ModeLabel = string.Equals(round.Mode, "guess_number", StringComparison.OrdinalIgnoreCase)
                 ? I18n.Get("magician.mode.number", "Guess the Number")
                 : I18n.Get("magician.mode.word", "Guess the Word"),
-            Prompt = round.Prompt,
-            OpeningLine = round.OpeningLine,
-            RewardLabel = I18n.Get("magician.reward.gold", $"+{round.RewardGold}g", new { reward = round.RewardGold }),
+            Prompt = BuildPromptText(round),
+            OpeningLine = ClampBubbleText(round.OpeningLine),
+            RewardLabel = _rewardPool.Count > 0
+                ? I18n.Get("magician.reward.item", "A small trinket")
+                : I18n.Get("magician.reward.gold", $"+{round.RewardGold}g", new { reward = round.RewardGold }),
             AttemptsUsed = progress.AttemptsUsed,
             AttemptsRemaining = Math.Max(0, round.MaxAttempts - progress.AttemptsUsed),
             MaxAttempts = round.MaxAttempts,
             RewardClaimedToday = progress.RewardClaimedToday,
             SolvedToday = progress.SolvedToday,
-            LastFeedback = progress.LastFeedback
+            LastFeedback = ClampBubbleText(progress.LastFeedback)
         };
     }
 
@@ -327,7 +393,7 @@ public sealed class TownSquareMagicianService
         var progress = state.MiniGames.TownSquareMagician;
         var today = Math.Max(1, state.Calendar.Day);
         var season = (state.Calendar.Season ?? string.Empty).Trim().ToLowerInvariant();
-        var featuredRound = ResolveRoundForToday(today, season);
+        var featuredRound = ResolveRoundForToday(state);
         if (featuredRound is null)
             return null;
 
@@ -349,6 +415,7 @@ public sealed class TownSquareMagicianService
         progress.LastOutcome = "fresh";
         progress.LastFeedback = string.Empty;
         progress.SessionsStartedToday = 0;
+        progress.LastPlayStyleTag = "steady";
         progress.PlayedRoundIdsToday.Clear();
         return featuredRound;
     }
@@ -412,11 +479,7 @@ public sealed class TownSquareMagicianService
     {
         var progress = state.MiniGames.TownSquareMagician;
         var usedIds = new HashSet<string>(progress.PlayedRoundIdsToday.Where(id => !string.IsNullOrWhiteSpace(id)), StringComparer.OrdinalIgnoreCase);
-        var dayKey = $"{Math.Max(1, state.Calendar.Year)}:{progress.Season}:{progress.Day}";
-        var orderedRounds = _rounds
-            .OrderBy(round => ComputeStableRoundWeight(dayKey, round.Id))
-            .ThenBy(round => round.Id, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var orderedRounds = GetOrderedRoundsForDay(state);
 
         var nextRound = orderedRounds.FirstOrDefault(round => !usedIds.Contains(round.Id));
         if (nextRound is not null)
@@ -437,6 +500,57 @@ public sealed class TownSquareMagicianService
         progress.PlayedRoundIdsToday.Add(roundId);
     }
 
+    private static bool IsBonusRound(TownSquareMagicianState progress, TownSquareMagicianRoundDefinition round)
+    {
+        return progress.RewardClaimedToday
+            && !string.IsNullOrWhiteSpace(progress.FeaturedRoundId)
+            && !string.Equals(progress.FeaturedRoundId, round.Id, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void RecordLoss(TownSquareMagicianState progress, TownSquareMagicianRoundDefinition round)
+    {
+        progress.LifetimeLosses += 1;
+        progress.ConsecutiveLosses += 1;
+        progress.ConsecutiveWins = 0;
+        progress.LastPlayStyleTag = ResolvePlayStyleTag(progress, round, solved: false);
+        AwardArcProgress(progress, 1);
+    }
+
+    private static string ResolvePlayStyleTag(TownSquareMagicianState progress, TownSquareMagicianRoundDefinition round, bool solved)
+    {
+        if (progress.HintsUsed >= 2)
+            return "careful";
+        if (solved && progress.AttemptsUsed <= 1)
+            return "sharp";
+        if (progress.AttemptsUsed >= Math.Max(1, round.MaxAttempts - 1))
+            return "dogged";
+        if (IsBonusRound(progress, round))
+            return "restless";
+        return "steady";
+    }
+
+    private static void AwardArcProgress(TownSquareMagicianState progress, int amount)
+    {
+        if (amount <= 0)
+            return;
+
+        progress.ArcProgressPoints += amount;
+        progress.ArcStageId = ResolveArcStageId(progress.ArcProgressPoints);
+    }
+
+    private static string ResolveArcStageId(int points)
+    {
+        if (points >= 24)
+            return "town_mirror";
+        if (points >= 16)
+            return "old_roads";
+        if (points >= 9)
+            return "house_of_cards";
+        if (points >= 4)
+            return "keen_eye";
+        return "street_smoke";
+    }
+
     private static int ComputeStableRoundWeight(string dayKey, string roundId)
     {
         unchecked
@@ -448,32 +562,55 @@ public sealed class TownSquareMagicianService
         }
     }
 
-    private TownSquareMagicianRoundDefinition? ResolveRoundForToday(int day, string season)
+    private TownSquareMagicianRoundDefinition? ResolveRoundForToday(SaveState state)
     {
         if (_rounds.Count == 0)
             return null;
 
-        var exact = _rounds.FirstOrDefault(round =>
-            round.Day == day
-            && (string.IsNullOrWhiteSpace(round.Season) || string.Equals(round.Season, season, StringComparison.OrdinalIgnoreCase)));
-        if (exact is not null)
-            return exact;
-
-        var byDay = _rounds.FirstOrDefault(round => round.Day == day);
-        if (byDay is not null)
-            return byDay;
-
-        var index = (Math.Max(1, day) - 1) % _rounds.Count;
-        return _rounds[index];
+        return GetOrderedRoundsForDay(state).FirstOrDefault();
     }
 
     private static string GetClueForAttempt(TownSquareMagicianRoundDefinition round, int clueIndex)
     {
-        if (round.Clues.Count == 0)
+        if (round.Clues.Count == 0 || clueIndex < 0 || clueIndex >= round.Clues.Count)
             return string.Empty;
 
-        var safeIndex = Math.Clamp(clueIndex, 0, round.Clues.Count - 1);
-        return (round.Clues[safeIndex] ?? string.Empty).Trim();
+        return ClampBubbleText((round.Clues[clueIndex] ?? string.Empty).Trim());
+    }
+
+    private static string BuildPromptText(TownSquareMagicianRoundDefinition round)
+    {
+        if (string.Equals(round.Mode, "guess_number", StringComparison.OrdinalIgnoreCase))
+        {
+            return ClampBubbleText(I18n.Get(
+                "magician.prompt.number",
+                $"Guess a number from {round.MinNumber} to {round.MaxNumber}.",
+                new
+                {
+                    min = round.MinNumber,
+                    max = round.MaxNumber
+                }));
+        }
+
+        return ClampBubbleText(I18n.Get("magician.prompt.word", "Guess the hidden word."));
+    }
+
+    public static string ClampBubbleText(string? rawText)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+            return string.Empty;
+
+        var value = rawText
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
+        while (value.Contains("  ", StringComparison.Ordinal))
+            value = value.Replace("  ", " ", StringComparison.Ordinal);
+
+        if (value.Length <= MaxBubbleTextLength)
+            return value;
+
+        return value[..(MaxBubbleTextLength - 3)].TrimEnd() + "...";
     }
 
     private static string NormalizeWordGuess(string? rawGuess)
@@ -495,7 +632,11 @@ public sealed class TownSquareMagicianService
         {
             var catalog = helper.Data.ReadJsonFile<TownSquareMagicianRoundCatalog>("assets/town-square-magician-rounds.json");
             if (catalog?.Rounds is not null && catalog.Rounds.Count > 0)
+            {
+                ValidateCatalogTextLengths(catalog.Rounds);
+                ValidateCatalogCount(catalog.Rounds);
                 return catalog.Rounds;
+            }
         }
         catch (Exception ex)
         {
@@ -534,11 +675,301 @@ public sealed class TownSquareMagicianService
             }
         };
     }
+
+    private List<TownSquareMagicianRewardDefinition> LoadRewardPool(IModHelper helper)
+    {
+        try
+        {
+            var pool = helper.Data.ReadJsonFile<TownSquareMagicianRewardCatalog>("assets/town-square-magician-rewards.json");
+            if (pool?.Rewards is not null && pool.Rewards.Count > 0)
+            {
+                return pool.Rewards
+                    .Where(reward =>
+                        !string.IsNullOrWhiteSpace(reward.Id)
+                        && !string.IsNullOrWhiteSpace(reward.QualifiedItemId)
+                        && reward.Weight > 0)
+                    .ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            _monitor.Log($"Failed to load magician reward pool: {ex.Message}", LogLevel.Warn);
+        }
+
+        return new List<TownSquareMagicianRewardDefinition>();
+    }
+
+    private TownSquareMagicianRewardGrant? ResolveRewardGrant(
+        SaveState state,
+        TownSquareMagicianState progress,
+        TownSquareMagicianRoundDefinition round)
+    {
+        var itemReward = ResolveItemReward(state, progress, round);
+        if (itemReward is not null)
+            return itemReward;
+
+        if (round.RewardGold <= 0)
+            return null;
+
+        return new TownSquareMagicianRewardGrant
+        {
+            RewardType = "gold",
+            GoldAmount = round.RewardGold,
+            DisplayName = $"{round.RewardGold}g",
+            Tier = "common"
+        };
+    }
+
+    private TownSquareMagicianRewardGrant? ResolveItemReward(
+        SaveState state,
+        TownSquareMagicianState progress,
+        TownSquareMagicianRoundDefinition round)
+    {
+        if (_rewardPool.Count == 0)
+            return null;
+
+        var key = $"{BuildDayKey(state)}:{round.Id}:reward";
+        var targetTier = ResolveRewardTier(progress, key);
+        var grandRewardUnlocked = IsGrandRewardUnlocked(state);
+        TownSquareMagicianRewardDefinition? reward = null;
+        foreach (var tier in GetRewardTierFallbacks(targetTier))
+        {
+            reward = ResolveWeightedRewardForTier(key, tier, grandRewardUnlocked);
+            if (reward is not null)
+                break;
+        }
+        if (reward is null)
+            return null;
+
+        return new TownSquareMagicianRewardGrant
+        {
+            RewardType = "item",
+            QualifiedItemId = reward.QualifiedItemId,
+            Stack = Math.Max(1, reward.Stack),
+            DisplayName = string.IsNullOrWhiteSpace(reward.DisplayName) ? reward.QualifiedItemId : reward.DisplayName,
+            Tier = reward.Tier
+        };
+    }
+
+    private static string BuildRewardWinText(TownSquareMagicianRewardGrant? rewardGrant)
+    {
+        if (rewardGrant is null)
+            return string.Empty;
+
+        if (string.Equals(rewardGrant.RewardType, "item", StringComparison.OrdinalIgnoreCase))
+        {
+            var key = string.Equals(rewardGrant.Tier, "grand", StringComparison.OrdinalIgnoreCase)
+                ? "magician.feedback.win_reward_grand"
+                : "magician.feedback.win_reward_item";
+            return I18n.Get(
+                key,
+                $"Take this: {BuildRewardDisplayText(rewardGrant)}.",
+                new { reward = BuildRewardDisplayText(rewardGrant) });
+        }
+
+        return I18n.Get(
+            "magician.feedback.win_reward",
+            $"Well struck. Prize: {rewardGrant.GoldAmount}g.",
+            new { reward = rewardGrant.GoldAmount });
+    }
+
+    private static string BuildRewardWinSuffix(TownSquareMagicianRewardGrant? rewardGrant)
+    {
+        if (rewardGrant is null)
+            return string.Empty;
+
+        if (string.Equals(rewardGrant.RewardType, "item", StringComparison.OrdinalIgnoreCase))
+        {
+            var key = string.Equals(rewardGrant.Tier, "grand", StringComparison.OrdinalIgnoreCase)
+                ? "magician.feedback.win_reward_grand_suffix"
+                : "magician.feedback.win_reward_item_suffix";
+            return I18n.Get(
+                key,
+                $"Take this: {BuildRewardDisplayText(rewardGrant)}.",
+                new { reward = BuildRewardDisplayText(rewardGrant) });
+        }
+
+        return I18n.Get(
+            "magician.feedback.win_reward_suffix",
+            $"Prize: {rewardGrant.GoldAmount}g.",
+            new { reward = rewardGrant.GoldAmount });
+    }
+
+    public static string BuildRewardDisplayText(TownSquareMagicianRewardGrant? rewardGrant)
+    {
+        if (rewardGrant is null)
+            return string.Empty;
+
+        var name = (rewardGrant.DisplayName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            name = string.Equals(rewardGrant.RewardType, "gold", StringComparison.OrdinalIgnoreCase)
+                ? $"{rewardGrant.GoldAmount}g"
+                : rewardGrant.QualifiedItemId;
+
+        return rewardGrant.Stack > 1 ? $"{rewardGrant.Stack}x {name}" : name;
+    }
+
+    private void ValidateCatalogTextLengths(IEnumerable<TownSquareMagicianRoundDefinition> rounds)
+    {
+        foreach (var round in rounds)
+        {
+            if (round is null)
+                continue;
+
+            WarnIfTooLong(round.Id, "Prompt", round.Prompt);
+            WarnIfTooLong(round.Id, "OpeningLine", round.OpeningLine);
+            WarnIfTooLong(round.Id, "VictoryLine", round.VictoryLine);
+            foreach (var clue in round.Clues)
+                WarnIfTooLong(round.Id, "Clue", clue);
+        }
+    }
+
+    private void ValidateCatalogCount(IEnumerable<TownSquareMagicianRoundDefinition> rounds)
+    {
+        var count = rounds.Count();
+        if (count < 1000)
+            _monitor.Log($"Magician catalog has {count} rounds; target is 1000.", LogLevel.Warn);
+    }
+
+    private List<TownSquareMagicianRoundDefinition> GetOrderedRoundsForDay(SaveState state)
+    {
+        var dayKey = BuildDayKey(state);
+        return _rounds
+            .OrderBy(round => ComputeStableRoundWeight(dayKey, round.Id))
+            .ThenBy(round => round.Id, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string BuildDayKey(SaveState state)
+    {
+        return $"{Math.Max(1, state.Calendar.Year)}:{(state.Calendar.Season ?? string.Empty).Trim().ToLowerInvariant()}:{Math.Max(1, state.Calendar.Day)}";
+    }
+
+    private string ResolveRewardTier(TownSquareMagicianState progress, string rewardKey)
+    {
+        if (progress.GrandDryRewardDays >= GrandPityThreshold - 1)
+            return "grand";
+
+        var baseTier = ResolveRewardTierFromOdds(rewardKey);
+        if (progress.RareDryRewardDays >= RarePityThreshold - 1 && GetRewardTierRank(baseTier) < GetRewardTierRank("rare"))
+            return "rare";
+
+        return baseTier;
+    }
+
+    private string ResolveRewardTierFromOdds(string rewardKey)
+    {
+        var roll = ComputeStablePositiveValue(rewardKey, "tier") % 100;
+        if (roll == 0)
+            return "grand";
+        if (roll < 5)
+            return "rare";
+        if (roll < 25)
+            return "uncommon";
+        return "common";
+    }
+
+    private static void UpdateRewardPity(TownSquareMagicianState progress, TownSquareMagicianRewardGrant rewardGrant)
+    {
+        var tier = (rewardGrant.Tier ?? string.Empty).Trim().ToLowerInvariant();
+        if (tier == "grand")
+        {
+            progress.RareDryRewardDays = 0;
+            progress.GrandDryRewardDays = 0;
+            return;
+        }
+
+        if (tier == "rare")
+        {
+            progress.RareDryRewardDays = 0;
+            progress.GrandDryRewardDays += 1;
+            return;
+        }
+
+        progress.RareDryRewardDays += 1;
+        progress.GrandDryRewardDays += 1;
+    }
+
+    private static int GetRewardTierRank(string tier)
+    {
+        return (tier ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "grand" => 4,
+            "rare" => 3,
+            "uncommon" => 2,
+            _ => 1
+        };
+    }
+
+    private static bool IsGrandRewardUnlocked(SaveState state)
+    {
+        var yearUnlocked = Math.Max(1, state.Calendar.Year) >= GrandTrinketUnlockYear;
+        var minesUnlocked = Game1.player?.deepestMineLevel >= BottomOfMinesLevel;
+        return yearUnlocked && minesUnlocked;
+    }
+
+    private static IEnumerable<string> GetRewardTierFallbacks(string targetTier)
+    {
+        return targetTier.ToLowerInvariant() switch
+        {
+            "grand" => new[] { "grand", "rare", "uncommon", "common" },
+            "rare" => new[] { "rare", "uncommon", "common" },
+            "uncommon" => new[] { "uncommon", "common" },
+            _ => new[] { "common" }
+        };
+    }
+
+    private TownSquareMagicianRewardDefinition? ResolveWeightedRewardForTier(string rewardKey, string tier, bool grandRewardUnlocked)
+    {
+        var candidates = _rewardPool
+            .Where(entry =>
+                string.Equals(entry.Tier, tier, StringComparison.OrdinalIgnoreCase)
+                && entry.Weight > 0
+                && (grandRewardUnlocked || !entry.RequiresGrandUnlock))
+            .OrderBy(entry => ComputeStableRoundWeight(rewardKey, entry.Id))
+            .ThenBy(entry => entry.Id, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (candidates.Count == 0)
+            return null;
+
+        var totalWeight = candidates.Sum(entry => Math.Max(1, entry.Weight));
+        var roll = ComputeStablePositiveValue(rewardKey, $"{tier}:pick") % totalWeight;
+        var cursor = 0;
+        foreach (var candidate in candidates)
+        {
+            cursor += Math.Max(1, candidate.Weight);
+            if (roll < cursor)
+                return candidate;
+        }
+
+        return candidates[^1];
+    }
+
+    private static int ComputeStablePositiveValue(string key, string salt)
+    {
+        return unchecked((int)((uint)ComputeStableRoundWeight(key, salt) & 0x7FFFFFFF));
+    }
+
+    private void WarnIfTooLong(string roundId, string fieldName, string? text)
+    {
+        var normalized = ClampBubbleText(text);
+        if (string.IsNullOrWhiteSpace(text) || text.Trim().Length <= MaxBubbleTextLength)
+            return;
+
+        _monitor.Log(
+            $"Magician round '{roundId}' field '{fieldName}' exceeds {MaxBubbleTextLength} chars and will be clamped: '{normalized}'",
+            LogLevel.Debug);
+    }
 }
 
 public sealed class TownSquareMagicianRoundCatalog
 {
     public List<TownSquareMagicianRoundDefinition> Rounds { get; set; } = new();
+}
+
+public sealed class TownSquareMagicianRewardCatalog
+{
+    public List<TownSquareMagicianRewardDefinition> Rewards { get; set; } = new();
 }
 
 public sealed class TownSquareMagicianRoundDefinition
@@ -556,6 +987,17 @@ public sealed class TownSquareMagicianRoundDefinition
     public string OpeningLine { get; set; } = string.Empty;
     public string VictoryLine { get; set; } = string.Empty;
     public List<string> Clues { get; set; } = new();
+}
+
+public sealed class TownSquareMagicianRewardDefinition
+{
+    public string Id { get; set; } = string.Empty;
+    public string QualifiedItemId { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public int Stack { get; set; } = 1;
+    public string Tier { get; set; } = "common";
+    public int Weight { get; set; } = 1;
+    public bool RequiresGrandUnlock { get; set; }
 }
 
 public sealed class TownSquareMagicianRoundView
@@ -580,7 +1022,17 @@ public sealed class TownSquareMagicianGuessResult
     public bool Solved { get; set; }
     public bool RewardGranted { get; set; }
     public bool SessionEnded { get; set; }
-    public int RewardGoldGranted { get; set; }
+    public TownSquareMagicianRewardGrant? RewardGrant { get; set; }
     public string Feedback { get; set; } = string.Empty;
     public TownSquareMagicianRoundView CurrentRound { get; set; } = new();
+}
+
+public sealed class TownSquareMagicianRewardGrant
+{
+    public string RewardType { get; set; } = string.Empty;
+    public string QualifiedItemId { get; set; } = string.Empty;
+    public int Stack { get; set; } = 1;
+    public string DisplayName { get; set; } = string.Empty;
+    public int GoldAmount { get; set; }
+    public string Tier { get; set; } = "common";
 }

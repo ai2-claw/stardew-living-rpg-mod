@@ -20,6 +20,16 @@ public sealed class TownSquareMagicianState
     public string LastFeedback { get; set; } = string.Empty;
     public int SessionsStartedToday { get; set; }
     public int LifetimeWins { get; set; }
+    public int LifetimeLosses { get; set; }
+    public int LifetimeHintsUsed { get; set; }
+    public int LifetimeBonusRoundsPlayed { get; set; }
     public int LifetimeRewardClaims { get; set; }
+    public int RareDryRewardDays { get; set; }
+    public int GrandDryRewardDays { get; set; }
+    public int ConsecutiveWins { get; set; }
+    public int ConsecutiveLosses { get; set; }
+    public int ArcProgressPoints { get; set; }
+    public string ArcStageId { get; set; } = "street_smoke";
+    public string LastPlayStyleTag { get; set; } = "steady";
     public List<string> PlayedRoundIdsToday { get; set; } = new();
 }
