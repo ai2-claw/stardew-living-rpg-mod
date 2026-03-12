@@ -27,6 +27,8 @@ public sealed class RumorBoardFocusContext
 
 public sealed class RumorBoardMenu : IClickableMenu
 {
+    private const int BoardWidth = 1040;
+    private const int BoardHeight = 698;
     private static string DefaultDetailMessage => I18n.Get("rumor_board.detail.default", "Select a request to view details.");
     private static string SearchingDetailMessage => I18n.Get("rumor_board.detail.searching", "Searching the board for new requests...");
     private static string DailyCapDetailMessage => I18n.Get("rumor_board.detail.daily_cap", "No new posting right now. Check back tomorrow.");
@@ -73,18 +75,22 @@ public sealed class RumorBoardMenu : IClickableMenu
     private const int SectionRowHeight = 44;
     private const int SectionRowGap = 8;
     private const int SectionRowsStartOffset = 36;
-    private const int DetailPanelHeight = 190;
+    private const int DetailPanelHeight = 288;
     private const int DetailBottomPadding = 36;
-    private const int DetailLineHeight = 26;
+    private const int DetailLineHeight = 30;
+    private const int DetailHeaderHeight = 58;
+    private const int DetailProgressSectionHeight = 48;
+    private const int DetailProgressBarHeight = 38;
+    private const int DetailInterestFlavorTopPadding = 6;
     private const int DetailScrollbarWidth = 14;
     private const int DetailScrollbarGap = 8;
 
     public RumorBoardMenu(SaveState state, RumorBoardService rumorBoardService, IMonitor monitor, Action onAskMayorForWork, Func<string>? getExternalStatus = null, RumorBoardFocusContext? focusContext = null)
         : base(
-            Game1.uiViewport.Width / 2 - 520,
-            Game1.uiViewport.Height / 2 - 300,
-            1040,
-            600,
+            Game1.uiViewport.Width / 2 - (BoardWidth / 2),
+            Game1.uiViewport.Height / 2 - (BoardHeight / 2),
+            BoardWidth,
+            BoardHeight,
             true)
     {
         _state = state;
@@ -291,8 +297,8 @@ public sealed class RumorBoardMenu : IClickableMenu
 
     private Rectangle GetDetailTextViewportBounds(Rectangle detailPanel, bool reserveScrollbarSpace)
     {
-        var viewportY = detailPanel.Y + 16;
-        var viewportBottom = _acceptButton.Y - 8;
+        var viewportY = detailPanel.Y + 16 + DetailHeaderHeight;
+        var viewportBottom = _acceptButton.Y - DetailProgressSectionHeight - 14;
         var viewportHeight = Math.Max(40, viewportBottom - viewportY);
         var viewportWidth = detailPanel.Width - 48; // Increased padding
         if (reserveScrollbarSpace)
@@ -506,6 +512,14 @@ public sealed class RumorBoardMenu : IClickableMenu
 
         if (_completeButton.Contains(x, y) && _selectedQuest.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
         {
+            var selectedProgress = _rumorBoardService.GetQuestProgress(_state, _selectedQuest.QuestId, Game1.player);
+            if (!selectedProgress.IsReadyToComplete)
+            {
+                Game1.playSound("cancel");
+                _statusMessage = I18n.Get("rumor_board.status.refresh_not_ready", "This request is not ready to turn in yet.");
+                return;
+            }
+
             var result = _rumorBoardService.CompleteQuestWithChecks(_state, _selectedQuest.QuestId, Game1.player, consumeItems: true);
             _statusMessage = result.Message;
             if (result.Success)
@@ -566,8 +580,8 @@ public sealed class RumorBoardMenu : IClickableMenu
         base.gameWindowSizeChanged(oldBounds, newBounds);
 
         // Recalculate menu position based on new viewport
-        xPositionOnScreen = Game1.uiViewport.Width / 2 - 520;
-        yPositionOnScreen = Game1.uiViewport.Height / 2 - 300;
+        xPositionOnScreen = Game1.uiViewport.Width / 2 - (width / 2);
+        yPositionOnScreen = Game1.uiViewport.Height / 2 - (height / 2);
 
         // Update close button position
         _closeButton.bounds = new Rectangle(xPositionOnScreen + width - 68, yPositionOnScreen + 20, 48, 48);
@@ -737,16 +751,18 @@ public sealed class RumorBoardMenu : IClickableMenu
         var q = _selectedQuest;
         var progress = _rumorBoardService.GetQuestProgress(_state, q.QuestId, Game1.player);
         var rawLines = BuildDetailLines(q, progress);
+        var interestFlavor = InterestTextHelper.BuildQuestDetailLine(q);
+        DrawDetailHeader(b, q, panel);
 
         _detailTextViewport = GetDetailTextViewportBounds(panel, reserveScrollbarSpace: false);
         var wrappedLines = WrapDetailLines(rawLines, _detailTextViewport.Width);
-        _detailContentHeight = wrappedLines.Count * DetailLineHeight;
+        _detailContentHeight = CalculateDetailContentHeight(wrappedLines.Count, interestFlavor);
 
         if (_detailContentHeight > _detailTextViewport.Height)
             _detailTextViewport = GetDetailTextViewportBounds(panel, reserveScrollbarSpace: true);
 
         wrappedLines = WrapDetailLines(rawLines, _detailTextViewport.Width);
-        _detailContentHeight = wrappedLines.Count * DetailLineHeight;
+        _detailContentHeight = CalculateDetailContentHeight(wrappedLines.Count, interestFlavor);
 
         _detailScrollTrackRegion = CanScrollDetailContent()
             ? new Rectangle(
@@ -765,10 +781,25 @@ public sealed class RumorBoardMenu : IClickableMenu
         Game1.graphics.GraphicsDevice.ScissorRectangle = _detailTextViewport;
 
         var y = _detailTextViewport.Y - _detailScrollOffset;
-        foreach (var line in wrappedLines)
+        foreach (var line in rawLines)
         {
-            b.DrawString(Game1.smallFont, line, new Vector2(_detailTextViewport.X, y), Game1.textColor);
-            y += DetailLineHeight;
+            var wrapped = TextWrapHelper.WrapText(Game1.smallFont, line, _detailTextViewport.Width);
+            if (wrapped.Length == 0)
+                wrapped = new[] { string.Empty };
+
+            var isInterestFlavorLine = string.Equals(line, interestFlavor, StringComparison.Ordinal);
+            var color = isInterestFlavorLine
+                ? new Color(150, 50, 50)
+                : Game1.textColor;
+
+            if (isInterestFlavorLine)
+                y += DetailInterestFlavorTopPadding;
+
+            foreach (var wrappedLine in wrapped)
+            {
+                b.DrawString(Game1.smallFont, wrappedLine, new Vector2(_detailTextViewport.X, y), color);
+                y += DetailLineHeight;
+            }
         }
 
         b.End();
@@ -788,8 +819,10 @@ public sealed class RumorBoardMenu : IClickableMenu
                 _detailScrollThumbRegion.Width, _detailScrollThumbRegion.Height, thumbTint, 4f, false);
         }
 
+        DrawProgressSection(b, q, progress);
+
         DrawButton(b, _acceptButton, I18n.Get("rumor_board.button.accept", "Accept"), enabled: q.Status.Equals("available", StringComparison.OrdinalIgnoreCase));
-        DrawButton(b, _completeButton, I18n.Get("rumor_board.button.complete", "Complete"), enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase));
+        DrawButton(b, _completeButton, I18n.Get("rumor_board.button.complete", "Complete"), enabled: q.Status.Equals("active", StringComparison.OrdinalIgnoreCase) && progress.IsReadyToComplete);
         DrawButton(
             b,
             _askWorkButton,
@@ -818,21 +851,6 @@ public sealed class RumorBoardMenu : IClickableMenu
     {
         var lines = new List<string>
         {
-            I18n.Get(
-                "rumor_board.detail.request_line",
-                $"Request: {QuestTextHelper.BuildQuestTitle(q)} ({q.Status})",
-                new { title = QuestTextHelper.BuildQuestTitle(q), status = q.Status }),
-            I18n.Get(
-                "rumor_board.detail.meta_line",
-                $"From: {QuestTextHelper.PrettyName(q.Issuer)} | Reward: +{q.RewardGold}g | Expires {(q.ExpiresDay > 0 ? CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(q.ExpiresDay) : I18n.Get("rumor_board.deadline.none", "No deadline"))}",
-                new
-                {
-                    issuer = QuestTextHelper.PrettyName(q.Issuer),
-                    reward = q.RewardGold,
-                    expires = q.ExpiresDay > 0
-                        ? CalendarDisplayHelper.FormatWeekdayDayWithSeasonYear(q.ExpiresDay)
-                        : I18n.Get("rumor_board.deadline.none", "No deadline")
-                }),
             q.Summary
         };
 
@@ -840,22 +858,104 @@ public sealed class RumorBoardMenu : IClickableMenu
         if (!string.IsNullOrWhiteSpace(interestFlavor))
             lines.Add(interestFlavor);
 
-        if (progress.Exists && progress.RequiresItems)
+        return lines;
+    }
+
+    private static void DrawDetailHeader(SpriteBatch b, QuestEntry q, Rectangle panel)
+    {
+        var contentX = panel.X + 24;
+        var title = QuestTextHelper.BuildQuestTitle(q);
+        b.DrawString(Game1.smallFont, title, new Vector2(contentX, panel.Y + 16), Game1.textColor);
+
+        var rowY = panel.Y + 16 + 30;
+        var clientWidth = DrawMetadataPair(
+            b,
+            I18n.Get("rumor_board.detail.client_label", "Client:"),
+            QuestTextHelper.PrettyName(q.Issuer),
+            new Vector2(contentX, rowY),
+            Game1.textColor * 0.8f,
+            new Color(116, 82, 164));
+
+        var rewardX = contentX + clientWidth + 28f;
+        var rewardWidth = DrawMetadataPair(
+            b,
+            I18n.Get("rumor_board.detail.reward_label", "Reward:"),
+            $"+{q.RewardGold}g",
+            new Vector2(rewardX, rowY),
+            Game1.textColor * 0.8f,
+            new Color(48, 128, 52));
+
+        var deadlineX = rewardX + rewardWidth + 28f;
+        DrawMetadataPair(
+            b,
+            I18n.Get("rumor_board.detail.deadline_label", "Deadline:"),
+            q.ExpiresDay > 0
+                ? CalendarDisplayHelper.FormatWeekdayDay(q.ExpiresDay)
+                : I18n.Get("rumor_board.deadline.none", "No deadline"),
+            new Vector2(deadlineX, rowY),
+            Game1.textColor * 0.8f,
+            new Color(150, 50, 50));
+    }
+
+    private static float DrawMetadataPair(SpriteBatch b, string label, string value, Vector2 position, Color labelColor, Color valueColor)
+    {
+        b.DrawString(Game1.smallFont, label, position, labelColor);
+        var labelWidth = Game1.smallFont.MeasureString(label).X;
+        var valuePosition = new Vector2(position.X + labelWidth + 6f, position.Y);
+        b.DrawString(Game1.smallFont, value, valuePosition, valueColor);
+        return labelWidth + 6f + Game1.smallFont.MeasureString(value).X;
+    }
+
+    private static int CalculateDetailContentHeight(int wrappedLineCount, string? interestFlavor)
+    {
+        var height = wrappedLineCount * DetailLineHeight;
+        if (!string.IsNullOrWhiteSpace(interestFlavor))
+            height += DetailInterestFlavorTopPadding;
+
+        return height;
+    }
+
+    private void DrawProgressSection(SpriteBatch b, QuestEntry quest, QuestProgressResult progress)
+    {
+        if (!progress.Exists)
+            return;
+
+        var barWidth = _detailTextViewport.Width;
+        if (CanScrollDetailContent())
+            barWidth = _detailScrollTrackRegion.IsEmpty
+                ? barWidth
+                : Math.Max(160, _detailScrollTrackRegion.X - DetailScrollbarGap - _detailTextViewport.X);
+
+        var barRect = new Rectangle(
+            _detailTextViewport.X,
+            _acceptButton.Y - DetailProgressSectionHeight,
+            barWidth,
+            DetailProgressBarHeight);
+
+        b.Draw(Game1.staminaRect, barRect, new Color(96, 76, 48));
+        var fillInset = 3;
+        var innerRect = new Rectangle(barRect.X + fillInset, barRect.Y + fillInset, Math.Max(0, barRect.Width - (fillInset * 2)), Math.Max(0, barRect.Height - (fillInset * 2)));
+        b.Draw(Game1.staminaRect, innerRect, new Color(226, 214, 188));
+
+        var ratio = progress.NeedCount <= 0
+            ? (progress.IsReadyToComplete ? 1f : 0f)
+            : Math.Clamp(progress.HaveCount / (float)Math.Max(1, progress.NeedCount), 0f, 1f);
+        var fillWidth = (int)(innerRect.Width * ratio);
+        if (fillWidth > 0)
         {
-            lines.Add(I18n.Get(
-                "rumor_board.detail.progress_items",
-                $"Progress: {progress.HaveCount}/{progress.NeedCount} {q.TargetItem} (ready={progress.IsReadyToComplete})",
-                new { have = progress.HaveCount, need = progress.NeedCount, item = q.TargetItem, ready = progress.IsReadyToComplete }));
-        }
-        else if (progress.Exists && q.TemplateId.Equals("social_visit", StringComparison.OrdinalIgnoreCase))
-        {
-            lines.Add(I18n.Get(
-                "rumor_board.detail.progress_visit",
-                $"Progress: visit {QuestTextHelper.PrettyName(q.TargetItem)} ({progress.HaveCount}/{progress.NeedCount})",
-                new { target = QuestTextHelper.PrettyName(q.TargetItem), have = progress.HaveCount, need = progress.NeedCount }));
+            var fillRect = new Rectangle(innerRect.X, innerRect.Y, fillWidth, innerRect.Height);
+            b.Draw(Game1.staminaRect, fillRect, progress.IsReadyToComplete ? new Color(84, 156, 78) : new Color(214, 174, 70));
         }
 
-        return lines;
+        var progressText = quest.TemplateId.Equals("social_visit", StringComparison.OrdinalIgnoreCase)
+            ? I18n.Get("rumor_board.progress.visit", $"Check-in: {progress.HaveCount}/{progress.NeedCount} {QuestTextHelper.PrettyName(quest.TargetItem)}", new { have = progress.HaveCount, need = progress.NeedCount, target = QuestTextHelper.PrettyName(quest.TargetItem) })
+            : I18n.Get("rumor_board.progress.items", $"Progress: {progress.HaveCount}/{progress.NeedCount} {QuestTextHelper.PrettyName(quest.TargetItem)}", new { have = progress.HaveCount, need = progress.NeedCount, item = QuestTextHelper.PrettyName(quest.TargetItem) });
+
+        var textSize = Game1.smallFont.MeasureString(progressText);
+        var textPos = new Vector2(
+            barRect.X + Math.Max(8, (barRect.Width - textSize.X) / 2f),
+            innerRect.Y + Math.Max(3f, ((innerRect.Height - textSize.Y) / 2f)));
+        b.DrawString(Game1.smallFont, progressText, textPos, new Color(58, 42, 25));
     }
 
     private static List<string> WrapDetailLines(IEnumerable<string> lines, int width)

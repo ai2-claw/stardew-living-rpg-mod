@@ -169,7 +169,7 @@ public sealed class RumorBoardService
             Source = "rumor_mill",
             Issuer = "lewis",
             ExpiresDay = state.Calendar.Day + 3,
-            Summary = $"Rumor Mill: Supply {crop} x20 to stabilize town demand.",
+            Summary = BuildQuestSummary("lewis", "gather_crop", crop, 20),
             TargetItem = crop,
             TargetCount = 20,
             RewardGold = 500
@@ -183,7 +183,7 @@ public sealed class RumorBoardService
             Source = "rumor_mill",
             Issuer = "haley",
             ExpiresDay = state.Calendar.Day + 2,
-            Summary = $"Rumor Mill: Check in with {visitName} and brighten their day.",
+            Summary = BuildQuestSummary("haley", "social_visit", visitTarget, 1),
             TargetItem = visitTarget,
             TargetCount = 1,
             RewardGold = 250
@@ -481,9 +481,9 @@ public sealed class RumorBoardService
             TemplateId = safeTemplate,
             Status = "available",
             Source = "npc_intent",
-            Issuer = "lewis",
+            Issuer = npcId,
             ExpiresDay = state.Calendar.Day + expiresDelta,
-            Summary = $"Mayor request ({safeUrgency}): {BuildSummary(safeTemplate, safeTarget, count)}",
+            Summary = BuildQuestSummary(npcId, safeTemplate, safeTarget, count),
             TargetItem = safeTarget,
             TargetCount = count,
             RewardGold = rewardGold
@@ -665,14 +665,16 @@ public sealed class RumorBoardService
         };
     }
 
-    private static string BuildSummary(string templateId, string target, int count)
+    private static string BuildQuestSummary(string issuer, string templateId, string target, int count)
     {
+        var issuerName = QuestTextHelper.PrettyName(issuer);
+        var prettyTarget = QuestTextHelper.PrettyName(target);
         return templateId switch
         {
-            "deliver_item" => $"Deliver {target} x{count} to support current demand.",
-            "mine_resource" => $"Gather {target} x{count} from the mines.",
-            "social_visit" => $"Visit {target} and bring a thoughtful gift.",
-            _ => $"Supply {target} x{count} for the town market."
+            "deliver_item" => $"{issuerName} says the town could use {count} {prettyTarget}. Bringing them by would keep local trade moving.",
+            "mine_resource" => $"{issuerName} needs {count} {prettyTarget} from the mines to keep rough work supplied.",
+            "social_visit" => $"{issuerName} asked someone to check in with {prettyTarget} and make sure they're doing all right.",
+            _ => $"{issuerName} says the town pantry is running thin. Bring {count} {prettyTarget} to help steady local demand."
         };
     }
 
@@ -1174,23 +1176,14 @@ public sealed class RumorBoardService
 
     private static HashSet<string> GetValidSupplyItems(SaveState state)
     {
-        var valid = new HashSet<string>(SupplementalSupplyItems, StringComparer.OrdinalIgnoreCase);
+        var valid = QuestAccessHelper.GetAccessibleSupplyItems(state);
+        foreach (var supplemental in SupplementalSupplyItems)
+        {
+            if (QuestAccessHelper.IsLikelyAccessibleNow(supplemental, state))
+                valid.Add(supplemental);
+        }
         foreach (var resource in ValidResources)
             valid.Add(resource);
-
-        foreach (var key in VanillaCropCatalog.GetEntries().Keys)
-        {
-            var normalized = NormalizeSupplyCandidate(key);
-            if (!string.IsNullOrWhiteSpace(normalized))
-                valid.Add(normalized);
-        }
-
-        foreach (var key in state.Economy.Crops.Keys)
-        {
-            var normalized = NormalizeSupplyCandidate(key);
-            if (!string.IsNullOrWhiteSpace(normalized))
-                valid.Add(normalized);
-        }
 
         return valid;
     }

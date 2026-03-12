@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 0.9.3 - 2026-03-12
+
+### Changed
+- Manifest version bumped to `0.9.3`.
+- Soft-interest feedback is now surfaced through more readable in-world text, including newspaper town-current summaries, request-board flavor lines, and clearer town-momentum HUD phrasing.
+- Town Request Board detail panels now use a cleaner header row for `Client`, `Reward`, and `Deadline`, with colored values, a larger detail viewport, and tighter spacing for flavor text and metadata.
+- Active request progress now renders inside a taller progress bar in the detail panel, and completion is only highlighted when the request is actually ready to turn in.
+- Request summaries now use more natural issuer-driven wording instead of debug-like or robotic labels, and generated requests preserve the actual requesting NPC as the client.
+
+### Fixed
+- Town Request Board detail text no longer leaks debug-style quest state such as raw readiness flags into the player-facing description.
+- Early-game supply requests now avoid inaccessible targets like desert-only items until the relevant area is unlocked, reducing impossible or misleading postings.
+- Plain-chat fallback quest generation now keeps requested item counts aligned with what the NPC actually asked for when the source line includes explicit amounts.
+
 ## 0.9.0 - 2026-03-04
 
 ### Added

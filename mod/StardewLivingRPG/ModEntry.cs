@@ -13821,25 +13821,18 @@ public sealed class ModEntry : Mod
 
     private List<string> BuildQuestSupplyCandidateList()
     {
+        var accessible = QuestAccessHelper.GetAccessibleSupplyItems(_state);
         var ranked = _state.Economy.Crops
             .Where(kv => !string.IsNullOrWhiteSpace(kv.Key))
             .OrderByDescending(kv => kv.Value.ScarcityBonus)
             .ThenByDescending(kv => kv.Value.DemandFactor)
             .ThenByDescending(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday))
             .Select(kv => NormalizeTargetToken(kv.Key))
+            .Where(accessible.Contains)
             .Where(k => !string.IsNullOrWhiteSpace(k))
             .ToList();
 
-        ranked.AddRange(VanillaCropCatalog.GetEntries().Keys
-            .Select(NormalizeTargetToken)
-            .Where(k => !string.IsNullOrWhiteSpace(k)));
-
-        ranked.AddRange(GetSeasonalNpcSupplyPool((_state.Calendar.Season ?? "spring").Trim().ToLowerInvariant())
-            .Select(NormalizeTargetToken));
-        ranked.AddRange(OrchardNpcSupplyPool.Select(NormalizeTargetToken));
-        ranked.AddRange(ForageNpcSupplyPool.Select(NormalizeTargetToken));
-        ranked.AddRange(FishingNpcSupplyPool.Select(NormalizeTargetToken));
-        ranked.AddRange(MiningNpcResourcePool.Select(NormalizeTargetToken));
+        ranked.AddRange(accessible.Select(NormalizeTargetToken));
 
         return ranked
             .Where(k => !string.IsNullOrWhiteSpace(k))
