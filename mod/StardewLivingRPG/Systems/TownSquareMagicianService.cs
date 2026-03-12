@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using StardewModdingAPI;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Utils;
@@ -16,14 +17,19 @@ public sealed class TownSquareMagicianService
     private const int BottomOfMinesLevel = 120;
 
     private readonly IMonitor _monitor;
+    private readonly IModHelper _helper;
     private readonly List<TownSquareMagicianRoundDefinition> _rounds;
     private readonly List<TownSquareMagicianRewardDefinition> _rewardPool;
+    private readonly Dictionary<string, Dictionary<string, TownSquareMagicianRoundLocaleEntry>> _roundLocaleOverlays = new(StringComparer.OrdinalIgnoreCase);
 
     public TownSquareMagicianService(IModHelper helper, IMonitor monitor)
     {
+        _helper = helper;
         _monitor = monitor;
         _rounds = LoadCatalog(helper);
         _rewardPool = LoadRewardPool(helper);
+        ValidateLocaleOverlayCoverage("es");
+        ValidateLocaleOverlayCoverage("pt-br");
     }
 
     public bool IsMagicianNpc(string? rawName)
@@ -40,7 +46,7 @@ public sealed class TownSquareMagicianService
     public TownSquareMagicianRoundView? PeekCurrentRound(SaveState state)
     {
         var round = EnsureRoundForToday(state, resetProgressIfRoundChanged: true);
-        return round is null ? null : BuildRoundView(state.MiniGames.TownSquareMagician, round);
+        return round is null ? null : BuildRoundView(state.MiniGames.TownSquareMagician, LocalizeRound(round));
     }
 
     public TownSquareMagicianRoundView? PeekUpcomingRound(SaveState state)
@@ -72,7 +78,7 @@ public sealed class TownSquareMagicianService
             LastOutcome = "fresh"
         };
 
-        return BuildRoundView(previewProgress, round);
+        return BuildRoundView(previewProgress, LocalizeRound(round));
     }
 
     public TownSquareMagicianRoundView? BeginRoundSession(SaveState state)
@@ -93,7 +99,7 @@ public sealed class TownSquareMagicianService
         progress.SessionsStartedToday += 1;
         state.Telemetry.Daily.TownSquareMagicianSessions += 1;
         progress.LastPlayStyleTag = ResolvePlayStyleTag(progress, round, solved: false);
-        return BuildRoundView(progress, round);
+        return BuildRoundView(progress, LocalizeRound(round));
     }
 
     public TownSquareMagicianGuessResult SubmitGuess(SaveState state, string? rawGuess)
@@ -117,7 +123,7 @@ public sealed class TownSquareMagicianService
             return BuildResult(progress, round, false, false, false, true, null, progress.LastFeedback);
         }
 
-        if (string.Equals(normalizedGuess, "hint", StringComparison.OrdinalIgnoreCase))
+        if (IsHintCommand(normalizedGuess))
             return SubmitHintRequest(progress, round);
 
         if (string.Equals(round.Mode, "guess_number", StringComparison.OrdinalIgnoreCase))
@@ -279,15 +285,16 @@ public sealed class TownSquareMagicianService
         }
 
         progress.AttemptsUsed += 1;
-        if (string.Equals(guess, NormalizeWordGuess(round.Answer), StringComparison.Ordinal))
+        if (GetAcceptedAnswers(round).Any(answer => string.Equals(guess, NormalizeWordGuess(answer), StringComparison.Ordinal)))
             return ResolveWin(state, progress, round);
 
         if (progress.AttemptsUsed >= round.MaxAttempts)
         {
+            var revealAnswer = GetRevealAnswer(round);
             var answerText = I18n.Get(
                 "magician.feedback.loss_word",
-                $"The word was {round.Answer}. Ask again if you want another try.",
-                new { answer = round.Answer });
+                $"The word was {revealAnswer}. Ask again if you want another try.",
+                new { answer = revealAnswer });
             MarkRoundPlayed(progress, round.Id);
             RecordLoss(progress, round);
             progress.LastOutcome = "lost";
@@ -460,11 +467,11 @@ public sealed class TownSquareMagicianService
         var progress = state.MiniGames.TownSquareMagician;
         var round = GetRoundById(progress.RoundId);
         if (round is not null)
-            return round;
+            return LocalizeRound(round);
 
         progress.RoundId = featuredRound.Id;
         progress.RoundMode = featuredRound.Mode;
-        return featuredRound;
+        return LocalizeRound(featuredRound);
     }
 
     private TownSquareMagicianRoundDefinition? GetRoundById(string? roundId)
@@ -582,6 +589,12 @@ public sealed class TownSquareMagicianService
     {
         if (string.Equals(round.Mode, "guess_number", StringComparison.OrdinalIgnoreCase))
         {
+            if (!string.IsNullOrWhiteSpace(round.Prompt)
+                && !string.Equals(round.Prompt, "Guess the number.", StringComparison.OrdinalIgnoreCase))
+            {
+                return ClampBubbleText(round.Prompt);
+            }
+
             return ClampBubbleText(I18n.Get(
                 "magician.prompt.number",
                 $"Guess a number from {round.MinNumber} to {round.MaxNumber}.",
@@ -589,7 +602,14 @@ public sealed class TownSquareMagicianService
                 {
                     min = round.MinNumber,
                     max = round.MaxNumber
-                }));
+            }));
+        }
+
+        if (!string.IsNullOrWhiteSpace(round.Prompt)
+            && !string.Equals(round.Prompt, "Guess the hidden word.", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(round.Prompt, "Name the hidden word.", StringComparison.OrdinalIgnoreCase))
+        {
+            return ClampBubbleText(round.Prompt);
         }
 
         return ClampBubbleText(I18n.Get("magician.prompt.word", "Guess the hidden word."));
@@ -618,12 +638,211 @@ public sealed class TownSquareMagicianService
         if (string.IsNullOrWhiteSpace(rawGuess))
             return string.Empty;
 
-        var chars = rawGuess
+        var normalized = rawGuess.Trim().Normalize(NormalizationForm.FormD);
+        var chars = normalized
             .Trim()
+            .Where(ch => CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark)
             .Where(char.IsLetterOrDigit)
             .Select(char.ToLowerInvariant)
             .ToArray();
         return new string(chars);
+    }
+
+    private bool IsHintCommand(string? rawGuess)
+    {
+        var normalized = NormalizeWordGuess(rawGuess);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        var aliases = I18n.Get("magician.command.hint_aliases", "hint")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizeWordGuess)
+            .Where(alias => !string.IsNullOrWhiteSpace(alias));
+
+        foreach (var alias in aliases)
+        {
+            if (string.Equals(normalized, alias, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    private IReadOnlyList<string> GetAcceptedAnswers(TownSquareMagicianRoundDefinition round)
+    {
+        if (round.AcceptedAnswers.Count > 0)
+            return round.AcceptedAnswers;
+
+        return string.IsNullOrWhiteSpace(round.Answer)
+            ? Array.Empty<string>()
+            : new[] { round.Answer };
+    }
+
+    private static string GetRevealAnswer(TownSquareMagicianRoundDefinition round)
+    {
+        if (!string.IsNullOrWhiteSpace(round.RevealAnswer))
+            return round.RevealAnswer;
+        if (round.AcceptedAnswers.Count > 0 && !string.IsNullOrWhiteSpace(round.AcceptedAnswers[0]))
+            return round.AcceptedAnswers[0];
+        return round.Answer;
+    }
+
+    private TownSquareMagicianRoundDefinition LocalizeRound(TownSquareMagicianRoundDefinition round)
+    {
+        var overlay = ResolveLocaleOverlay(round.Id);
+        if (overlay is null)
+            return EnsureAcceptedAnswers(round);
+
+        var localized = new TownSquareMagicianRoundDefinition
+        {
+            Id = round.Id,
+            Season = round.Season,
+            Day = round.Day,
+            Mode = round.Mode,
+            Prompt = string.IsNullOrWhiteSpace(overlay.Prompt) ? round.Prompt : overlay.Prompt.Trim(),
+            Answer = round.Answer,
+            MinNumber = round.MinNumber,
+            MaxNumber = round.MaxNumber,
+            MaxAttempts = round.MaxAttempts,
+            RewardGold = round.RewardGold,
+            OpeningLine = string.IsNullOrWhiteSpace(overlay.OpeningLine) ? round.OpeningLine : overlay.OpeningLine.Trim(),
+            VictoryLine = string.IsNullOrWhiteSpace(overlay.VictoryLine) ? round.VictoryLine : overlay.VictoryLine.Trim(),
+            Clues = overlay.Clues.Count > 0 ? overlay.Clues.Where(static clue => !string.IsNullOrWhiteSpace(clue)).Select(clue => clue.Trim()).ToList() : new List<string>(round.Clues),
+            RevealAnswer = string.IsNullOrWhiteSpace(overlay.RevealAnswer) ? round.RevealAnswer : overlay.RevealAnswer.Trim()
+        };
+
+        if (overlay.Answers.Count > 0)
+        {
+            localized.AcceptedAnswers = overlay.Answers
+                .Where(static answer => !string.IsNullOrWhiteSpace(answer))
+                .Select(answer => answer.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        else if (round.AcceptedAnswers.Count > 0)
+        {
+            localized.AcceptedAnswers = new List<string>(round.AcceptedAnswers);
+        }
+        else if (!string.IsNullOrWhiteSpace(round.Answer))
+        {
+            localized.AcceptedAnswers = new List<string> { round.Answer };
+        }
+
+        if (string.IsNullOrWhiteSpace(localized.RevealAnswer))
+            localized.RevealAnswer = GetRevealAnswer(localized);
+
+        return localized;
+    }
+
+    private TownSquareMagicianRoundDefinition EnsureAcceptedAnswers(TownSquareMagicianRoundDefinition round)
+    {
+        if (round.AcceptedAnswers.Count > 0 || string.IsNullOrWhiteSpace(round.Answer))
+            return round;
+
+        return new TownSquareMagicianRoundDefinition
+        {
+            Id = round.Id,
+            Season = round.Season,
+            Day = round.Day,
+            Mode = round.Mode,
+            Prompt = round.Prompt,
+            Answer = round.Answer,
+            MinNumber = round.MinNumber,
+            MaxNumber = round.MaxNumber,
+            MaxAttempts = round.MaxAttempts,
+            RewardGold = round.RewardGold,
+            OpeningLine = round.OpeningLine,
+            VictoryLine = round.VictoryLine,
+            Clues = new List<string>(round.Clues),
+            AcceptedAnswers = new List<string> { round.Answer },
+            RevealAnswer = string.IsNullOrWhiteSpace(round.RevealAnswer) ? round.Answer : round.RevealAnswer
+        };
+    }
+
+    private TownSquareMagicianRoundLocaleEntry? ResolveLocaleOverlay(string roundId)
+    {
+        if (string.IsNullOrWhiteSpace(roundId))
+            return null;
+
+        TownSquareMagicianRoundLocaleEntry? merged = null;
+        foreach (var candidate in BuildLocaleFallback(I18n.GetCurrentLocaleCode()).Reverse())
+        {
+            var catalog = GetLocaleOverlayCatalog(candidate);
+            if (catalog.Count == 0 || !catalog.TryGetValue(roundId, out var overlay))
+                continue;
+
+            merged = MergeLocaleOverlayEntry(merged, overlay);
+        }
+
+        return merged;
+    }
+
+    private Dictionary<string, TownSquareMagicianRoundLocaleEntry> GetLocaleOverlayCatalog(string locale)
+    {
+        if (_roundLocaleOverlays.TryGetValue(locale, out var cached))
+            return cached;
+
+        var path = $"assets/town-square-magician-rounds.{locale}.json";
+        try
+        {
+            var catalog = _helper.Data.ReadJsonFile<TownSquareMagicianRoundLocaleCatalog>(path);
+            var loaded = catalog?.Rounds is not null
+                ? new Dictionary<string, TownSquareMagicianRoundLocaleEntry>(catalog.Rounds, StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, TownSquareMagicianRoundLocaleEntry>(StringComparer.OrdinalIgnoreCase);
+            _roundLocaleOverlays[locale] = loaded;
+            return loaded;
+        }
+        catch (Exception ex)
+        {
+            _monitor.Log($"Failed to load magician locale overlay '{path}': {ex.Message}", LogLevel.Warn);
+            var empty = new Dictionary<string, TownSquareMagicianRoundLocaleEntry>(StringComparer.OrdinalIgnoreCase);
+            _roundLocaleOverlays[locale] = empty;
+            return empty;
+        }
+    }
+
+    private static TownSquareMagicianRoundLocaleEntry MergeLocaleOverlayEntry(
+        TownSquareMagicianRoundLocaleEntry? original,
+        TownSquareMagicianRoundLocaleEntry overlay)
+    {
+        var merged = new TownSquareMagicianRoundLocaleEntry();
+        if (original is not null)
+        {
+            merged.Prompt = original.Prompt;
+            merged.OpeningLine = original.OpeningLine;
+            merged.VictoryLine = original.VictoryLine;
+            merged.RevealAnswer = original.RevealAnswer;
+            merged.Clues = new List<string>(original.Clues);
+            merged.Answers = new List<string>(original.Answers);
+        }
+
+        if (!string.IsNullOrWhiteSpace(overlay.Prompt))
+            merged.Prompt = overlay.Prompt.Trim();
+        if (!string.IsNullOrWhiteSpace(overlay.OpeningLine))
+            merged.OpeningLine = overlay.OpeningLine.Trim();
+        if (!string.IsNullOrWhiteSpace(overlay.VictoryLine))
+            merged.VictoryLine = overlay.VictoryLine.Trim();
+        if (!string.IsNullOrWhiteSpace(overlay.RevealAnswer))
+            merged.RevealAnswer = overlay.RevealAnswer.Trim();
+        if (overlay.Clues.Count > 0)
+            merged.Clues = overlay.Clues.Where(static clue => !string.IsNullOrWhiteSpace(clue)).Select(clue => clue.Trim()).ToList();
+        if (overlay.Answers.Count > 0)
+            merged.Answers = overlay.Answers.Where(static answer => !string.IsNullOrWhiteSpace(answer)).Select(answer => answer.Trim()).ToList();
+
+        return merged;
+    }
+
+    private IEnumerable<string> BuildLocaleFallback(string locale)
+    {
+        if (string.IsNullOrWhiteSpace(locale))
+            yield break;
+
+        var normalized = locale.Trim().Replace('_', '-').ToLowerInvariant();
+        yield return normalized;
+
+        var dash = normalized.IndexOf('-', StringComparison.Ordinal);
+        if (dash > 0)
+            yield return normalized[..dash];
     }
 
     private List<TownSquareMagicianRoundDefinition> LoadCatalog(IModHelper helper)
@@ -831,6 +1050,50 @@ public sealed class TownSquareMagicianService
             _monitor.Log($"Magician catalog has {count} rounds; target is 1000.", LogLevel.Warn);
     }
 
+    private void ValidateLocaleOverlayCoverage(string locale)
+    {
+        var catalog = GetLocaleOverlayCatalog(locale);
+        if (catalog.Count == 0)
+        {
+            _monitor.Log($"Magician locale overlay '{locale}' is missing or empty.", LogLevel.Warn);
+            return;
+        }
+
+        var knownIds = new HashSet<string>(_rounds.Select(round => round.Id), StringComparer.OrdinalIgnoreCase);
+        foreach (var roundId in catalog.Keys)
+        {
+            if (!knownIds.Contains(roundId))
+                _monitor.Log($"Magician locale overlay '{locale}' has unknown round id '{roundId}'.", LogLevel.Warn);
+        }
+
+        foreach (var round in _rounds)
+        {
+            if (!catalog.TryGetValue(round.Id, out var overlay))
+            {
+                _monitor.Log($"Magician locale overlay '{locale}' is missing round '{round.Id}'.", LogLevel.Warn);
+                continue;
+            }
+
+            ValidateLocaleOverlayEntry(locale, round, overlay);
+        }
+    }
+
+    private void ValidateLocaleOverlayEntry(string locale, TownSquareMagicianRoundDefinition round, TownSquareMagicianRoundLocaleEntry overlay)
+    {
+        WarnIfTooLong($"{locale}:{round.Id}", "Prompt", overlay.Prompt);
+        WarnIfTooLong($"{locale}:{round.Id}", "OpeningLine", overlay.OpeningLine);
+        WarnIfTooLong($"{locale}:{round.Id}", "VictoryLine", overlay.VictoryLine);
+        WarnIfTooLong($"{locale}:{round.Id}", "RevealAnswer", overlay.RevealAnswer);
+        foreach (var clue in overlay.Clues)
+            WarnIfTooLong($"{locale}:{round.Id}", "Clue", clue);
+
+        if (string.Equals(round.Mode, "guess_word", StringComparison.OrdinalIgnoreCase) && overlay.Answers.Count == 0)
+            _monitor.Log($"Magician locale overlay '{locale}' round '{round.Id}' has no localized answers.", LogLevel.Warn);
+
+        if (overlay.Clues.Count > 0 && overlay.Clues.Count != round.Clues.Count)
+            _monitor.Log($"Magician locale overlay '{locale}' round '{round.Id}' has {overlay.Clues.Count} clues; expected {round.Clues.Count}.", LogLevel.Warn);
+    }
+
     private List<TownSquareMagicianRoundDefinition> GetOrderedRoundsForDay(SaveState state)
     {
         var dayKey = BuildDayKey(state);
@@ -972,6 +1235,21 @@ public sealed class TownSquareMagicianRewardCatalog
     public List<TownSquareMagicianRewardDefinition> Rewards { get; set; } = new();
 }
 
+public sealed class TownSquareMagicianRoundLocaleCatalog
+{
+    public Dictionary<string, TownSquareMagicianRoundLocaleEntry> Rounds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class TownSquareMagicianRoundLocaleEntry
+{
+    public string Prompt { get; set; } = string.Empty;
+    public string OpeningLine { get; set; } = string.Empty;
+    public string VictoryLine { get; set; } = string.Empty;
+    public List<string> Clues { get; set; } = new();
+    public List<string> Answers { get; set; } = new();
+    public string RevealAnswer { get; set; } = string.Empty;
+}
+
 public sealed class TownSquareMagicianRoundDefinition
 {
     public string Id { get; set; } = string.Empty;
@@ -987,6 +1265,8 @@ public sealed class TownSquareMagicianRoundDefinition
     public string OpeningLine { get; set; } = string.Empty;
     public string VictoryLine { get; set; } = string.Empty;
     public List<string> Clues { get; set; } = new();
+    public List<string> AcceptedAnswers { get; set; } = new();
+    public string RevealAnswer { get; set; } = string.Empty;
 }
 
 public sealed class TownSquareMagicianRewardDefinition
