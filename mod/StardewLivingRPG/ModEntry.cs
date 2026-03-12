@@ -1,5 +1,6 @@
 ﻿using Microsoft.Xna.Framework;
 using StardewModdingAPI;
+using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI.Events;
 using StardewValley;
 using StardewValley.ItemTypeDefinitions;
@@ -71,6 +72,14 @@ public sealed class ModEntry : Mod
     private static readonly TimeSpan Player2HealthPingInterval = TimeSpan.FromSeconds(60);
     private const int VanillaDialogueContextSequenceMaxLines = 6;
     private const string InitialNpcChatPrompt = "Let's chat.";
+    private const int TownSquareMagicianHudInputWidth = 360;
+    private const int TownSquareMagicianHudInputHeight = 64;
+    private const int TownSquareMagicianHudSubmitWidth = 120;
+    private const int TownSquareMagicianHudGap = 12;
+    private const int TownSquareMagicianHudMargin = 24;
+    private const int TownSquareMagicianHudBottomOffset = 140;
+    private const int TownSquareMagicianHudTextPaddingX = 16;
+    private const int TownSquareMagicianHudTextPaddingY = 14;
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
     private const string PlayerFamilyMarriedMilestoneFactKey = "player_family:milestone:married";
     private const string PlayerFamilyFirstChildMilestoneFactKey = "player_family:milestone:first_child";
@@ -680,6 +689,13 @@ public sealed class ModEntry : Mod
     private NpcSpeechStyleService? _npcSpeechStyleService;
     private NpcAskGateService? _npcAskGateService;
     private CommandPolicyService? _commandPolicyService;
+    private TownSquareMagicianService? _townSquareMagicianService;
+    private NPC? _townSquareMagicianHudNpc;
+    private TextBox? _townSquareMagicianHudInput;
+    private Rectangle _townSquareMagicianHudInputBounds;
+    private Rectangle _townSquareMagicianHudSubmitButtonBounds;
+    private bool _townSquareMagicianHudActive;
+    private bool _townSquareMagicianHudSessionEnded;
     private LoveLanguageEngineService? _loveLanguageEngineService;
     private CanonBaselineService? _customNpcCanonBaselineService;
     private NpcRegistry? _customNpcRegistry;
@@ -899,6 +915,7 @@ public sealed class ModEntry : Mod
         _npcSpeechStyleService = new NpcSpeechStyleService(speechStyleConfig);
         _npcAskGateService = new NpcAskGateService();
         _commandPolicyService = new CommandPolicyService();
+        _townSquareMagicianService = new TownSquareMagicianService(helper, Monitor);
         _player2Client = new Player2Client();
         InitializeCustomNpcFramework(helper);
         InitializeVanillaCanonLoreFramework(helper);
@@ -1140,6 +1157,9 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_open_board", "Open Market Board menu.", OnOpenBoardCommand);
         helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
+        helper.ConsoleCommands.Add("slrpg_magician_open", "Open the town square magician guessing menu.", OnMagicianOpenCommand);
+        helper.ConsoleCommands.Add("slrpg_magician_state", "Dump today's town square magician round state.", OnMagicianStateCommand);
+        helper.ConsoleCommands.Add("slrpg_magician_reset", "Reset today's town square magician progress.", OnMagicianResetCommand);
         helper.ConsoleCommands.Add("slrpg_p2_login", "Player2 local app login using built-in game client id.", OnPlayer2LoginCommand);
         helper.ConsoleCommands.Add("slrpg_p2_status", "Show Player2 session + joules + stream status.", OnPlayer2StatusCommand);
         helper.ConsoleCommands.Add("slrpg_town_memory_events", "List recent town-memory events: slrpg_town_memory_events [count]", OnTownMemoryEventsCommand);
@@ -1280,6 +1300,7 @@ public sealed class ModEntry : Mod
         TryRefreshPlayerFamilyLoreFromWorld("save-loaded", logNoChange: false);
         _economyService?.EnsureInitialized(_state.Economy);
         _rumorBoardService?.ExpireOverdueQuests(_state);
+        _townSquareMagicianService?.SyncForToday(_state);
         if (_config.EnableCustomNpcFramework)
         {
             ReloadCustomNpcPacks();
@@ -1362,6 +1383,7 @@ public sealed class ModEntry : Mod
         _economyService?.IngestSales(_state.Economy, sold);
         _economyService?.RunDailyPricing(_state);
         _dailyTickService.Run(_state);
+        _townSquareMagicianService?.SyncForToday(_state);
 
         _rumorBoardService?.ExpireOverdueQuests(_state);
         _rumorBoardService?.RefreshDailyRumors(_state);
@@ -1401,6 +1423,9 @@ public sealed class ModEntry : Mod
     private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
     {
         if (!Context.IsWorldReady)
+            return;
+
+        if (TryHandleTownSquareMagicianHudInput(e))
             return;
 
         if (TryHandleMenuHotkeyToggle(e.Button))
@@ -1493,7 +1518,7 @@ public sealed class ModEntry : Mod
         if (!e.Button.IsActionButton())
             return false;
 
-        if (!_config.EnablePlayerChatMenu)
+        if (!_config.EnablePlayerChatMenu && !_config.EnableTownSquareMagicianMinigame)
         {
             ClearNpcDialogueHook();
             ClearManualNpcFollowUpState();
@@ -1556,6 +1581,12 @@ public sealed class ModEntry : Mod
         if (loc is null)
             return;
 
+        if (IsTownSquareMagicianNpc(npc))
+        {
+            OpenTownSquareMagicianFollowUpChoiceDialogue(loc, npc, contextTag);
+            return;
+        }
+
         TryRecordSocialVisitProgress(npc.Name);
 
         var responses = new[]
@@ -1587,6 +1618,254 @@ public sealed class ModEntry : Mod
                     OpenRumorBoard(npc);
             },
             npc);
+    }
+
+    private void OpenTownSquareMagicianFollowUpChoiceDialogue(GameLocation loc, NPC npc, string contextTag)
+    {
+        if (_townSquareMagicianService is null)
+            return;
+
+        var round = _townSquareMagicianService.PeekCurrentRound(_state);
+        if (round is null)
+        {
+            Game1.drawObjectDialogue("No trick is ready today.");
+            return;
+        }
+
+        var responses = new List<Response>
+        {
+            new("play", I18n.Get("magician.followup.option.play", "Play today's round"))
+        };
+        if (_config.EnablePlayerChatMenu && IsRosterNpc(npc))
+            responses.Add(new Response("talk", I18n.Get("npc_followup.option.talk", "Talk")));
+        responses.Add(new Response("bye", I18n.Get("npc_followup.option.bye", "Bye")));
+
+        var introLine = round.RewardClaimedToday
+            ? I18n.Get("magician.followup.intro.claimed", "You already took today's prize, but the trick still remembers your name.")
+            : I18n.Get("magician.followup.intro", "I have today's little puzzle ready if you want it.");
+
+        loc.createQuestionDialogue(
+            introLine,
+            responses.ToArray(),
+            (_, answer) =>
+            {
+                if (string.Equals(answer, "play", StringComparison.OrdinalIgnoreCase))
+                {
+                    OpenTownSquareMagicianMenu(npc);
+                    return;
+                }
+
+                if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
+                {
+                    OpenNpcChatMenu(
+                        npc,
+                        initialPlayerMessage: InitialNpcChatPrompt,
+                        autoSendInitialPlayerMessage: true,
+                        defaultContextTag: contextTag);
+                }
+            },
+            npc);
+    }
+
+    private void OpenTownSquareMagicianMenu(NPC npc)
+    {
+        if (_townSquareMagicianService is null)
+            return;
+
+        var round = _townSquareMagicianService.BeginRoundSession(_state);
+        if (round is null)
+        {
+            Game1.drawObjectDialogue("No trick is ready today.");
+            return;
+        }
+
+        EnsureTownSquareMagicianHud();
+        _townSquareMagicianHudNpc = npc;
+        _townSquareMagicianHudActive = true;
+        _townSquareMagicianHudSessionEnded = false;
+        _townSquareMagicianHudInput!.Text = string.Empty;
+        RebuildTownSquareMagicianHudLayout();
+        SetTownSquareMagicianHudFocus(true);
+
+        var openingText = string.IsNullOrWhiteSpace(round.Prompt)
+            ? round.OpeningLine
+            : round.Prompt;
+        DelayedAction.functionAfterDelay(
+            () =>
+            {
+                if (_townSquareMagicianHudActive)
+                    ShowTownSquareMagicianBubble(npc, openingText);
+            },
+            75);
+    }
+
+    private void ShowTownSquareMagicianBubble(NPC sourceNpc, string? text)
+    {
+        var cleanText = (text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(cleanText))
+            return;
+
+        var desiredDurationMs = Math.Clamp(2200 + (cleanText.Length * 35), 2200, 5200);
+        var liveNpc = ResolveNpcByName(sourceNpc.Name)
+            ?? ResolveNpcByName(sourceNpc.displayName)
+            ?? sourceNpc;
+        if (liveNpc is not null)
+        {
+            liveNpc.showTextAboveHead(cleanText);
+            TrySetMemberValue(liveNpc, "textAboveHeadTimer", desiredDurationMs);
+            return;
+        }
+
+        Game1.drawObjectDialogue(cleanText);
+    }
+
+    private void EnsureTownSquareMagicianHud()
+    {
+        if (_townSquareMagicianHudInput is not null)
+            return;
+
+        _townSquareMagicianHudInput = new TextBox(
+            Game1.content.Load<Texture2D>("LooseSprites\\textBox"),
+            null,
+            Game1.smallFont,
+            Color.Black)
+        {
+            Selected = false
+        };
+        _townSquareMagicianHudInput.limitWidth = false;
+    }
+
+    private void RebuildTownSquareMagicianHudLayout()
+    {
+        if (_townSquareMagicianHudInput is null)
+            return;
+
+        var totalWidth = TownSquareMagicianHudInputWidth + TownSquareMagicianHudGap + TownSquareMagicianHudSubmitWidth;
+        var x = Math.Max(TownSquareMagicianHudMargin, (Game1.uiViewport.Width - totalWidth) / 2);
+        var bottomAnchor = Game1.uiViewport.Height - TownSquareMagicianHudBottomOffset;
+        var y = Math.Max(TownSquareMagicianHudMargin, bottomAnchor - TownSquareMagicianHudInputHeight);
+
+        _townSquareMagicianHudInputBounds = new Rectangle(x, y, TownSquareMagicianHudInputWidth, TownSquareMagicianHudInputHeight);
+        _townSquareMagicianHudSubmitButtonBounds = new Rectangle(
+            _townSquareMagicianHudInputBounds.Right + TownSquareMagicianHudGap,
+            y,
+            TownSquareMagicianHudSubmitWidth,
+            TownSquareMagicianHudInputHeight);
+
+        _townSquareMagicianHudInput.X = _townSquareMagicianHudInputBounds.X + TownSquareMagicianHudTextPaddingX;
+        _townSquareMagicianHudInput.Y = _townSquareMagicianHudInputBounds.Y + TownSquareMagicianHudTextPaddingY;
+        _townSquareMagicianHudInput.Width = Math.Max(32, _townSquareMagicianHudInputBounds.Width - (TownSquareMagicianHudTextPaddingX * 2));
+        _townSquareMagicianHudInput.Height = Math.Max(24, _townSquareMagicianHudInputBounds.Height - (TownSquareMagicianHudTextPaddingY * 2));
+    }
+
+    private void SetTownSquareMagicianHudFocus(bool focused)
+    {
+        if (_townSquareMagicianHudInput is null)
+            return;
+
+        _townSquareMagicianHudInput.Selected = focused;
+        if (focused)
+            Game1.keyboardDispatcher.Subscriber = _townSquareMagicianHudInput;
+        else if (Game1.keyboardDispatcher.Subscriber == _townSquareMagicianHudInput)
+            Game1.keyboardDispatcher.Subscriber = null;
+    }
+
+    private void CloseTownSquareMagicianHud(bool playSound)
+    {
+        if (_townSquareMagicianHudInput is not null && Game1.keyboardDispatcher.Subscriber == _townSquareMagicianHudInput)
+            Game1.keyboardDispatcher.Subscriber = null;
+
+        if (_townSquareMagicianHudInput is not null)
+        {
+            _townSquareMagicianHudInput.Selected = false;
+            _townSquareMagicianHudInput.Text = string.Empty;
+        }
+
+        _townSquareMagicianHudActive = false;
+        _townSquareMagicianHudSessionEnded = false;
+        _townSquareMagicianHudNpc = null;
+        _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
+
+        if (playSound)
+            Game1.playSound("bigDeSelect");
+    }
+
+    private bool TryHandleTownSquareMagicianHudInput(ButtonPressedEventArgs e)
+    {
+        if (!_townSquareMagicianHudActive || _townSquareMagicianHudInput is null)
+            return false;
+
+        if (e.Button == SButton.Escape)
+        {
+            Helper.Input.Suppress(e.Button);
+            CloseTownSquareMagicianHud(playSound: true);
+            return true;
+        }
+
+        if (e.Button == SButton.Enter)
+        {
+            Helper.Input.Suppress(e.Button);
+            SubmitTownSquareMagicianHudGuess();
+            return true;
+        }
+
+        if (e.Button == SButton.MouseLeft)
+        {
+            Helper.Input.Suppress(e.Button);
+
+            var point = new Point(Game1.getMouseX(), Game1.getMouseY());
+            if (_townSquareMagicianHudSubmitButtonBounds.Contains(point))
+            {
+                SubmitTownSquareMagicianHudGuess();
+                return true;
+            }
+
+            if (_townSquareMagicianHudInputBounds.Contains(point))
+                SetTownSquareMagicianHudFocus(!_townSquareMagicianHudSessionEnded);
+
+            return true;
+        }
+
+        Helper.Input.Suppress(e.Button);
+        return true;
+    }
+
+    private void SubmitTownSquareMagicianHudGuess()
+    {
+        if (_townSquareMagicianHudInput is null || _townSquareMagicianService is null)
+            return;
+
+        if (_townSquareMagicianHudSessionEnded)
+        {
+            Game1.playSound("bigDeSelect");
+            return;
+        }
+
+        var result = _townSquareMagicianService.SubmitGuess(_state, _townSquareMagicianHudInput.Text);
+        if (result.RewardGranted && result.RewardGoldGranted > 0)
+        {
+            Game1.player.Money += result.RewardGoldGranted;
+            Game1.addHUDMessage(new HUDMessage(
+                I18n.Get(
+                    "magician.hud.reward",
+                    $"Won {result.RewardGoldGranted}g from today's trick.",
+                    new { reward = result.RewardGoldGranted }),
+                HUDMessage.newQuest_type));
+        }
+
+        if (_townSquareMagicianHudNpc is not null)
+            ShowTownSquareMagicianBubble(_townSquareMagicianHudNpc, result.Feedback);
+        else
+            Game1.drawObjectDialogue(result.Feedback);
+
+        _townSquareMagicianHudInput.Text = string.Empty;
+        _townSquareMagicianHudSessionEnded = result.SessionEnded;
+        SetTownSquareMagicianHudFocus(!result.SessionEnded);
+
+        Game1.playSound(result.Solved ? "reward" : result.Accepted ? "smallSelect" : "cancel");
+
+        if (result.SessionEnded)
+            CloseTownSquareMagicianHud(playSound: false);
     }
 
     private string BuildNpcFollowUpFlavorText(NPC npc)
@@ -1743,7 +2022,7 @@ public sealed class ModEntry : Mod
             && string.Equals(candidate.Name, _manualNpcFollowUpName, StringComparison.OrdinalIgnoreCase))
             ?? _manualNpcFollowUpNpc!;
 
-        if (npc is null || !IsRosterNpc(npc))
+        if (npc is null || !IsNpcEligibleForManualFollowUp(npc))
         {
             ClearManualNpcFollowUpState();
             return false;
@@ -2320,7 +2599,7 @@ public sealed class ModEntry : Mod
 
         void AddCandidate(NPC? candidate)
         {
-            if (candidate is null || !IsRosterNpc(candidate))
+            if (candidate is null || !IsNpcEligibleForManualFollowUp(candidate))
                 return;
 
             var key = string.IsNullOrWhiteSpace(candidate.Name)
@@ -2428,7 +2707,7 @@ public sealed class ModEntry : Mod
 
     private void TryApplyNpcChatCursorIndicator()
     {
-        if (!_config.EnablePlayerChatMenu
+        if ((!_config.EnablePlayerChatMenu && !_config.EnableTownSquareMagicianMinigame)
             || Game1.currentLocation is null
             || Game1.dialogueUp
             || (Game1.eventUp && !IsFestivalInteractionEventActive())
@@ -2752,6 +3031,26 @@ public sealed class ModEntry : Mod
             return true;
 
         return !string.IsNullOrWhiteSpace(npc.displayName) && IsRosterNpc(npc.displayName);
+    }
+
+    private bool IsTownSquareMagicianNpc(string? name)
+    {
+        return _config.EnableTownSquareMagicianMinigame
+            && _townSquareMagicianService?.IsMagicianNpc(name) == true;
+    }
+
+    private bool IsTownSquareMagicianNpc(NPC npc)
+    {
+        if (npc is null)
+            return false;
+
+        return IsTownSquareMagicianNpc(npc.Name)
+            || (!string.IsNullOrWhiteSpace(npc.displayName) && IsTownSquareMagicianNpc(npc.displayName));
+    }
+
+    private bool IsNpcEligibleForManualFollowUp(NPC npc)
+    {
+        return IsRosterNpc(npc) || IsTownSquareMagicianNpc(npc);
     }
 
     private List<string> GetExpandedNpcRoster(bool includeExternalAutoDiscovered = true)
@@ -3422,6 +3721,7 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
+        TryUpdateTownSquareMagicianHud();
         SyncCalendarSeasonFromWorld();
         SyncPlayer2DeviceAuthModal();
         TrackLateNightPassOutWindow();
@@ -6178,6 +6478,55 @@ public sealed class ModEntry : Mod
         return true;
     }
 
+    private static bool TrySetMemberValue(object source, string memberName, object? value)
+    {
+        if (source is null || string.IsNullOrWhiteSpace(memberName))
+            return false;
+
+        const BindingFlags flags =
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+
+        var type = source.GetType();
+        try
+        {
+            var property = type.GetProperty(memberName, flags);
+            if (property is not null && property.CanWrite)
+            {
+                property.SetValue(source, ConvertMemberValue(value, property.PropertyType));
+                return true;
+            }
+
+            var field = type.GetField(memberName, flags);
+            if (field is not null)
+            {
+                field.SetValue(source, ConvertMemberValue(value, field.FieldType));
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
+    private static object? ConvertMemberValue(object? value, Type targetType)
+    {
+        if (value is null)
+            return targetType.IsValueType ? Activator.CreateInstance(targetType) : null;
+
+        var underlyingType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        if (underlyingType.IsInstanceOfType(value))
+            return value;
+
+        if (underlyingType.IsEnum)
+            return value is string text
+                ? Enum.Parse(underlyingType, text, ignoreCase: true)
+                : Enum.ToObject(underlyingType, value);
+
+        return Convert.ChangeType(value, underlyingType, CultureInfo.InvariantCulture);
+    }
+
     private static bool TryGetStaticMemberValue(Type sourceType, string memberName, out object? value)
     {
         value = null;
@@ -7014,7 +7363,7 @@ public sealed class ModEntry : Mod
 
     private void TryHandleNpcDialogueHookFallback()
     {
-        if (!_config.EnablePlayerChatMenu)
+        if (!_config.EnablePlayerChatMenu && !_config.EnableTownSquareMagicianMinigame)
         {
             ClearNpcDialogueHook();
             ClearManualNpcFollowUpState();
@@ -7117,6 +7466,7 @@ public sealed class ModEntry : Mod
             || Game1.activeClickableMenu is not null)
             return;
 
+        TryDrawTownSquareMagicianHud(e);
         TryDrawPendingNpcGiftSelectionHud(e);
 
         if (!_config.ShowPlayer2ConnectionHud)
@@ -7169,6 +7519,115 @@ public sealed class ModEntry : Mod
         e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Bottom - 4, rect.Width, 4), border);
         e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, 4, rect.Height), border);
         e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.Right - 4, rect.Y, 4, rect.Height), border);
+    }
+
+    private void TryUpdateTownSquareMagicianHud()
+    {
+        if (_townSquareMagicianHudInput is null)
+            return;
+
+        if (!_townSquareMagicianHudActive)
+        {
+            if (Game1.keyboardDispatcher.Subscriber == _townSquareMagicianHudInput)
+                Game1.keyboardDispatcher.Subscriber = null;
+            return;
+        }
+
+        RebuildTownSquareMagicianHudLayout();
+        _townSquareMagicianHudInput.Update();
+        if (_townSquareMagicianHudInput.Selected && Game1.keyboardDispatcher.Subscriber != _townSquareMagicianHudInput)
+            Game1.keyboardDispatcher.Subscriber = _townSquareMagicianHudInput;
+    }
+
+    private void TryDrawTownSquareMagicianHud(RenderedHudEventArgs e)
+    {
+        if (!_townSquareMagicianHudActive || _townSquareMagicianHudInput is null)
+            return;
+
+        var mousePoint = new Point(Game1.getMouseX(), Game1.getMouseY());
+        DrawTownSquareMagicianHudInput(
+            e.SpriteBatch,
+            _townSquareMagicianHudInputBounds,
+            _townSquareMagicianHudInput.Text,
+            _townSquareMagicianHudInput.Selected && !_townSquareMagicianHudSessionEnded,
+            !_townSquareMagicianHudSessionEnded);
+        DrawTownSquareMagicianHudButton(
+            e.SpriteBatch,
+            _townSquareMagicianHudSubmitButtonBounds,
+            I18n.Get("magician.menu.button.submit", "Submit"),
+            _townSquareMagicianHudSubmitButtonBounds.Contains(mousePoint) && !_townSquareMagicianHudSessionEnded,
+            !_townSquareMagicianHudSessionEnded);
+    }
+
+    private static void DrawTownSquareMagicianHudInput(SpriteBatch spriteBatch, Rectangle bounds, string? text, bool selected, bool enabled)
+    {
+        var tint = enabled ? Color.White : Color.Gray * 0.9f;
+        IClickableMenu.drawTextureBox(
+            spriteBatch,
+            Game1.menuTexture,
+            new Rectangle(0, 256, 60, 60),
+            bounds.X,
+            bounds.Y,
+            bounds.Width,
+            bounds.Height,
+            tint,
+            1f,
+            false);
+
+        var color = enabled ? Game1.textColor : new Color(92, 92, 92);
+        var availableWidth = Math.Max(32, bounds.Width - (TownSquareMagicianHudTextPaddingX * 2));
+        var showCaret = selected && (DateTime.UtcNow.Millisecond < 500);
+        var displayText = BuildTownSquareMagicianHudDisplayText(text, availableWidth, showCaret);
+        var pos = new Vector2(
+            bounds.X + TownSquareMagicianHudTextPaddingX,
+            bounds.Y + TownSquareMagicianHudTextPaddingY);
+        spriteBatch.DrawString(Game1.smallFont, displayText, pos, color);
+    }
+
+    private static void DrawTownSquareMagicianHudButton(SpriteBatch spriteBatch, Rectangle bounds, string label, bool hovered, bool enabled)
+    {
+        var tint = enabled
+            ? (hovered ? new Color(255, 255, 255) : Color.White)
+            : Color.Gray * 0.9f;
+        IClickableMenu.drawTextureBox(
+            spriteBatch,
+            Game1.mouseCursors,
+            new Rectangle(432, 439, 9, 9),
+            bounds.X,
+            bounds.Y,
+            bounds.Width,
+            bounds.Height,
+            tint,
+            4f,
+            false);
+
+        var color = enabled ? Game1.textColor : new Color(92, 92, 92);
+        var size = Game1.smallFont.MeasureString(label);
+        var pos = new Vector2(
+            bounds.X + (bounds.Width - size.X) / 2f,
+            bounds.Y + (bounds.Height - size.Y) / 2f);
+        spriteBatch.DrawString(Game1.smallFont, label, pos, color);
+    }
+
+    private static string BuildTownSquareMagicianHudDisplayText(string? rawText, float availableWidth, bool showCaret)
+    {
+        var baseText = rawText ?? string.Empty;
+        var caret = showCaret ? "|" : string.Empty;
+        var candidate = baseText + caret;
+        if (Game1.smallFont.MeasureString(candidate).X <= availableWidth)
+            return candidate;
+
+        var trimmed = baseText;
+        while (trimmed.Length > 0)
+        {
+            var compact = "..." + trimmed + caret;
+            if (Game1.smallFont.MeasureString(compact).X <= availableWidth)
+                return compact;
+
+            trimmed = trimmed[1..];
+        }
+
+        return caret;
     }
 
     private Rectangle GetPlayer2HudRect()
@@ -8049,6 +8508,38 @@ public sealed class ModEntry : Mod
         OpenRumorBoard();
     }
 
+    private void OnMagicianOpenCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady || !_config.EnableTownSquareMagicianMinigame)
+            return;
+
+        var npc = ResolveNpcByName(TownSquareMagicianService.MagicianNpcName);
+        if (npc is null)
+        {
+            Monitor.Log($"Could not find magician NPC '{TownSquareMagicianService.MagicianNpcName}' in the current save.", LogLevel.Warn);
+            return;
+        }
+
+        OpenTownSquareMagicianMenu(npc);
+    }
+
+    private void OnMagicianStateCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady || _townSquareMagicianService is null)
+            return;
+
+        Monitor.Log(_townSquareMagicianService.BuildDebugSummary(_state), LogLevel.Info);
+    }
+
+    private void OnMagicianResetCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady || _townSquareMagicianService is null)
+            return;
+
+        _townSquareMagicianService.ResetTodayProgress(_state);
+        Monitor.Log("Reset today's town square magician round progress.", LogLevel.Info);
+    }
+
     private void OnAcceptQuestCommand(string name, string[] args)
     {
         if (!Context.IsWorldReady || _rumorBoardService is null || args.Length < 1)
@@ -8221,7 +8712,10 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log($"Quests | available: {_state.Quests.Available.Count}, active: {_state.Quests.Active.Count}, completed: {_state.Quests.Completed.Count}, failed: {_state.Quests.Failed.Count}", LogLevel.Info);
+        if (_townSquareMagicianService is not null)
+            Monitor.Log(_townSquareMagicianService.BuildDebugSummary(_state), LogLevel.Info);
         Monitor.Log($"Telemetry | opens(board): {_state.Telemetry.Daily.MarketBoardOpens}, accepts: {_state.Telemetry.Daily.RumorBoardAccepts}, completes: {_state.Telemetry.Daily.RumorBoardCompletions}, anchors: {_state.Telemetry.Daily.AnchorEventsTriggered}, mutations: {_state.Telemetry.Daily.WorldMutations}", LogLevel.Info);
+        Monitor.Log($"Telemetry magician | sessions: {_state.Telemetry.Daily.TownSquareMagicianSessions}, wins: {_state.Telemetry.Daily.TownSquareMagicianWins}, reward claims: {_state.Telemetry.Daily.TownSquareMagicianRewardClaims}", LogLevel.Info);
         Monitor.Log($"Telemetry NPC intents | applied: {_state.Telemetry.Daily.NpcIntentsApplied}, rejected: {_state.Telemetry.Daily.NpcIntentsRejected}, duplicate: {_state.Telemetry.Daily.NpcIntentsDuplicate}", LogLevel.Info);
         Monitor.Log($"Telemetry NPC lanes | auto(applied/rejected): {_state.Telemetry.Daily.NpcIntentsAutoApplied}/{_state.Telemetry.Daily.NpcIntentsAutoRejected}, manual(applied/rejected): {_state.Telemetry.Daily.NpcIntentsManualApplied}/{_state.Telemetry.Daily.NpcIntentsManualRejected}", LogLevel.Info);
         Monitor.Log($"Telemetry ask gate | accept: {_state.Telemetry.Daily.NpcAskGateAccepted}, defer: {_state.Telemetry.Daily.NpcAskGateDeferred}, reject: {_state.Telemetry.Daily.NpcAskGateRejected}", LogLevel.Info);

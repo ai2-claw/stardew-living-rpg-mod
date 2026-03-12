@@ -6,7 +6,7 @@ public static class StateStore
 {
     private const string DataKey = "mx146323.StardewLivingRPG.SaveState";
     private const string LegacyDataKey = "mx146323.StardewLivingRPG/SaveState";
-    private const string CurrentStateVersion = "0.3.0";
+    private const string CurrentStateVersion = "0.4.0";
     private static readonly HashSet<string> ValidSeasons = new(StringComparer.OrdinalIgnoreCase)
     {
         "spring", "summer", "fall", "winter"
@@ -424,6 +424,42 @@ public static class StateStore
         if (state.PlayerFamily.FactVersion < 1)
         {
             state.PlayerFamily.FactVersion = 1;
+            changed = true;
+        }
+
+        if (state.MiniGames is null)
+        {
+            state.MiniGames = new MiniGameState();
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician is null)
+        {
+            state.MiniGames.TownSquareMagician = new TownSquareMagicianState();
+            changed = true;
+        }
+        if (string.IsNullOrWhiteSpace(state.MiniGames.TownSquareMagician.LastOutcome))
+        {
+            state.MiniGames.TownSquareMagician.LastOutcome = "fresh";
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.AttemptsUsed < 0)
+        {
+            state.MiniGames.TownSquareMagician.AttemptsUsed = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.HintsUsed < 0)
+        {
+            state.MiniGames.TownSquareMagician.HintsUsed = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.SessionsStartedToday < 0)
+        {
+            state.MiniGames.TownSquareMagician.SessionsStartedToday = 0;
+            changed = true;
+        }
+        if (state.MiniGames.TownSquareMagician.PlayedRoundIdsToday is null)
+        {
+            state.MiniGames.TownSquareMagician.PlayedRoundIdsToday = new List<string>();
             changed = true;
         }
 

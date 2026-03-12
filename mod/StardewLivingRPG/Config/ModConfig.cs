@@ -41,6 +41,7 @@ public sealed class ModConfig
     public bool EnablePlayerChatMenu { get; set; } = true;
     public bool ShowPlayer2ConnectionHud { get; set; } = true;
     public bool ShowDeveloperConsoleCommands { get; set; } = false;
+    public bool EnableTownSquareMagicianMinigame { get; set; } = true;
 
     // In-world work request anti-spam
     public int WorkRequestCooldownSeconds { get; set; } = 5;

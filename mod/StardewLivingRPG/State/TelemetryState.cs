@@ -10,6 +10,9 @@ public sealed class DailyTelemetry
     public int MarketBoardOpens { get; set; }
     public int RumorBoardAccepts { get; set; }
     public int RumorBoardCompletions { get; set; }
+    public int TownSquareMagicianSessions { get; set; }
+    public int TownSquareMagicianWins { get; set; }
+    public int TownSquareMagicianRewardClaims { get; set; }
     public int AnchorEventsTriggered { get; set; }
     public int WorldMutations { get; set; }
 
