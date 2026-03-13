@@ -30,6 +30,12 @@ public sealed class TownSquareMagicianService
         _rewardPool = LoadRewardPool(helper);
         ValidateLocaleOverlayCoverage("es");
         ValidateLocaleOverlayCoverage("pt-br");
+        ValidateLocaleOverlayCoverage("de");
+        ValidateLocaleOverlayCoverage("ru");
+        ValidateLocaleOverlayCoverage("fr");
+        ValidateLocaleOverlayCoverage("zh-cn");
+        ValidateLocaleOverlayCoverage("it");
+        ValidateLocaleOverlayCoverage("tr");
     }
 
     public bool IsMagicianNpc(string? rawName)
@@ -1039,7 +1045,10 @@ public sealed class TownSquareMagicianService
             WarnIfTooLong(round.Id, "OpeningLine", round.OpeningLine);
             WarnIfTooLong(round.Id, "VictoryLine", round.VictoryLine);
             foreach (var clue in round.Clues)
+            {
                 WarnIfTooLong(round.Id, "Clue", clue);
+                WarnIfGenericClue(round.Id, clue);
+            }
         }
     }
 
@@ -1085,7 +1094,10 @@ public sealed class TownSquareMagicianService
         WarnIfTooLong($"{locale}:{round.Id}", "VictoryLine", overlay.VictoryLine);
         WarnIfTooLong($"{locale}:{round.Id}", "RevealAnswer", overlay.RevealAnswer);
         foreach (var clue in overlay.Clues)
+        {
             WarnIfTooLong($"{locale}:{round.Id}", "Clue", clue);
+            WarnIfGenericClue($"{locale}:{round.Id}", clue);
+        }
 
         if (string.Equals(round.Mode, "guess_word", StringComparison.OrdinalIgnoreCase) && overlay.Answers.Count == 0)
             _monitor.Log($"Magician locale overlay '{locale}' round '{round.Id}' has no localized answers.", LogLevel.Warn);
@@ -1094,13 +1106,47 @@ public sealed class TownSquareMagicianService
             _monitor.Log($"Magician locale overlay '{locale}' round '{round.Id}' has {overlay.Clues.Count} clues; expected {round.Clues.Count}.", LogLevel.Warn);
     }
 
+    private void WarnIfGenericClue(string roundId, string clue)
+    {
+        if (string.IsNullOrWhiteSpace(clue))
+            return;
+
+        var trimmed = clue.Trim();
+        if (trimmed.StartsWith("It is an item.", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("It is a machine.", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("It is a hat.", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("It is a weapon.", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("It is a villager.", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("It is a tool.", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("It is footwear.", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("It has ", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("Tiene ", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("Tem ", StringComparison.OrdinalIgnoreCase))
+        {
+            _monitor.Log($"Magician round '{roundId}' still uses a generic clue: '{trimmed}'", LogLevel.Warn);
+        }
+    }
+
     private List<TownSquareMagicianRoundDefinition> GetOrderedRoundsForDay(SaveState state)
     {
         var dayKey = BuildDayKey(state);
-        return _rounds
-            .OrderBy(round => ComputeStableRoundWeight(dayKey, round.Id))
-            .ThenBy(round => round.Id, StringComparer.OrdinalIgnoreCase)
+        var ordered = _rounds
+            .OrderBy(round => round.Id, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        var shuffleState = (uint)ComputeStablePositiveValue(dayKey, "round-order");
+        if (shuffleState == 0)
+            shuffleState = 0x9E3779B9u;
+
+        // Use a deterministic Fisher-Yates shuffle so each day gets a real permutation.
+        for (var index = ordered.Count - 1; index > 0; index--)
+        {
+            shuffleState = NextStableShuffleValue(shuffleState);
+            var swapIndex = (int)(shuffleState % (uint)(index + 1));
+            (ordered[index], ordered[swapIndex]) = (ordered[swapIndex], ordered[index]);
+        }
+
+        return ordered;
     }
 
     private static string BuildDayKey(SaveState state)
@@ -1211,6 +1257,14 @@ public sealed class TownSquareMagicianService
     private static int ComputeStablePositiveValue(string key, string salt)
     {
         return unchecked((int)((uint)ComputeStableRoundWeight(key, salt) & 0x7FFFFFFF));
+    }
+
+    private static uint NextStableShuffleValue(uint state)
+    {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        return state == 0 ? 0xA341316Cu : state;
     }
 
     private void WarnIfTooLong(string roundId, string fieldName, string? text)
