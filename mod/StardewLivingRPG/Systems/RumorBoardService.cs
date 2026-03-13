@@ -159,8 +159,6 @@ public sealed class RumorBoardService
             state,
             preferredTarget: eventVisitTarget,
             fallbackSeed: $"daily_social_{state.Calendar.Day}");
-        var visitName = QuestTextHelper.PrettyName(visitTarget);
-
         state.Quests.Available.Add(new QuestEntry
         {
             QuestId = $"quest_gather_{crop}_{state.Calendar.Day}",
@@ -169,7 +167,7 @@ public sealed class RumorBoardService
             Source = "rumor_mill",
             Issuer = "lewis",
             ExpiresDay = state.Calendar.Day + 3,
-            Summary = BuildQuestSummary("lewis", "gather_crop", crop, 20),
+            Summary = QuestTextHelper.BuildQuestSummary("lewis", "gather_crop", crop, 20),
             TargetItem = crop,
             TargetCount = 20,
             RewardGold = 500
@@ -183,7 +181,7 @@ public sealed class RumorBoardService
             Source = "rumor_mill",
             Issuer = "haley",
             ExpiresDay = state.Calendar.Day + 2,
-            Summary = BuildQuestSummary("haley", "social_visit", visitTarget, 1),
+            Summary = QuestTextHelper.BuildQuestSummary("haley", "social_visit", visitTarget, 1),
             TargetItem = visitTarget,
             TargetCount = 1,
             RewardGold = 250
@@ -338,7 +336,7 @@ public sealed class RumorBoardService
     {
         var progress = GetQuestProgress(state, questId, player);
         if (!progress.Exists)
-            return new QuestCompletionResult { Success = false, Message = $"Active quest not found: {questId}" };
+            return new QuestCompletionResult { Success = false, Message = QuestTextHelper.BuildQuestNotFoundMessage(questId) };
 
         var quest = progress.Quest!;
 
@@ -346,18 +344,18 @@ public sealed class RumorBoardService
         {
             if (string.Equals(quest.TemplateId, "social_visit", StringComparison.OrdinalIgnoreCase))
             {
-                var visitTarget = QuestTextHelper.PrettyName(quest.TargetItem);
+                var visitTarget = QuestTextHelper.GetQuestTargetDisplayName(quest);
                 return new QuestCompletionResult
                 {
                     Success = false,
-                    Message = $"Visit {visitTarget} first, then complete this request."
+                    Message = QuestTextHelper.BuildVisitFirstMessage(visitTarget)
                 };
             }
 
             return new QuestCompletionResult
             {
                 Success = false,
-                Message = $"Request not ready yet: {QuestTextHelper.BuildQuestTitle(quest)}."
+                Message = QuestTextHelper.BuildNotReadyMessage(QuestTextHelper.BuildQuestTitle(quest))
             };
         }
 
@@ -366,7 +364,10 @@ public sealed class RumorBoardService
             return new QuestCompletionResult
             {
                 Success = false,
-                Message = $"Need {progress.NeedCount} {quest.TargetItem}, but only have {progress.HaveCount}."
+                Message = QuestTextHelper.BuildNeedItemsMessage(
+                    progress.NeedCount,
+                    QuestTextHelper.GetQuestTargetDisplayName(quest),
+                    progress.HaveCount)
             };
         }
 
@@ -383,12 +384,15 @@ public sealed class RumorBoardService
         if (player is not null && reward > 0)
             player.Money += reward;
 
-        var consumedPart = progress.RequiresItems ? $", consumed {consumed} {quest.TargetItem}" : string.Empty;
         var title = QuestTextHelper.BuildQuestTitle(quest);
         return new QuestCompletionResult
         {
             Success = true,
-            Message = $"Completed request: {title} (+{reward}g{consumedPart})",
+            Message = QuestTextHelper.BuildCompletedMessage(
+                title,
+                reward,
+                progress.RequiresItems ? consumed : 0,
+                QuestTextHelper.GetQuestTargetDisplayName(quest)),
             RewardGold = reward
         };
     }
@@ -483,7 +487,7 @@ public sealed class RumorBoardService
             Source = "npc_intent",
             Issuer = npcId,
             ExpiresDay = state.Calendar.Day + expiresDelta,
-            Summary = BuildQuestSummary(npcId, safeTemplate, safeTarget, count),
+            Summary = QuestTextHelper.BuildQuestSummary(npcId, safeTemplate, safeTarget, count),
             TargetItem = safeTarget,
             TargetCount = count,
             RewardGold = rewardGold
@@ -662,19 +666,6 @@ public sealed class RumorBoardService
             "high" => "high",
             "medium" => "medium",
             _ => "low"
-        };
-    }
-
-    private static string BuildQuestSummary(string issuer, string templateId, string target, int count)
-    {
-        var issuerName = QuestTextHelper.PrettyName(issuer);
-        var prettyTarget = QuestTextHelper.PrettyName(target);
-        return templateId switch
-        {
-            "deliver_item" => $"{issuerName} says the town could use {count} {prettyTarget}. Bringing them by would keep local trade moving.",
-            "mine_resource" => $"{issuerName} needs {count} {prettyTarget} from the mines to keep rough work supplied.",
-            "social_visit" => $"{issuerName} asked someone to check in with {prettyTarget} and make sure they're doing all right.",
-            _ => $"{issuerName} says the town pantry is running thin. Bring {count} {prettyTarget} to help steady local demand."
         };
     }
 

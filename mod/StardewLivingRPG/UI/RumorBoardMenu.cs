@@ -488,7 +488,7 @@ public sealed class RumorBoardMenu : IClickableMenu
             var title = QuestTextHelper.BuildQuestTitle(_selectedQuest);
             var ok = _rumorBoardService.AcceptQuest(_state, _selectedQuest.QuestId);
             _statusMessage = ok
-                ? I18n.Get("rumor_board.status.accepted", $"Accepted Town Request: {title}", new { title })
+                ? QuestTextHelper.BuildAcceptedMessage(title)
                 : I18n.Get("rumor_board.status.accept_failed", "Could not accept request.");
             if (ok)
             {
@@ -608,17 +608,17 @@ public sealed class RumorBoardMenu : IClickableMenu
         if (progress.IsReadyToComplete)
         {
             var title = QuestTextHelper.BuildQuestTitle(progress.Quest!);
-            _statusMessage = I18n.Get("rumor_board.status.refresh_ready", $"Ready to complete: {title}", new { title });
+            _statusMessage = QuestTextHelper.BuildProgressReadyMessage(title);
         }
         else if (progress.RequiresItems)
         {
-            var item = QuestTextHelper.PrettyName(progress.Quest!.TargetItem);
-            _statusMessage = I18n.Get("rumor_board.status.refresh_items", $"Progress: {progress.HaveCount}/{progress.NeedCount} {item}", new { have = progress.HaveCount, need = progress.NeedCount, item });
+            var item = QuestTextHelper.GetQuestTargetDisplayName(progress.Quest!);
+            _statusMessage = QuestTextHelper.BuildProgressItemsMessage(progress.HaveCount, progress.NeedCount, item);
         }
         else // social_visit
         {
-            var target = QuestTextHelper.PrettyName(progress.Quest!.TargetItem);
-            _statusMessage = I18n.Get("rumor_board.status.refresh_visit", $"Visit {target} to complete", new { target });
+            var target = QuestTextHelper.GetQuestTargetDisplayName(progress.Quest!);
+            _statusMessage = QuestTextHelper.BuildProgressVisitMessage(target);
         }
     }
 
@@ -851,7 +851,7 @@ public sealed class RumorBoardMenu : IClickableMenu
     {
         var lines = new List<string>
         {
-            q.Summary
+            QuestTextHelper.BuildQuestSummary(q)
         };
 
         var interestFlavor = InterestTextHelper.BuildQuestDetailLine(q);
@@ -871,7 +871,7 @@ public sealed class RumorBoardMenu : IClickableMenu
         var clientWidth = DrawMetadataPair(
             b,
             I18n.Get("rumor_board.detail.client_label", "Client:"),
-            QuestTextHelper.PrettyName(q.Issuer),
+            QuestTextHelper.GetQuestIssuerDisplayName(q.Issuer),
             new Vector2(contentX, rowY),
             Game1.textColor * 0.8f,
             new Color(116, 82, 164));
@@ -947,9 +947,7 @@ public sealed class RumorBoardMenu : IClickableMenu
             b.Draw(Game1.staminaRect, fillRect, progress.IsReadyToComplete ? new Color(84, 156, 78) : new Color(214, 174, 70));
         }
 
-        var progressText = quest.TemplateId.Equals("social_visit", StringComparison.OrdinalIgnoreCase)
-            ? I18n.Get("rumor_board.progress.visit", $"Check-in: {progress.HaveCount}/{progress.NeedCount} {QuestTextHelper.PrettyName(quest.TargetItem)}", new { have = progress.HaveCount, need = progress.NeedCount, target = QuestTextHelper.PrettyName(quest.TargetItem) })
-            : I18n.Get("rumor_board.progress.items", $"Progress: {progress.HaveCount}/{progress.NeedCount} {QuestTextHelper.PrettyName(quest.TargetItem)}", new { have = progress.HaveCount, need = progress.NeedCount, item = QuestTextHelper.PrettyName(quest.TargetItem) });
+        var progressText = QuestTextHelper.BuildProgressBarText(quest, progress);
 
         var textSize = Game1.smallFont.MeasureString(progressText);
         var textPos = new Vector2(

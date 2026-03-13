@@ -1,0 +1,50 @@
+{
+  "TitleVariants": {
+    "gather_crop": [
+      "{{target}} topla",
+      "Hasat yardimi: {{target}}",
+      "Tarla kosusu: {{target}}"
+    ],
+    "deliver_item": [
+      "Malzeme teslimi: {{target}}",
+      "Pazar teslimi: {{target}}",
+      "Kasaba teslimi: {{target}}"
+    ],
+    "mine_resource": [
+      "Maden seferi: {{target}}",
+      "Arayici cagrisi: {{target}}",
+      "Maden istegi: {{target}}"
+    ],
+    "social_visit": [
+      "Dost ziyareti: {{target}}",
+      "{{target}} ile gorus",
+      "Komsu isi: {{target}}"
+    ],
+    "default": [
+      "Kasaba istegi: {{target}}",
+      "Topluluk gorevi: {{target}}",
+      "Baskan istegi: {{target}}"
+    ]
+  },
+  "SummaryTemplates": {
+    "gather_crop": "{{issuer}}, kasaba raflari bos kalmasin diye {{count}} {{target}} istiyor.",
+    "deliver_item": "{{issuer}}, yerel ticaret sursun diye {{count}} {{target}} istiyor.",
+    "mine_resource": "{{issuer}}, agir isler sursun diye madenden {{count}} {{target}} istiyor.",
+    "social_visit": "{{issuer}}, birinin {{target}} ile gorusup iyi olup olmadigini kontrol etmesini istiyor.",
+    "default": "{{issuer}}, {{count}} {{target}} icin bir kasaba istegi birakti."
+  },
+  "Messages": {
+    "accepted": "Istek kabul edildi: {{title}}",
+    "active_not_found": "Etkin istek bulunamadi: {{questId}}",
+    "visit_first": "Once {{target}} ile gorus, sonra bu istegi teslim et.",
+    "not_ready": "Henuz hazir degil: {{title}}.",
+    "need_items": "{{need}} {{item}} gerekiyor ama sende yalnizca {{have}} var.",
+    "completed": "Istek tamamlandi: {{title}} (+{{reward}}g{{consumed}})",
+    "completed_consumed_part": ", teslim edilen: {{count}} {{item}}",
+    "progress_ready": "Tamamlamaya hazir: {{title}}",
+    "progress_items": "Henuz degil: {{have}}/{{need}} {{item}} teslim edildi.",
+    "progress_visit": "Henuz degil: once {{target}} ile gorus.",
+    "progress_items_bar": "Ilerleme: {{have}}/{{need}} {{item}}",
+    "progress_visit_bar": "Ziyaret: {{have}}/{{need}} {{target}}"
+  }
+}

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using StardewModdingAPI;
 using StardewLivingRPG.State;
 using StardewLivingRPG.Utils;
@@ -15,6 +16,15 @@ public sealed class TownSquareMagicianService
     private const int GrandPityThreshold = 120;
     private const int GrandTrinketUnlockYear = 2;
     private const int BottomOfMinesLevel = 120;
+    private static readonly string[] SupportedMagicianLocales =
+    {
+        "es", "pt-br", "ja", "ko", "de", "ru", "fr", "zh-cn", "it", "tr"
+    };
+    private static readonly Regex AsciiWordPattern = new(@"\b[A-Za-z]{3,}\b", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly HashSet<string> EnglishLeakSensitiveLocales = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ja", "ko", "ru", "zh-cn"
+    };
 
     private readonly IMonitor _monitor;
     private readonly IModHelper _helper;
@@ -28,14 +38,8 @@ public sealed class TownSquareMagicianService
         _monitor = monitor;
         _rounds = LoadCatalog(helper);
         _rewardPool = LoadRewardPool(helper);
-        ValidateLocaleOverlayCoverage("es");
-        ValidateLocaleOverlayCoverage("pt-br");
-        ValidateLocaleOverlayCoverage("de");
-        ValidateLocaleOverlayCoverage("ru");
-        ValidateLocaleOverlayCoverage("fr");
-        ValidateLocaleOverlayCoverage("zh-cn");
-        ValidateLocaleOverlayCoverage("it");
-        ValidateLocaleOverlayCoverage("tr");
+        foreach (var locale in SupportedMagicianLocales)
+            ValidateLocaleOverlayCoverage(locale);
     }
 
     public bool IsMagicianNpc(string? rawName)
@@ -1093,10 +1097,19 @@ public sealed class TownSquareMagicianService
         WarnIfTooLong($"{locale}:{round.Id}", "OpeningLine", overlay.OpeningLine);
         WarnIfTooLong($"{locale}:{round.Id}", "VictoryLine", overlay.VictoryLine);
         WarnIfTooLong($"{locale}:{round.Id}", "RevealAnswer", overlay.RevealAnswer);
+        WarnIfCorruptedText($"{locale}:{round.Id}", "Prompt", overlay.Prompt);
+        WarnIfCorruptedText($"{locale}:{round.Id}", "OpeningLine", overlay.OpeningLine);
+        WarnIfCorruptedText($"{locale}:{round.Id}", "VictoryLine", overlay.VictoryLine);
+        WarnIfCorruptedText($"{locale}:{round.Id}", "RevealAnswer", overlay.RevealAnswer);
+        WarnIfLikelyEnglish(locale, round.Id, "Prompt", overlay.Prompt);
+        WarnIfLikelyEnglish(locale, round.Id, "OpeningLine", overlay.OpeningLine);
+        WarnIfLikelyEnglish(locale, round.Id, "VictoryLine", overlay.VictoryLine);
         foreach (var clue in overlay.Clues)
         {
             WarnIfTooLong($"{locale}:{round.Id}", "Clue", clue);
             WarnIfGenericClue($"{locale}:{round.Id}", clue);
+            WarnIfCorruptedText($"{locale}:{round.Id}", "Clue", clue);
+            WarnIfLikelyEnglish(locale, round.Id, "Clue", clue);
         }
 
         if (string.Equals(round.Mode, "guess_word", StringComparison.OrdinalIgnoreCase) && overlay.Answers.Count == 0)
@@ -1125,6 +1138,45 @@ public sealed class TownSquareMagicianService
         {
             _monitor.Log($"Magician round '{roundId}' still uses a generic clue: '{trimmed}'", LogLevel.Warn);
         }
+    }
+
+    private void WarnIfCorruptedText(string roundId, string fieldName, string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        if (text.Contains("??", StringComparison.Ordinal)
+            || text.Contains("Ã", StringComparison.Ordinal)
+            || text.Contains("Â", StringComparison.Ordinal)
+            || ContainsBrokenQuestionMark(text))
+        {
+            _monitor.Log($"Magician round '{roundId}' field '{fieldName}' looks corrupted: '{text}'", LogLevel.Warn);
+        }
+    }
+
+    private static bool ContainsBrokenQuestionMark(string text)
+    {
+        for (var i = 1; i < text.Length - 1; i++)
+        {
+            if (text[i] != '?')
+                continue;
+
+            if (char.IsLetter(text[i - 1]) && char.IsLetter(text[i + 1]))
+                return true;
+        }
+
+        return false;
+    }
+
+    private void WarnIfLikelyEnglish(string locale, string roundId, string fieldName, string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || !EnglishLeakSensitiveLocales.Contains(locale))
+            return;
+
+        if (!AsciiWordPattern.IsMatch(text))
+            return;
+
+        _monitor.Log($"Magician locale overlay '{locale}' round '{roundId}' field '{fieldName}' still looks English: '{text}'", LogLevel.Warn);
     }
 
     private List<TownSquareMagicianRoundDefinition> GetOrderedRoundsForDay(SaveState state)

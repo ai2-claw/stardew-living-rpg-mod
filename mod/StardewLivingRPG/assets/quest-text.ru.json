@@ -1,0 +1,50 @@
+{
+  "TitleVariants": {
+    "gather_crop": [
+      "Собрать {{target}}",
+      "Помощь с урожаем: {{target}}",
+      "Полевое дело: {{target}}"
+    ],
+    "deliver_item": [
+      "Поставка: {{target}}",
+      "Доставка на рынок: {{target}}",
+      "Доставка в город: {{target}}"
+    ],
+    "mine_resource": [
+      "Поход в шахту: {{target}}",
+      "Зов шахтёра: {{target}}",
+      "Заказ руды: {{target}}"
+    ],
+    "social_visit": [
+      "Дружеский визит: {{target}}",
+      "Зайти к {{target}}",
+      "Соседское дело: {{target}}"
+    ],
+    "default": [
+      "Городская просьба: {{target}}",
+      "Общее дело: {{target}}",
+      "Просьба мэра: {{target}}"
+    ]
+  },
+  "SummaryTemplates": {
+    "gather_crop": "{{issuer}} говорит, что городу нужны {{count}} {{target}}, чтобы полки не пустовали.",
+    "deliver_item": "{{issuer}} говорит, что городу нужны {{count}} {{target}}, чтобы торговля не замирала.",
+    "mine_resource": "{{issuer}} нужны {{count}} {{target}} из шахты для тяжёлой работы.",
+    "social_visit": "{{issuer}} просит заглянуть к {{target}} и убедиться, что у него всё в порядке.",
+    "default": "{{issuer}} разместил городскую просьбу на {{count}} {{target}}."
+  },
+  "Messages": {
+    "accepted": "Просьба принята: {{title}}",
+    "active_not_found": "Активная просьба не найдена: {{questId}}",
+    "visit_first": "Сначала навести {{target}}, потом заверши эту просьбу.",
+    "not_ready": "Просьба ещё не готова: {{title}}.",
+    "need_items": "Нужно {{need}} {{item}}, а есть только {{have}}.",
+    "completed": "Просьба выполнена: {{title}} (+{{reward}}g{{consumed}})",
+    "completed_consumed_part": ", отдано {{count}} {{item}}",
+    "progress_ready": "Можно завершить: {{title}}",
+    "progress_items": "Пока нет: доставлено {{have}}/{{need}} {{item}}.",
+    "progress_visit": "Пока нет: сначала навести {{target}}.",
+    "progress_items_bar": "Ход: {{have}}/{{need}} {{item}}",
+    "progress_visit_bar": "Визит: {{have}}/{{need}} {{target}}"
+  }
+}

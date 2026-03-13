@@ -1,0 +1,50 @@
+{
+  "TitleVariants": {
+    "gather_crop": [
+      "收集{{target}}",
+      "收成帮手：{{target}}",
+      "田间跑腿：{{target}}"
+    ],
+    "deliver_item": [
+      "补给送达：{{target}}",
+      "市场交货：{{target}}",
+      "小镇配送：{{target}}"
+    ],
+    "mine_resource": [
+      "矿洞跑腿：{{target}}",
+      "矿工委托：{{target}}",
+      "矿石请求：{{target}}"
+    ],
+    "social_visit": [
+      "友好探访：{{target}}",
+      "去看看{{target}}",
+      "邻里跑腿：{{target}}"
+    ],
+    "default": [
+      "小镇委托：{{target}}",
+      "社区任务：{{target}}",
+      "镇长委托：{{target}}"
+    ]
+  },
+  "SummaryTemplates": {
+    "gather_crop": "{{issuer}}说小镇需要{{count}}个{{target}}，这样货架才不会空。",
+    "deliver_item": "{{issuer}}说小镇需要{{count}}个{{target}}，这样本地生意才能继续。",
+    "mine_resource": "{{issuer}}需要从矿洞带回{{count}}个{{target}}，好让粗活继续。",
+    "social_visit": "{{issuer}}想请人去看看{{target}}，确认对方一切安好。",
+    "default": "{{issuer}}张贴了一份需要{{count}}个{{target}}的小镇委托。"
+  },
+  "Messages": {
+    "accepted": "已接受委托：{{title}}",
+    "active_not_found": "未找到进行中的委托：{{questId}}",
+    "visit_first": "先去见{{target}}，再完成这份委托。",
+    "not_ready": "委托尚未完成：{{title}}。",
+    "need_items": "需要{{need}}个{{item}}，你现在只有{{have}}个。",
+    "completed": "委托完成：{{title}} (+{{reward}}g{{consumed}})",
+    "completed_consumed_part": "，交出了{{count}}个{{item}}",
+    "progress_ready": "可以完成：{{title}}",
+    "progress_items": "还没完成：已交付{{have}}/{{need}}个{{item}}。",
+    "progress_visit": "还没完成：先去见{{target}}。",
+    "progress_items_bar": "进度：{{have}}/{{need}} {{item}}",
+    "progress_visit_bar": "探访：{{have}}/{{need}} {{target}}"
+  }
+}

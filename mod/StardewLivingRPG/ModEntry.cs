@@ -885,6 +885,7 @@ public sealed class ModEntry : Mod
         if (NormalizeGmcmConfigValues())
             helper.WriteConfig(_config);
         I18n.Initialize(helper.Translation);
+        QuestTextHelper.Initialize(helper, Monitor);
         TryMigrateLegacyPlayer2Config(helper);
         EnsureRequiredPlayer2Enabled(helper);
         _dailyTickService = new DailyTickService(Monitor, _config);
@@ -11958,7 +11959,7 @@ public sealed class ModEntry : Mod
         var quest = _state.Quests.Available
             .FirstOrDefault(q => q.QuestId.Equals(questId, StringComparison.OrdinalIgnoreCase));
         if (quest is not null && !string.IsNullOrWhiteSpace(quest.Issuer))
-            issuer = QuestTextHelper.PrettyName(quest.Issuer);
+            issuer = QuestTextHelper.GetQuestIssuerDisplayName(quest.Issuer);
 
         var title = quest is null
             ? I18n.Get("hud.rumor.title.fallback", "New request on the board")

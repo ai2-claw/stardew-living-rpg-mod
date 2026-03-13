@@ -1,0 +1,50 @@
+{
+  "TitleVariants": {
+    "gather_crop": [
+      "Reune {{target}}",
+      "Ayuda de cosecha: {{target}}",
+      "Recado del campo: {{target}}"
+    ],
+    "deliver_item": [
+      "Entrega de abasto: {{target}}",
+      "Entrega al mercado: {{target}}",
+      "Entrega al pueblo: {{target}}"
+    ],
+    "mine_resource": [
+      "Salida a la mina: {{target}}",
+      "Llamado minero: {{target}}",
+      "Pedido de mineral: {{target}}"
+    ],
+    "social_visit": [
+      "Visita amable: {{target}}",
+      "Pasa a ver a {{target}}",
+      "Recado vecinal: {{target}}"
+    ],
+    "default": [
+      "Encargo del pueblo: {{target}}",
+      "Tarea comunitaria: {{target}}",
+      "Pedido del alcalde: {{target}}"
+    ]
+  },
+  "SummaryTemplates": {
+    "gather_crop": "{{issuer}} pide {{count}} {{target}} para mantener llenos los estantes del pueblo.",
+    "deliver_item": "{{issuer}} pide {{count}} {{target}} para que el comercio local siga en marcha.",
+    "mine_resource": "{{issuer}} necesita {{count}} {{target}} de la mina para seguir con el trabajo duro.",
+    "social_visit": "{{issuer}} quiere que alguien pase a ver a {{target}} y confirme que esta bien.",
+    "default": "{{issuer}} dejo un encargo del pueblo por {{count}} {{target}}."
+  },
+  "Messages": {
+    "accepted": "Encargo aceptado: {{title}}",
+    "active_not_found": "No se encontro el encargo activo: {{questId}}",
+    "visit_first": "Primero visita a {{target}} y luego entrega este encargo.",
+    "not_ready": "Aun no esta listo: {{title}}.",
+    "need_items": "Faltan {{need}} {{item}}; solo tienes {{have}}.",
+    "completed": "Encargo completado: {{title}} (+{{reward}}g{{consumed}})",
+    "completed_consumed_part": ", entregaste {{count}} {{item}}",
+    "progress_ready": "Listo para completar: {{title}}",
+    "progress_items": "Aun no: {{have}}/{{need}} {{item}} entregados.",
+    "progress_visit": "Aun no: primero visita a {{target}}.",
+    "progress_items_bar": "Progreso: {{have}}/{{need}} {{item}}",
+    "progress_visit_bar": "Visita: {{have}}/{{need}} {{target}}"
+  }
+}

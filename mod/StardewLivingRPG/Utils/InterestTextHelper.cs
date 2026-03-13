@@ -135,8 +135,6 @@ public static class InterestTextHelper
 
         var templateId = (quest.TemplateId ?? string.Empty).Trim().ToLowerInvariant();
         var target = NormalizeTarget(quest.TargetItem);
-        var summary = (quest.Summary ?? string.Empty).Trim();
-
         switch (templateId)
         {
             case "gather_crop":
@@ -163,15 +161,6 @@ public static class InterestTextHelper
                 if (FarmTargets.Contains(target))
                 {
                     interestId = "farmers_circle";
-                    return true;
-                }
-
-                if (summary.Contains("shop", StringComparison.OrdinalIgnoreCase)
-                    || summary.Contains("market", StringComparison.OrdinalIgnoreCase)
-                    || summary.Contains("delivery", StringComparison.OrdinalIgnoreCase)
-                    || summary.Contains("counter", StringComparison.OrdinalIgnoreCase))
-                {
-                    interestId = "shopkeepers_guild";
                     return true;
                 }
 

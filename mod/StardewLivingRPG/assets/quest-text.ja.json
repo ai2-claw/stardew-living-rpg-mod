@@ -1,0 +1,50 @@
+{
+  "TitleVariants": {
+    "gather_crop": [
+      "{{target}}集め",
+      "収穫の手助け: {{target}}",
+      "畑の用事: {{target}}"
+    ],
+    "deliver_item": [
+      "物資の届け物: {{target}}",
+      "市場納品: {{target}}",
+      "町への配達: {{target}}"
+    ],
+    "mine_resource": [
+      "採掘の用事: {{target}}",
+      "採掘依頼: {{target}}",
+      "鉱石の頼み: {{target}}"
+    ],
+    "social_visit": [
+      "{{target}}を訪ねる",
+      "{{target}}に声をかける",
+      "近所の気づかい: {{target}}"
+    ],
+    "default": [
+      "町の頼み: {{target}}",
+      "共同の用事: {{target}}",
+      "町長の頼み: {{target}}"
+    ]
+  },
+  "SummaryTemplates": {
+    "gather_crop": "{{issuer}}は町の棚のために{{count}}個の{{target}}を欲しがっている。",
+    "deliver_item": "{{issuer}}は町の商いのために{{count}}個の{{target}}を求めている。",
+    "mine_resource": "{{issuer}}は骨の折れる仕事のために鉱山の{{count}}個の{{target}}を必要としている。",
+    "social_visit": "{{issuer}}は{{target}}の様子を見に行ってほしいと言っている。",
+    "default": "{{issuer}}が{{count}}個の{{target}}を求める町の頼みを出した。"
+  },
+  "Messages": {
+    "accepted": "依頼を受けた: {{title}}",
+    "active_not_found": "進行中の依頼が見つからない: {{questId}}",
+    "visit_first": "先に{{target}}を訪ねてから、この依頼を終えて。",
+    "not_ready": "まだ完了できない: {{title}}。",
+    "need_items": "{{need}}個の{{item}}が必要だが、あるのは{{have}}個。",
+    "completed": "依頼完了: {{title}} (+{{reward}}g{{consumed}})",
+    "completed_consumed_part": "、{{count}}個の{{item}}を渡した",
+    "progress_ready": "完了できる: {{title}}",
+    "progress_items": "未達成: {{have}}/{{need}}個の{{item}}。",
+    "progress_visit": "未達成: 先に{{target}}を訪ねて。",
+    "progress_items_bar": "進行: {{have}}/{{need}} {{item}}",
+    "progress_visit_bar": "訪問: {{have}}/{{need}} {{target}}"
+  }
+}

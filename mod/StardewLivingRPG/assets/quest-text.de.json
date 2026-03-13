@@ -1,0 +1,50 @@
+{
+  "TitleVariants": {
+    "gather_crop": [
+      "Sammle {{target}}",
+      "Erntehilfe: {{target}}",
+      "Felddienst: {{target}}"
+    ],
+    "deliver_item": [
+      "Lieferung: {{target}}",
+      "Marktlieferung: {{target}}",
+      "Stadtlieferung: {{target}}"
+    ],
+    "mine_resource": [
+      "Minenlauf: {{target}}",
+      "Schuerfauftrag: {{target}}",
+      "Erzgesuch: {{target}}"
+    ],
+    "social_visit": [
+      "Freundlicher Besuch: {{target}}",
+      "Schau nach {{target}}",
+      "Nachbarschaftsdienst: {{target}}"
+    ],
+    "default": [
+      "Stadtauftrag: {{target}}",
+      "Gemeindeaufgabe: {{target}}",
+      "Auftrag des Buergermeisters: {{target}}"
+    ]
+  },
+  "SummaryTemplates": {
+    "gather_crop": "{{issuer}} bittet um {{count}} {{target}}, damit die Regale im Ort gefuellt bleiben.",
+    "deliver_item": "{{issuer}} bittet um {{count}} {{target}}, damit der Handel im Ort weiterlaeuft.",
+    "mine_resource": "{{issuer}} braucht {{count}} {{target}} aus der Mine, damit die harte Arbeit versorgt bleibt.",
+    "social_visit": "{{issuer}} moechte, dass jemand nach {{target}} sieht und sich vergewissert, dass alles in Ordnung ist.",
+    "default": "{{issuer}} hat einen Ortsauftrag ueber {{count}} {{target}} ausgehaengt."
+  },
+  "Messages": {
+    "accepted": "Auftrag angenommen: {{title}}",
+    "active_not_found": "Aktiver Auftrag nicht gefunden: {{questId}}",
+    "visit_first": "Besuche erst {{target}} und gib den Auftrag danach ab.",
+    "not_ready": "Noch nicht bereit: {{title}}.",
+    "need_items": "{{need}} {{item}} werden gebraucht, aber du hast nur {{have}}.",
+    "completed": "Auftrag erledigt: {{title}} (+{{reward}}g{{consumed}})",
+    "completed_consumed_part": ", abgegeben: {{count}} {{item}}",
+    "progress_ready": "Bereit zum Abschliessen: {{title}}",
+    "progress_items": "Noch nicht: {{have}}/{{need}} {{item}} abgegeben.",
+    "progress_visit": "Noch nicht: Besuche zuerst {{target}}.",
+    "progress_items_bar": "Fortschritt: {{have}}/{{need}} {{item}}",
+    "progress_visit_bar": "Besuch: {{have}}/{{need}} {{target}}"
+  }
+}

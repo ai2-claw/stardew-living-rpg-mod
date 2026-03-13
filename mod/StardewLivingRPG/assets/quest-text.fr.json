@@ -1,0 +1,50 @@
+{
+  "TitleVariants": {
+    "gather_crop": [
+      "Recolte de {{target}}",
+      "Coup de main : {{target}}",
+      "Tournee des champs : {{target}}"
+    ],
+    "deliver_item": [
+      "Livraison : {{target}}",
+      "Livraison du marche : {{target}}",
+      "Livraison au bourg : {{target}}"
+    ],
+    "mine_resource": [
+      "Viree a la mine : {{target}}",
+      "Appel du prospecteur : {{target}}",
+      "Demande de minerai : {{target}}"
+    ],
+    "social_visit": [
+      "Visite amicale : {{target}}",
+      "Va voir {{target}}",
+      "Service de voisinage : {{target}}"
+    ],
+    "default": [
+      "Demande du bourg : {{target}}",
+      "Tache commune : {{target}}",
+      "Demande du maire : {{target}}"
+    ]
+  },
+  "SummaryTemplates": {
+    "gather_crop": "{{issuer}} dit que le bourg a besoin de {{count}} {{target}}. Les apporter aidera a garder les etageres pleines.",
+    "deliver_item": "{{issuer}} dit que le bourg a besoin de {{count}} {{target}}. Les apporter aidera le commerce local a tourner.",
+    "mine_resource": "{{issuer}} a besoin de {{count}} {{target}} de la mine pour soutenir le travail rude.",
+    "social_visit": "{{issuer}} a demande a quelquun daller voir {{target}} pour verifier que tout va bien.",
+    "default": "{{issuer}} a affiche une demande du bourg pour {{count}} {{target}}."
+  },
+  "Messages": {
+    "accepted": "Demande acceptee : {{title}}",
+    "active_not_found": "Demande active introuvable : {{questId}}",
+    "visit_first": "Va dabord voir {{target}}, puis termine cette demande.",
+    "not_ready": "Demande pas encore prete : {{title}}.",
+    "need_items": "Il faut {{need}} {{item}}, mais tu nen as que {{have}}.",
+    "completed": "Demande terminee : {{title}} (+{{reward}}g{{consumed}})",
+    "completed_consumed_part": ", remis : {{count}} {{item}}",
+    "progress_ready": "Pret a terminer : {{title}}",
+    "progress_items": "Pas encore : {{have}}/{{need}} {{item}} remis.",
+    "progress_visit": "Pas encore : va dabord voir {{target}}.",
+    "progress_items_bar": "Progres : {{have}}/{{need}} {{item}}",
+    "progress_visit_bar": "Visite : {{have}}/{{need}} {{target}}"
+  }
+}

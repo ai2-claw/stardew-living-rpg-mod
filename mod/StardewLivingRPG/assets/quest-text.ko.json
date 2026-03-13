@@ -1,0 +1,50 @@
+{
+  "TitleVariants": {
+    "gather_crop": [
+      "{{target}} 모으기",
+      "수확 도우미: {{target}}",
+      "밭일 심부름: {{target}}"
+    ],
+    "deliver_item": [
+      "물자 전달: {{target}}",
+      "시장 납품: {{target}}",
+      "마을 배달: {{target}}"
+    ],
+    "mine_resource": [
+      "광산 심부름: {{target}}",
+      "채굴 요청: {{target}}",
+      "광석 부탁: {{target}}"
+    ],
+    "social_visit": [
+      "{{target}} 안부 보기",
+      "{{target}} 찾아가기",
+      "이웃 심부름: {{target}}"
+    ],
+    "default": [
+      "마을 부탁: {{target}}",
+      "공동 일감: {{target}}",
+      "시장님의 부탁: {{target}}"
+    ]
+  },
+  "SummaryTemplates": {
+    "gather_crop": "{{issuer}}이(가) 마을 진열대를 위해 {{target}} {{count}}개를 구하고 있다.",
+    "deliver_item": "{{issuer}}이(가) 마을 장사를 위해 {{target}} {{count}}개를 찾고 있다.",
+    "mine_resource": "{{issuer}}이(가) 거친 일을 버티려면 광산의 {{target}} {{count}}개가 필요하다.",
+    "social_visit": "{{issuer}}이(가) {{target}}에게 들러 안부를 확인해 달라고 했다.",
+    "default": "{{issuer}}이(가) {{target}} {{count}}개를 구하는 마을 부탁을 올렸다."
+  },
+  "Messages": {
+    "accepted": "의뢰 수락: {{title}}",
+    "active_not_found": "진행 중 의뢰를 찾지 못함: {{questId}}",
+    "visit_first": "먼저 {{target}}에게 들른 뒤 이 의뢰를 마쳐라.",
+    "not_ready": "아직 준비되지 않음: {{title}}.",
+    "need_items": "{{item}} {{need}}개가 필요하지만 지금은 {{have}}개뿐이다.",
+    "completed": "의뢰 완료: {{title}} (+{{reward}}g{{consumed}})",
+    "completed_consumed_part": ", {{item}} {{count}}개 전달",
+    "progress_ready": "완료 가능: {{title}}",
+    "progress_items": "아직 아님: {{have}}/{{need}} {{item}} 전달됨.",
+    "progress_visit": "아직 아님: 먼저 {{target}}에게 가라.",
+    "progress_items_bar": "진행: {{have}}/{{need}} {{item}}",
+    "progress_visit_bar": "방문: {{have}}/{{need}} {{target}}"
+  }
+}
