@@ -12,7 +12,17 @@ public sealed class NewspaperIssue
     public string Headline { get; set; } = string.Empty;
     public List<string> Sections { get; set; } = new();
     public List<string> PredictiveHints { get; set; } = new();
+    public List<NewspaperMarketLine> MarketSections { get; set; } = new();
+    public List<NewspaperMarketLine> MarketHintFallbacks { get; set; } = new();
     public List<NewspaperArticle> Articles { get; set; } = new();
+}
+
+public sealed class NewspaperMarketLine
+{
+    public string TemplateId { get; set; } = string.Empty;
+    public string CropKey { get; set; } = string.Empty;
+    public int PriceToday { get; set; }
+    public float DeltaPct { get; set; }
 }
 
 public class NewspaperArticle

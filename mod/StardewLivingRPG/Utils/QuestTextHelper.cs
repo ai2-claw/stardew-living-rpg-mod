@@ -239,6 +239,11 @@ public static class QuestTextHelper
         return ResolveObjectDisplayName(target);
     }
 
+    public static string GetLocalizedObjectDisplayName(string? objectKey)
+    {
+        return ResolveObjectDisplayName(objectKey);
+    }
+
     public static string PrettyTarget(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))

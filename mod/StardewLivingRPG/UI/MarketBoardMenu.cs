@@ -158,7 +158,7 @@ public sealed class MarketBoardMenu : IClickableMenu
         var nameY = y + 8;
 
         // Name
-        var displayName = QuestTextHelper.PrettyName(cropName);
+        var displayName = QuestTextHelper.GetLocalizedObjectDisplayName(cropName);
         b.DrawString(Game1.smallFont, displayName, new Vector2(textX, nameY), new Color(60, 40, 20));
 
         // Price with trend indicator

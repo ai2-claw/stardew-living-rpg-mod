@@ -188,6 +188,34 @@ public static class StateStore
             state.Newspaper.Articles = new List<NewspaperArticle>();
             changed = true;
         }
+        foreach (var issue in state.Newspaper.Issues)
+        {
+            if (issue.Sections is null)
+            {
+                issue.Sections = new List<string>();
+                changed = true;
+            }
+            if (issue.PredictiveHints is null)
+            {
+                issue.PredictiveHints = new List<string>();
+                changed = true;
+            }
+            if (issue.MarketSections is null)
+            {
+                issue.MarketSections = new List<NewspaperMarketLine>();
+                changed = true;
+            }
+            if (issue.MarketHintFallbacks is null)
+            {
+                issue.MarketHintFallbacks = new List<NewspaperMarketLine>();
+                changed = true;
+            }
+            if (issue.Articles is null)
+            {
+                issue.Articles = new List<NewspaperArticle>();
+                changed = true;
+            }
+        }
 
         if (state.Telemetry is null)
         {

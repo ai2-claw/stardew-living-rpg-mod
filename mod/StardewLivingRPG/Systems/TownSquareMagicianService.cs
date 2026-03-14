@@ -1133,8 +1133,9 @@ public sealed class TownSquareMagicianService
             || trimmed.StartsWith("It is a tool.", StringComparison.OrdinalIgnoreCase)
             || trimmed.StartsWith("It is footwear.", StringComparison.OrdinalIgnoreCase)
             || trimmed.StartsWith("It has ", StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith("Tiene ", StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith("Tem ", StringComparison.OrdinalIgnoreCase))
+            || trimmed.Equals("It carries a strange vibe.", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("Tiene un aire extrano.", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("Tem um ar estranho.", StringComparison.OrdinalIgnoreCase))
         {
             _monitor.Log($"Magician round '{roundId}' still uses a generic clue: '{trimmed}'", LogLevel.Warn);
         }
@@ -1146,12 +1147,27 @@ public sealed class TownSquareMagicianService
             return;
 
         if (text.Contains("??", StringComparison.Ordinal)
-            || text.Contains("Ã", StringComparison.Ordinal)
-            || text.Contains("Â", StringComparison.Ordinal)
+            || text.Contains("�", StringComparison.Ordinal)
+            || LooksLikeBrokenUtf8Pair(text, 'Ã')
             || ContainsBrokenQuestionMark(text))
         {
             _monitor.Log($"Magician round '{roundId}' field '{fieldName}' looks corrupted: '{text}'", LogLevel.Warn);
         }
+    }
+
+    private static bool LooksLikeBrokenUtf8Pair(string text, char marker)
+    {
+        for (var i = 0; i < text.Length - 1; i++)
+        {
+            if (text[i] != marker)
+                continue;
+
+            var next = text[i + 1];
+            if ((next >= '' && next <= '¿') || char.IsLetter(next))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool ContainsBrokenQuestionMark(string text)

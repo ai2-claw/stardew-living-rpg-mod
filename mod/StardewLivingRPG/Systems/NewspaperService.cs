@@ -49,6 +49,8 @@ public sealed class NewspaperService
             Headline = BuildQuietDayHeadline(), // Placeholder, will be replaced by SelectHeadline
             Sections = new List<string>(),
             PredictiveHints = new List<string>(),
+            MarketSections = new List<NewspaperMarketLine>(),
+            MarketHintFallbacks = new List<NewspaperMarketLine>(),
             Articles = new List<NewspaperArticle>()
         };
 
@@ -100,10 +102,10 @@ public sealed class NewspaperService
         var topUp = GetTopUp(state);
 
         if (topDown is not null)
-            issue.Sections.Add($"Market: {Cap(topDown.Crop)} softened {(Math.Abs(topDown.DeltaPct) * 100):0.#}% to {topDown.Today}g.");
+            issue.MarketSections.Add(BuildMarketLine("market_down", topDown));
 
         if (topUp is not null)
-            issue.Sections.Add($"Opportunity: {Cap(topUp.Crop)} rose {(topUp.DeltaPct * 100):0.#}% to {topUp.Today}g.");
+            issue.MarketSections.Add(BuildMarketLine("market_up", topUp));
 
         if (!string.IsNullOrWhiteSpace(anchorNote))
             issue.Sections.Add(anchorNote);
@@ -117,7 +119,7 @@ public sealed class NewspaperService
         if (marketOutlook.Count > 0)
             issue.PredictiveHints.AddRange(marketOutlook);
         else
-            issue.PredictiveHints.AddRange(BuildPressTimeMarketOutlookFallback(state));
+            issue.MarketHintFallbacks.AddRange(BuildPressTimeMarketOutlookFallback(state));
 
         return issue;
     }
@@ -167,6 +169,8 @@ public sealed class NewspaperService
                 Headline = BuildQuietDayHeadline(),
                 Sections = new List<string>(),
                 PredictiveHints = new List<string>(),
+                MarketSections = new List<NewspaperMarketLine>(),
+                MarketHintFallbacks = new List<NewspaperMarketLine>(),
                 Articles = new List<NewspaperArticle>()
             };
         }
@@ -966,7 +970,18 @@ public sealed class NewspaperService
             || string.Equals(sourceNpc, LegacyTownReporterByline, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string Cap(string value) => QuestTextHelper.PrettyName(value);
+    private static string Cap(string value) => QuestTextHelper.GetLocalizedObjectDisplayName(value);
+
+    private static NewspaperMarketLine BuildMarketLine(string templateId, CropTrendEntry entry)
+    {
+        return new NewspaperMarketLine
+        {
+            TemplateId = templateId,
+            CropKey = entry.Crop,
+            PriceToday = entry.Today,
+            DeltaPct = entry.DeltaPct
+        };
+    }
 
     private async Task<List<string>> GenerateDynamicMarketOutlookHintsAsync(SaveState state)
     {
@@ -1028,7 +1043,7 @@ public sealed class NewspaperService
             .ToList();
     }
 
-    private static List<string> BuildPressTimeMarketOutlookFallback(SaveState state)
+    private static List<NewspaperMarketLine> BuildPressTimeMarketOutlookFallback(SaveState state)
     {
         var hints = state.Economy.Crops
             .Where(kv => kv.Value.PriceYesterday > 0 && kv.Value.PriceToday != kv.Value.PriceYesterday)
@@ -1040,11 +1055,17 @@ public sealed class NewspaperService
             })
             .OrderByDescending(x => Math.Abs(x.DeltaPct))
             .Take(2)
-            .Select(x => $"By press time, {Cap(x.Crop)} traded at {x.Entry.PriceToday}g ({x.DeltaPct * 100:+0.#;-0.#;0}%).")
+            .Select(x => new NewspaperMarketLine
+            {
+                TemplateId = "press_time",
+                CropKey = x.Crop,
+                PriceToday = x.Entry.PriceToday,
+                DeltaPct = x.DeltaPct
+            })
             .ToList();
 
         if (hints.Count == 0)
-            hints.Add("By press time, market prices held steady across town stalls.");
+            hints.Add(new NewspaperMarketLine { TemplateId = "press_time_steady" });
 
         return hints;
     }

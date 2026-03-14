@@ -534,11 +534,12 @@ public sealed class NewspaperMenu : IClickableMenu
         }
         y += 10;
 
-        if (_issue.Sections is { Count: > 0 })
+        var renderedSections = BuildRenderedSections();
+        if (renderedSections.Count > 0)
         {
-            for (var i = 0; i < _issue.Sections.Count; i++)
+            for (var i = 0; i < renderedSections.Count; i++)
             {
-                var section = _issue.Sections[i];
+                var section = renderedSections[i];
                 var wrappedBody = TextWrapHelper.WrapText(Game1.smallFont, section, contentMaxWidth);
                 foreach (var line in wrappedBody)
                 {
@@ -547,7 +548,7 @@ public sealed class NewspaperMenu : IClickableMenu
                     y += 28;
                 }
 
-                if (i < _issue.Sections.Count - 1)
+                if (i < renderedSections.Count - 1)
                     y += 16;
             }
         }
@@ -557,7 +558,8 @@ public sealed class NewspaperMenu : IClickableMenu
             b.Draw(Game1.staminaRect, new Rectangle(paperRect.X + 20, y, paperRect.Width - 40, 1), Color.Black * 0.3f);
         y += 20;
 
-        if (_issue.PredictiveHints != null && _issue.PredictiveHints.Any())
+        var renderedHints = BuildRenderedPredictiveHints();
+        if (renderedHints.Count > 0)
         {
             if (draw && b is not null)
             {
@@ -569,9 +571,9 @@ public sealed class NewspaperMenu : IClickableMenu
             }
             y += 30;
 
-            for (var i = 0; i < _issue.PredictiveHints.Count; i++)
+            for (var i = 0; i < renderedHints.Count; i++)
             {
-                var hint = _issue.PredictiveHints[i];
+                var hint = renderedHints[i];
                 var bulletText = $"- {hint}";
                 var wrappedHint = TextWrapHelper.WrapText(Game1.smallFont, bulletText, contentMaxWidth);
                 foreach (var line in wrappedHint)
@@ -581,7 +583,7 @@ public sealed class NewspaperMenu : IClickableMenu
                     y += 24;
                 }
 
-                if (i < _issue.PredictiveHints.Count - 1)
+                if (i < renderedHints.Count - 1)
                     y += 4;
             }
         }
@@ -599,5 +601,48 @@ public sealed class NewspaperMenu : IClickableMenu
             paperRect.Center.Y - size.Y / 2f
         );
         b.DrawString(Game1.dialogueFont, text, pos, Color.Black);
+    }
+
+    private List<string> BuildRenderedSections()
+    {
+        var rendered = new List<string>();
+        if (_issue is null)
+            return rendered;
+
+        if (_issue.MarketSections is { Count: > 0 })
+            rendered.AddRange(_issue.MarketSections.Select(RenderMarketLine));
+
+        if (_issue.Sections is { Count: > 0 })
+            rendered.AddRange(_issue.Sections.Where(section => !string.IsNullOrWhiteSpace(section)));
+
+        return rendered;
+    }
+
+    private List<string> BuildRenderedPredictiveHints()
+    {
+        var rendered = new List<string>();
+        if (_issue is null)
+            return rendered;
+
+        if (_issue.MarketHintFallbacks is { Count: > 0 })
+            rendered.AddRange(_issue.MarketHintFallbacks.Select(RenderMarketLine));
+
+        if (_issue.PredictiveHints is { Count: > 0 })
+            rendered.AddRange(_issue.PredictiveHints.Where(hint => !string.IsNullOrWhiteSpace(hint)));
+
+        return rendered;
+    }
+
+    private static string RenderMarketLine(NewspaperMarketLine line)
+    {
+        var displayName = QuestTextHelper.GetLocalizedObjectDisplayName(line.CropKey);
+        return (line.TemplateId ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "market_down" => $"Market: {displayName} softened {(Math.Abs(line.DeltaPct) * 100):0.#}% to {line.PriceToday}g.",
+            "market_up" => $"Opportunity: {displayName} rose {(line.DeltaPct * 100):0.#}% to {line.PriceToday}g.",
+            "press_time" => $"By press time, {displayName} traded at {line.PriceToday}g ({line.DeltaPct * 100:+0.#;-0.#;0}%).",
+            "press_time_steady" => "By press time, market prices held steady across town stalls.",
+            _ => string.Empty
+        };
     }
 }
