@@ -70,8 +70,8 @@ public static class QuestTextHelper
     private static IModHelper? _helper;
     private static IMonitor? _monitor;
     private static readonly Dictionary<string, QuestTextLocaleOverlay?> LocaleOverlayCache = new(StringComparer.OrdinalIgnoreCase);
-    private static IReadOnlyDictionary<string, string>? _localizedObjectNames;
-    private static IReadOnlyDictionary<string, string>? _localizedNpcNames;
+    private static readonly Dictionary<string, IReadOnlyDictionary<string, string>> LocalizedObjectNameCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, IReadOnlyDictionary<string, string>> LocalizedNpcNameCache = new(StringComparer.OrdinalIgnoreCase);
 
     public static void Initialize(IModHelper helper, IMonitor monitor)
     {
@@ -80,8 +80,8 @@ public static class QuestTextHelper
         lock (SyncRoot)
         {
             LocaleOverlayCache.Clear();
-            _localizedObjectNames = null;
-            _localizedNpcNames = null;
+            LocalizedObjectNameCache.Clear();
+            LocalizedNpcNameCache.Clear();
         }
 
         foreach (var locale in SupportedQuestLocales)
@@ -288,26 +288,21 @@ public static class QuestTextHelper
         if (string.IsNullOrWhiteSpace(npcName))
             return fallback;
 
-        try
-        {
-            var liveNpc = Game1.getCharacterFromName(npcName.Trim(), mustBeVillager: false) as NPC;
-            if (liveNpc is not null && !string.IsNullOrWhiteSpace(liveNpc.displayName))
-                return liveNpc.displayName.Trim();
-        }
-        catch
-        {
-        }
-
         var map = GetLocalizedNpcNames();
         var normalized = NormalizeLookupKey(npcName);
-        if (map.TryGetValue(normalized, out var localized) && !string.IsNullOrWhiteSpace(localized))
+        if (TryResolveLocalizedNpcName(map, normalized, out var localized))
             return localized;
 
-        if (NpcAliasMap.TryGetValue(normalized, out var alias))
+        var liveNpc = TryResolveLiveNpc(npcName);
+        if (liveNpc is not null)
         {
-            var aliasKey = NormalizeLookupKey(alias);
-            if (map.TryGetValue(aliasKey, out localized) && !string.IsNullOrWhiteSpace(localized))
-                return localized;
+            var liveDisplayName = (liveNpc.displayName ?? string.Empty).Trim();
+            if (IsUsableLocalizedNpcName(liveDisplayName))
+                return liveDisplayName;
+
+            var liveName = (liveNpc.Name ?? string.Empty).Trim();
+            if (IsUsableLocalizedNpcName(liveName))
+                return liveName;
         }
 
         return fallback;
@@ -315,10 +310,11 @@ public static class QuestTextHelper
 
     private static IReadOnlyDictionary<string, string> GetLocalizedObjectNames()
     {
+        var locale = NormalizeLocale(I18n.GetCurrentLocaleCode());
         lock (SyncRoot)
         {
-            if (_localizedObjectNames is not null)
-                return _localizedObjectNames;
+            if (LocalizedObjectNameCache.TryGetValue(locale, out var cached))
+                return cached;
 
             var resolved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var objectData = TryGetGame1ObjectData();
@@ -329,8 +325,9 @@ public static class QuestTextHelper
                     if (entry.Value is null)
                         continue;
 
+                    var itemId = Convert.ToString(entry.Key)?.Trim();
                     var canonicalName = TryReadStringMember(entry.Value, "Name");
-                    var displayName = TryReadStringMember(entry.Value, "DisplayName", "Name");
+                    var displayName = ResolveObjectDataDisplayName(itemId, entry.Value);
                     var normalized = NormalizeLookupKey(canonicalName);
                     if (string.IsNullOrWhiteSpace(normalized) || string.IsNullOrWhiteSpace(displayName))
                         continue;
@@ -340,17 +337,18 @@ public static class QuestTextHelper
                 }
             }
 
-            _localizedObjectNames = resolved;
-            return _localizedObjectNames;
+            LocalizedObjectNameCache[locale] = resolved;
+            return resolved;
         }
     }
 
     private static IReadOnlyDictionary<string, string> GetLocalizedNpcNames()
     {
+        var locale = NormalizeLocale(I18n.GetCurrentLocaleCode());
         lock (SyncRoot)
         {
-            if (_localizedNpcNames is not null)
-                return _localizedNpcNames;
+            if (LocalizedNpcNameCache.TryGetValue(locale, out var cached))
+                return cached;
 
             var resolved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             try
@@ -359,11 +357,12 @@ public static class QuestTextHelper
                 foreach (var (key, value) in names)
                 {
                     var normalized = NormalizeLookupKey(key, splitCamelCase: true);
-                    if (string.IsNullOrWhiteSpace(normalized) || string.IsNullOrWhiteSpace(value))
+                    var localized = value?.Trim() ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(normalized) || !IsUsableLocalizedNpcName(localized))
                         continue;
 
                     if (!resolved.ContainsKey(normalized))
-                        resolved[normalized] = value.Trim();
+                        resolved[normalized] = localized;
                 }
             }
             catch (Exception ex)
@@ -371,9 +370,68 @@ public static class QuestTextHelper
                 _monitor?.Log($"Failed to load localized NPC names for quests: {ex.Message}", LogLevel.Trace);
             }
 
-            _localizedNpcNames = resolved;
-            return _localizedNpcNames;
+            LocalizedNpcNameCache[locale] = resolved;
+            return resolved;
         }
+    }
+
+    private static bool TryResolveLocalizedNpcName(IReadOnlyDictionary<string, string> map, string normalizedNpcName, out string localized)
+    {
+        localized = string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedNpcName))
+            return false;
+
+        if (map.TryGetValue(normalizedNpcName, out var directLocalized) && IsUsableLocalizedNpcName(directLocalized))
+        {
+            localized = directLocalized;
+            return true;
+        }
+
+        if (!NpcAliasMap.TryGetValue(normalizedNpcName, out var alias))
+            return false;
+
+        var aliasKey = NormalizeLookupKey(alias, splitCamelCase: true);
+        if (map.TryGetValue(aliasKey, out var aliasedLocalized) && IsUsableLocalizedNpcName(aliasedLocalized))
+        {
+            localized = aliasedLocalized;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static NPC? TryResolveLiveNpc(string? npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName))
+            return null;
+
+        foreach (var candidate in EnumerateNpcLookupCandidates(npcName))
+        {
+            try
+            {
+                if (Game1.getCharacterFromName(candidate, mustBeVillager: false) is NPC npc)
+                    return npc;
+            }
+            catch
+            {
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateNpcLookupCandidates(string npcName)
+    {
+        var trimmed = npcName.Trim();
+        if (!string.IsNullOrWhiteSpace(trimmed))
+            yield return trimmed;
+
+        var normalized = NormalizeLookupKey(trimmed);
+        if (!NpcAliasMap.TryGetValue(normalized, out var alias))
+            yield break;
+
+        if (!string.Equals(alias, trimmed, StringComparison.OrdinalIgnoreCase))
+            yield return alias;
     }
 
     private static object? TryGetGame1ObjectData()
@@ -385,6 +443,118 @@ public static class QuestTextHelper
 
         var field = typeof(Game1).GetField("objectData", flags);
         return field?.GetValue(null);
+    }
+
+    private static string? ResolveObjectDataDisplayName(string? itemId, object source)
+    {
+        var displayName = TryReadStringMember(source, "DisplayName", "Name");
+        var resolvedTokenName = ResolveLocalizedObjectToken(displayName);
+        if (IsUsableLocalizedObjectName(resolvedTokenName))
+            return resolvedTokenName;
+
+        if (!string.IsNullOrWhiteSpace(itemId))
+        {
+            try
+            {
+                var item = ItemRegistry.Create($"(O){itemId}");
+                var liveDisplayName = item?.DisplayName?.Trim();
+                if (IsUsableLocalizedObjectName(liveDisplayName))
+                    return liveDisplayName;
+            }
+            catch
+            {
+            }
+        }
+
+        return IsUsableLocalizedObjectName(displayName)
+            ? displayName!.Trim()
+            : null;
+    }
+
+    private static string? ResolveLocalizedObjectToken(string? displayName)
+    {
+        if (!IsLocalizedTextStringToken(displayName))
+            return null;
+
+        var token = displayName![1..^1];
+        var parts = token.Split(':', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length != 2)
+            return null;
+
+        try
+        {
+            var prefix = "LocalizedTextStrings\\";
+            if (!parts[0].StartsWith(prefix, StringComparison.Ordinal))
+                return null;
+
+            var resolved = Game1.content.LoadString($"Strings\\{parts[0][prefix.Length..]}:{parts[1]}");
+            return string.IsNullOrWhiteSpace(resolved)
+                ? null
+                : resolved.Trim();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsLocalizedTextStringToken(string? text)
+    {
+        return !string.IsNullOrWhiteSpace(text)
+            && text.StartsWith("[LocalizedTextStrings\\", StringComparison.Ordinal)
+            && text.EndsWith("]", StringComparison.Ordinal);
+    }
+
+    private static bool IsUsableLocalizedObjectName(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var trimmed = text.Trim();
+        return !IsLocalizedTextStringToken(trimmed)
+            && !LooksLikeLocalizedObjectMojibake(trimmed);
+    }
+
+    private static bool IsUsableLocalizedNpcName(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var trimmed = text.Trim();
+        if (IsLocalizedTextStringToken(trimmed) || LooksLikeLocalizedObjectMojibake(trimmed))
+            return false;
+
+        return !trimmed.All(c => c == '*');
+    }
+
+    private static bool LooksLikeLocalizedObjectMojibake(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        return text.Contains('�')
+            || text.Contains("Ãƒ", StringComparison.Ordinal)
+            || text.Contains("Ã‚", StringComparison.Ordinal)
+            || text.Contains("ï¿½", StringComparison.Ordinal)
+            || LooksLikeBrokenUtf8Pair(text, 'Ã')
+            || LooksLikeBrokenUtf8Pair(text, 'Â')
+            || LooksLikeBrokenUtf8Pair(text, 'Ð')
+            || LooksLikeBrokenUtf8Pair(text, 'Ñ');
+    }
+
+    private static bool LooksLikeBrokenUtf8Pair(string text, char marker)
+    {
+        for (var i = 0; i < text.Length - 1; i++)
+        {
+            if (text[i] != marker)
+                continue;
+
+            var next = text[i + 1];
+            if ((next >= '\u0080' && next <= '\u00BF') || char.IsLetter(next))
+                return true;
+        }
+
+        return false;
     }
 
     private static string? TryReadStringMember(object source, params string[] memberNames)
