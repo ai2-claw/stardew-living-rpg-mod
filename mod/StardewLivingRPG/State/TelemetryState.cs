@@ -33,6 +33,30 @@ public sealed class DailyTelemetry
     public Dictionary<string, int> AmbientCommandDuplicateByType { get; set; } = new();
     public int AmbientLowInfoSuppressed { get; set; }
     public int AmbientCadenceSkips { get; set; }
+    public int AutonomyGoalsProposed { get; set; }
+    public int AutonomyGoalsAccepted { get; set; }
+    public int AutonomyGoalsRejected { get; set; }
+    public int AutonomyPlansCreated { get; set; }
+    public int AutonomyBlocksCompleted { get; set; }
+    public int AutonomyBlocksFailed { get; set; }
+    public int AutonomyReplans { get; set; }
+    public int ScheduleOverridesApplied { get; set; }
+    public int ArrivalsSucceeded { get; set; }
+    public int ArrivalsFailed { get; set; }
+    public int HomeVisitsAllowed { get; set; }
+    public int HomeVisitsDenied { get; set; }
+    public int EncountersStarted { get; set; }
+    public int EncountersCompleted { get; set; }
+    public int EncountersCancelled { get; set; }
+    public int EncountersPlanned { get; set; }
+    public int EncountersOpportunistic { get; set; }
+    public int PairEmotionUpdates { get; set; }
+    public int BubblesDisplayed { get; set; }
+    public int BubblesFallbackUsed { get; set; }
+    public int BubblesCancelled { get; set; }
+    public Dictionary<string, int> VisitDenialByReason { get; set; } = new();
+    public Dictionary<string, int> PairEmotionUpdatesByAxis { get; set; } = new();
+    public Dictionary<string, int> AutonomyRejectByReason { get; set; } = new();
 
     public int RomanceCommandsApplied { get; set; }
     public int RomanceCommandsRejected { get; set; }

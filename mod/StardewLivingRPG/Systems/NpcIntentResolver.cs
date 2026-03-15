@@ -19,7 +19,11 @@ public sealed class NpcIntentResolver
         "record_town_event",
         "adjust_town_sentiment",
         "update_romance_profile",
-        "propose_micro_date"
+        "propose_micro_date",
+        "adjust_npc_pair_emotion",
+        "record_social_incident",
+        "set_npc_pair_flag",
+        "suggest_autonomy_goal"
     };
 
     private static readonly HashSet<string> AllowedTemplates = new(StringComparer.OrdinalIgnoreCase)
@@ -40,6 +44,10 @@ public sealed class NpcIntentResolver
     private static readonly HashSet<string> AllowedMemoryCategories = new(StringComparer.OrdinalIgnoreCase)
     {
         "preference", "promise", "event", "relationship"
+    };
+    private static readonly HashSet<string> AllowedPairEmotionAxes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "friendship", "anger", "jealousy", "envy", "trust", "admiration", "awkwardness"
     };
     private static readonly HashSet<string> AllowedTownEventKinds = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -137,6 +145,10 @@ public sealed class NpcIntentResolver
             "adjust_town_sentiment" => ResolveAdjustTownSentiment(state, npcId, intentId, args),
             "update_romance_profile" => ResolveUpdateRomanceProfile(state, npcId, intentId, args),
             "propose_micro_date" => ResolveProposeMicroDate(state, npcId, intentId, args),
+            "adjust_npc_pair_emotion" => ResolveAdjustNpcPairEmotion(state, npcId, intentId, args),
+            "record_social_incident" => ResolveRecordSocialIncident(state, npcId, intentId, args),
+            "set_npc_pair_flag" => ResolveSetNpcPairFlag(state, npcId, intentId, args),
+            "suggest_autonomy_goal" => ResolveSuggestAutonomyGoal(state, npcId, intentId, args),
             _ => NpcIntentResolveResult.Rejected($"unhandled command '{command}'")
         };
     }
@@ -993,6 +1005,165 @@ public sealed class NpcIntentResolver
         return NpcIntentResolveResult.Applied(intentId, "adjust_town_sentiment", axis, fallbackUsed: false, proposal: null);
     }
 
+    private static NpcIntentResolveResult ResolveAdjustNpcPairEmotion(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (!args.TryGetProperty("target_npc", out var targetEl) || targetEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("adjust_npc_pair_emotion missing target_npc", "E_PAIR_TARGET_INVALID");
+        if (!args.TryGetProperty("axis", out var axisEl) || axisEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("adjust_npc_pair_emotion missing axis", "E_PAIR_AXIS_INVALID");
+        if (!args.TryGetProperty("delta", out var deltaEl) || deltaEl.ValueKind != JsonValueKind.Number || !deltaEl.TryGetInt32(out var delta))
+            return NpcIntentResolveResult.Rejected("adjust_npc_pair_emotion missing integer delta", "E_PAIR_DELTA_INVALID");
+        if (HasUnexpectedArgs(args, "target_npc", "axis", "delta", "reason"))
+            return NpcIntentResolveResult.Rejected("adjust_npc_pair_emotion contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
+
+        var targetNpc = (targetEl.GetString() ?? string.Empty).Trim();
+        var axis = (axisEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(targetNpc))
+            return NpcIntentResolveResult.Rejected("adjust_npc_pair_emotion target_npc cannot be empty", "E_PAIR_TARGET_INVALID");
+        if (!AllowedPairEmotionAxes.Contains(axis))
+            return NpcIntentResolveResult.Rejected($"adjust_npc_pair_emotion invalid axis '{axis}'", "E_PAIR_AXIS_INVALID");
+        if (delta < -5 || delta > 5)
+            return NpcIntentResolveResult.Rejected("adjust_npc_pair_emotion delta out of range (-5..5)", "E_PAIR_DELTA_INVALID");
+
+        var pairKey = BuildPairKey(npcId, targetNpc);
+        if (!state.Social.PairEmotions.TryGetValue(pairKey, out var entry))
+        {
+            entry = new NpcPairEmotionEntry();
+            state.Social.PairEmotions[pairKey] = entry;
+        }
+
+        var dayPrefix = $"pair_emotion:{state.Calendar.Day}:{pairKey}:{axis}:";
+        var netToday = SumSignedDeltaFacts(state, dayPrefix);
+        if (Math.Abs(netToday + delta) > 15)
+            return NpcIntentResolveResult.Rejected("adjust_npc_pair_emotion daily axis cap exceeded", "E_PAIR_DAILY_CAP");
+
+        entry.EmotionAxes.TryGetValue(axis, out var current);
+        entry.EmotionAxes[axis] = Math.Clamp(current + delta, 0, 100);
+        entry.LastInteractionDay = state.Calendar.Day;
+        entry.Familiarity = Math.Clamp(entry.Familiarity + 1, 0, 100);
+        entry.Affinity = Math.Clamp(entry.Affinity + (axis is "friendship" or "trust" or "admiration" ? delta : 0), -100, 100);
+        entry.Tension = Math.Clamp(entry.Tension + (axis is "anger" or "jealousy" or "envy" ? Math.Max(delta, 0) : 0), 0, 100);
+        entry.Avoidance = Math.Clamp(entry.Avoidance + (axis == "anger" && delta > 0 ? delta : 0), 0, 100);
+
+        MarkIntentProcessed(state, intentId, npcId, "adjust_npc_pair_emotion");
+        state.Facts.Facts[$"{dayPrefix}{delta}:{intentId}"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "npc_command"
+        };
+        state.Telemetry.Daily.WorldMutations += 1;
+        state.Telemetry.Daily.PairEmotionUpdates += 1;
+        IncrementCounter(state.Telemetry.Daily.PairEmotionUpdatesByAxis, axis);
+        return NpcIntentResolveResult.Applied(intentId, "adjust_npc_pair_emotion", pairKey, fallbackUsed: false, proposal: null);
+    }
+
+    private static NpcIntentResolveResult ResolveRecordSocialIncident(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (!args.TryGetProperty("target_npc", out var targetEl) || targetEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("record_social_incident missing target_npc", "E_SOCIAL_TARGET_INVALID");
+        if (!args.TryGetProperty("summary", out var summaryEl) || summaryEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("record_social_incident missing summary", "E_SOCIAL_SUMMARY_INVALID");
+        if (HasUnexpectedArgs(args, "target_npc", "summary", "visibility", "location", "tags"))
+            return NpcIntentResolveResult.Rejected("record_social_incident contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
+
+        var targetNpc = (targetEl.GetString() ?? string.Empty).Trim();
+        var summary = (summaryEl.GetString() ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(targetNpc) || string.IsNullOrWhiteSpace(summary))
+            return NpcIntentResolveResult.Rejected("record_social_incident requires non-empty target_npc and summary", "E_SOCIAL_SUMMARY_INVALID");
+
+        var location = args.TryGetProperty("location", out var locationEl) && locationEl.ValueKind == JsonValueKind.String
+            ? (locationEl.GetString() ?? string.Empty).Trim()
+            : "Town";
+        var visibility = args.TryGetProperty("visibility", out var visibilityEl) && visibilityEl.ValueKind == JsonValueKind.String
+            ? (visibilityEl.GetString() ?? string.Empty).Trim()
+            : "local";
+
+        state.TownMemory.Events.Add(new TownMemoryEvent
+        {
+            EventId = $"social_incident:{intentId}",
+            Kind = "social",
+            Summary = summary,
+            Location = string.IsNullOrWhiteSpace(location) ? "Town" : location,
+            Day = state.Calendar.Day,
+            Severity = 2,
+            Visibility = string.IsNullOrWhiteSpace(visibility) ? "local" : visibility,
+            SourceNpc = npcId,
+            Tags = new[] { "social", "npc_autonomy", NormalizeTargetToken(targetNpc) }
+        });
+
+        MarkIntentProcessed(state, intentId, npcId, "record_social_incident");
+        state.Telemetry.Daily.WorldMutations += 1;
+        return NpcIntentResolveResult.Applied(intentId, "record_social_incident", targetNpc, fallbackUsed: false, proposal: null);
+    }
+
+    private static NpcIntentResolveResult ResolveSetNpcPairFlag(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (!args.TryGetProperty("target_npc", out var targetEl) || targetEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("set_npc_pair_flag missing target_npc", "E_PAIR_TARGET_INVALID");
+        if (!args.TryGetProperty("flag", out var flagEl) || flagEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("set_npc_pair_flag missing flag", "E_PAIR_FLAG_INVALID");
+        if (HasUnexpectedArgs(args, "target_npc", "flag", "enabled"))
+            return NpcIntentResolveResult.Rejected("set_npc_pair_flag contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
+
+        var targetNpc = (targetEl.GetString() ?? string.Empty).Trim();
+        var flag = (flagEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+        var enabled = !args.TryGetProperty("enabled", out var enabledEl) || enabledEl.ValueKind != JsonValueKind.False;
+        if (string.IsNullOrWhiteSpace(targetNpc) || string.IsNullOrWhiteSpace(flag))
+            return NpcIntentResolveResult.Rejected("set_npc_pair_flag requires target_npc and flag", "E_PAIR_FLAG_INVALID");
+
+        var pairKey = BuildPairKey(npcId, targetNpc);
+        if (!state.Social.PairEmotions.TryGetValue(pairKey, out var entry))
+        {
+            entry = new NpcPairEmotionEntry();
+            state.Social.PairEmotions[pairKey] = entry;
+        }
+
+        entry.ActiveFlags.RemoveAll(existing => existing.Equals(flag, StringComparison.OrdinalIgnoreCase));
+        if (enabled)
+            entry.ActiveFlags.Add(flag);
+        entry.LastInteractionDay = state.Calendar.Day;
+
+        MarkIntentProcessed(state, intentId, npcId, "set_npc_pair_flag");
+        state.Telemetry.Daily.WorldMutations += 1;
+        return NpcIntentResolveResult.Applied(intentId, "set_npc_pair_flag", pairKey, fallbackUsed: false, proposal: null);
+    }
+
+    private static NpcIntentResolveResult ResolveSuggestAutonomyGoal(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (!args.TryGetProperty("goal_type", out var goalEl) || goalEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("suggest_autonomy_goal missing goal_type", "E_AUTONOMY_GOAL_INVALID");
+        if (HasUnexpectedArgs(args, "goal_type", "target_npc", "target_location", "reason", "urgency"))
+            return NpcIntentResolveResult.Rejected("suggest_autonomy_goal contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
+
+        var goalType = (goalEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+        if (goalType is not ("visit_npc" or "socialize" or "wander" or "rest" or "observe_event" or "errand"))
+            return NpcIntentResolveResult.Rejected($"suggest_autonomy_goal invalid goal_type '{goalType}'", "E_AUTONOMY_GOAL_INVALID");
+
+        var urgency = 0.5f;
+        if (args.TryGetProperty("urgency", out var urgencyEl))
+        {
+            if (urgencyEl.ValueKind != JsonValueKind.Number || !urgencyEl.TryGetSingle(out urgency) || urgency < 0f || urgency > 1f)
+                return NpcIntentResolveResult.Rejected("suggest_autonomy_goal urgency out of range (0..1)", "E_AUTONOMY_URGENCY_INVALID");
+        }
+
+        var targetNpc = args.TryGetProperty("target_npc", out var targetNpcEl) && targetNpcEl.ValueKind == JsonValueKind.String
+            ? (targetNpcEl.GetString() ?? string.Empty).Trim()
+            : string.Empty;
+        var targetLocation = args.TryGetProperty("target_location", out var targetLocationEl) && targetLocationEl.ValueKind == JsonValueKind.String
+            ? (targetLocationEl.GetString() ?? string.Empty).Trim()
+            : string.Empty;
+
+        MarkIntentProcessed(state, intentId, npcId, "suggest_autonomy_goal");
+        state.Facts.Facts[$"autonomy_suggestion:{state.Calendar.Day}:{npcId}:{goalType}:{intentId}"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "npc_command"
+        };
+        return NpcIntentResolveResult.Applied(intentId, "suggest_autonomy_goal", string.IsNullOrWhiteSpace(targetNpc) ? goalType : targetNpc, fallbackUsed: false, proposal: null);
+    }
+
     private static void IncrementCounter(Dictionary<string, int> counters, string key)
     {
         if (counters is null)
@@ -1042,6 +1213,31 @@ public sealed class NpcIntentResolver
         }
 
         return net;
+    }
+
+    private static string BuildPairKey(string npcIdA, string npcIdB)
+    {
+        var left = (npcIdA ?? string.Empty).Trim().ToLowerInvariant();
+        var right = (npcIdB ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return string.Empty;
+
+        return string.Compare(left, right, StringComparison.OrdinalIgnoreCase) <= 0
+            ? $"{left}|{right}"
+            : $"{right}|{left}";
+    }
+
+    private static string NormalizeTargetToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "unknown";
+
+        var normalized = value.Trim().ToLowerInvariant();
+        var builder = new StringBuilder(normalized.Length);
+        foreach (var ch in normalized)
+            builder.Append(char.IsLetterOrDigit(ch) ? ch : '_');
+
+        return builder.ToString().Trim('_');
     }
 
     private bool TryResolveEmbeddedMessageQuestPayload(SaveState state, JsonElement root, out NpcIntentResolveResult result, string? npcIdOverride = null)

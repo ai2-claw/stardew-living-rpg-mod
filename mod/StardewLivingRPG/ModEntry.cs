@@ -378,6 +378,7 @@ public sealed class ModEntry : Mod
         public string ListenerShortName { get; init; } = string.Empty;
         public string SpeakerNpcId { get; init; } = string.Empty;
         public string ListenerNpcId { get; init; } = string.Empty;
+        public string ContextTag { get; init; } = "npc_to_npc_ambient";
         public string PairKey { get; init; } = string.Empty;
         public bool Completed { get; init; }
         public string AbortReason { get; init; } = string.Empty;
@@ -688,6 +689,12 @@ public sealed class ModEntry : Mod
     private TownMemoryService? _townMemoryService;
     private AmbientConsequenceService? _ambientConsequenceService;
     private NpcConversationService? _npcConversationService;
+    private DestinationRegistryService? _destinationRegistryService;
+    private PairEmotionService? _pairEmotionService;
+    private NpcAutonomyGoalEngine? _npcAutonomyGoalEngine;
+    private NpcAutonomyPlannerService? _npcAutonomyPlannerService;
+    private NpcSocialEncounterService? _npcSocialEncounterService;
+    private NpcSpeechBubbleService? _npcSpeechBubbleService;
     private NpcSpeechStyleService? _npcSpeechStyleService;
     private NpcAskGateService? _npcAskGateService;
     private CommandPolicyService? _commandPolicyService;
@@ -766,6 +773,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _npcChatHistoryFallbackInFlightById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<string> _ambientLaneDebugSnapshots = new();
+    private readonly Dictionary<string, AutonomyRuntimeState> _autonomyRuntimeByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _externalAutoDiscoveredNpcNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ExternalNpcLoreProfile> _externalAutoLoreByToken = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
@@ -902,6 +910,12 @@ public sealed class ModEntry : Mod
         _townMemoryService = new TownMemoryService();
         _ambientConsequenceService = new AmbientConsequenceService();
         _npcConversationService = new NpcConversationService();
+        _destinationRegistryService = new DestinationRegistryService();
+        _pairEmotionService = new PairEmotionService(_config.PairEmotionMaxDeltaPerCommand, _config.PairEmotionMaxDeltaPerDayPerAxis);
+        _npcAutonomyGoalEngine = new NpcAutonomyGoalEngine(_destinationRegistryService, _pairEmotionService, _config);
+        _npcAutonomyPlannerService = new NpcAutonomyPlannerService(_destinationRegistryService);
+        _npcSocialEncounterService = new NpcSocialEncounterService(_pairEmotionService, _config);
+        _npcSpeechBubbleService = new NpcSpeechBubbleService(_config);
         _loveLanguageEngineService = _config.EnableLoveLanguageEngine
             ? new LoveLanguageEngineService(
                 TryResolveLoveLanguageConfig,
@@ -1046,6 +1060,44 @@ public sealed class ModEntry : Mod
 
         gmcm.AddSectionTitle(
             mod: ModManifest,
+            text: () => I18n.Get("gmcm.section.autonomy", "Autonomous NPC Routines"));
+
+        gmcm.AddBoolOption(
+            mod: ModManifest,
+            getValue: () => _config.EnableAutonomousRoutines,
+            setValue: value => _config.EnableAutonomousRoutines = value,
+            name: () => I18n.Get("gmcm.option.enable_autonomous_routines.name", "Enable Autonomous NPC Routines"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.enable_autonomous_routines.tooltip",
+                "Allow NPCs to synthesize light autonomous social plans and queue ambient speech bubbles."));
+
+        gmcm.AddNumberOption(
+            mod: ModManifest,
+            getValue: () => _config.AutonomyEncounterScoreThreshold,
+            setValue: value => _config.AutonomyEncounterScoreThreshold = value,
+            name: () => I18n.Get("gmcm.option.autonomy_encounter_score_threshold.name", "Autonomy Encounter Threshold"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.autonomy_encounter_score_threshold.tooltip",
+                "Minimum autonomy encounter score required before two NPCs start an autonomous social exchange."),
+            min: 0f,
+            max: 1f,
+            interval: 0.05f,
+            formatValue: value => value.ToString("0.00", CultureInfo.InvariantCulture));
+
+        gmcm.AddNumberOption(
+            mod: ModManifest,
+            getValue: () => _config.BubbleMaxChars,
+            setValue: value => _config.BubbleMaxChars = (int)value,
+            name: () => I18n.Get("gmcm.option.bubble_max_chars.name", "Bubble Max Characters"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.bubble_max_chars.tooltip",
+                "Maximum characters shown in a single NPC speech bubble before it is split."),
+            min: 30,
+            max: 90,
+            interval: 5);
+
+        gmcm.AddSectionTitle(
+            mod: ModManifest,
             text: () => I18n.Get("gmcm.section.hotkeys", "Hotkeys"));
 
         gmcm.AddKeybind(
@@ -1079,6 +1131,9 @@ public sealed class ModEntry : Mod
         _config.PriceFloorPct = defaults.PriceFloorPct;
         _config.PriceCeilingPct = defaults.PriceCeilingPct;
         _config.DailyPriceDeltaCapPct = defaults.DailyPriceDeltaCapPct;
+        _config.EnableAutonomousRoutines = defaults.EnableAutonomousRoutines;
+        _config.AutonomyEncounterScoreThreshold = defaults.AutonomyEncounterScoreThreshold;
+        _config.BubbleMaxChars = defaults.BubbleMaxChars;
         _config.OpenBoardKey = defaults.OpenBoardKey;
         _config.OpenNewspaperKey = defaults.OpenNewspaperKey;
         _config.OpenRumorBoardKey = defaults.OpenRumorBoardKey;
@@ -1133,6 +1188,20 @@ public sealed class ModEntry : Mod
         if (_config.PriceFloorPct > _config.PriceCeilingPct)
         {
             _config.PriceFloorPct = _config.PriceCeilingPct;
+            changed = true;
+        }
+
+        var clampedEncounterThreshold = Math.Clamp(_config.AutonomyEncounterScoreThreshold, 0f, 1f);
+        if (Math.Abs(_config.AutonomyEncounterScoreThreshold - clampedEncounterThreshold) > float.Epsilon)
+        {
+            _config.AutonomyEncounterScoreThreshold = clampedEncounterThreshold;
+            changed = true;
+        }
+
+        var clampedBubbleChars = Math.Clamp(_config.BubbleMaxChars, 30, 90);
+        if (_config.BubbleMaxChars != clampedBubbleChars)
+        {
+            _config.BubbleMaxChars = clampedBubbleChars;
             changed = true;
         }
 
@@ -1204,6 +1273,10 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_p2_stream_stop", "Stop persistent Player2 response stream listener.", OnPlayer2StreamStopCommand);
         helper.ConsoleCommands.Add("slrpg_p2_health", "Compact Player2 health summary line.", OnPlayer2HealthCommand);
         helper.ConsoleCommands.Add("slrpg_debug_ambient_pair_chat", "Trigger one ambient multi-turn chat for a specific pair: slrpg_debug_ambient_pair_chat <speaker> <listener> [topic]", OnDebugAmbientPairChatCommand);
+        helper.ConsoleCommands.Add("slrpg_autonomy_status", "Print autonomy runtime summary for all tracked NPCs.", OnAutonomyStatusCommand);
+        helper.ConsoleCommands.Add("slrpg_autonomy_plan", "Print autonomy plan for an NPC: slrpg_autonomy_plan <npc>", OnAutonomyPlanCommand);
+        helper.ConsoleCommands.Add("slrpg_pair_emotions", "Print pair emotion ledger: slrpg_pair_emotions <npcA> <npcB>", OnPairEmotionsCommand);
+        helper.ConsoleCommands.Add("slrpg_bubble_test", "Force a speech bubble on an NPC: slrpg_bubble_test <npc> <text>", OnBubbleTestCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_validate", "Validate integrated custom-NPC content packs.", OnCustomNpcValidatePacksCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_list", "List loaded integrated custom NPCs.", OnCustomNpcListCommand);
         helper.ConsoleCommands.Add("slrpg_customnpc_dump", "Dump integrated custom NPC lore: slrpg_customnpc_dump <npc>", OnCustomNpcDumpCommand);
@@ -1384,6 +1457,8 @@ public sealed class ModEntry : Mod
 
         ResetAmbientNpcConversationScheduleForDay();
         RefreshAmbientConditionalCommandPolicy(forceLog: true);
+        RunAutonomyDailyMaintenance();
+        BuildDailyAutonomyPlans();
 
         _economyService?.EnsureInitialized(_state.Economy);
         var sold = _salesIngestionService?.DrainPendingSales() ?? new Dictionary<string, int>();
@@ -3966,6 +4041,8 @@ public sealed class ModEntry : Mod
         TrySchedulePlayer2HealthPing();
         TryTriggerAmbientNpcConversation();
         TryApplyPendingAmbientConversationCompletions();
+        TryAdvanceAutonomousRoutines(e);
+        TryTickNpcSpeechBubbles();
 
         if (e.IsMultipleOf(60))
             TryRunAutomaticNpcCommandExposureHooks();
@@ -4426,7 +4503,8 @@ public sealed class ModEntry : Mod
         string speakerDialogueContext,
         string listenerDialogueContext,
         string extractionContext,
-        bool overhearEligible)
+        bool overhearEligible,
+        string completionContextTag = "npc_to_npc_ambient")
     {
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
         {
@@ -4457,7 +4535,8 @@ public sealed class ModEntry : Mod
                     speakerDialogueContext,
                     listenerDialogueContext,
                     extractionContext,
-                    overhearEligible);
+                    overhearEligible,
+                    completionContextTag);
                 _pendingAmbientConversationCompletions.Enqueue(completion);
             }
             catch (Exception ex)
@@ -4469,6 +4548,7 @@ public sealed class ModEntry : Mod
                     ListenerShortName = listenerShortName,
                     SpeakerNpcId = speakerNpcId,
                     ListenerNpcId = listenerNpcId,
+                    ContextTag = completionContextTag,
                     PairKey = pairKey,
                     Completed = false,
                     AbortReason = "E_AMBIENT_TASK_EXCEPTION",
@@ -4501,7 +4581,8 @@ public sealed class ModEntry : Mod
         string speakerDialogueContext,
         string listenerDialogueContext,
         string extractionContext,
-        bool overhearEligible)
+        bool overhearEligible,
+        string completionContextTag)
     {
         var startedUtc = DateTime.UtcNow;
         var transcript = new List<AmbientConversationLine>();
@@ -4633,6 +4714,7 @@ public sealed class ModEntry : Mod
             ListenerShortName = listenerShortName,
             SpeakerNpcId = speakerNpcId,
             ListenerNpcId = listenerNpcId,
+            ContextTag = completionContextTag,
             PairKey = pairKey,
             Completed = string.IsNullOrWhiteSpace(abortReason),
             AbortReason = abortReason,
@@ -5242,12 +5324,17 @@ public sealed class ModEntry : Mod
                 Monitor.Log(
                     $"Ambient transcript T{transcriptLine.Turn} {transcriptLine.SpeakerShortName}->{transcriptLine.ListenerShortName}: {transcriptLine.Message}",
                     LogLevel.Trace);
+
+                var transcriptNpc = ResolveNpcByName(transcriptLine.SpeakerShortName);
+                if (_npcSpeechBubbleService is not null && transcriptNpc is not null)
+                    _npcSpeechBubbleService.QueueTranscriptLine(transcriptNpc.Name, transcriptLine.Message);
             }
 
+            var completionContextTag = string.IsNullOrWhiteSpace(completion.ContextTag) ? "npc_to_npc_ambient" : completion.ContextTag;
             if (!string.IsNullOrWhiteSpace(completion.SpeakerNpcId))
-                _npcLastContextTagById[completion.SpeakerNpcId] = "npc_to_npc_ambient";
+                _npcLastContextTagById[completion.SpeakerNpcId] = completionContextTag;
             if (!string.IsNullOrWhiteSpace(completion.ListenerNpcId))
-                _npcLastContextTagById[completion.ListenerNpcId] = "npc_to_npc_ambient";
+                _npcLastContextTagById[completion.ListenerNpcId] = completionContextTag;
 
             var appliedStructuredMemoryOrEvent = false;
             foreach (var commandLine in completion.CommandLines)
@@ -12312,6 +12399,359 @@ public sealed class ModEntry : Mod
 
         _nextAmbientNpcConversationUtc = DateTime.UtcNow.AddSeconds(_ambientNpcRandom.Next(180, 480));
         Monitor.Log($"Debug ambient pair chat queued: {speakerShortName}->{listenerShortName} turns={turnDepth} beat={beat.Id} topic='{topicSeed}'.", LogLevel.Info);
+    }
+
+    private void RunAutonomyDailyMaintenance()
+    {
+        if (!_config.EnableAutonomousRoutines)
+            return;
+
+        _autonomyRuntimeByNpcId.Clear();
+        _npcSpeechBubbleService?.CancelAll();
+        _pairEmotionService?.Decay(_state);
+    }
+
+    private void BuildDailyAutonomyPlans()
+    {
+        if (!_config.EnableAutonomousRoutines
+            || _npcAutonomyGoalEngine is null
+            || _npcAutonomyPlannerService is null)
+        {
+            return;
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var npcName in GetExpandedNpcRoster())
+        {
+            var npc = ResolveNpcByName(npcName);
+            if (npc is null || string.IsNullOrWhiteSpace(npc.Name) || !seen.Add(npc.Name))
+                continue;
+
+            var nearby = npc.currentLocation?.characters?.Where(character => character is not null).Cast<NPC>() ?? Enumerable.Empty<NPC>();
+            var snapshot = _npcAutonomyGoalEngine.BuildSnapshot(_state, npc, nearby);
+            var goals = _npcAutonomyGoalEngine.ScoreCandidateGoals(_state, npc, snapshot, Game1.locations);
+            _state.Telemetry.Daily.AutonomyGoalsProposed += goals.Count;
+
+            var plan = _npcAutonomyPlannerService.SynthesizeDailyPlan(_state, npc.Name, snapshot, goals, _config);
+            if (plan is null)
+                continue;
+
+            _autonomyRuntimeByNpcId[npc.Name] = new AutonomyRuntimeState
+            {
+                NpcId = npc.Name,
+                ActivePlan = plan,
+                LastProgressUtc = DateTime.UtcNow,
+                NextEncounterAllowedUtc = DateTime.UtcNow
+            };
+
+            _state.Telemetry.Daily.AutonomyGoalsAccepted += goals.Count(goal => goal.Score >= _config.AutonomyEncounterScoreThreshold);
+            _state.Telemetry.Daily.AutonomyGoalsRejected += goals.Count(goal => goal.Score < _config.AutonomyEncounterScoreThreshold);
+            _state.Telemetry.Daily.AutonomyPlansCreated += 1;
+        }
+    }
+
+    private void TryAdvanceAutonomousRoutines(UpdateTickedEventArgs e)
+    {
+        if (!_config.EnableAutonomousRoutines
+            || !e.IsMultipleOf(30)
+            || _npcAutonomyPlannerService is null
+            || _npcSocialEncounterService is null)
+        {
+            return;
+        }
+
+        foreach (var runtime in _autonomyRuntimeByNpcId.Values.ToArray())
+        {
+            var npc = ResolveNpcByName(runtime.NpcId);
+            if (npc is null)
+                continue;
+
+            var block = _npcAutonomyPlannerService.AdvancePlan(runtime, Game1.timeOfDay);
+            if (block is null)
+                continue;
+
+            if (block.Status == AutonomyPlanBlockStatus.Completed)
+            {
+                _state.Telemetry.Daily.AutonomyBlocksCompleted += 1;
+                continue;
+            }
+
+            if (DateTime.UtcNow < runtime.NextEncounterAllowedUtc)
+                continue;
+
+            var targetNpc = ResolveAutonomyTargetNpc(npc, block);
+            if (targetNpc is null)
+                continue;
+
+            if (!_npcSocialEncounterService.ShouldStartEncounter(_state, npc, targetNpc, block))
+                continue;
+
+            runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, _config.AutonomyMinEncounterIntervalMinutes));
+            _state.Telemetry.Daily.EncountersStarted += 1;
+            if (block.Type == AutonomyPlanBlockType.VisitNpc)
+                _state.Telemetry.Daily.EncountersPlanned += 1;
+            else
+                _state.Telemetry.Daily.EncountersOpportunistic += 1;
+
+            if (!TryStartAutonomyEncounter(npc, targetNpc, block))
+            {
+                TryQueueFallbackAutonomyConversation(npc, targetNpc, block);
+            }
+        }
+    }
+
+    private void TryTickNpcSpeechBubbles()
+    {
+        if (_npcSpeechBubbleService is null)
+            return;
+
+        if (Game1.eventUp || Game1.activeClickableMenu is not null)
+        {
+            _npcSpeechBubbleService.CancelAll();
+            return;
+        }
+
+        var displayed = _npcSpeechBubbleService.Tick(ResolveNpcByName);
+        if (displayed > 0)
+            _state.Telemetry.Daily.BubblesDisplayed += displayed;
+    }
+
+    private NPC? ResolveAutonomyTargetNpc(NPC sourceNpc, AutonomyPlanBlock block)
+    {
+        if (!string.IsNullOrWhiteSpace(block.TargetNpcId))
+        {
+            var target = ResolveNpcByName(block.TargetNpcId);
+            if (target is not null
+                && target.currentLocation is not null
+                && sourceNpc.currentLocation is not null
+                && string.Equals(target.currentLocation.Name, sourceNpc.currentLocation.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                return target;
+            }
+        }
+
+        if (sourceNpc.currentLocation?.characters is null)
+            return null;
+
+        return sourceNpc.currentLocation.characters
+            .Where(candidate => candidate is not null
+                && !string.Equals(candidate.Name, sourceNpc.Name, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(candidate => Vector2.Distance(candidate.Tile, sourceNpc.Tile))
+            .FirstOrDefault();
+    }
+
+    private bool TryStartAutonomyEncounter(NPC speakerNpc, NPC listenerNpc, AutonomyPlanBlock block)
+    {
+        if (_npcConversationService is null)
+            return false;
+
+        var speakerShortName = ResolveNpcShortNameForPlayer2(speakerNpc);
+        var listenerShortName = ResolveNpcShortNameForPlayer2(listenerNpc);
+        if (string.IsNullOrWhiteSpace(speakerShortName) || string.IsNullOrWhiteSpace(listenerShortName))
+            return false;
+
+        if (!TryResolvePlayer2NpcIdForNpc(speakerNpc, out var speakerNpcId)
+            || !TryResolvePlayer2NpcIdForNpc(listenerNpc, out var listenerNpcId))
+        {
+            return false;
+        }
+
+        if (Interlocked.CompareExchange(ref _ambientNpcConversationInFlight, 1, 0) == 1)
+            return false;
+
+        var pairKey = _npcConversationService.BuildPairKey(speakerNpcId, listenerNpcId);
+        var beat = SelectAmbientConversationBeat(
+            speakerShortName,
+            listenerShortName,
+            pairKey,
+            _state.TownMemory.Events.Any(ev => _state.Calendar.Day - ev.Day <= 2),
+            _state.Economy.MarketEvents.Any(ev => ev.EndDay >= _state.Calendar.Day));
+        var topicSeed = BuildAmbientConversationTopicSeed(string.IsNullOrWhiteSpace(block.Reason) ? "a change in the day" : block.Reason, beat);
+        var turnDepth = _npcConversationService.ResolveTurnDepth(_state.Config.Mode, _config.AmbientNpcConversationTurnDepth);
+        TrackAmbientConversationBeatUsage(pairKey, speakerShortName, listenerShortName, beat.Id);
+        var speakerDialogueContext = BuildCompactGameStateInfo(speakerShortName, contextTag: "npc_to_npc_ambient_dialogue", referencedNpcName: listenerShortName);
+        var listenerDialogueContext = BuildCompactGameStateInfo(listenerShortName, contextTag: "npc_to_npc_ambient_dialogue", referencedNpcName: speakerShortName);
+        var extractionContext = BuildCompactGameStateInfo(speakerShortName, contextTag: "npc_autonomy", referencedNpcName: listenerShortName);
+        _npcLastContextTagById[speakerNpcId] = "npc_to_npc_ambient_dialogue";
+        _npcLastContextTagById[listenerNpcId] = "npc_to_npc_ambient_dialogue";
+        MarkAmbientNpcConversationTimestamp(speakerNpcId);
+        MarkAmbientNpcConversationTimestamp(listenerNpcId);
+
+        StartAmbientNpcConversationTask(
+            speakerShortName,
+            speakerNpcId,
+            listenerShortName,
+            listenerNpcId,
+            pairKey,
+            topicSeed,
+            beat,
+            turnDepth,
+            speakerDialogueContext,
+            listenerDialogueContext,
+            extractionContext,
+            overhearEligible: false,
+            completionContextTag: "npc_autonomy");
+
+        return true;
+    }
+
+    private void TryQueueFallbackAutonomyConversation(NPC speakerNpc, NPC listenerNpc, AutonomyPlanBlock block)
+    {
+        if (_npcSpeechBubbleService is null)
+            return;
+
+        var openLine = BuildFallbackAutonomyLine(speakerNpc, listenerNpc, block, isReply: false);
+        var replyLine = BuildFallbackAutonomyLine(listenerNpc, speakerNpc, block, isReply: true);
+        _npcSpeechBubbleService.QueueTranscriptLine(speakerNpc.Name, openLine);
+        _npcSpeechBubbleService.QueueTranscriptLine(listenerNpc.Name, replyLine);
+        _state.Telemetry.Daily.BubblesFallbackUsed += 2;
+        _state.Telemetry.Daily.EncountersCompleted += 1;
+
+        if (_pairEmotionService is not null)
+        {
+            var axis = block.Type == AutonomyPlanBlockType.VisitNpc ? "friendship" : "trust";
+            if (_pairEmotionService.TryAdjustAxis(_state, speakerNpc.Name, listenerNpc.Name, axis, 1, out _))
+            {
+                _state.Telemetry.Daily.PairEmotionUpdates += 1;
+                IncrementCounter(_state.Telemetry.Daily.PairEmotionUpdatesByAxis, axis);
+            }
+        }
+    }
+
+    private static string BuildFallbackAutonomyLine(NPC speakerNpc, NPC listenerNpc, AutonomyPlanBlock block, bool isReply)
+    {
+        var listenerName = string.IsNullOrWhiteSpace(listenerNpc.displayName) ? listenerNpc.Name : listenerNpc.displayName;
+        return block.Type switch
+        {
+            AutonomyPlanBlockType.VisitNpc when !isReply => $"I thought I'd stop by, {listenerName}.",
+            AutonomyPlanBlockType.VisitNpc => "You're always welcome for a short visit.",
+            AutonomyPlanBlockType.Socialize when !isReply => $"The day felt different, so I came over.",
+            AutonomyPlanBlockType.Socialize => "Then let's make a moment of it.",
+            AutonomyPlanBlockType.Wander when !isReply => "I felt like seeing more of town today.",
+            AutonomyPlanBlockType.Wander => "It's good to run into a familiar face.",
+            _ when !isReply => "I changed course for a little while.",
+            _ => "Sometimes a small change is enough."
+        };
+    }
+
+    private bool TryResolvePlayer2NpcIdForNpc(NPC npc, out string npcId)
+    {
+        npcId = string.Empty;
+        if (npc is null)
+            return false;
+
+        var candidates = new[]
+        {
+            npc.Name,
+            npc.displayName
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+            if (_player2NpcIdsByShortName.TryGetValue(candidate, out var resolvedNpcId) && !string.IsNullOrWhiteSpace(resolvedNpcId))
+            {
+                npcId = resolvedNpcId;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string ResolveNpcShortNameForPlayer2(NPC npc)
+    {
+        return string.IsNullOrWhiteSpace(npc.displayName) ? npc.Name : npc.displayName;
+    }
+
+    private void OnAutonomyStatusCommand(string name, string[] args)
+    {
+        if (_autonomyRuntimeByNpcId.Count == 0)
+        {
+            Monitor.Log("Autonomy runtime: no active plans.", LogLevel.Info);
+            return;
+        }
+
+        foreach (var runtime in _autonomyRuntimeByNpcId.Values.OrderBy(value => value.NpcId, StringComparer.OrdinalIgnoreCase))
+        {
+            var block = runtime.ActivePlan is not null
+                && runtime.ActiveBlockIndex >= 0
+                && runtime.ActiveBlockIndex < runtime.ActivePlan.Blocks.Count
+                ? runtime.ActivePlan.Blocks[runtime.ActiveBlockIndex]
+                : null;
+            Monitor.Log(
+                $"Autonomy | npc={runtime.NpcId} status={runtime.OverrideStatus} block={(block?.Type.ToString() ?? "none")} targetNpc='{runtime.CurrentTargetNpcId}' targetLoc='{runtime.CurrentTargetLocation}' completed={runtime.CompletedBlocksToday} failed={runtime.FailedBlocksToday} replans={runtime.ReplanCount}",
+                LogLevel.Info);
+        }
+    }
+
+    private void OnAutonomyPlanCommand(string name, string[] args)
+    {
+        if (args.Length < 1)
+        {
+            Monitor.Log("Usage: slrpg_autonomy_plan <npc>", LogLevel.Info);
+            return;
+        }
+
+        var npc = ResolveNpcByName(args[0]);
+        if (npc is null || !_autonomyRuntimeByNpcId.TryGetValue(npc.Name, out var runtime) || runtime.ActivePlan is null)
+        {
+            Monitor.Log($"No autonomy plan found for '{args[0]}'.", LogLevel.Info);
+            return;
+        }
+
+        Monitor.Log($"Autonomy plan for {npc.Name}:", LogLevel.Info);
+        foreach (var block in runtime.ActivePlan.Blocks)
+        {
+            Monitor.Log(
+                $"- {block.BlockId} {block.Type} {block.StartTime}-{block.EndTime} targetNpc='{block.TargetNpcId}' targetLoc='{block.TargetLocation}' reason='{block.Reason}' status={block.Status}",
+                LogLevel.Info);
+        }
+    }
+
+    private void OnPairEmotionsCommand(string name, string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Monitor.Log("Usage: slrpg_pair_emotions <npcA> <npcB>", LogLevel.Info);
+            return;
+        }
+
+        var npcA = ResolveNpcByName(args[0]);
+        var npcB = ResolveNpcByName(args[1]);
+        var pairKey = PairEmotionService.BuildPairKey(npcA?.Name ?? args[0], npcB?.Name ?? args[1]);
+        if (!_state.Social.PairEmotions.TryGetValue(pairKey, out var entry))
+        {
+            Monitor.Log($"Pair emotions {pairKey}: none", LogLevel.Info);
+            return;
+        }
+
+        var axes = entry.EmotionAxes.Count == 0
+            ? "(none)"
+            : string.Join(", ", entry.EmotionAxes.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).Select(pair => $"{pair.Key}={pair.Value}"));
+        var flags = entry.ActiveFlags.Count == 0 ? "(none)" : string.Join(", ", entry.ActiveFlags);
+        Monitor.Log($"Pair emotions {pairKey}: affinity={entry.Affinity} familiarity={entry.Familiarity} tension={entry.Tension} avoidance={entry.Avoidance} axes=[{axes}] flags=[{flags}]", LogLevel.Info);
+    }
+
+    private void OnBubbleTestCommand(string name, string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Monitor.Log("Usage: slrpg_bubble_test <npc> <text>", LogLevel.Info);
+            return;
+        }
+
+        var npc = ResolveNpcByName(args[0]);
+        if (npc is null || _npcSpeechBubbleService is null)
+        {
+            Monitor.Log($"Unable to resolve NPC '{args[0]}' for bubble test.", LogLevel.Warn);
+            return;
+        }
+
+        var text = string.Join(" ", args.Skip(1)).Trim();
+        _npcSpeechBubbleService.QueueTranscriptLine(npc.Name, text);
+        Monitor.Log($"Queued bubble test for {npc.Name}.", LogLevel.Info);
     }
 
     private bool CaptureNpcUiMessage(string line, bool allowPlayerChatRouting, bool forcePlayerChatRouting = false)

@@ -5,6 +5,7 @@ public sealed class SocialState
     public Dictionary<string, InterestState> Interests { get; set; } = new();
     public Dictionary<string, int> NpcReputation { get; set; } = new();
     public Dictionary<string, RelationshipState> NpcRelationships { get; set; } = new();
+    public Dictionary<string, NpcPairEmotionEntry> PairEmotions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public TownSentimentState TownSentiment { get; set; } = new();
 }
 

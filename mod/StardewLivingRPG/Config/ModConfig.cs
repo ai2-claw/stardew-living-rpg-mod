@@ -35,6 +35,26 @@ public sealed class ModConfig
     public int AmbientNpcPairCooldownDays { get; set; } = 2;
     public bool EnableAmbientNpcOverhearMoments { get; set; } = true;
     public int AmbientNpcOverhearCadenceDays { get; set; } = 2; // target cadence: every 2-3 in-game days
+    public bool EnableAutonomousRoutines { get; set; } = true;
+    public int AutonomyMaxBlocksPerDay { get; set; } = 6;
+    public int AutonomyMaxHomeVisitsPerDay { get; set; } = 2;
+    public int AutonomyMaxReplansPerBlock { get; set; } = 2;
+    public int AutonomyLocationRevisitCooldownMinutes { get; set; } = 120;
+    public int AutonomyNpcRevisitCooldownMinutes { get; set; } = 180;
+    public int AutonomyMinEncounterIntervalMinutes { get; set; } = 8;
+    public int AutonomyMaxEncountersPerNpcPerDay { get; set; } = 4;
+    public float AutonomyEncounterScoreThreshold { get; set; } = 0.30f;
+    public int PairEmotionMaxDeltaPerCommand { get; set; } = 5;
+    public int PairEmotionMaxDeltaPerDayPerAxis { get; set; } = 15;
+    public int BubbleMaxChars { get; set; } = 60;
+    public int BubbleMinDurationMs { get; set; } = 2000;
+    public int BubbleMaxDurationMs { get; set; } = 5000;
+    public int BubblePauseBetweenMs { get; set; } = 400;
+    public bool EnablePlayer2AutonomySuggestions { get; set; } = true;
+    public float Player2GoalMaxUrgencyInfluence { get; set; } = 0.6f;
+    public float AutonomyIntensityCozy { get; set; } = 0.6f;
+    public float AutonomyIntensityStory { get; set; } = 1.0f;
+    public float AutonomyIntensityChaos { get; set; } = 1.4f;
 
     // Player-facing auto-connect UX
     public bool AutoConnectPlayer2OnLoad { get; set; } = true;

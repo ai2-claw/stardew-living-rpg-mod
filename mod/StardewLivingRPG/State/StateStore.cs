@@ -125,6 +125,31 @@ public static class StateStore
             state.Social.NpcRelationships = new Dictionary<string, RelationshipState>();
             changed = true;
         }
+        if (state.Social.PairEmotions is null)
+        {
+            state.Social.PairEmotions = new Dictionary<string, NpcPairEmotionEntry>(StringComparer.OrdinalIgnoreCase);
+            changed = true;
+        }
+        foreach (var key in state.Social.PairEmotions.Keys.ToArray())
+        {
+            var entry = state.Social.PairEmotions[key];
+            if (entry is null)
+            {
+                state.Social.PairEmotions.Remove(key);
+                changed = true;
+                continue;
+            }
+            if (entry.EmotionAxes is null)
+            {
+                entry.EmotionAxes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                changed = true;
+            }
+            if (entry.ActiveFlags is null)
+            {
+                entry.ActiveFlags = new List<string>();
+                changed = true;
+            }
+        }
         if (state.Social.TownSentiment is null)
         {
             state.Social.TownSentiment = new TownSentimentState();
@@ -260,6 +285,21 @@ public static class StateStore
         if (state.Telemetry.Daily.RomanceRejectByReason is null)
         {
             state.Telemetry.Daily.RomanceRejectByReason = new Dictionary<string, int>();
+            changed = true;
+        }
+        if (state.Telemetry.Daily.VisitDenialByReason is null)
+        {
+            state.Telemetry.Daily.VisitDenialByReason = new Dictionary<string, int>();
+            changed = true;
+        }
+        if (state.Telemetry.Daily.PairEmotionUpdatesByAxis is null)
+        {
+            state.Telemetry.Daily.PairEmotionUpdatesByAxis = new Dictionary<string, int>();
+            changed = true;
+        }
+        if (state.Telemetry.Daily.AutonomyRejectByReason is null)
+        {
+            state.Telemetry.Daily.AutonomyRejectByReason = new Dictionary<string, int>();
             changed = true;
         }
 
