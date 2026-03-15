@@ -8,7 +8,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0002": {
       "Prompt": "Rate die Zahl.",
@@ -18,7 +20,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0003": {
       "Prompt": "Rate die Zahl.",
@@ -28,7 +32,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0004": {
       "Prompt": "Rate die Zahl.",
@@ -38,7 +44,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0005": {
       "Prompt": "Rate die Zahl.",
@@ -48,7 +56,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0006": {
       "Prompt": "Rate die Zahl.",
@@ -58,7 +68,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0007": {
       "Prompt": "Rate die Zahl.",
@@ -68,7 +80,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0008": {
       "Prompt": "Rate die Zahl.",
@@ -78,7 +92,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0009": {
       "Prompt": "Rate die Zahl.",
@@ -88,7 +104,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0010": {
       "Prompt": "Rate die Zahl.",
@@ -98,7 +116,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0011": {
       "Prompt": "Rate die Zahl.",
@@ -108,7 +128,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0012": {
       "Prompt": "Rate die Zahl.",
@@ -118,7 +140,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0013": {
       "Prompt": "Rate die Zahl.",
@@ -128,7 +152,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0014": {
       "Prompt": "Rate die Zahl.",
@@ -138,7 +164,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0015": {
       "Prompt": "Rate die Zahl.",
@@ -148,7 +176,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0016": {
       "Prompt": "Rate die Zahl.",
@@ -158,7 +188,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0017": {
       "Prompt": "Rate die Zahl.",
@@ -168,7 +200,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0018": {
       "Prompt": "Rate die Zahl.",
@@ -178,7 +212,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0019": {
       "Prompt": "Rate die Zahl.",
@@ -188,7 +224,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0020": {
       "Prompt": "Rate die Zahl.",
@@ -198,7 +236,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0021": {
       "Prompt": "Rate die Zahl.",
@@ -208,7 +248,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0022": {
       "Prompt": "Rate die Zahl.",
@@ -218,7 +260,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0023": {
       "Prompt": "Rate die Zahl.",
@@ -228,7 +272,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0024": {
       "Prompt": "Rate die Zahl.",
@@ -238,7 +284,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0025": {
       "Prompt": "Rate die Zahl.",
@@ -248,7 +296,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0026": {
       "Prompt": "Rate die Zahl.",
@@ -258,7 +308,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0027": {
       "Prompt": "Rate die Zahl.",
@@ -268,7 +320,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0028": {
       "Prompt": "Rate die Zahl.",
@@ -278,7 +332,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0029": {
       "Prompt": "Rate die Zahl.",
@@ -288,7 +344,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0030": {
       "Prompt": "Rate die Zahl.",
@@ -298,7 +356,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0031": {
       "Prompt": "Rate die Zahl.",
@@ -308,7 +368,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0032": {
       "Prompt": "Rate die Zahl.",
@@ -318,7 +380,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0033": {
       "Prompt": "Rate die Zahl.",
@@ -328,7 +392,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0034": {
       "Prompt": "Rate die Zahl.",
@@ -338,7 +404,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0035": {
       "Prompt": "Rate die Zahl.",
@@ -348,7 +416,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0036": {
       "Prompt": "Rate die Zahl.",
@@ -358,7 +428,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0037": {
       "Prompt": "Rate die Zahl.",
@@ -368,7 +440,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0038": {
       "Prompt": "Rate die Zahl.",
@@ -378,7 +452,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0039": {
       "Prompt": "Rate die Zahl.",
@@ -388,7 +464,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0040": {
       "Prompt": "Rate die Zahl.",
@@ -398,7 +476,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0041": {
       "Prompt": "Rate die Zahl.",
@@ -408,7 +488,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0042": {
       "Prompt": "Rate die Zahl.",
@@ -418,7 +500,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0043": {
       "Prompt": "Rate die Zahl.",
@@ -428,7 +512,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Die Ziffernsumme ist 1."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0044": {
       "Prompt": "Rate die Zahl.",
@@ -438,7 +524,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0045": {
       "Prompt": "Rate die Zahl.",
@@ -448,7 +536,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0046": {
       "Prompt": "Rate die Zahl.",
@@ -458,7 +548,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0047": {
       "Prompt": "Rate die Zahl.",
@@ -468,7 +560,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0048": {
       "Prompt": "Rate die Zahl.",
@@ -478,7 +572,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0049": {
       "Prompt": "Rate die Zahl.",
@@ -488,7 +584,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0050": {
       "Prompt": "Rate die Zahl.",
@@ -498,7 +596,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0051": {
       "Prompt": "Rate die Zahl.",
@@ -508,7 +608,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0052": {
       "Prompt": "Rate die Zahl.",
@@ -518,7 +620,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0053": {
       "Prompt": "Rate die Zahl.",
@@ -528,7 +632,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0054": {
       "Prompt": "Rate die Zahl.",
@@ -538,7 +644,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0055": {
       "Prompt": "Rate die Zahl.",
@@ -548,7 +656,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0056": {
       "Prompt": "Rate die Zahl.",
@@ -558,7 +668,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0057": {
       "Prompt": "Rate die Zahl.",
@@ -568,7 +680,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0058": {
       "Prompt": "Rate die Zahl.",
@@ -578,7 +692,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0059": {
       "Prompt": "Rate die Zahl.",
@@ -588,7 +704,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0060": {
       "Prompt": "Rate die Zahl.",
@@ -598,7 +716,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0061": {
       "Prompt": "Rate die Zahl.",
@@ -608,7 +728,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0062": {
       "Prompt": "Rate die Zahl.",
@@ -618,7 +740,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0063": {
       "Prompt": "Rate die Zahl.",
@@ -628,7 +752,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0064": {
       "Prompt": "Rate die Zahl.",
@@ -638,7 +764,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0065": {
       "Prompt": "Rate die Zahl.",
@@ -648,7 +776,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0066": {
       "Prompt": "Rate die Zahl.",
@@ -658,7 +788,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0067": {
       "Prompt": "Rate die Zahl.",
@@ -668,7 +800,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0068": {
       "Prompt": "Rate die Zahl.",
@@ -678,7 +812,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0069": {
       "Prompt": "Rate die Zahl.",
@@ -688,7 +824,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0070": {
       "Prompt": "Rate die Zahl.",
@@ -698,7 +836,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0071": {
       "Prompt": "Rate die Zahl.",
@@ -708,7 +848,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0072": {
       "Prompt": "Rate die Zahl.",
@@ -718,7 +860,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0073": {
       "Prompt": "Rate die Zahl.",
@@ -728,7 +872,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0074": {
       "Prompt": "Rate die Zahl.",
@@ -738,7 +884,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0075": {
       "Prompt": "Rate die Zahl.",
@@ -748,7 +896,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0076": {
       "Prompt": "Rate die Zahl.",
@@ -758,7 +908,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0077": {
       "Prompt": "Rate die Zahl.",
@@ -768,7 +920,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0078": {
       "Prompt": "Rate die Zahl.",
@@ -778,7 +932,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0079": {
       "Prompt": "Rate die Zahl.",
@@ -788,7 +944,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0080": {
       "Prompt": "Rate die Zahl.",
@@ -798,7 +956,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0081": {
       "Prompt": "Rate die Zahl.",
@@ -808,7 +968,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0082": {
       "Prompt": "Rate die Zahl.",
@@ -818,7 +980,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0083": {
       "Prompt": "Rate die Zahl.",
@@ -828,7 +992,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0084": {
       "Prompt": "Rate die Zahl.",
@@ -838,7 +1004,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0085": {
       "Prompt": "Rate die Zahl.",
@@ -848,7 +1016,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0086": {
       "Prompt": "Rate die Zahl.",
@@ -858,7 +1028,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0087": {
       "Prompt": "Rate die Zahl.",
@@ -868,7 +1040,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0088": {
       "Prompt": "Rate die Zahl.",
@@ -878,7 +1052,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0089": {
       "Prompt": "Rate die Zahl.",
@@ -888,7 +1064,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0090": {
       "Prompt": "Rate die Zahl.",
@@ -898,7 +1076,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0091": {
       "Prompt": "Rate die Zahl.",
@@ -908,7 +1088,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0092": {
       "Prompt": "Rate die Zahl.",
@@ -918,7 +1100,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0093": {
       "Prompt": "Rate die Zahl.",
@@ -928,7 +1112,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0094": {
       "Prompt": "Rate die Zahl.",
@@ -938,7 +1124,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0095": {
       "Prompt": "Rate die Zahl.",
@@ -948,7 +1136,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0096": {
       "Prompt": "Rate die Zahl.",
@@ -958,7 +1148,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0097": {
       "Prompt": "Rate die Zahl.",
@@ -968,7 +1160,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0098": {
       "Prompt": "Rate die Zahl.",
@@ -978,7 +1172,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0099": {
       "Prompt": "Rate die Zahl.",
@@ -988,7 +1184,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0100": {
       "Prompt": "Rate die Zahl.",
@@ -998,7 +1196,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0101": {
       "Prompt": "Rate die Zahl.",
@@ -1008,7 +1208,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0102": {
       "Prompt": "Rate die Zahl.",
@@ -1018,7 +1220,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0103": {
       "Prompt": "Rate die Zahl.",
@@ -1028,7 +1232,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Die Ziffernsumme ist 1."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0104": {
       "Prompt": "Rate die Zahl.",
@@ -1038,7 +1244,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0105": {
       "Prompt": "Rate die Zahl.",
@@ -1048,7 +1256,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0106": {
       "Prompt": "Rate die Zahl.",
@@ -1058,7 +1268,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0107": {
       "Prompt": "Rate die Zahl.",
@@ -1068,7 +1280,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0108": {
       "Prompt": "Rate die Zahl.",
@@ -1078,7 +1292,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0109": {
       "Prompt": "Rate die Zahl.",
@@ -1088,7 +1304,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0110": {
       "Prompt": "Rate die Zahl.",
@@ -1098,7 +1316,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0111": {
       "Prompt": "Rate die Zahl.",
@@ -1108,7 +1328,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0112": {
       "Prompt": "Rate die Zahl.",
@@ -1118,7 +1340,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 14."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0113": {
       "Prompt": "Rate die Zahl.",
@@ -1128,7 +1352,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0114": {
       "Prompt": "Rate die Zahl.",
@@ -1138,7 +1364,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0115": {
       "Prompt": "Rate die Zahl.",
@@ -1148,7 +1376,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0116": {
       "Prompt": "Rate die Zahl.",
@@ -1158,7 +1388,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0117": {
       "Prompt": "Rate die Zahl.",
@@ -1168,7 +1400,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0118": {
       "Prompt": "Rate die Zahl.",
@@ -1178,7 +1412,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0119": {
       "Prompt": "Rate die Zahl.",
@@ -1188,7 +1424,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0120": {
       "Prompt": "Rate die Zahl.",
@@ -1198,7 +1436,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0121": {
       "Prompt": "Rate die Zahl.",
@@ -1208,7 +1448,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0122": {
       "Prompt": "Rate die Zahl.",
@@ -1218,7 +1460,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0123": {
       "Prompt": "Rate die Zahl.",
@@ -1228,7 +1472,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0124": {
       "Prompt": "Rate die Zahl.",
@@ -1238,7 +1484,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0125": {
       "Prompt": "Rate die Zahl.",
@@ -1248,7 +1496,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0126": {
       "Prompt": "Rate die Zahl.",
@@ -1258,7 +1508,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0127": {
       "Prompt": "Rate die Zahl.",
@@ -1268,7 +1520,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0128": {
       "Prompt": "Rate die Zahl.",
@@ -1278,7 +1532,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0129": {
       "Prompt": "Rate die Zahl.",
@@ -1288,7 +1544,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0130": {
       "Prompt": "Rate die Zahl.",
@@ -1298,7 +1556,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0131": {
       "Prompt": "Rate die Zahl.",
@@ -1308,7 +1568,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0132": {
       "Prompt": "Rate die Zahl.",
@@ -1318,7 +1580,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0133": {
       "Prompt": "Rate die Zahl.",
@@ -1328,7 +1592,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0134": {
       "Prompt": "Rate die Zahl.",
@@ -1338,7 +1604,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0135": {
       "Prompt": "Rate die Zahl.",
@@ -1348,7 +1616,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0136": {
       "Prompt": "Rate die Zahl.",
@@ -1358,7 +1628,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0137": {
       "Prompt": "Rate die Zahl.",
@@ -1368,7 +1640,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0138": {
       "Prompt": "Rate die Zahl.",
@@ -1378,7 +1652,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0139": {
       "Prompt": "Rate die Zahl.",
@@ -1388,7 +1664,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0140": {
       "Prompt": "Rate die Zahl.",
@@ -1398,7 +1676,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0141": {
       "Prompt": "Rate die Zahl.",
@@ -1408,7 +1688,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0142": {
       "Prompt": "Rate die Zahl.",
@@ -1418,7 +1700,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0143": {
       "Prompt": "Rate die Zahl.",
@@ -1428,7 +1712,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0144": {
       "Prompt": "Rate die Zahl.",
@@ -1438,7 +1724,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0145": {
       "Prompt": "Rate die Zahl.",
@@ -1448,7 +1736,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0146": {
       "Prompt": "Rate die Zahl.",
@@ -1458,7 +1748,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0147": {
       "Prompt": "Rate die Zahl.",
@@ -1468,7 +1760,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0148": {
       "Prompt": "Rate die Zahl.",
@@ -1478,7 +1772,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0149": {
       "Prompt": "Rate die Zahl.",
@@ -1488,7 +1784,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0150": {
       "Prompt": "Rate die Zahl.",
@@ -1498,7 +1796,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0151": {
       "Prompt": "Rate die Zahl.",
@@ -1508,7 +1808,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0152": {
       "Prompt": "Rate die Zahl.",
@@ -1518,7 +1820,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0153": {
       "Prompt": "Rate die Zahl.",
@@ -1528,7 +1832,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0154": {
       "Prompt": "Rate die Zahl.",
@@ -1538,7 +1844,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0155": {
       "Prompt": "Rate die Zahl.",
@@ -1548,7 +1856,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0156": {
       "Prompt": "Rate die Zahl.",
@@ -1558,7 +1868,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0157": {
       "Prompt": "Rate die Zahl.",
@@ -1568,7 +1880,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0158": {
       "Prompt": "Rate die Zahl.",
@@ -1578,7 +1892,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0159": {
       "Prompt": "Rate die Zahl.",
@@ -1588,7 +1904,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0160": {
       "Prompt": "Rate die Zahl.",
@@ -1598,7 +1916,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0161": {
       "Prompt": "Rate die Zahl.",
@@ -1608,7 +1928,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0162": {
       "Prompt": "Rate die Zahl.",
@@ -1618,7 +1940,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0163": {
       "Prompt": "Rate die Zahl.",
@@ -1628,7 +1952,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Die Ziffernsumme ist 1."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0164": {
       "Prompt": "Rate die Zahl.",
@@ -1638,7 +1964,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0165": {
       "Prompt": "Rate die Zahl.",
@@ -1648,7 +1976,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0166": {
       "Prompt": "Rate die Zahl.",
@@ -1658,7 +1988,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0167": {
       "Prompt": "Rate die Zahl.",
@@ -1668,7 +2000,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0168": {
       "Prompt": "Rate die Zahl.",
@@ -1678,7 +2012,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0169": {
       "Prompt": "Rate die Zahl.",
@@ -1688,7 +2024,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0170": {
       "Prompt": "Rate die Zahl.",
@@ -1698,7 +2036,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0171": {
       "Prompt": "Rate die Zahl.",
@@ -1708,7 +2048,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0172": {
       "Prompt": "Rate die Zahl.",
@@ -1718,7 +2060,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0173": {
       "Prompt": "Rate die Zahl.",
@@ -1728,7 +2072,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0174": {
       "Prompt": "Rate die Zahl.",
@@ -1738,7 +2084,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0175": {
       "Prompt": "Rate die Zahl.",
@@ -1748,7 +2096,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0176": {
       "Prompt": "Rate die Zahl.",
@@ -1758,7 +2108,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0177": {
       "Prompt": "Rate die Zahl.",
@@ -1768,7 +2120,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0178": {
       "Prompt": "Rate die Zahl.",
@@ -1778,7 +2132,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0179": {
       "Prompt": "Rate die Zahl.",
@@ -1788,7 +2144,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0180": {
       "Prompt": "Rate die Zahl.",
@@ -1798,7 +2156,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 69.",
         "Die Ziffernsumme ist 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0181": {
       "Prompt": "Rate die Zahl.",
@@ -1808,7 +2168,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0182": {
       "Prompt": "Rate die Zahl.",
@@ -1818,7 +2180,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0183": {
       "Prompt": "Rate die Zahl.",
@@ -1828,7 +2192,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0184": {
       "Prompt": "Rate die Zahl.",
@@ -1838,7 +2204,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0185": {
       "Prompt": "Rate die Zahl.",
@@ -1848,7 +2216,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0186": {
       "Prompt": "Rate die Zahl.",
@@ -1858,7 +2228,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0187": {
       "Prompt": "Rate die Zahl.",
@@ -1868,7 +2240,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0188": {
       "Prompt": "Rate die Zahl.",
@@ -1878,7 +2252,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0189": {
       "Prompt": "Rate die Zahl.",
@@ -1888,7 +2264,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 27.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0190": {
       "Prompt": "Rate die Zahl.",
@@ -1898,7 +2276,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 40.",
         "Die Ziffernsumme ist 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0191": {
       "Prompt": "Rate die Zahl.",
@@ -1908,7 +2288,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0192": {
       "Prompt": "Rate die Zahl.",
@@ -1918,7 +2300,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0193": {
       "Prompt": "Rate die Zahl.",
@@ -1928,7 +2312,9 @@
         "Sie ist gerade.",
         "Sie liegt ueber 10.",
         "Die Ziffernsumme ist 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0194": {
       "Prompt": "Rate die Zahl.",
@@ -1938,7 +2324,9 @@
         "Sie ist ungerade.",
         "Sie liegt ueber 17.",
         "Die Ziffernsumme ist 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0195": {
       "Prompt": "Rate die Zahl.",
@@ -1948,7 +2336,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 27.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0196": {
       "Prompt": "Rate die Zahl.",
@@ -1958,7 +2348,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 40.",
         "Die Ziffernsumme ist 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0197": {
       "Prompt": "Rate die Zahl.",
@@ -1968,7 +2360,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 55.",
         "Die Ziffernsumme ist 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0198": {
       "Prompt": "Rate die Zahl.",
@@ -1978,7 +2372,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 69.",
         "Die Ziffernsumme ist 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0199": {
       "Prompt": "Rate die Zahl.",
@@ -1988,7 +2384,9 @@
         "Sie ist gerade.",
         "Sie ist hoechstens 10.",
         "Sie liegt unter 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0200": {
       "Prompt": "Rate die Zahl.",
@@ -1998,7 +2396,9 @@
         "Sie ist ungerade.",
         "Sie ist hoechstens 17.",
         "Die Ziffernsumme ist 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "word_0001": {
       "Prompt": "Rate das versteckte Wort.",
@@ -6854,9 +7254,9 @@
         "Das erste Wort beginnt mit R."
       ],
       "Answers": [
-        "Rubber Boots"
+        "Regenstiefel"
       ],
-      "RevealAnswer": "Rubber Boots"
+      "RevealAnswer": "Regenstiefel"
     },
     "word_0348": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6868,9 +7268,9 @@
         "Das erste Wort beginnt mit L."
       ],
       "Answers": [
-        "Leather Boots"
+        "Lederschuhe"
       ],
-      "RevealAnswer": "Leather Boots"
+      "RevealAnswer": "Lederschuhe"
     },
     "word_0349": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6879,12 +7279,12 @@
       "Clues": [
         "Es ist robustes Schuhwerk.",
         "Es gehoert aufs Feld.",
-        "Das erste Wort beginnt mit W."
+        "Das erste Wort beginnt mit A."
       ],
       "Answers": [
-        "Work Boots"
+        "Arbeiterschuhe"
       ],
-      "RevealAnswer": "Work Boots"
+      "RevealAnswer": "Arbeiterschuhe"
     },
     "word_0350": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6893,12 +7293,12 @@
       "Clues": [
         "Es schuetzt im Kampf.",
         "Es gehoert in einen Kampf.",
-        "Das erste Wort beginnt mit C."
+        "Das erste Wort beginnt mit K."
       ],
       "Answers": [
-        "Combat Boots"
+        "Kampfstiefel"
       ],
-      "RevealAnswer": "Combat Boots"
+      "RevealAnswer": "Kampfstiefel"
     },
     "word_0351": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6910,9 +7310,9 @@
         "Das erste Wort beginnt mit T."
       ],
       "Answers": [
-        "Tundra Boots"
+        "Tundrastiefel"
       ],
-      "RevealAnswer": "Tundra Boots"
+      "RevealAnswer": "Tundrastiefel"
     },
     "word_0352": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6924,9 +7324,9 @@
         "Das erste Wort beginnt mit T."
       ],
       "Answers": [
-        "Thermal Boots"
+        "Thermalstiefel"
       ],
-      "RevealAnswer": "Thermal Boots"
+      "RevealAnswer": "Thermalstiefel"
     },
     "word_0353": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6938,9 +7338,9 @@
         "Das erste Wort beginnt mit D."
       ],
       "Answers": [
-        "Dark Boots"
+        "Dunkle Stiefel"
       ],
-      "RevealAnswer": "Dark Boots"
+      "RevealAnswer": "Dunkle Stiefel"
     },
     "word_0354": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6952,9 +7352,9 @@
         "Das erste Wort beginnt mit F."
       ],
       "Answers": [
-        "Firewalker Boots"
+        "Feuerwandlerstiefel"
       ],
-      "RevealAnswer": "Firewalker Boots"
+      "RevealAnswer": "Feuerwandlerstiefel"
     },
     "word_0355": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6963,12 +7363,12 @@
       "Clues": [
         "Es schuetzt im Kampf.",
         "Es gehoert in einen Kampf.",
-        "Das erste Wort beginnt mit G."
+        "Das erste Wort beginnt mit D."
       ],
       "Answers": [
-        "Genie Shoes"
+        "Dschinn-Schuhe"
       ],
-      "RevealAnswer": "Genie Shoes"
+      "RevealAnswer": "Dschinn-Schuhe"
     },
     "word_0356": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6977,12 +7377,12 @@
       "Clues": [
         "Es wirkt etwas magisch.",
         "Es wirkt seltsam.",
-        "Das erste Wort beginnt mit S."
+        "Das erste Wort beginnt mit W."
       ],
       "Answers": [
-        "Space Boots"
+        "Weltall-Stiefel"
       ],
-      "RevealAnswer": "Space Boots"
+      "RevealAnswer": "Weltall-Stiefel"
     },
     "word_0357": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -6994,9 +7394,9 @@
         "Das erste Wort beginnt mit C."
       ],
       "Answers": [
-        "Cowboy Boots"
+        "Cowboy-Stiefel"
       ],
-      "RevealAnswer": "Cowboy Boots"
+      "RevealAnswer": "Cowboy-Stiefel"
     },
     "word_0358": {
       "Prompt": "Rate diese Redewendung.",
@@ -7008,9 +7408,9 @@
         "Das erste Wort beginnt mit E."
       ],
       "Answers": [
-        "Emily's Magic Boots"
+        "Emily's magische Stiefel"
       ],
-      "RevealAnswer": "Emily's Magic Boots"
+      "RevealAnswer": "Emily's magische Stiefel"
     },
     "word_0359": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -7022,9 +7422,9 @@
         "Das erste Wort beginnt mit L."
       ],
       "Answers": [
-        "Leprechaun Shoes"
+        "Leprechaun Schuhe"
       ],
-      "RevealAnswer": "Leprechaun Shoes"
+      "RevealAnswer": "Leprechaun Schuhe"
     },
     "word_0360": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -7033,12 +7433,12 @@
       "Clues": [
         "Es schuetzt im Kampf.",
         "Es gehoert in einen Kampf.",
-        "Das erste Wort beginnt mit C."
+        "Das erste Wort beginnt mit Z."
       ],
       "Answers": [
-        "Cinderclown Shoes"
+        "Zunderclown-Schuhe"
       ],
-      "RevealAnswer": "Cinderclown Shoes"
+      "RevealAnswer": "Zunderclown-Schuhe"
     },
     "word_0361": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -7050,9 +7450,9 @@
         "Das erste Wort beginnt mit M."
       ],
       "Answers": [
-        "Mermaid Boots"
+        "Meerjungfrauen-Stiefel"
       ],
-      "RevealAnswer": "Mermaid Boots"
+      "RevealAnswer": "Meerjungfrauen-Stiefel"
     },
     "word_0362": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -7064,9 +7464,9 @@
         "Das erste Wort beginnt mit D."
       ],
       "Answers": [
-        "Dragonscale Boots"
+        "Drachenhaut-Stiefel"
       ],
-      "RevealAnswer": "Dragonscale Boots"
+      "RevealAnswer": "Drachenhaut-Stiefel"
     },
     "word_0363": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -7075,12 +7475,12 @@
       "Clues": [
         "Es wirkt etwas magisch.",
         "Es wirkt seltsam.",
-        "Das erste Wort beginnt mit C."
+        "Das erste Wort beginnt mit K."
       ],
       "Answers": [
-        "Crystal Shoes"
+        "Kristallschuhe"
       ],
-      "RevealAnswer": "Crystal Shoes"
+      "RevealAnswer": "Kristallschuhe"
     },
     "word_0364": {
       "Prompt": "Rate diese zwei Woerter.",
@@ -11992,9 +12392,10 @@
         "Das erste Wort beginnt mit G."
       ],
       "Answers": [
+        "Gold Stone",
         "Goldstein"
       ],
-      "RevealAnswer": "Goldstein"
+      "RevealAnswer": "Gold Stone"
     },
     "word_0715": {
       "Prompt": "Rate das versteckte Wort.",

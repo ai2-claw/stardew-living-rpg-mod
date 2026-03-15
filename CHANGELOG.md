@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 0.9.6 - 2026-03-15
+
+### Changed
+- Manifest version bumped to `0.9.6`.
+- Newspaper market-outlook lines now use localization keys for the remaining market phrasing, including `Market`, `Opportunity`, `softened`, `rose`, and the press-time variants.
+- Short date formatting used by the newspaper and market board now resolves localized season names and the `Yr` abbreviation through `i18n`.
+
+### Fixed
+- Newspaper `Market Outlook` bullets now wrap correctly for long localized text, including no-space scripts such as Japanese, instead of overflowing or clipping.
+- Magician locale overlays were repaired back to readable UTF-8 native text on disk and no longer ship as ASCII-escaped `\uXXXX` JSON.
+- Magician localized first-character clues now align with the localized visible answers across supported overlays instead of reusing the English answer letter.
+
 ## 0.9.5 - 2026-03-15
 
 ### Changed

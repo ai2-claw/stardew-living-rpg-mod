@@ -28,6 +28,11 @@ public static class TextWrapHelper
             if (!string.IsNullOrEmpty(current))
             {
                 lines.Add(current);
+                current = string.Empty;
+            }
+
+            if (font.MeasureString(word).X <= maxWidth)
+            {
                 current = word;
                 continue;
             }

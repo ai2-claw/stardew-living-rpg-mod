@@ -39,6 +39,18 @@ Stardew Living RPG is a SMAPI (Stardew Modding API) mod that adds a living RPG l
 - Prefer clear function/variable names over inline comments
 - Don't use emojis
 
+### Localization / Encoding Safety
+- Localization files must be stored as readable UTF-8 text with native characters on disk, for example Japanese, Chinese, Russian, Korean, and other target-language scripts
+- Do NOT rewrite localization files into ASCII-escaped `\\uXXXX` form
+- Do NOT accept mojibake, replacement `?`, or mixed-encoding corruption in localization files
+- Console success, JSON parse success, and build success are NOT sufficient validation for non-ASCII localization edits
+- After editing any file with non-ASCII text, ALWAYS reopen the exact file from disk and inspect the stored content itself
+- The read pass must verify representative lines still contain real native characters on disk, not escaped sequences and not console-decoded stand-ins
+- Decoded Python output, escaped previews, or command success logs do NOT count as the verification pass
+- Do NOT use write paths that silently coerce Unicode; if a tool path is likely to corrupt non-ASCII text, stop and choose a UTF-8-safe path first
+- Do NOT use `ensure_ascii=True` or equivalent when writing hand-maintained localization assets
+- Never finish a localization task without a raw on-disk read pass of the edited file
+
 ## Bash Guidelines
 
 - Do NOT pipe output through `head`, `tail`, `less`, or `more`

@@ -757,7 +757,7 @@ public sealed class TownSquareMagicianService
         if (string.IsNullOrWhiteSpace(localized.RevealAnswer))
             localized.RevealAnswer = GetRevealAnswer(localized);
 
-        return localized;
+        return RepairLocalizedStructuralClues(round, localized, NormalizeOverlayLocale(I18n.GetCurrentLocaleCode()));
     }
 
     private TownSquareMagicianRoundDefinition EnsureAcceptedAnswers(TownSquareMagicianRoundDefinition round)
@@ -1133,6 +1133,143 @@ public sealed class TownSquareMagicianService
 
         if (overlay.Clues.Count > 0 && overlay.Clues.Count != round.Clues.Count)
             _monitor.Log($"Magician locale overlay '{locale}' round '{round.Id}' has {overlay.Clues.Count} clues; expected {round.Clues.Count}.", LogLevel.Warn);
+
+        WarnIfLocalizedStructuralClueMismatch(locale, round, overlay);
+    }
+
+    private TownSquareMagicianRoundDefinition RepairLocalizedStructuralClues(
+        TownSquareMagicianRoundDefinition baseRound,
+        TownSquareMagicianRoundDefinition localized,
+        string locale)
+    {
+        if (!string.Equals(baseRound.Mode, "guess_word", StringComparison.OrdinalIgnoreCase)
+            || localized.Clues.Count == 0)
+        {
+            return localized;
+        }
+
+        var visibleAnswer = GetRevealAnswer(localized);
+        if (string.IsNullOrWhiteSpace(visibleAnswer))
+            return localized;
+
+        var repairedClues = new List<string>(localized.Clues);
+        for (var i = 0; i < Math.Min(repairedClues.Count, baseRound.Clues.Count); i++)
+        {
+            if (TryBuildExpectedStructuralClue(baseRound.Clues[i], locale, visibleAnswer, out var expected))
+                repairedClues[i] = expected;
+        }
+
+        localized.Clues = repairedClues;
+        return localized;
+    }
+
+    private void WarnIfLocalizedStructuralClueMismatch(string locale, TownSquareMagicianRoundDefinition round, TownSquareMagicianRoundLocaleEntry overlay)
+    {
+        if (!string.Equals(round.Mode, "guess_word", StringComparison.OrdinalIgnoreCase)
+            || overlay.Clues.Count == 0)
+        {
+            return;
+        }
+
+        var visibleAnswer = !string.IsNullOrWhiteSpace(overlay.RevealAnswer)
+            ? overlay.RevealAnswer.Trim()
+            : overlay.Answers.FirstOrDefault(static answer => !string.IsNullOrWhiteSpace(answer))?.Trim();
+        if (string.IsNullOrWhiteSpace(visibleAnswer))
+            return;
+
+        var normalizedLocale = NormalizeOverlayLocale(locale);
+        for (var i = 0; i < Math.Min(overlay.Clues.Count, round.Clues.Count); i++)
+        {
+            if (!TryBuildExpectedStructuralClue(round.Clues[i], normalizedLocale, visibleAnswer, out var expected))
+                continue;
+
+            var actual = overlay.Clues[i]?.Trim() ?? string.Empty;
+            if (!string.Equals(actual, expected, StringComparison.Ordinal))
+            {
+                _monitor.Log(
+                    $"Magician locale overlay '{locale}' round '{round.Id}' has a localized clue mismatch: expected '{expected}', found '{actual}'.",
+                    LogLevel.Warn);
+            }
+        }
+    }
+
+    private static bool TryBuildExpectedStructuralClue(string? baseClue, string locale, string visibleAnswer, out string expected)
+    {
+        expected = string.Empty;
+        if (string.IsNullOrWhiteSpace(baseClue) || string.IsNullOrWhiteSpace(visibleAnswer))
+            return false;
+
+        var trimmed = baseClue.Trim();
+        var isFirstWordClue = trimmed.StartsWith("The first word starts with ", StringComparison.Ordinal);
+        var isWholeAnswerClue = trimmed.StartsWith("It starts with ", StringComparison.Ordinal);
+        if (!isFirstWordClue && !isWholeAnswerClue)
+            return false;
+
+        var firstCharacter = GetFirstVisibleClueCharacter(visibleAnswer);
+        if (string.IsNullOrWhiteSpace(firstCharacter))
+            return false;
+
+        expected = locale switch
+        {
+            "es" => isFirstWordClue
+                ? $"La primera palabra empieza con {firstCharacter}."
+                : $"Empieza con {firstCharacter}.",
+            "pt-br" => isFirstWordClue
+                ? $"A primeira palavra começa com {firstCharacter}."
+                : $"Começa com {firstCharacter}.",
+            "ja" => $"\u300c{firstCharacter}\u300d\u3067\u59cb\u307e\u308b\u3002",
+            "ko" => $"'{firstCharacter}'\ub85c \uc2dc\uc791\ud55c\ub2e4.",
+            "de" => isFirstWordClue
+                ? $"Das erste Wort beginnt mit {firstCharacter}."
+                : $"Es beginnt mit {firstCharacter}.",
+            "ru" => isFirstWordClue
+                ? $"\u041f\u0435\u0440\u0432\u043e\u0435 \u0441\u043b\u043e\u0432\u043e \u043d\u0430\u0447\u0438\u043d\u0430\u0435\u0442\u0441\u044f \u0441 {firstCharacter}."
+                : $"\u041d\u0430\u0447\u0438\u043d\u0430\u0435\u0442\u0441\u044f \u0441 {firstCharacter}.",
+            "fr" => isFirstWordClue
+                ? $"Le premier mot commence par {firstCharacter}."
+                : $"Cela commence par {firstCharacter}.",
+            "zh-cn" => $"\u5b83\u4ee5\u201c{firstCharacter}\u201d\u5f00\u5934\u3002",
+            "it" => isFirstWordClue
+                ? $"La prima parola inizia con {firstCharacter}."
+                : $"Inizia con {firstCharacter}.",
+            "tr" => isFirstWordClue
+                ? $"\u0130lk kelime {firstCharacter} ile ba\u015flar."
+                : $"{firstCharacter} ile ba\u015flar.",
+            _ => string.Empty
+        };
+
+        return !string.IsNullOrWhiteSpace(expected);
+    }
+
+    private static string GetFirstVisibleClueCharacter(string value)
+    {
+        foreach (var character in value.Trim())
+        {
+            if (char.IsWhiteSpace(character))
+                continue;
+            if ("\"'“”‘’«»「」『』()[]{}<>".Contains(character))
+                continue;
+
+            return character.ToString();
+        }
+
+        return string.Empty;
+    }
+
+    private static string NormalizeOverlayLocale(string? locale)
+    {
+        if (string.IsNullOrWhiteSpace(locale))
+            return string.Empty;
+
+        var normalized = locale.Trim().Replace('_', '-').ToLowerInvariant();
+        return normalized switch
+        {
+            "zh" => "zh-cn",
+            _ when normalized.StartsWith("zh-", StringComparison.Ordinal) => "zh-cn",
+            _ when normalized.StartsWith("pt-", StringComparison.Ordinal) => "pt-br",
+            _ when normalized.Contains('-', StringComparison.Ordinal) => normalized[..normalized.IndexOf('-')],
+            _ => normalized
+        };
     }
 
     private void WarnIfGenericClue(string roundId, string clue)

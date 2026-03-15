@@ -574,12 +574,20 @@ public sealed class NewspaperMenu : IClickableMenu
             for (var i = 0; i < renderedHints.Count; i++)
             {
                 var hint = renderedHints[i];
-                var bulletText = $"- {hint}";
-                var wrappedHint = TextWrapHelper.WrapText(Game1.smallFont, bulletText, contentMaxWidth);
-                foreach (var line in wrappedHint)
+                const string bulletPrefix = "- ";
+                var bulletIndent = Game1.smallFont.MeasureString(bulletPrefix).X;
+                var wrappedHint = TextWrapHelper.WrapText(
+                    Game1.smallFont,
+                    hint,
+                    Math.Max(1f, contentMaxWidth - bulletIndent - 10f));
+                for (var lineIndex = 0; lineIndex < wrappedHint.Length; lineIndex++)
                 {
                     if (draw && b is not null)
-                        b.DrawString(Game1.smallFont, line, new Vector2(contentX + 10, y), new Color(70, 60, 50));
+                    {
+                        var drawText = lineIndex == 0 ? bulletPrefix + wrappedHint[lineIndex] : wrappedHint[lineIndex];
+                        var drawX = lineIndex == 0 ? contentX + 10 : contentX + 10 + bulletIndent;
+                        b.DrawString(Game1.smallFont, drawText, new Vector2(drawX, y), new Color(70, 60, 50));
+                    }
                     y += 24;
                 }
 
@@ -636,12 +644,25 @@ public sealed class NewspaperMenu : IClickableMenu
     private static string RenderMarketLine(NewspaperMarketLine line)
     {
         var displayName = QuestTextHelper.GetLocalizedObjectDisplayName(line.CropKey);
+        var absolutePct = $"{(Math.Abs(line.DeltaPct) * 100):0.#}%";
+        var signedPct = $"{line.DeltaPct * 100:+0.#;-0.#;0}%";
         return (line.TemplateId ?? string.Empty).Trim().ToLowerInvariant() switch
         {
-            "market_down" => $"Market: {displayName} softened {(Math.Abs(line.DeltaPct) * 100):0.#}% to {line.PriceToday}g.",
-            "market_up" => $"Opportunity: {displayName} rose {(line.DeltaPct * 100):0.#}% to {line.PriceToday}g.",
-            "press_time" => $"By press time, {displayName} traded at {line.PriceToday}g ({line.DeltaPct * 100:+0.#;-0.#;0}%).",
-            "press_time_steady" => "By press time, market prices held steady across town stalls.",
+            "market_down" => I18n.Get(
+                "newspaper.market_outlook.line.market_down",
+                "Market: {{item}} softened {{pct}} to {{price}}g.",
+                new { item = displayName, pct = absolutePct, price = line.PriceToday }),
+            "market_up" => I18n.Get(
+                "newspaper.market_outlook.line.market_up",
+                "Opportunity: {{item}} rose {{pct}} to {{price}}g.",
+                new { item = displayName, pct = absolutePct, price = line.PriceToday }),
+            "press_time" => I18n.Get(
+                "newspaper.market_outlook.line.press_time",
+                "By press time, {{item}} traded at {{price}}g ({{pct}}).",
+                new { item = displayName, pct = signedPct, price = line.PriceToday }),
+            "press_time_steady" => I18n.Get(
+                "newspaper.market_outlook.line.press_time_steady",
+                "By press time, market prices held steady across town stalls."),
             _ => string.Empty
         };
     }

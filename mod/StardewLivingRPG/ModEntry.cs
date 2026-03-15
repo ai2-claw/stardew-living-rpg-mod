@@ -74,7 +74,6 @@ public sealed class ModEntry : Mod
     private static readonly TimeSpan RecentGiftContextMaxAge = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan Player2HealthPingInterval = TimeSpan.FromSeconds(60);
     private const int VanillaDialogueContextSequenceMaxLines = 6;
-    private const string InitialNpcChatPrompt = "Let's chat.";
     private const int TownSquareMagicianHudInputWidth = 360;
     private const int TownSquareMagicianHudInputHeight = 64;
     private const int TownSquareMagicianHudSubmitWidth = 120;
@@ -1617,7 +1616,7 @@ public sealed class ModEntry : Mod
                     TryRecordSocialVisitProgress(npc.Name);
                     OpenNpcChatMenu(
                         npc,
-                        initialPlayerMessage: InitialNpcChatPrompt,
+                        initialPlayerMessage: GetInitialNpcChatPrompt(),
                         autoSendInitialPlayerMessage: true,
                         defaultContextTag: contextTag);
                     _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
@@ -1669,7 +1668,7 @@ public sealed class ModEntry : Mod
                 {
                     OpenNpcChatMenu(
                         npc,
-                        initialPlayerMessage: InitialNpcChatPrompt,
+                        initialPlayerMessage: GetInitialNpcChatPrompt(),
                         autoSendInitialPlayerMessage: true,
                         defaultContextTag: contextTag);
                 }
@@ -2501,7 +2500,7 @@ public sealed class ModEntry : Mod
         TryRecordSocialVisitProgress(npc.Name);
         OpenNpcChatMenu(
             npc,
-            initialPlayerMessage: InitialNpcChatPrompt,
+            initialPlayerMessage: GetInitialNpcChatPrompt(),
             autoSendInitialPlayerMessage: true,
             defaultContextTag: "player_chat_gift_followup");
         _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
@@ -3418,7 +3417,7 @@ public sealed class ModEntry : Mod
                 {
                     OpenNpcChatMenu(
                         npc,
-                        initialPlayerMessage: InitialNpcChatPrompt,
+                        initialPlayerMessage: GetInitialNpcChatPrompt(),
                         autoSendInitialPlayerMessage: true,
                         defaultContextTag: "player_chat_followup");
                     return;
@@ -7652,7 +7651,7 @@ public sealed class ModEntry : Mod
                 if (string.Equals(answer, "talk", StringComparison.OrdinalIgnoreCase))
                     OpenNpcChatMenu(
                         npc,
-                        initialPlayerMessage: InitialNpcChatPrompt,
+                        initialPlayerMessage: GetInitialNpcChatPrompt(),
                         autoSendInitialPlayerMessage: true,
                         defaultContextTag: "player_chat_followup");
             },
@@ -10217,7 +10216,7 @@ public sealed class ModEntry : Mod
 
         var prompt = BuildCompactGameStateInfo(
             "Lewis",
-            playerText: InitialNpcChatPrompt,
+            playerText: GetInitialNpcChatPrompt(),
             contextTag: "player_chat_gift_followup");
 
         if (prompt.Contains("PLAYER_CHAT_GROUNDING_RULE:", StringComparison.Ordinal)
@@ -10257,8 +10256,19 @@ public sealed class ModEntry : Mod
             Monitor.Log("[FAIL] player chat grounding regression missing low-information opener anti-canned-reply rule", LogLevel.Warn);
         }
 
+        if (IsLowInformationChatOpener(GetInitialNpcChatPrompt()))
+        {
+            pass++;
+            Monitor.Log("[PASS] player chat grounding regression treats the localized initial opener as low-information small talk", LogLevel.Info);
+        }
+        else
+        {
+            fail++;
+            Monitor.Log("[FAIL] player chat grounding regression did not recognize the localized initial opener as low-information small talk", LogLevel.Warn);
+        }
+
         _npcLastContextTagById["grounding_regression_npc"] = "player_chat_followup";
-        _npcLastPlayerPromptById["grounding_regression_npc"] = InitialNpcChatPrompt;
+        _npcLastPlayerPromptById["grounding_regression_npc"] = GetInitialNpcChatPrompt();
         var groundedReply = NormalizeGroundedLowInfoInitialReply("grounding_regression_npc", "Lewis", "What's on your mind?");
         if (!groundedReply.Contains("what's on your mind", StringComparison.OrdinalIgnoreCase)
             && groundedReply.Contains("passed out", StringComparison.OrdinalIgnoreCase))
@@ -10272,7 +10282,7 @@ public sealed class ModEntry : Mod
             Monitor.Log("[FAIL] player chat grounding regression did not rewrite a canned helper reply into contextual grounding", LogLevel.Warn);
         }
 
-        return (pass, fail, 4);
+        return (pass, fail, 5);
     }
 
     private (int Pass, int Fail, int Total) RunPendingVanillaDialogueRegressionChecks()
@@ -12967,13 +12977,26 @@ public sealed class ModEntry : Mod
         return townEvent is not null;
     }
 
-    private static bool IsLowInformationChatOpener(string? text)
+    private bool IsLowInformationChatOpener(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
             return false;
 
-        var normalized = Regex.Replace(text.Trim().ToLowerInvariant(), @"[^a-z]+", string.Empty, RegexOptions.CultureInvariant);
-        return normalized is "letschat" or "letstalk" or "chat";
+        var normalized = NormalizeNpcChatOpener(text);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        foreach (var alias in GetNpcChatSmallTalkOpeners())
+        {
+            var normalizedAlias = NormalizeNpcChatOpener(alias);
+            if (string.IsNullOrWhiteSpace(normalizedAlias))
+                continue;
+
+            if (normalized == normalizedAlias || normalized.StartsWith(normalizedAlias, StringComparison.Ordinal))
+                return true;
+        }
+
+        return normalized is "letstalk" or "chat";
     }
 
     private static bool LooksLikeCannedHelperQuestionReply(string? message)
@@ -13218,7 +13241,7 @@ public sealed class ModEntry : Mod
         var sourceDialogueContext = BuildSourceModDialogueContextBlock(npcName, playerText);
         var vanillaDialogueFollowUpRule = string.IsNullOrWhiteSpace(vanillaDialogueContext)
             ? string.Empty
-            : "FOLLOWUP_DIALOGUE_RULE: If player opens with small-talk like 'Let's chat.', continue naturally from VANILLA_DIALOGUE_CONTEXT before switching topics.";
+            : "FOLLOWUP_DIALOGUE_RULE: If player opens with a low-information small-talk opener, continue naturally from VANILLA_DIALOGUE_CONTEXT before switching topics.";
         var playerAskedForRequest = IsPlayerAskingForQuest(playerText);
         var questDiversityContext = BuildQuestDiversityBlock(npcName, playerAskedForRequest);
         var followUpContextRule = string.Equals(effectiveContextTag, "player_chat_followup", StringComparison.OrdinalIgnoreCase)
@@ -13229,10 +13252,10 @@ public sealed class ModEntry : Mod
             : string.Empty;
         var lowInfoOpenerRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
             && IsLowInformationChatOpener(playerText)
-                ? "LOW_INFO_OPENER_RULE: If the player's opener is only low-information small talk like 'Let's chat.', do not reply with generic helper questions like 'What's on your mind?' or 'Need something?' when PASS_OUT_CONTEXT, VANILLA_DIALOGUE_CONTEXT, NEWS_CONTEXT, RECENT_EVENTS, TOWN_MEMORY, or NPC_MEMORY provides usable grounding. Open with the strongest available context directly."
+                ? "LOW_INFO_OPENER_RULE: If the player's opener is only low-information small talk, do not reply with generic helper questions like 'What's on your mind?' or 'Need something?' when PASS_OUT_CONTEXT, VANILLA_DIALOGUE_CONTEXT, NEWS_CONTEXT, RECENT_EVENTS, TOWN_MEMORY, or NPC_MEMORY provides usable grounding. Open with the strongest available context directly."
                 : string.Empty;
         var playerChatGroundingRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
-            ? "PLAYER_CHAT_GROUNDING_RULE: Treat low-information openers like 'Let's chat.' as a trigger only, not the true topic. Ground the first reply in this priority order: PASS_OUT_CONTEXT first, then VANILLA_DIALOGUE_CONTEXT, then NEWS_CONTEXT and RECENT_EVENTS, then TOWN_MEMORY, then NPC_MEMORY. Use generic small talk only if none of those provide useful grounding."
+            ? "PLAYER_CHAT_GROUNDING_RULE: Treat low-information small-talk openers as a trigger only, not the true topic. Ground the first reply in this priority order: PASS_OUT_CONTEXT first, then VANILLA_DIALOGUE_CONTEXT, then NEWS_CONTEXT and RECENT_EVENTS, then TOWN_MEMORY, then NPC_MEMORY. Use generic small talk only if none of those provide useful grounding."
             : string.Empty;
         var playerAmbientIsolationRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
             ? "PLAYER_CHAT_ISOLATION_RULE: Treat this as direct player conversation. Do not repeat or continue offscreen NPC-to-NPC ambient lines verbatim."
@@ -15522,24 +15545,50 @@ public sealed class ModEntry : Mod
         return false;
     }
 
-    private static bool IsLikelySmallTalkOpen(string? playerMessage)
+    private bool IsLikelySmallTalkOpen(string? playerMessage)
     {
         if (string.IsNullOrWhiteSpace(playerMessage))
             return false;
 
-        var normalized = Regex.Replace(
-            playerMessage.Trim().ToLowerInvariant(),
-            @"[^a-z0-9]+",
-            " ",
-            RegexOptions.CultureInvariant)
-            .Trim();
+        var normalized = NormalizeNpcChatOpener(playerMessage);
         if (string.IsNullOrWhiteSpace(normalized))
             return false;
 
-        return normalized == "lets chat"
-            || normalized == "let s chat"
-            || normalized.StartsWith("lets chat ", StringComparison.Ordinal)
-            || normalized.StartsWith("let s chat ", StringComparison.Ordinal);
+        foreach (var alias in GetNpcChatSmallTalkOpeners())
+        {
+            var normalizedAlias = NormalizeNpcChatOpener(alias);
+            if (string.IsNullOrWhiteSpace(normalizedAlias))
+                continue;
+
+            if (normalized == normalizedAlias || normalized.StartsWith(normalizedAlias, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    private string GetInitialNpcChatPrompt()
+    {
+        return I18n.Get("npc_chat.initial_message", "Let's chat.");
+    }
+
+    private IEnumerable<string> GetNpcChatSmallTalkOpeners()
+    {
+        yield return GetInitialNpcChatPrompt();
+        yield return I18n.Get("npc_followup.option.lets_chat", "Let's chat.");
+        yield return "Let's chat.";
+    }
+
+    private static string NormalizeNpcChatOpener(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        return Regex.Replace(
+            text.Trim().ToLowerInvariant(),
+            @"[^\p{L}\p{N}]+",
+            string.Empty,
+            RegexOptions.CultureInvariant);
     }
 
     private static string TryExtractMessageFromLine(string line)

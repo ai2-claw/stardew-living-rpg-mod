@@ -8,7 +8,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0002": {
       "Prompt": "Adivina el numero.",
@@ -18,7 +20,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0003": {
       "Prompt": "Adivina el numero.",
@@ -28,7 +32,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0004": {
       "Prompt": "Adivina el numero.",
@@ -38,7 +44,9 @@
         "Es par.",
         "Es mayor que 40.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0005": {
       "Prompt": "Adivina el numero.",
@@ -48,7 +56,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0006": {
       "Prompt": "Adivina el numero.",
@@ -58,7 +68,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0007": {
       "Prompt": "Adivina el numero.",
@@ -68,7 +80,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0008": {
       "Prompt": "Adivina el numero.",
@@ -78,7 +92,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0009": {
       "Prompt": "Adivina el numero.",
@@ -88,7 +104,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0010": {
       "Prompt": "Adivina el numero.",
@@ -98,7 +116,9 @@
         "Es par.",
         "Es mayor que 40.",
         "Sus cifras suman 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0011": {
       "Prompt": "Adivina el numero.",
@@ -108,7 +128,9 @@
         "Es impar.",
         "Es como mucho 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0012": {
       "Prompt": "Adivina el numero.",
@@ -118,7 +140,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0013": {
       "Prompt": "Adivina el numero.",
@@ -128,7 +152,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0014": {
       "Prompt": "Adivina el numero.",
@@ -138,7 +164,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0015": {
       "Prompt": "Adivina el numero.",
@@ -148,7 +176,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0016": {
       "Prompt": "Adivina el numero.",
@@ -158,7 +188,9 @@
         "Es par.",
         "Es como mucho 40.",
         "Sus cifras suman 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0017": {
       "Prompt": "Adivina el numero.",
@@ -168,7 +200,9 @@
         "Es par.",
         "Es mayor que 55.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0018": {
       "Prompt": "Adivina el numero.",
@@ -178,7 +212,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0019": {
       "Prompt": "Adivina el numero.",
@@ -188,7 +224,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0020": {
       "Prompt": "Adivina el numero.",
@@ -198,7 +236,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0021": {
       "Prompt": "Adivina el numero.",
@@ -208,7 +248,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0022": {
       "Prompt": "Adivina el numero.",
@@ -218,7 +260,9 @@
         "Es impar.",
         "Es mayor que 40.",
         "Sus cifras suman 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0023": {
       "Prompt": "Adivina el numero.",
@@ -228,7 +272,9 @@
         "Es impar.",
         "Es mayor que 55.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0024": {
       "Prompt": "Adivina el numero.",
@@ -238,7 +284,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0025": {
       "Prompt": "Adivina el numero.",
@@ -248,7 +296,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0026": {
       "Prompt": "Adivina el numero.",
@@ -258,7 +308,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0027": {
       "Prompt": "Adivina el numero.",
@@ -268,7 +320,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0028": {
       "Prompt": "Adivina el numero.",
@@ -278,7 +332,9 @@
         "Es impar.",
         "Es como mucho 40.",
         "Sus cifras suman 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0029": {
       "Prompt": "Adivina el numero.",
@@ -288,7 +344,9 @@
         "Es impar.",
         "Es como mucho 55.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0030": {
       "Prompt": "Adivina el numero.",
@@ -298,7 +356,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0031": {
       "Prompt": "Adivina el numero.",
@@ -308,7 +368,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0032": {
       "Prompt": "Adivina el numero.",
@@ -318,7 +380,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0033": {
       "Prompt": "Adivina el numero.",
@@ -328,7 +392,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0034": {
       "Prompt": "Adivina el numero.",
@@ -338,7 +404,9 @@
         "Es impar.",
         "Es como mucho 40.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0035": {
       "Prompt": "Adivina el numero.",
@@ -348,7 +416,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0036": {
       "Prompt": "Adivina el numero.",
@@ -358,7 +428,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0037": {
       "Prompt": "Adivina el numero.",
@@ -368,7 +440,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0038": {
       "Prompt": "Adivina el numero.",
@@ -378,7 +452,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0039": {
       "Prompt": "Adivina el numero.",
@@ -388,7 +464,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0040": {
       "Prompt": "Adivina el numero.",
@@ -398,7 +476,9 @@
         "Es par.",
         "Es mayor que 40.",
         "Sus cifras suman 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0041": {
       "Prompt": "Adivina el numero.",
@@ -408,7 +488,9 @@
         "Es impar.",
         "Es mayor que 55.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0042": {
       "Prompt": "Adivina el numero.",
@@ -418,7 +500,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0043": {
       "Prompt": "Adivina el numero.",
@@ -428,7 +512,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Sus cifras suman 1."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0044": {
       "Prompt": "Adivina el numero.",
@@ -438,7 +524,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0045": {
       "Prompt": "Adivina el numero.",
@@ -448,7 +536,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0046": {
       "Prompt": "Adivina el numero.",
@@ -458,7 +548,9 @@
         "Es par.",
         "Es como mucho 40.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0047": {
       "Prompt": "Adivina el numero.",
@@ -468,7 +560,9 @@
         "Es impar.",
         "Es como mucho 55.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0048": {
       "Prompt": "Adivina el numero.",
@@ -478,7 +572,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0049": {
       "Prompt": "Adivina el numero.",
@@ -488,7 +584,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0050": {
       "Prompt": "Adivina el numero.",
@@ -498,7 +596,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0051": {
       "Prompt": "Adivina el numero.",
@@ -508,7 +608,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0052": {
       "Prompt": "Adivina el numero.",
@@ -518,7 +620,9 @@
         "Es impar.",
         "Es mayor que 40.",
         "Sus cifras suman 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0053": {
       "Prompt": "Adivina el numero.",
@@ -528,7 +632,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0054": {
       "Prompt": "Adivina el numero.",
@@ -538,7 +644,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0055": {
       "Prompt": "Adivina el numero.",
@@ -548,7 +656,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0056": {
       "Prompt": "Adivina el numero.",
@@ -558,7 +668,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0057": {
       "Prompt": "Adivina el numero.",
@@ -568,7 +680,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0058": {
       "Prompt": "Adivina el numero.",
@@ -578,7 +692,9 @@
         "Es impar.",
         "Es como mucho 40.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0059": {
       "Prompt": "Adivina el numero.",
@@ -588,7 +704,9 @@
         "Es impar.",
         "Es mayor que 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0060": {
       "Prompt": "Adivina el numero.",
@@ -598,7 +716,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0061": {
       "Prompt": "Adivina el numero.",
@@ -608,7 +728,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0062": {
       "Prompt": "Adivina el numero.",
@@ -618,7 +740,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0063": {
       "Prompt": "Adivina el numero.",
@@ -628,7 +752,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0064": {
       "Prompt": "Adivina el numero.",
@@ -638,7 +764,9 @@
         "Es impar.",
         "Es como mucho 40.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0065": {
       "Prompt": "Adivina el numero.",
@@ -648,7 +776,9 @@
         "Es par.",
         "Es mayor que 55.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0066": {
       "Prompt": "Adivina el numero.",
@@ -658,7 +788,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0067": {
       "Prompt": "Adivina el numero.",
@@ -668,7 +800,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0068": {
       "Prompt": "Adivina el numero.",
@@ -678,7 +812,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0069": {
       "Prompt": "Adivina el numero.",
@@ -688,7 +824,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0070": {
       "Prompt": "Adivina el numero.",
@@ -698,7 +836,9 @@
         "Es par.",
         "Es mayor que 40.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0071": {
       "Prompt": "Adivina el numero.",
@@ -708,7 +848,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0072": {
       "Prompt": "Adivina el numero.",
@@ -718,7 +860,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0073": {
       "Prompt": "Adivina el numero.",
@@ -728,7 +872,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0074": {
       "Prompt": "Adivina el numero.",
@@ -738,7 +884,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0075": {
       "Prompt": "Adivina el numero.",
@@ -748,7 +896,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0076": {
       "Prompt": "Adivina el numero.",
@@ -758,7 +908,9 @@
         "Es par.",
         "Es como mucho 40.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0077": {
       "Prompt": "Adivina el numero.",
@@ -768,7 +920,9 @@
         "Es impar.",
         "Es mayor que 55.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0078": {
       "Prompt": "Adivina el numero.",
@@ -778,7 +932,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0079": {
       "Prompt": "Adivina el numero.",
@@ -788,7 +944,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0080": {
       "Prompt": "Adivina el numero.",
@@ -798,7 +956,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0081": {
       "Prompt": "Adivina el numero.",
@@ -808,7 +968,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0082": {
       "Prompt": "Adivina el numero.",
@@ -818,7 +980,9 @@
         "Es impar.",
         "Es mayor que 40.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0083": {
       "Prompt": "Adivina el numero.",
@@ -828,7 +992,9 @@
         "Es par.",
         "Es mayor que 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0084": {
       "Prompt": "Adivina el numero.",
@@ -838,7 +1004,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0085": {
       "Prompt": "Adivina el numero.",
@@ -848,7 +1016,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0086": {
       "Prompt": "Adivina el numero.",
@@ -858,7 +1028,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0087": {
       "Prompt": "Adivina el numero.",
@@ -868,7 +1040,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0088": {
       "Prompt": "Adivina el numero.",
@@ -878,7 +1052,9 @@
         "Es impar.",
         "Es mayor que 40.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0089": {
       "Prompt": "Adivina el numero.",
@@ -888,7 +1064,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0090": {
       "Prompt": "Adivina el numero.",
@@ -898,7 +1076,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0091": {
       "Prompt": "Adivina el numero.",
@@ -908,7 +1088,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0092": {
       "Prompt": "Adivina el numero.",
@@ -918,7 +1100,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0093": {
       "Prompt": "Adivina el numero.",
@@ -928,7 +1112,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0094": {
       "Prompt": "Adivina el numero.",
@@ -938,7 +1124,9 @@
         "Es impar.",
         "Es como mucho 40.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0095": {
       "Prompt": "Adivina el numero.",
@@ -948,7 +1136,9 @@
         "Es impar.",
         "Es como mucho 55.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0096": {
       "Prompt": "Adivina el numero.",
@@ -958,7 +1148,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0097": {
       "Prompt": "Adivina el numero.",
@@ -968,7 +1160,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0098": {
       "Prompt": "Adivina el numero.",
@@ -978,7 +1172,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0099": {
       "Prompt": "Adivina el numero.",
@@ -988,7 +1184,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0100": {
       "Prompt": "Adivina el numero.",
@@ -998,7 +1196,9 @@
         "Es par.",
         "Es mayor que 40.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0101": {
       "Prompt": "Adivina el numero.",
@@ -1008,7 +1208,9 @@
         "Es par.",
         "Es mayor que 55.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0102": {
       "Prompt": "Adivina el numero.",
@@ -1018,7 +1220,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0103": {
       "Prompt": "Adivina el numero.",
@@ -1028,7 +1232,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Sus cifras suman 1."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0104": {
       "Prompt": "Adivina el numero.",
@@ -1038,7 +1244,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0105": {
       "Prompt": "Adivina el numero.",
@@ -1048,7 +1256,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0106": {
       "Prompt": "Adivina el numero.",
@@ -1058,7 +1268,9 @@
         "Es par.",
         "Es como mucho 40.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0107": {
       "Prompt": "Adivina el numero.",
@@ -1068,7 +1280,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0108": {
       "Prompt": "Adivina el numero.",
@@ -1078,7 +1292,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0109": {
       "Prompt": "Adivina el numero.",
@@ -1088,7 +1304,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0110": {
       "Prompt": "Adivina el numero.",
@@ -1098,7 +1316,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0111": {
       "Prompt": "Adivina el numero.",
@@ -1108,7 +1328,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0112": {
       "Prompt": "Adivina el numero.",
@@ -1118,7 +1340,9 @@
         "Es impar.",
         "Es mayor que 40.",
         "Sus cifras suman 14."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0113": {
       "Prompt": "Adivina el numero.",
@@ -1128,7 +1352,9 @@
         "Es impar.",
         "Es como mucho 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0114": {
       "Prompt": "Adivina el numero.",
@@ -1138,7 +1364,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0115": {
       "Prompt": "Adivina el numero.",
@@ -1148,7 +1376,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0116": {
       "Prompt": "Adivina el numero.",
@@ -1158,7 +1388,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0117": {
       "Prompt": "Adivina el numero.",
@@ -1168,7 +1400,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0118": {
       "Prompt": "Adivina el numero.",
@@ -1178,7 +1412,9 @@
         "Es impar.",
         "Es mayor que 40.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0119": {
       "Prompt": "Adivina el numero.",
@@ -1188,7 +1424,9 @@
         "Es par.",
         "Es mayor que 55.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0120": {
       "Prompt": "Adivina el numero.",
@@ -1198,7 +1436,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0121": {
       "Prompt": "Adivina el numero.",
@@ -1208,7 +1448,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0122": {
       "Prompt": "Adivina el numero.",
@@ -1218,7 +1460,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0123": {
       "Prompt": "Adivina el numero.",
@@ -1228,7 +1472,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0124": {
       "Prompt": "Adivina el numero.",
@@ -1238,7 +1484,9 @@
         "Es impar.",
         "Es como mucho 40.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0125": {
       "Prompt": "Adivina el numero.",
@@ -1248,7 +1496,9 @@
         "Es impar.",
         "Es mayor que 55.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0126": {
       "Prompt": "Adivina el numero.",
@@ -1258,7 +1508,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0127": {
       "Prompt": "Adivina el numero.",
@@ -1268,7 +1520,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0128": {
       "Prompt": "Adivina el numero.",
@@ -1278,7 +1532,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0129": {
       "Prompt": "Adivina el numero.",
@@ -1288,7 +1544,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0130": {
       "Prompt": "Adivina el numero.",
@@ -1298,7 +1556,9 @@
         "Es par.",
         "Es mayor que 40.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0131": {
       "Prompt": "Adivina el numero.",
@@ -1308,7 +1568,9 @@
         "Es impar.",
         "Es como mucho 55.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0132": {
       "Prompt": "Adivina el numero.",
@@ -1318,7 +1580,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0133": {
       "Prompt": "Adivina el numero.",
@@ -1328,7 +1592,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0134": {
       "Prompt": "Adivina el numero.",
@@ -1338,7 +1604,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0135": {
       "Prompt": "Adivina el numero.",
@@ -1348,7 +1616,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0136": {
       "Prompt": "Adivina el numero.",
@@ -1358,7 +1628,9 @@
         "Es par.",
         "Es como mucho 40.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0137": {
       "Prompt": "Adivina el numero.",
@@ -1368,7 +1640,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0138": {
       "Prompt": "Adivina el numero.",
@@ -1378,7 +1652,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0139": {
       "Prompt": "Adivina el numero.",
@@ -1388,7 +1664,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0140": {
       "Prompt": "Adivina el numero.",
@@ -1398,7 +1676,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0141": {
       "Prompt": "Adivina el numero.",
@@ -1408,7 +1688,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0142": {
       "Prompt": "Adivina el numero.",
@@ -1418,7 +1700,9 @@
         "Es par.",
         "Es como mucho 40.",
         "Sus cifras suman 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0143": {
       "Prompt": "Adivina el numero.",
@@ -1428,7 +1712,9 @@
         "Es impar.",
         "Es mayor que 55.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0144": {
       "Prompt": "Adivina el numero.",
@@ -1438,7 +1724,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0145": {
       "Prompt": "Adivina el numero.",
@@ -1448,7 +1736,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0146": {
       "Prompt": "Adivina el numero.",
@@ -1458,7 +1748,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0147": {
       "Prompt": "Adivina el numero.",
@@ -1468,7 +1760,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0148": {
       "Prompt": "Adivina el numero.",
@@ -1478,7 +1772,9 @@
         "Es impar.",
         "Es mayor que 40.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0149": {
       "Prompt": "Adivina el numero.",
@@ -1488,7 +1784,9 @@
         "Es impar.",
         "Es como mucho 55.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0150": {
       "Prompt": "Adivina el numero.",
@@ -1498,7 +1796,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0151": {
       "Prompt": "Adivina el numero.",
@@ -1508,7 +1808,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0152": {
       "Prompt": "Adivina el numero.",
@@ -1518,7 +1820,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0153": {
       "Prompt": "Adivina el numero.",
@@ -1528,7 +1832,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0154": {
       "Prompt": "Adivina el numero.",
@@ -1538,7 +1844,9 @@
         "Es impar.",
         "Es como mucho 40.",
         "Sus cifras suman 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0155": {
       "Prompt": "Adivina el numero.",
@@ -1548,7 +1856,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0156": {
       "Prompt": "Adivina el numero.",
@@ -1558,7 +1868,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0157": {
       "Prompt": "Adivina el numero.",
@@ -1568,7 +1880,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0158": {
       "Prompt": "Adivina el numero.",
@@ -1578,7 +1892,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0159": {
       "Prompt": "Adivina el numero.",
@@ -1588,7 +1904,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0160": {
       "Prompt": "Adivina el numero.",
@@ -1598,7 +1916,9 @@
         "Es par.",
         "Es mayor que 40.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0161": {
       "Prompt": "Adivina el numero.",
@@ -1608,7 +1928,9 @@
         "Es impar.",
         "Es mayor que 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0162": {
       "Prompt": "Adivina el numero.",
@@ -1618,7 +1940,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0163": {
       "Prompt": "Adivina el numero.",
@@ -1628,7 +1952,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Sus cifras suman 1."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0164": {
       "Prompt": "Adivina el numero.",
@@ -1638,7 +1964,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0165": {
       "Prompt": "Adivina el numero.",
@@ -1648,7 +1976,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 3."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0166": {
       "Prompt": "Adivina el numero.",
@@ -1658,7 +1988,9 @@
         "Es par.",
         "Es como mucho 40.",
         "Sus cifras suman 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0167": {
       "Prompt": "Adivina el numero.",
@@ -1668,7 +2000,9 @@
         "Es par.",
         "Es mayor que 55.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0168": {
       "Prompt": "Adivina el numero.",
@@ -1678,7 +2012,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0169": {
       "Prompt": "Adivina el numero.",
@@ -1688,7 +2024,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0170": {
       "Prompt": "Adivina el numero.",
@@ -1698,7 +2036,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 7."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0171": {
       "Prompt": "Adivina el numero.",
@@ -1708,7 +2048,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0172": {
       "Prompt": "Adivina el numero.",
@@ -1718,7 +2060,9 @@
         "Es par.",
         "Es como mucho 40.",
         "Sus cifras suman 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0173": {
       "Prompt": "Adivina el numero.",
@@ -1728,7 +2072,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0174": {
       "Prompt": "Adivina el numero.",
@@ -1738,7 +2084,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0175": {
       "Prompt": "Adivina el numero.",
@@ -1748,7 +2096,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0176": {
       "Prompt": "Adivina el numero.",
@@ -1758,7 +2108,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0177": {
       "Prompt": "Adivina el numero.",
@@ -1768,7 +2120,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0178": {
       "Prompt": "Adivina el numero.",
@@ -1778,7 +2132,9 @@
         "Es impar.",
         "Es mayor que 40.",
         "Sus cifras suman 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0179": {
       "Prompt": "Adivina el numero.",
@@ -1788,7 +2144,9 @@
         "Es impar.",
         "Es mayor que 55.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0180": {
       "Prompt": "Adivina el numero.",
@@ -1798,7 +2156,9 @@
         "Es par.",
         "Es mayor que 69.",
         "Sus cifras suman 15."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0181": {
       "Prompt": "Adivina el numero.",
@@ -1808,7 +2168,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0182": {
       "Prompt": "Adivina el numero.",
@@ -1818,7 +2180,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0183": {
       "Prompt": "Adivina el numero.",
@@ -1828,7 +2192,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0184": {
       "Prompt": "Adivina el numero.",
@@ -1838,7 +2204,9 @@
         "Es impar.",
         "Es como mucho 40.",
         "Sus cifras suman 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0185": {
       "Prompt": "Adivina el numero.",
@@ -1848,7 +2216,9 @@
         "Es par.",
         "Es mayor que 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0186": {
       "Prompt": "Adivina el numero.",
@@ -1858,7 +2228,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0187": {
       "Prompt": "Adivina el numero.",
@@ -1868,7 +2240,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 5."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0188": {
       "Prompt": "Adivina el numero.",
@@ -1878,7 +2252,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0189": {
       "Prompt": "Adivina el numero.",
@@ -1888,7 +2264,9 @@
         "Es impar.",
         "Es mayor que 27.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0190": {
       "Prompt": "Adivina el numero.",
@@ -1898,7 +2276,9 @@
         "Es par.",
         "Es mayor que 40.",
         "Sus cifras suman 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0191": {
       "Prompt": "Adivina el numero.",
@@ -1908,7 +2288,9 @@
         "Es par.",
         "Es como mucho 55.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0192": {
       "Prompt": "Adivina el numero.",
@@ -1918,7 +2300,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 12."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0193": {
       "Prompt": "Adivina el numero.",
@@ -1928,7 +2312,9 @@
         "Es par.",
         "Es mayor que 10.",
         "Sus cifras suman 2."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0194": {
       "Prompt": "Adivina el numero.",
@@ -1938,7 +2324,9 @@
         "Es impar.",
         "Es mayor que 17.",
         "Sus cifras suman 11."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0195": {
       "Prompt": "Adivina el numero.",
@@ -1948,7 +2336,9 @@
         "Es impar.",
         "Es como mucho 27.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0196": {
       "Prompt": "Adivina el numero.",
@@ -1958,7 +2348,9 @@
         "Es par.",
         "Es como mucho 40.",
         "Sus cifras suman 4."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0197": {
       "Prompt": "Adivina el numero.",
@@ -1968,7 +2360,9 @@
         "Es impar.",
         "Es como mucho 55.",
         "Sus cifras suman 6."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0198": {
       "Prompt": "Adivina el numero.",
@@ -1978,7 +2372,9 @@
         "Es par.",
         "Es como mucho 69.",
         "Sus cifras suman 9."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0199": {
       "Prompt": "Adivina el numero.",
@@ -1988,7 +2384,9 @@
         "Es par.",
         "Es como mucho 10.",
         "Es menor que 10."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "num_0200": {
       "Prompt": "Adivina el numero.",
@@ -1998,7 +2396,9 @@
         "Es impar.",
         "Es como mucho 17.",
         "Sus cifras suman 8."
-      ]
+      ],
+      "Answers": [],
+      "RevealAnswer": ""
     },
     "word_0001": {
       "Prompt": "Adivina la palabra oculta.",

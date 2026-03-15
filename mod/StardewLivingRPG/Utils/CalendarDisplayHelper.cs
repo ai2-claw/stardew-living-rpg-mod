@@ -29,7 +29,25 @@ public static class CalendarDisplayHelper
     public static string FormatSeasonDayYearShort(int absoluteDay)
     {
         var parts = Resolve(absoluteDay);
-        return $"{parts.Season} {parts.DayOfSeason}, Yr {parts.Year}";
+        var season = parts.Season.ToLowerInvariant() switch
+        {
+            "spring" => I18n.Get("calendar.season.spring", "Spring"),
+            "summer" => I18n.Get("calendar.season.summer", "Summer"),
+            "fall" => I18n.Get("calendar.season.fall", "Fall"),
+            "winter" => I18n.Get("calendar.season.winter", "Winter"),
+            _ => parts.Season
+        };
+        var yearAbbrev = I18n.Get("calendar.abbrev.year", "Yr");
+        return I18n.Get(
+            "calendar.format.season_day_year_short",
+            "{{season}} {{day}}, {{year_abbrev}} {{year}}",
+            new
+            {
+                season,
+                day = parts.DayOfSeason,
+                year_abbrev = yearAbbrev,
+                year = parts.Year
+            });
     }
 
     private static CalendarDisplayParts Resolve(int absoluteDay)
