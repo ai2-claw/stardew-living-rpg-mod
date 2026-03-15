@@ -125,6 +125,7 @@
   "npc_chat.npc.fallback_name": "Villager",
   "npc_chat.label.you": "You: ",
   "npc_chat.label.thinking": "Thinking",
+  "npc_chat.fallback.no_response": "I'm not sure what to say right now.",
   "npc_followup.option.talk": "Talk",
   "npc_followup.option.quest": "Quest",
   "npc_followup.option.bye": "Bye",

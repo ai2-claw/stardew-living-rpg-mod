@@ -765,6 +765,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerQuestAskUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, PendingFallbackQuestOffer> _npcPendingFallbackQuestOfferById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> _npcChatHistoryFallbackInFlightById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<string> _ambientLaneDebugSnapshots = new();
     private readonly HashSet<string> _externalAutoDiscoveredNpcNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ExternalNpcLoreProfile> _externalAutoLoreByToken = new(StringComparer.OrdinalIgnoreCase);
@@ -11387,9 +11388,17 @@ public sealed class ModEntry : Mod
             if (!string.IsNullOrWhiteSpace(immediateLine))
             {
                 var immediateMessage = TryExtractMessageFromLine(immediateLine);
-                if (IsLikelyAmbientToPlayerBleed(npcId, message, immediateMessage))
+                var immediateHasValidReply = TryExtractValidPlayerFacingMessageFromLine(immediateLine, out _);
+                var immediateHasCommand = !string.IsNullOrWhiteSpace(TryExtractCommandNameFromLine(immediateLine));
+                if (IsLikelyAmbientToPlayerBleed(npcId, message, immediateMessage) || !immediateHasValidReply)
                 {
-                    Monitor.Log("Filtered likely ambient bleed from immediate player-chat response; retrying once for a fresh player-facing line.", LogLevel.Debug);
+                    Monitor.Log(
+                        IsLikelyAmbientToPlayerBleed(npcId, message, immediateMessage)
+                            ? "Filtered likely ambient bleed from immediate player-chat response; retrying once for a fresh player-facing line."
+                            : "Filtered immediate player-chat response with no usable player-facing text; retrying once for a fresh reply.",
+                        LogLevel.Debug);
+                    if (immediateHasCommand)
+                        _pendingPlayer2ChatLines.Enqueue(immediateLine);
                     var retriedDelivered = false;
                     try
                     {
@@ -11401,11 +11410,17 @@ public sealed class ModEntry : Mod
                         if (!string.IsNullOrWhiteSpace(retryLine))
                         {
                             var retryMessage = TryExtractMessageFromLine(retryLine);
-                            if (!IsLikelyAmbientToPlayerBleed(npcId, message, retryMessage))
+                            var retryHasValidReply = TryExtractValidPlayerFacingMessageFromLine(retryLine, out _);
+                            var retryHasCommand = !string.IsNullOrWhiteSpace(TryExtractCommandNameFromLine(retryLine));
+                            if (!IsLikelyAmbientToPlayerBleed(npcId, message, retryMessage) && retryHasValidReply)
                             {
                                 _pendingPlayer2ChatLines.Enqueue(retryLine);
                                 retriedDelivered = true;
                                 Monitor.Log("Player-chat ambient-bleed repair retry produced a fresh reply.", LogLevel.Trace);
+                            }
+                            else if (retryHasCommand)
+                            {
+                                _pendingPlayer2ChatLines.Enqueue(retryLine);
                             }
                             else if (!string.IsNullOrWhiteSpace(retryMessage))
                             {
@@ -11439,6 +11454,7 @@ public sealed class ModEntry : Mod
         catch (Exception ex)
         {
             _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+            EnqueuePlayerChatNoResponseFallback(npcId);
             Monitor.Log($"Player2 chat failed: {ex.Message}", LogLevel.Error);
         }
     }
@@ -12311,7 +12327,10 @@ public sealed class ModEntry : Mod
             if (!root.TryGetProperty("message", out var msgEl) || msgEl.ValueKind != JsonValueKind.String)
             {
                 if (routeToPlayerChat)
-                    _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+                {
+                    _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPrompt);
+                    StartPlayerChatHistoryFallback(npcId, null, lastPrompt ?? string.Empty);
+                }
                 return routeToPlayerChat;
             }
 
@@ -12319,7 +12338,10 @@ public sealed class ModEntry : Mod
             if (string.IsNullOrWhiteSpace(msg))
             {
                 if (routeToPlayerChat)
-                    _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+                {
+                    _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPrompt);
+                    StartPlayerChatHistoryFallback(npcId, null, lastPrompt ?? string.Empty);
+                }
                 return routeToPlayerChat;
             }
             var rawMessage = msg.Trim();
@@ -12342,13 +12364,31 @@ public sealed class ModEntry : Mod
 
             if (routeToPlayerChat)
             {
-                _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
-                playerFacingMsg = NormalizeNpcTimeReply(npcId, playerFacingMsg);
-                playerFacingMsg = NormalizeNonHumanNpcReply(npcId, npcName, playerFacingMsg);
-                playerFacingMsg = NormalizeGroundedLowInfoInitialReply(npcId, npcName, playerFacingMsg);
-                var playerFacingUiMsg = EnsurePlayerFacingEmotionTag(playerFacingMsg);
-                var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
-                q.Enqueue(playerFacingUiMsg);
+                if (!TrySanitizePlayerFacingNpcReply(playerFacingMsg, out var sanitizedPlayerFacingMsg))
+                {
+                    _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPrompt);
+                    Monitor.Log($"Rejected unusable player-facing NPC reply for {npcId}; requesting history fallback.", LogLevel.Trace);
+                    StartPlayerChatHistoryFallback(npcId, null, lastPrompt ?? string.Empty, rawMessage);
+                    return true;
+                }
+
+                try
+                {
+                    playerFacingMsg = NormalizeNpcTimeReply(npcId, sanitizedPlayerFacingMsg);
+                    playerFacingMsg = NormalizeNonHumanNpcReply(npcId, npcName, playerFacingMsg);
+                    playerFacingMsg = NormalizeGroundedLowInfoInitialReply(npcId, npcName, playerFacingMsg);
+                    var playerFacingUiMsg = EnsurePlayerFacingEmotionTag(playerFacingMsg);
+                    var q = _npcUiMessagesById.GetOrAdd(npcId, _ => new ConcurrentQueue<string>());
+                    q.Enqueue(playerFacingUiMsg);
+                    _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+                }
+                catch (Exception ex)
+                {
+                    _npcLastPlayerPromptById.TryGetValue(npcId, out var lastPrompt);
+                    Monitor.Log($"Player-facing NPC reply normalization failed for {npcId}: {ex.Message}", LogLevel.Trace);
+                    StartPlayerChatHistoryFallback(npcId, null, lastPrompt ?? string.Empty, rawMessage);
+                    return true;
+                }
             }
             else
             {
@@ -15523,6 +15563,86 @@ public sealed class ModEntry : Mod
         return string.Empty;
     }
 
+    private static bool TryExtractValidPlayerFacingMessageFromLine(string line, out string sanitizedMessage)
+    {
+        sanitizedMessage = string.Empty;
+        return TrySanitizePlayerFacingNpcReply(TryExtractMessageFromLine(line), out sanitizedMessage);
+    }
+
+    private static bool TrySanitizePlayerFacingNpcReply(string? message, out string sanitizedMessage)
+    {
+        sanitizedMessage = string.Empty;
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var text = NormalizePlayerFacingNpcMessage(message);
+        if (string.IsNullOrWhiteSpace(text))
+            text = message.Trim();
+
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        text = text.Trim();
+        for (var i = 0; i < 3 && !string.IsNullOrWhiteSpace(text); i++)
+        {
+            var trimmed = text.Trim();
+            var strippedPrefix = Regex.Replace(
+                trimmed,
+                @"^(?:[\*\-_/\\|>~`]+\s*)+",
+                string.Empty,
+                RegexOptions.CultureInvariant);
+            if (!string.Equals(strippedPrefix, trimmed, StringComparison.Ordinal))
+            {
+                text = strippedPrefix.Trim();
+                continue;
+            }
+
+            var rolePrefixMatch = Regex.Match(
+                trimmed,
+                @"^\s*/?(?:assistant|npc|bot|system)\b(?:\s*[:>\-./\\|]+\s*|\s+|$)",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (rolePrefixMatch.Success && rolePrefixMatch.Length > 0)
+            {
+                text = trimmed[rolePrefixMatch.Length..].Trim();
+                continue;
+            }
+
+            break;
+        }
+
+        text = Regex.Replace(
+            text,
+            @"(?:\s*[\*\-_/\\|>~`]+)+$",
+            string.Empty,
+            RegexOptions.CultureInvariant);
+        text = Regex.Replace(
+            text,
+            @"\s*/?(?:assistant|npc|bot|system)\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        text = Regex.Replace(text, @"\s{2,}", " ", RegexOptions.CultureInvariant).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var collapsed = text.Trim().Trim('.', ':', '-', '/', '\\', '*', '|', '>', '<', '~', '`').Trim();
+        if (string.IsNullOrWhiteSpace(collapsed))
+            return false;
+
+        if (Regex.IsMatch(
+                collapsed,
+                @"^/?(?:assistant|npc|bot|system)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
+        if (!Regex.IsMatch(collapsed, @"[\p{L}\p{N}]", RegexOptions.CultureInvariant))
+            return false;
+
+        sanitizedMessage = text;
+        return true;
+    }
+
     private bool HasRecentVisibleTownEventForPublish(int minSeverity, bool requirePublicVisibility, int maxAgeDays = 2)
     {
         var currentDay = _state.Calendar.Day;
@@ -17476,6 +17596,7 @@ public sealed class ModEntry : Mod
     private void ResetNpcResponseTracking()
     {
         _npcResponseRoutingById.Clear();
+        _npcChatHistoryFallbackInFlightById.Clear();
         _npcUiPendingById.Clear();
         _npcLastReceivedMessageById.Clear();
         _npcLastNonPlayerMessageById.Clear();
@@ -17488,6 +17609,8 @@ public sealed class ModEntry : Mod
     private void StartPlayerChatHistoryFallback(string npcId, NpcHistorySnapshot? previousHistorySnapshot, string playerMessage, string? blockedMessage = null)
     {
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key) || string.IsNullOrWhiteSpace(npcId))
+            return;
+        if (!_npcChatHistoryFallbackInFlightById.TryAdd(npcId, 0))
             return;
 
         var client = _player2Client;
@@ -17534,6 +17657,13 @@ public sealed class ModEntry : Mod
                     var latest = snapshot?.LatestMessage?.Trim();
                     if (!string.IsNullOrWhiteSpace(latest))
                     {
+                        if (!TrySanitizePlayerFacingNpcReply(latest, out var sanitizedLatest))
+                        {
+                            Monitor.Log($"History chat-response fallback ignored unusable NPC reply for {npcId}.", LogLevel.Trace);
+                            await Task.Delay(350, totalCts.Token);
+                            continue;
+                        }
+
                         var blocked = (blockedMessage ?? string.Empty).Trim();
                         if (!string.IsNullOrWhiteSpace(blocked)
                             && string.Equals(latest, blocked, StringComparison.OrdinalIgnoreCase))
@@ -17556,7 +17686,7 @@ public sealed class ModEntry : Mod
                             && !looksLikeAmbientBleed
                             && (historyChanged || (baselineMissing && differsFromSeen)))
                         {
-                            var fallbackLine = JsonSerializer.Serialize(new { npc_id = npcId, message = latest });
+                            var fallbackLine = JsonSerializer.Serialize(new { npc_id = npcId, message = sanitizedLatest });
                             _pendingPlayer2ChatLines.Enqueue(fallbackLine);
                             delivered = true;
                             Monitor.Log("Injected history chat-response fallback for player chat.", LogLevel.Trace);
@@ -17577,9 +17707,11 @@ public sealed class ModEntry : Mod
             }
             finally
             {
+                _npcChatHistoryFallbackInFlightById.TryRemove(npcId, out _);
                 if (!delivered && _npcUiPendingById.TryGetValue(npcId, out var pending) && pending > 0)
                 {
                     _npcUiPendingById.AddOrUpdate(npcId, 0, (_, v) => Math.Max(0, v - 1));
+                    EnqueuePlayerChatNoResponseFallback(npcId);
                     var timeoutReason = bypassedRoutingGate
                         ? "stale ambient routing gate bypassed"
                         : waitedOnRoutingGate
@@ -17589,6 +17721,18 @@ public sealed class ModEntry : Mod
                 }
             }
         });
+    }
+
+    private void EnqueuePlayerChatNoResponseFallback(string npcId)
+    {
+        if (string.IsNullOrWhiteSpace(npcId))
+            return;
+
+        var fallback = I18n.Get("npc_chat.fallback.no_response", "I'm not sure what to say right now.");
+        if (string.IsNullOrWhiteSpace(fallback))
+            return;
+
+        EnqueueNpcUiMessage(npcId, EnsurePlayerFacingEmotionTag(fallback));
     }
 
     private static string? TryBuildImmediateNpcResponseLine(string? payload, string npcId)
