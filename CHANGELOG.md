@@ -1,5 +1,30 @@
 # CHANGELOG
 
+## 0.9.5 - 2026-03-15
+
+### Changed
+- Manifest version bumped to `0.9.5`.
+
+### Fixed
+- Market Board prices now affect actual sell payouts for tracked goods across normal selling paths instead of only updating the board and newspaper displays.
+- Shipping-bin sale ingestion now resolves tracked goods by object identity instead of localized display name, keeping economy tracking aligned with live sell-price overrides.
+
+## 0.9.4 - 2026-03-15
+
+### Added
+- New Town Square magician NPC minigame flow, including the Morrow interaction path, daily riddle sessions, same-day follow-up rounds, and item-first reward payouts.
+- Large localized magician puzzle catalog with official-term overlays for supported game languages, including localized answers, clue text, and multi-word prompt framing.
+
+### Changed
+- Manifest version bumped to `0.9.4`.
+- Rumor Board quest text now resolves through locale-aware quest templates and official localized target/NPC names instead of English-only hardcoded copy.
+- Market Board and newspaper market item names now resolve live from the current game locale, matching official in-game item names for vanilla and compatible modded content.
+
+### Fixed
+- Magician sessions now advance to a fresh unanswered round after a loss instead of reopening the already-revealed puzzle.
+- Rumor Board item and NPC names now use localized runtime names consistently across supported locales.
+- Magician locale validation and clue data were tightened to reduce generic clue leakage and corrupted localized text warnings.
+
 ## 0.9.3 - 2026-03-12
 
 ### Changed

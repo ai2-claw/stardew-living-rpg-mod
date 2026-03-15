@@ -1,5 +1,6 @@
 using StardewLivingRPG.State;
 using StardewLivingRPG.Utils;
+using SObject = StardewValley.Object;
 
 namespace StardewLivingRPG.Systems;
 
@@ -134,6 +135,18 @@ public sealed class EconomyService
         }
 
         return false;
+    }
+
+    public bool TryNormalizeCropKey(SObject? item, out string cropKey)
+    {
+        cropKey = string.Empty;
+        if (item is null)
+            return false;
+
+        if (VanillaCropCatalog.TryGetCropKeyForObjectId(item.ParentSheetIndex, out cropKey))
+            return true;
+
+        return TryNormalizeCropKey(item.Name ?? item.DisplayName ?? item.ItemId ?? string.Empty, out cropKey);
     }
 
     private static float ComputeSeasonalDemand(string season, string crop)

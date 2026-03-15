@@ -21,11 +21,14 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
+using SObject = StardewValley.Object;
 
 namespace StardewLivingRPG;
 
 public sealed class ModEntry : Mod
 {
+    internal static ModEntry? Current { get; private set; }
+
     private const int NpcPublishAfternoonStartTime = 1300;
     private const int NpcPublishMinimumIntervalMinutes = 120;
     private const int AmbientLaneDebugSnapshotLimit = 20;
@@ -881,6 +884,7 @@ public sealed class ModEntry : Mod
 
     public override void Entry(IModHelper helper)
     {
+        Current = this;
         _config = helper.ReadConfig<ModConfig>();
         if (NormalizeGmcmConfigValues())
             helper.WriteConfig(_config);
@@ -923,6 +927,7 @@ public sealed class ModEntry : Mod
         InitializeCustomNpcFramework(helper);
         InitializeVanillaCanonLoreFramework(helper);
         InitializePortraitProfileFramework();
+        MarketSellPricePatcher.Apply(ModManifest.UniqueID);
 
         RegisterPlayerConsoleCommands(helper);
         if (_config.ShowDeveloperConsoleCommands)
@@ -8266,16 +8271,37 @@ public sealed class ModEntry : Mod
 
         foreach (var item in farm.getShippingBin(Game1.player))
         {
-            if (item is null)
+            if (item is not SObject saleItem)
                 continue;
 
-            var displayName = item.DisplayName ?? string.Empty;
-            if (!_economyService.TryNormalizeCropKey(displayName, out var cropKey))
+            if (!_economyService.TryNormalizeCropKey(saleItem, out var cropKey))
                 continue;
 
-            var count = Math.Max(1, item.Stack);
+            var count = Math.Max(1, saleItem.Stack);
             _salesIngestionService.AddSale(cropKey, count);
         }
+    }
+
+    internal int ResolveAdjustedSellPrice(SObject item, int vanillaPrice)
+    {
+        if (item is null || vanillaPrice <= 0 || !Context.IsWorldReady || _economyService is null)
+            return vanillaPrice;
+
+        if (!_economyService.TryNormalizeCropKey(item, out var cropKey))
+            return vanillaPrice;
+
+        if (!_state.Economy.Crops.TryGetValue(cropKey, out var cropEntry) || cropEntry is null || cropEntry.PriceToday <= 0)
+            return vanillaPrice;
+
+        var catalog = VanillaCropCatalog.GetEntries();
+        if (!catalog.TryGetValue(cropKey, out var catalogEntry) || catalogEntry.BasePrice <= 0)
+            return vanillaPrice;
+
+        if (cropEntry.PriceToday == catalogEntry.BasePrice)
+            return vanillaPrice;
+
+        var scale = cropEntry.PriceToday / (float)catalogEntry.BasePrice;
+        return Math.Max(1, (int)MathF.Round(vanillaPrice * scale));
     }
 
     private void AppendSimulatedNpcMarketSales(Dictionary<string, int> sold)

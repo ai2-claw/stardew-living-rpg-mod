@@ -29,6 +29,10 @@
       <HintPath>$(SMAPI_PATH)/smapi-internal/SMAPI.Toolkit.CoreInterfaces.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(SMAPI_PATH)/smapi-internal/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- MonoGame Framework provides XNA compatibility -->

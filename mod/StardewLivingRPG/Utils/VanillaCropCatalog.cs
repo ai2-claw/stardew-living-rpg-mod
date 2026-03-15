@@ -85,6 +85,24 @@ public static class VanillaCropCatalog
         return key.Trim('_');
     }
 
+    public static bool TryGetCropKeyForObjectId(int objectId, out string cropKey)
+    {
+        cropKey = string.Empty;
+        if (objectId <= 0)
+            return false;
+
+        foreach (var (key, entry) in GetEntries())
+        {
+            if (entry.ObjectId != objectId)
+                continue;
+
+            cropKey = key;
+            return true;
+        }
+
+        return false;
+    }
+
     private static Dictionary<string, VanillaCropEntry> BuildFromRuntimeObjectData()
     {
         var resolved = new Dictionary<string, VanillaCropEntry>(StringComparer.OrdinalIgnoreCase);

@@ -156,6 +156,7 @@
   "magician.followup.option.play": "Play today's round",
   "magician.followup.intro": "I have a puzzle ready if you want it.",
   "magician.followup.intro.claimed": "Prize is gone, but you can still play.",
+  "magician.command.hint_aliases": "hint",
   "magician.feedback.unavailable": "No riddle is ready today.",
   "magician.feedback.session_locked": "That round is spent. Ask for another.",
   "magician.feedback.invalid_number": "Speak a whole number, not smoke.",

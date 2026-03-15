@@ -55,7 +55,11 @@ public sealed class TownSquareMagicianService
 
     public TownSquareMagicianRoundView? PeekCurrentRound(SaveState state)
     {
-        var round = EnsureRoundForToday(state, resetProgressIfRoundChanged: true);
+        var featuredRound = EnsureRoundForToday(state, resetProgressIfRoundChanged: true);
+        if (featuredRound is null)
+            return null;
+
+        var round = ResolveRoundForSession(state, featuredRound);
         return round is null ? null : BuildRoundView(state.MiniGames.TownSquareMagician, LocalizeRound(round));
     }
 
@@ -66,14 +70,9 @@ public sealed class TownSquareMagicianService
             return null;
 
         var progress = state.MiniGames.TownSquareMagician;
-        var finishedRound = string.Equals(progress.LastOutcome, "won", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(progress.LastOutcome, "lost", StringComparison.OrdinalIgnoreCase);
-
-        var round = GetRoundById(progress.RoundId) ?? featuredRound;
-        if (progress.RewardClaimedToday && finishedRound)
-            round = SelectNextBonusRound(state, featuredRound) ?? round;
-        else if (string.IsNullOrWhiteSpace(progress.RoundId))
-            round = featuredRound;
+        var round = ResolveRoundForSession(state, featuredRound);
+        if (round is null)
+            return null;
 
         var previewProgress = new TownSquareMagicianState
         {
@@ -180,6 +179,9 @@ public sealed class TownSquareMagicianService
         string? rawGuess)
     {
         var guessText = (rawGuess ?? string.Empty).Trim();
+        if (IsHintCommand(guessText))
+            return SubmitHintRequest(progress, round);
+
         if (!int.TryParse(guessText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var guessedNumber))
         {
             return BuildResult(
@@ -448,11 +450,7 @@ public sealed class TownSquareMagicianService
             || string.Equals(progress.LastOutcome, "lost", StringComparison.OrdinalIgnoreCase);
         var previousRoundId = progress.RoundId;
 
-        var round = GetRoundById(progress.RoundId) ?? featuredRound;
-        if (progress.RewardClaimedToday && finishedRound)
-            round = SelectNextBonusRound(state, featuredRound) ?? round;
-        else if (string.IsNullOrWhiteSpace(progress.RoundId))
-            round = featuredRound;
+        var round = ResolveRoundForSession(state, featuredRound) ?? featuredRound;
 
         progress.RoundId = round.Id;
         progress.RoundMode = round.Mode;
@@ -492,7 +490,23 @@ public sealed class TownSquareMagicianService
         return _rounds.FirstOrDefault(round => string.Equals(round.Id, roundId, StringComparison.OrdinalIgnoreCase));
     }
 
-    private TownSquareMagicianRoundDefinition? SelectNextBonusRound(SaveState state, TownSquareMagicianRoundDefinition featuredRound)
+    private TownSquareMagicianRoundDefinition? ResolveRoundForSession(SaveState state, TownSquareMagicianRoundDefinition featuredRound)
+    {
+        var progress = state.MiniGames.TownSquareMagician;
+        var finishedRound = string.Equals(progress.LastOutcome, "won", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(progress.LastOutcome, "lost", StringComparison.OrdinalIgnoreCase);
+        var currentRound = GetRoundById(progress.RoundId) ?? featuredRound;
+
+        if (finishedRound)
+            return SelectNextUnplayedRound(state, featuredRound) ?? currentRound;
+
+        if (string.IsNullOrWhiteSpace(progress.RoundId))
+            return featuredRound;
+
+        return currentRound;
+    }
+
+    private TownSquareMagicianRoundDefinition? SelectNextUnplayedRound(SaveState state, TownSquareMagicianRoundDefinition featuredRound)
     {
         var progress = state.MiniGames.TownSquareMagician;
         var usedIds = new HashSet<string>(progress.PlayedRoundIdsToday.Where(id => !string.IsNullOrWhiteSpace(id)), StringComparer.OrdinalIgnoreCase);
@@ -666,8 +680,10 @@ public sealed class TownSquareMagicianService
 
         var aliases = I18n.Get("magician.command.hint_aliases", "hint")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Append("hint")
             .Select(NormalizeWordGuess)
-            .Where(alias => !string.IsNullOrWhiteSpace(alias));
+            .Where(alias => !string.IsNullOrWhiteSpace(alias))
+            .Distinct(StringComparer.Ordinal);
 
         foreach (var alias in aliases)
         {
