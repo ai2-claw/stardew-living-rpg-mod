@@ -50,11 +50,25 @@ public sealed class ModConfig
     public int BubbleMinDurationMs { get; set; } = 2000;
     public int BubbleMaxDurationMs { get; set; } = 5000;
     public int BubblePauseBetweenMs { get; set; } = 400;
+    public int AutonomyMinimumConversationTurns { get; set; } = 4;
+    public int AutonomyMaximumConversationTurns { get; set; } = 8;
+    public bool AutonomyRequireConversationClosing { get; set; } = true;
     public bool EnablePlayer2AutonomySuggestions { get; set; } = true;
     public float Player2GoalMaxUrgencyInfluence { get; set; } = 0.6f;
     public float AutonomyIntensityCozy { get; set; } = 0.6f;
     public float AutonomyIntensityStory { get; set; } = 1.0f;
     public float AutonomyIntensityChaos { get; set; } = 1.4f;
+
+    // Cross-Map Autonomy
+    public bool EnableCrossMapAutonomy { get; set; } = true;
+    public int AutonomyMaxTravelMinutesPerBlock { get; set; } = 60;
+    public int AutonomyMaxWaitForTargetMinutes { get; set; } = 30;
+    public int AutonomyCrossMapReplanLimit { get; set; } = 3;
+    public bool AutonomyPrivateVisitFallbackToPublic { get; set; } = true;
+    public int AutonomyFaceToFaceDistanceTiles { get; set; } = 5;
+    public int AutonomyStagingTimeoutTicks { get; set; } = 60;
+    public int AutonomyStuckDetectionTicks { get; set; } = 120;
+    public int AutonomyMaterializationMaxRadius { get; set; } = 5;
 
     // Player-facing auto-connect UX
     public bool AutoConnectPlayer2OnLoad { get; set; } = true;

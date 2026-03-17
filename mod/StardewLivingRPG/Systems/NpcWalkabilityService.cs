@@ -1,0 +1,149 @@
+using Microsoft.Xna.Framework;
+using StardewValley;
+using StardewValley.Objects;
+using StardewValley.TerrainFeatures;
+using SObject = StardewValley.Object;
+
+namespace StardewLivingRPG.Systems;
+
+public sealed class NpcWalkabilityService
+{
+    private const int TileSize = 64;
+
+    public bool IsTileWalkable(GameLocation? location, Point tile, Character? actor = null)
+    {
+        if (location is null || location.Map is null)
+            return false;
+        if (tile.X < 0 || tile.Y < 0)
+            return false;
+
+        var layer = location.Map.Layers.Count > 0 ? location.Map.Layers[0] : null;
+        if (layer is null || tile.X >= layer.LayerWidth || tile.Y >= layer.LayerHeight)
+            return false;
+
+        var tileVector = new Vector2(tile.X, tile.Y);
+        var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
+        var tileViewport = new xTile.Dimensions.Rectangle(0, 0, TileSize, TileSize);
+        if (!location.isTilePassable(tileLocation, tileViewport))
+            return false;
+        if (HasNoPathProperty(location, tile))
+            return false;
+
+        var collisionRect = BuildCollisionRect(tile);
+        if (location.isCollidingPosition(collisionRect, Game1.viewport, actor))
+            return false;
+
+        if (location.Objects.TryGetValue(tileVector, out var obj)
+            && obj is SObject placedObject
+            && !placedObject.isPassable())
+        {
+            return false;
+        }
+
+        if (location.terrainFeatures.TryGetValue(tileVector, out var terrainFeature)
+            && terrainFeature is TerrainFeature feature
+            && !feature.isPassable(actor))
+        {
+            return false;
+        }
+
+        foreach (var largeTerrainFeature in location.largeTerrainFeatures)
+        {
+            if (largeTerrainFeature.getBoundingBox().Intersects(collisionRect))
+                return false;
+        }
+
+        foreach (var resourceClump in location.resourceClumps)
+        {
+            if (resourceClump.occupiesTile(tile.X, tile.Y))
+                return false;
+        }
+
+        foreach (var furniture in location.furniture)
+        {
+            if (furniture is Furniture placedFurniture
+                && placedFurniture.GetBoundingBox().Intersects(collisionRect))
+            {
+                return false;
+            }
+        }
+
+        if (location.characters.Any(character =>
+                character is not null
+                && !ReferenceEquals(character, actor)
+                && (int)character.Tile.X == tile.X
+                && (int)character.Tile.Y == tile.Y))
+        {
+            return false;
+        }
+
+        if (Game1.player is not null
+            && !ReferenceEquals(Game1.player, actor)
+            && (int)Game1.player.Tile.X == tile.X
+            && (int)Game1.player.Tile.Y == tile.Y)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool IsNearWarpTile(GameLocation? location, Point tile, int radius = 0)
+    {
+        return location is not null
+            && location.warps.Any(warp => Math.Abs(warp.X - tile.X) <= radius && Math.Abs(warp.Y - tile.Y) <= radius);
+    }
+
+    public bool TryFindNearestWalkableTile(GameLocation? location, Point preferredTile, int maxRadius, Character? actor, out Point safeTile)
+    {
+        safeTile = Point.Zero;
+        if (location is null)
+            return false;
+
+        if (IsTileWalkable(location, preferredTile, actor))
+        {
+            safeTile = preferredTile;
+            return true;
+        }
+
+        for (var radius = 1; radius <= maxRadius; radius++)
+        {
+            for (var dx = -radius; dx <= radius; dx++)
+            {
+                for (var dy = -radius; dy <= radius; dy++)
+                {
+                    if (Math.Abs(dx) != radius && Math.Abs(dy) != radius)
+                        continue;
+
+                    var candidate = new Point(preferredTile.X + dx, preferredTile.Y + dy);
+                    if (!IsTileWalkable(location, candidate, actor))
+                        continue;
+
+                    safeTile = candidate;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static Rectangle BuildCollisionRect(Point tile)
+    {
+        return new Rectangle((tile.X * TileSize) + 8, (tile.Y * TileSize) + 16, TileSize - 16, TileSize - 24);
+    }
+
+    private static bool HasNoPathProperty(GameLocation location, Point tile)
+    {
+        return HasBlockingProperty(location, tile, "Back")
+            || HasBlockingProperty(location, tile, "Buildings")
+            || HasBlockingProperty(location, tile, "Front");
+    }
+
+    private static bool HasBlockingProperty(GameLocation location, Point tile, string layerName)
+    {
+        return !string.IsNullOrWhiteSpace(location.doesTileHaveProperty(tile.X, tile.Y, "NoPath", layerName))
+            || string.Equals(location.doesTileHaveProperty(tile.X, tile.Y, "NPCBarrier", layerName), "T", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(location.doesTileHaveProperty(tile.X, tile.Y, "TouchAction", layerName), "Door", StringComparison.OrdinalIgnoreCase);
+    }
+}

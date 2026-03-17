@@ -18,6 +18,7 @@ public sealed class SaveState
     public RomanceState Romance { get; set; } = new();
     public PlayerFamilyState PlayerFamily { get; set; } = new();
     public MiniGameState MiniGames { get; set; } = new();
+    public AutonomySaveState Autonomy { get; set; } = new();
 
     public static SaveState CreateDefault() => new();
 

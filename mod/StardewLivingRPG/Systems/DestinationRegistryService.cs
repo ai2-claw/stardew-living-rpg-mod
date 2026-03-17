@@ -12,28 +12,45 @@ public sealed class DestinationRegistryService
         public string DisplayName { get; init; } = string.Empty;
         public string Category { get; init; } = "public";
         public string OwnerNpcId { get; init; } = string.Empty;
+        public string[] HouseholdNpcIds { get; init; } = Array.Empty<string>();
         public string[] RoleTags { get; init; } = Array.Empty<string>();
         public int OpenTime { get; init; } = 600;
         public int CloseTime { get; init; } = 2600;
         public Point DefaultTile { get; init; } = new(0, 0);
     }
 
+    private IReadOnlyList<AutonomyLocation>? _cachedLocations;
+    private int _cachedDay = -1;
+
+    public void InvalidateCache() { _cachedLocations = null; _cachedDay = -1; }
+
     public IReadOnlyList<AutonomyLocation> BuildLocations(IEnumerable<GameLocation> worldLocations)
     {
+        var today = Game1.Date?.TotalDays ?? -1;
+        if (_cachedLocations is not null && _cachedDay == today)
+            return _cachedLocations;
+
+        var locationList = worldLocations.ToList();
+        var npcHomeMap = BuildNpcHomeMap();
+
         var results = new List<AutonomyLocation>();
-        foreach (var location in worldLocations)
+        foreach (var location in locationList)
         {
             if (location is null || string.IsNullOrWhiteSpace(location.Name))
                 continue;
 
             var normalized = location.Name.Trim();
             var category = InferCategory(normalized);
+            var household = ResolveHousehold(normalized, npcHomeMap);
+            var owner = household.Length > 0 ? household[0] : string.Empty;
+
             results.Add(new AutonomyLocation
             {
                 LocationId = normalized,
                 DisplayName = normalized,
                 Category = category,
-                OwnerNpcId = InferOwner(normalized),
+                OwnerNpcId = owner,
+                HouseholdNpcIds = household,
                 RoleTags = InferRoleTags(normalized, category),
                 OpenTime = category == "private" ? 900 : 600,
                 CloseTime = category == "private" ? 2000 : 2600,
@@ -41,6 +58,8 @@ public sealed class DestinationRegistryService
             });
         }
 
+        _cachedLocations = results;
+        _cachedDay = today;
         return results;
     }
 
@@ -56,8 +75,9 @@ public sealed class DestinationRegistryService
         reasonCode = "ok";
         location = BuildLocations(worldLocations)
             .FirstOrDefault(candidate =>
-                !string.IsNullOrWhiteSpace(candidate.OwnerNpcId)
-                && candidate.OwnerNpcId.Equals(targetNpcId, StringComparison.OrdinalIgnoreCase))
+                candidate.HouseholdNpcIds.Contains(targetNpcId, StringComparer.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(candidate.OwnerNpcId)
+                    && candidate.OwnerNpcId.Equals(targetNpcId, StringComparison.OrdinalIgnoreCase)))
             ?? new AutonomyLocation();
 
         if (string.IsNullOrWhiteSpace(location.LocationId))
@@ -70,6 +90,21 @@ public sealed class DestinationRegistryService
             return false;
 
         return true;
+    }
+
+    public bool TryResolveResidenceLocation(
+        string npcId,
+        IEnumerable<GameLocation> worldLocations,
+        out AutonomyLocation location)
+    {
+        location = BuildLocations(worldLocations)
+            .FirstOrDefault(candidate =>
+                candidate.HouseholdNpcIds.Contains(npcId, StringComparer.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(candidate.OwnerNpcId)
+                    && candidate.OwnerNpcId.Equals(npcId, StringComparison.OrdinalIgnoreCase)))
+            ?? new AutonomyLocation();
+
+        return !string.IsNullOrWhiteSpace(location.LocationId);
     }
 
     public bool IsVisitAllowed(
@@ -89,31 +124,51 @@ public sealed class DestinationRegistryService
         if (!string.Equals(location.Category, "private", StringComparison.OrdinalIgnoreCase))
             return true;
 
-        if (string.IsNullOrWhiteSpace(location.OwnerNpcId))
+        // Check relationship with ANY household member (G20)
+        var householdMembers = location.HouseholdNpcIds.Length > 0
+            ? location.HouseholdNpcIds
+            : (!string.IsNullOrWhiteSpace(location.OwnerNpcId) ? new[] { location.OwnerNpcId } : Array.Empty<string>());
+
+        if (householdMembers.Length == 0)
             return false;
 
-        var pairKey = PairEmotionService.BuildPairKey(visitorNpcId, location.OwnerNpcId);
-        state.Social.PairEmotions.TryGetValue(pairKey, out var pair);
-        var affinity = pair?.Affinity ?? 0;
-        var tension = pair?.Tension ?? 0;
-        var avoidance = pair?.Avoidance ?? 0;
+        // Visitor is a household member themselves
+        if (householdMembers.Any(h => string.Equals(h, visitorNpcId, StringComparison.OrdinalIgnoreCase)))
+            return true;
 
-        if (avoidance >= 50)
+        var bestAffinity = int.MinValue;
+        var worstAvoidance = 0;
+        var worstTension = 0;
+
+        foreach (var resident in householdMembers)
+        {
+            var pairKey = PairEmotionService.BuildPairKey(visitorNpcId, resident);
+            state.Social.PairEmotions.TryGetValue(pairKey, out var pair);
+            var affinity = pair?.Affinity ?? 0;
+            var tension = pair?.Tension ?? 0;
+            var avoidance = pair?.Avoidance ?? 0;
+
+            if (affinity > bestAffinity) bestAffinity = affinity;
+            if (avoidance > worstAvoidance) worstAvoidance = avoidance;
+            if (tension > worstTension) worstTension = tension;
+        }
+
+        if (worstAvoidance >= 50)
         {
             reasonCode = "avoidance";
             return false;
         }
 
-        if (tension >= 60)
+        if (worstTension >= 60)
         {
             reasonCode = "high_tension";
             return false;
         }
 
-        if (affinity >= 40)
+        if (bestAffinity >= 40)
             return true;
 
-        if (affinity >= 10 && timeOfDay >= 1000 && timeOfDay <= 1800)
+        if (bestAffinity >= 10 && timeOfDay >= 1000 && timeOfDay <= 1800)
             return true;
 
         reasonCode = "low_affinity";
@@ -152,45 +207,33 @@ public sealed class DestinationRegistryService
         return "public";
     }
 
-    private static string InferOwner(string locationName)
+    /// <summary>
+    /// Build a map of locationId → NPC names using NPC.DefaultMap (G13 fix).
+    /// </summary>
+    private static Dictionary<string, List<string>> BuildNpcHomeMap()
     {
-        if (locationName.Contains("Abigail", StringComparison.OrdinalIgnoreCase))
-            return "Abigail";
-        if (locationName.Contains("Alex", StringComparison.OrdinalIgnoreCase))
-            return "Alex";
-        if (locationName.Contains("Caroline", StringComparison.OrdinalIgnoreCase))
-            return "Caroline";
-        if (locationName.Contains("Emily", StringComparison.OrdinalIgnoreCase))
-            return "Emily";
-        if (locationName.Contains("Evelyn", StringComparison.OrdinalIgnoreCase))
-            return "Evelyn";
-        if (locationName.Contains("George", StringComparison.OrdinalIgnoreCase))
-            return "George";
-        if (locationName.Contains("Haley", StringComparison.OrdinalIgnoreCase))
-            return "Haley";
-        if (locationName.Contains("Harvey", StringComparison.OrdinalIgnoreCase))
-            return "Harvey";
-        if (locationName.Contains("Leah", StringComparison.OrdinalIgnoreCase))
-            return "Leah";
-        if (locationName.Contains("Lewis", StringComparison.OrdinalIgnoreCase))
-            return "Lewis";
-        if (locationName.Contains("Linus", StringComparison.OrdinalIgnoreCase))
-            return "Linus";
-        if (locationName.Contains("Marnie", StringComparison.OrdinalIgnoreCase))
-            return "Marnie";
-        if (locationName.Contains("Pam", StringComparison.OrdinalIgnoreCase))
-            return "Pam";
-        if (locationName.Contains("Pierre", StringComparison.OrdinalIgnoreCase))
-            return "Pierre";
-        if (locationName.Contains("Robin", StringComparison.OrdinalIgnoreCase))
-            return "Robin";
-        if (locationName.Contains("Sam", StringComparison.OrdinalIgnoreCase))
-            return "Sam";
-        if (locationName.Contains("Sebastian", StringComparison.OrdinalIgnoreCase))
-            return "Sebastian";
-        if (locationName.Contains("Shane", StringComparison.OrdinalIgnoreCase))
-            return "Shane";
-        return string.Empty;
+        var map = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var npc in Utility.getAllCharacters())
+        {
+            if (npc is null || string.IsNullOrWhiteSpace(npc.Name) || string.IsNullOrWhiteSpace(npc.DefaultMap))
+                continue;
+
+            if (!map.TryGetValue(npc.DefaultMap, out var list))
+            {
+                list = new List<string>();
+                map[npc.DefaultMap] = list;
+            }
+            list.Add(npc.Name);
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// Resolve all NPCs whose DefaultMap points to the given location (G20 fix).
+    /// </summary>
+    private static string[] ResolveHousehold(string locationId, Dictionary<string, List<string>> npcHomeMap)
+    {
+        return npcHomeMap.TryGetValue(locationId, out var list) ? list.ToArray() : Array.Empty<string>();
     }
 
     private static string[] InferRoleTags(string locationName, string category)
