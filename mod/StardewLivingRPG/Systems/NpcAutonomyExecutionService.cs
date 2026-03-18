@@ -30,6 +30,13 @@ public sealed class NpcAutonomyExecutionService
 
     public MovementTickResult Tick(NPC? npc, AutonomyRuntimeState runtime, AutonomyPlanBlock activeBlock, int gameTimeOfDay)
     {
+        // Anchor / duty blocks are 100% vanilla-driven — never touch the NPC
+        if (activeBlock.Type is AutonomyPlanBlockType.BaseAnchor or AutonomyPlanBlockType.RequiredDuty)
+        {
+            runtime.MovementPhase = "vanilla_driving";
+            return MovementTickResult.InProgress;
+        }
+
         if (Game1.eventUp)
         {
             runtime.MovementPhase = "hard_lock_yield";
@@ -42,6 +49,66 @@ public sealed class NpcAutonomyExecutionService
         return TickUnloadedNpc(runtime, activeBlock);
     }
 
+    /// <summary>
+    /// Resolve a walkable tile for a block whose TargetTile is Point.Zero.
+    /// Uses warp entry point or map center as seed, then spiral-searches outward.
+    /// Updates the block in-place so subsequent ticks reuse the resolved tile.
+    /// </summary>
+    public bool TryResolveFallbackTile(GameLocation location, NPC npc, AutonomyPlanBlock block)
+    {
+        if (location is null || block.TargetTile != Point.Zero)
+            return block.TargetTile != Point.Zero;
+
+        // Prefer the warp arrival tile nearest to an entry point
+        var seedTile = FindWarpEntryOrMapCenter(location);
+        if (_walkabilityService.TryFindNearestWalkableTile(location, seedTile, 8, npc, out var safeTile))
+        {
+            block.TargetTile = safeTile;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static Point FindWarpEntryOrMapCenter(GameLocation location)
+    {
+        // Try the first warp tile that leads into this location from another map
+        if (location.warps.Count > 0)
+        {
+            var warp = location.warps[0];
+            return new Point(warp.X, Math.Max(0, warp.Y - 1));
+        }
+
+        // Fall back to the first tile that has Back layer data (avoids interior void areas)
+        var backLayer = location.Map?.GetLayer("Back");
+        if (backLayer is not null)
+        {
+            var cx = backLayer.LayerWidth / 2;
+            var cy = backLayer.LayerHeight / 2;
+            // Spiral outward from center to find a tile with painted Back data
+            for (var r = 0; r <= Math.Max(backLayer.LayerWidth, backLayer.LayerHeight); r++)
+            {
+                for (var dx = -r; dx <= r; dx++)
+                {
+                    for (var dy = -r; dy <= r; dy++)
+                    {
+                        if (Math.Abs(dx) != r && Math.Abs(dy) != r && r > 0)
+                            continue;
+                        var tx = cx + dx;
+                        var ty = cy + dy;
+                        if (tx >= 0 && ty >= 0 && tx < backLayer.LayerWidth && ty < backLayer.LayerHeight
+                            && backLayer.Tiles[tx, ty] is not null)
+                        {
+                            return new Point(tx, ty);
+                        }
+                    }
+                }
+            }
+        }
+
+        return new Point(10, 10); // absolute last resort
+    }
+
     public bool HasArrived(NPC? npc, AutonomyRuntimeState runtime, AutonomyPlanBlock activeBlock)
     {
         if (npc is not null
@@ -50,9 +117,13 @@ public sealed class NpcAutonomyExecutionService
         {
             if (activeBlock.TargetTile == Point.Zero)
             {
-                if (activeBlock.RequiresExactTile)
-                    return false;
-                return true;
+                // Try to resolve a fallback tile now that we're on the right map
+                if (TryResolveFallbackTile(npc.currentLocation, npc, activeBlock))
+                    return Vector2.Distance(npc.Tile, new Vector2(activeBlock.TargetTile.X, activeBlock.TargetTile.Y)) <= 1.25f;
+                // If we still can't resolve and it's not exact-required, consider arrived
+                if (!activeBlock.RequiresExactTile)
+                    return true;
+                return false;
             }
 
             var distance = Vector2.Distance(npc.Tile, new Vector2(activeBlock.TargetTile.X, activeBlock.TargetTile.Y));
@@ -75,6 +146,21 @@ public sealed class NpcAutonomyExecutionService
     {
         if (npc is null || string.IsNullOrWhiteSpace(locationId))
             return;
+
+        // Validate the tile is walkable; spiral-search if not (prevents void placement)
+        var destination = Game1.getLocationFromName(locationId);
+        if (destination is not null && !_walkabilityService.IsTileWalkable(destination, tile, npc))
+        {
+            if (_walkabilityService.TryFindNearestWalkableTile(destination, tile, 16, npc, out var safeTile))
+                tile = safeTile;
+            else
+            {
+                // Last resort: find any walkable tile near a warp entry
+                var seed = FindWarpEntryOrMapCenter(destination);
+                if (_walkabilityService.TryFindNearestWalkableTile(destination, seed, 16, npc, out var fallback))
+                    tile = fallback;
+            }
+        }
 
         npc.controller = null;
         npc.Halt();
@@ -109,6 +195,10 @@ public sealed class NpcAutonomyExecutionService
             ResetStuckTracking(runtime.NpcId);
             return MovementTickResult.Arrived;
         }
+
+        // If no route and no tile, try resolving a fallback tile first
+        if (activeBlock.TargetTile == Point.Zero && currentLocation is not null)
+            TryResolveFallbackTile(currentLocation, npc, activeBlock);
 
         if (activeBlock.Route is null || activeBlock.Route.Segments.Count == 0)
             return MoveWithinCurrentLocation(npc, runtime, activeBlock.TargetTile, "local_target", activeBlock.RequiresExactTile);
@@ -168,7 +258,22 @@ public sealed class NpcAutonomyExecutionService
     private MovementTickResult MoveWithinCurrentLocation(NPC npc, AutonomyRuntimeState runtime, Point preferredTargetTile, string movementPhase, bool exactOnly = false)
     {
         if (preferredTargetTile == Point.Zero)
-            return MovementTickResult.InProgress;
+        {
+            // Resolve a fallback tile instead of doing nothing
+            var fallbackLoc = npc.currentLocation;
+            if (fallbackLoc is not null)
+            {
+                var seed = FindWarpEntryOrMapCenter(fallbackLoc);
+                if (_walkabilityService.TryFindNearestWalkableTile(fallbackLoc, seed, 8, npc, out var fallback))
+                    preferredTargetTile = fallback;
+                else
+                    return MovementTickResult.InProgress;
+            }
+            else
+            {
+                return MovementTickResult.InProgress;
+            }
+        }
 
         var location = npc.currentLocation;
         if (location is null)

@@ -59,12 +59,12 @@ public sealed class NpcAmbientIndoorChatterService
         if (speaker is null || listener is null)
             return false;
 
-        return bestScore >= 0.35f;
+        return bestScore >= 0.25f;
     }
 
     public void MarkStarted(GameLocation location, string npcA, string npcB)
     {
-        var intervalSeconds = IsHomeLike(location, npcA, npcB) ? 8 : 14;
+        var intervalSeconds = IsHomeLike(location, npcA, npcB) ? 5 : 9;
         _nextAllowedByLocation[location.Name] = DateTime.UtcNow.AddSeconds(intervalSeconds);
         _nextAllowedByPair[BuildPairKey(npcA, npcB)] = DateTime.UtcNow.AddSeconds(intervalSeconds + 8);
     }
@@ -75,29 +75,29 @@ public sealed class NpcAmbientIndoorChatterService
         if (distance > _config.AutonomyFaceToFaceDistanceTiles)
             return 0f;
 
-        var score = 0.15f;
+        var score = 0.22f;
         if (distance <= 2)
-            score += 0.24f;
+            score += 0.28f;
         else if (distance <= 4)
-            score += 0.16f;
+            score += 0.20f;
 
         var homeA = _residenceService.ResolveHomeLocation(npcA.Name, Game1.locations, npcA.DefaultMap ?? string.Empty);
         var homeB = _residenceService.ResolveHomeLocation(npcB.Name, Game1.locations, npcB.DefaultMap ?? string.Empty);
         if (string.Equals(homeA, location.Name, StringComparison.OrdinalIgnoreCase))
-            score += 0.18f;
+            score += 0.20f;
         if (string.Equals(homeB, location.Name, StringComparison.OrdinalIgnoreCase))
-            score += 0.18f;
+            score += 0.20f;
         if (!string.IsNullOrWhiteSpace(homeA)
             && string.Equals(homeA, homeB, StringComparison.OrdinalIgnoreCase)
             && string.Equals(homeA, location.Name, StringComparison.OrdinalIgnoreCase))
         {
-            score += 0.22f;
+            score += 0.24f;
         }
 
         if (location.Name.Contains("Saloon", StringComparison.OrdinalIgnoreCase))
-            score += 0.08f;
+            score += 0.10f;
         else if (!location.IsOutdoors)
-            score += 0.06f;
+            score += 0.08f;
 
         return score;
     }

@@ -95,8 +95,16 @@ public sealed class AutonomyRuntimeState
     public int OffscreenProgressMinutes { get; set; }
     public string MovementPhase { get; set; } = "idle";
     public string? ActiveEncounterId { get; set; }
+    public string? EncounterLockedPartnerNpcId { get; set; }
     public string? StagingTargetNpcId { get; set; }
     public int EncountersToday { get; set; }
+    public string? LastEncounterPartnerNpcId { get; set; }
+    public string? LastEncounterSummary { get; set; }
+    public string? LastEncounterTopicTag { get; set; }
+    public string? LastEncounterClosingLine { get; set; }
+    public bool LastEncounterClosedWithGoodbye { get; set; }
+    public DateTime LastEncounterEndedUtc { get; set; }
+    public DateTime SamePairEncounterBlockedUntilUtc { get; set; }
 }
 
 public sealed class NpcContextSnapshot
@@ -217,6 +225,7 @@ public sealed class ActiveEncounter
     public int TurnBudgetSoftCap { get; set; } = 4;
     public bool HasMutualEngagement { get; set; }
     public bool HasExitStarted { get; set; }
+    public bool ClosingComplete { get; set; }
     public AutonomyPlanBlockType BlockTypeContext { get; set; } = AutonomyPlanBlockType.Socialize;
     public int BlockEndTime { get; set; }
     public ConversationScenario? Scenario { get; set; }

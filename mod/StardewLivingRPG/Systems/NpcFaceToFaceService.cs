@@ -1,7 +1,5 @@
 using Microsoft.Xna.Framework;
 using StardewValley;
-using StardewValley.Pathfinding;
-
 namespace StardewLivingRPG.Systems;
 
 public enum StagingPhase { Idle, Approaching, Positioned, Talking, Releasing }
@@ -58,7 +56,7 @@ public sealed class NpcFaceToFaceService
             LocationName = location.Name,
             TileA = tiles.Value.tileA,
             TileB = tiles.Value.tileB,
-            Phase = StagingPhase.Approaching
+            Phase = StagingPhase.Talking
         };
 
         _activeByEncounterId[encounterId] = state;
@@ -94,8 +92,6 @@ public sealed class NpcFaceToFaceService
                         break;
                     }
 
-                    MoveNpcToTile(npcA, state.TileA);
-                    MoveNpcToTile(npcB, state.TileB);
                     if (IsAtTile(npcA, state.TileA) && IsAtTile(npcB, state.TileB))
                     {
                         npcA.Halt();
@@ -119,13 +115,13 @@ public sealed class NpcFaceToFaceService
                     FaceEachOther(npcA, npcB);
                     npcA.Halt();
                     npcB.Halt();
-                    // Talking phase is driven externally by bubble exhaustion
-                    // or timeout (30 seconds ≈ 1800 ticks at 60fps)
                     if (state.TicksInPhase > 1800)
                     {
                         state.Phase = StagingPhase.Releasing;
                         state.TicksInPhase = 0;
                     }
+                    // Talking phase is driven externally by bubble exhaustion
+                    // or timeout (30 seconds ≈ 1800 ticks at 60fps)
                     break;
 
                 case StagingPhase.Releasing:
@@ -142,6 +138,12 @@ public sealed class NpcFaceToFaceService
             state.Phase = StagingPhase.Releasing;
             state.TicksInPhase = 0;
         }
+    }
+
+    public void CancelEncounter(string encounterId)
+    {
+        if (_activeByEncounterId.TryGetValue(encounterId, out var state))
+            Release(state);
     }
 
     public void CancelAll(string reason)
@@ -193,6 +195,7 @@ public sealed class NpcFaceToFaceService
     {
         var currentA = new Point((int)npcATile.X, (int)npcATile.Y);
         var currentB = new Point((int)npcBTile.X, (int)npcBTile.Y);
+
         if (walkabilityService.IsTileWalkable(location, currentA)
             && walkabilityService.IsTileWalkable(location, currentB)
             && !walkabilityService.IsNearWarpTile(location, currentA, 1)
@@ -202,63 +205,13 @@ public sealed class NpcFaceToFaceService
             return (currentA, currentB);
         }
 
-        var midX = (int)((npcATile.X + npcBTile.X) / 2);
-        var midY = (int)((npcATile.Y + npcBTile.Y) / 2);
-
-        // Try tile pairs within 3-tile radius of midpoint
-        for (var radius = 0; radius <= 3; radius++)
-        {
-            for (var dx = -radius; dx <= radius; dx++)
-            {
-                for (var dy = -radius; dy <= radius; dy++)
-                {
-                    var candidateA = new Point(midX + dx, midY + dy);
-
-                    // Check 4 adjacent tiles for candidateB
-                    Point[] adjacents = new[]
-                    {
-                        new Point(candidateA.X + 1, candidateA.Y),
-                        new Point(candidateA.X - 1, candidateA.Y),
-                        new Point(candidateA.X, candidateA.Y + 1),
-                        new Point(candidateA.X, candidateA.Y - 1)
-                    };
-
-                    foreach (var candidateB in adjacents)
-                    {
-                        if (walkabilityService.IsTileWalkable(location, candidateA)
-                            && walkabilityService.IsTileWalkable(location, candidateB)
-                            && !walkabilityService.IsNearWarpTile(location, candidateA, 1)
-                            && !walkabilityService.IsNearWarpTile(location, candidateB, 1))
-                        {
-                            return (candidateA, candidateB);
-                        }
-                    }
-                }
-            }
-        }
-
+        // Spiral search using IsTileStageable (lenient — ignores NPC/player occupancy)
         return null;
     }
 
     private static bool IsAtTile(NPC npc, Point tile)
     {
         return Vector2.Distance(npc.Tile, new Vector2(tile.X, tile.Y)) <= 0.75f;
-    }
-
-    private static void MoveNpcToTile(NPC npc, Point tile)
-    {
-        if (IsAtTile(npc, tile))
-            return;
-
-        if (npc.currentLocation is null)
-            return;
-
-        var currentTile = new Point((int)npc.Tile.X, (int)npc.Tile.Y);
-        if (npc.controller is null || currentTile != tile)
-        {
-            npc.Halt();
-            npc.controller = new PathFindController(npc, npc.currentLocation, tile, 2);
-        }
     }
 
     private static float TileDistance(Vector2 a, Point b)

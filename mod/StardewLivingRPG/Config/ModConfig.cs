@@ -41,9 +41,9 @@ public sealed class ModConfig
     public int AutonomyMaxReplansPerBlock { get; set; } = 2;
     public int AutonomyLocationRevisitCooldownMinutes { get; set; } = 120;
     public int AutonomyNpcRevisitCooldownMinutes { get; set; } = 180;
-    public int AutonomyMinEncounterIntervalMinutes { get; set; } = 8;
-    public int AutonomyMaxEncountersPerNpcPerDay { get; set; } = 4;
-    public float AutonomyEncounterScoreThreshold { get; set; } = 0.30f;
+    public int AutonomyMinEncounterIntervalMinutes { get; set; } = 2;
+    public int AutonomyMaxEncountersPerNpcPerDay { get; set; } = 10;
+    public float AutonomyEncounterScoreThreshold { get; set; } = 0.12f;
     public int PairEmotionMaxDeltaPerCommand { get; set; } = 5;
     public int PairEmotionMaxDeltaPerDayPerAxis { get; set; } = 15;
     public int BubbleMaxChars { get; set; } = 60;
@@ -51,7 +51,7 @@ public sealed class ModConfig
     public int BubbleMaxDurationMs { get; set; } = 5000;
     public int BubblePauseBetweenMs { get; set; } = 400;
     public int AutonomyMinimumConversationTurns { get; set; } = 4;
-    public int AutonomyMaximumConversationTurns { get; set; } = 8;
+    public int AutonomyMaximumConversationTurns { get; set; } = 6;
     public bool AutonomyRequireConversationClosing { get; set; } = true;
     public bool EnablePlayer2AutonomySuggestions { get; set; } = true;
     public float Player2GoalMaxUrgencyInfluence { get; set; } = 0.6f;
@@ -66,7 +66,7 @@ public sealed class ModConfig
     public int AutonomyCrossMapReplanLimit { get; set; } = 3;
     public bool AutonomyPrivateVisitFallbackToPublic { get; set; } = true;
     public int AutonomyFaceToFaceDistanceTiles { get; set; } = 5;
-    public int AutonomyStagingTimeoutTicks { get; set; } = 60;
+    public int AutonomyStagingTimeoutTicks { get; set; } = 180;
     public int AutonomyStuckDetectionTicks { get; set; } = 120;
     public int AutonomyMaterializationMaxRadius { get; set; } = 5;
 
@@ -74,7 +74,7 @@ public sealed class ModConfig
     public bool AutoConnectPlayer2OnLoad { get; set; } = true;
     public bool EnablePlayerChatMenu { get; set; } = true;
     public bool ShowPlayer2ConnectionHud { get; set; } = true;
-    public bool ShowDeveloperConsoleCommands { get; set; } = false;
+    public bool ShowDeveloperConsoleCommands { get; set; } = true;
     public bool EnableTownSquareMagicianMinigame { get; set; } = true;
 
     // In-world work request anti-spam

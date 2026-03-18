@@ -32,30 +32,32 @@ public sealed class NpcSocialEncounterService
         var jealousy = TryGetAxis(pair, "jealousy");
         var anger = TryGetAxis(pair, "anger");
 
-        var score = 0.15f;
+        var score = 0.22f;
         score += friendship / 250f;
         score += trust / 300f;
         score -= jealousy / 350f;
         score -= anger / 300f;
 
         if (block?.Type == AutonomyPlanBlockType.VisitNpc)
-            score += 0.25f;
+            score += 0.30f;
         else if (block?.Type == AutonomyPlanBlockType.Socialize)
-            score += 0.12f;
+            score += 0.18f;
+        else if (block?.Type is AutonomyPlanBlockType.BaseAnchor)
+            score += 0.22f; // encourage passerby chats during vanilla schedule
         else if (block?.Type is AutonomyPlanBlockType.ReturnHome or AutonomyPlanBlockType.Rest or AutonomyPlanBlockType.Wander)
-            score += 0.10f;
+            score += 0.14f;
 
         if (speaker.currentLocation.IsOutdoors)
             score += 0.05f;
         else
-            score += 0.08f;
+            score += 0.12f;
 
         var proximity = Math.Abs(speaker.Tile.X - listener.Tile.X) + Math.Abs(speaker.Tile.Y - listener.Tile.Y);
-        score += Math.Max(0f, (5f - proximity) / 25f);
+        score += Math.Max(0f, (6f - proximity) / 20f);
 
         // Event awareness bonus
         if (pair.Tension >= 30)
-            score += 0.08f;
+            score += 0.10f;
 
         // Location fit
         var locationName = speaker.currentLocation.Name ?? string.Empty;
@@ -64,7 +66,7 @@ public sealed class NpcSocialEncounterService
         else if (locationName.Contains("House", StringComparison.OrdinalIgnoreCase)
             || locationName.Contains("Shop", StringComparison.OrdinalIgnoreCase))
         {
-            score += 0.08f;
+            score += 0.10f;
         }
 
         return Math.Clamp(score, 0f, 1f);
@@ -99,7 +101,7 @@ public sealed class NpcSocialEncounterService
 
         var dx = Math.Abs(speaker.Tile.X - listener.Tile.X);
         var dy = Math.Abs(speaker.Tile.Y - listener.Tile.Y);
-        if (dx + dy > 5f)
+        if (dx + dy > 8f)
             return false;
 
         var score = ScoreEncounter(state, speaker, listener, block);
@@ -136,7 +138,7 @@ public sealed class NpcSocialEncounterService
         string locationId)
     {
         var score = ScoreEncounterByNames(state, visitorRuntime.NpcId, hostNpcId, locationId, EncounterSource.PlannedVisit);
-        if (score < _config.AutonomyEncounterScoreThreshold)
+        if (score < _config.AutonomyEncounterScoreThreshold - 0.005f)
             return null;
 
         return CreateEncounter(visitorRuntime.NpcId, hostNpcId, locationId, EncounterSource.PlannedVisit, score);
@@ -149,7 +151,7 @@ public sealed class NpcSocialEncounterService
         string locationId)
     {
         var score = ScoreEncounterByNames(state, npcA, npcB, locationId, EncounterSource.Opportunistic);
-        if (score < _config.AutonomyEncounterScoreThreshold)
+        if (score < _config.AutonomyEncounterScoreThreshold - 0.005f)
             return null;
 
         return CreateEncounter(npcA, npcB, locationId, EncounterSource.Opportunistic, score);
@@ -218,6 +220,15 @@ public sealed class NpcSocialEncounterService
         }
     }
 
+    /// <summary>
+    /// Create an encounter directly with a pre-validated score.
+    /// Use when ShouldStartEncounter already passed (avoids double-gating with different scoring).
+    /// </summary>
+    public ActiveEncounter CreateEncounterDirect(string npcA, string npcB, string locationId, EncounterSource source, float preValidatedScore)
+    {
+        return CreateEncounter(npcA, npcB, locationId, source, preValidatedScore);
+    }
+
     private ActiveEncounter CreateEncounter(string npcA, string npcB, string locationId, EncounterSource source, float score)
     {
         var id = $"enc_{++_nextEncounterId}";
@@ -229,7 +240,7 @@ public sealed class NpcSocialEncounterService
             LocationId = locationId,
             Source = source,
             Score = score,
-            TurnDepth = source == EncounterSource.PlannedVisit ? 3 : 2,
+            TurnDepth = source == EncounterSource.PlannedVisit ? 5 : 4,
             StartedUtc = DateTime.UtcNow
         };
         _activeEncounters[id] = encounter;

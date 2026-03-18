@@ -152,6 +152,151 @@ public sealed class NpcLocationSpotService
                 Spot("blacksmith_wait_b", "Blacksmith", "floor", "shop_browse", new Point(10, 12), priority: 55),
                 Spot("blacksmith_chat", "Blacksmith", "floor", "chat_node", new Point(9, 10), priority: 45)
             });
+
+        // ─── Outdoor locations ─────────────────────────────────────────────
+
+        AddLayout(
+            "Town",
+            "Central town square with paths, fountain, and surrounding buildings. Open public area with plenty of walking space.",
+            blockers: new[] { "buildings", "fences", "water", "trees" },
+            keepClear: new[] { "building_entrances" },
+            norms: new[] { "NPCs spread out across the square.", "Don't cluster at building doors." },
+            keepClearAreas: Array.Empty<Rectangle>(),
+            zoneAreas: new Dictionary<string, Rectangle[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["square"] = new[] { Rect(20, 50, 20, 15) },
+                ["north_path"] = new[] { Rect(20, 15, 20, 10) },
+                ["south_path"] = new[] { Rect(20, 80, 20, 15) },
+                ["east_side"] = new[] { Rect(55, 50, 15, 20) }
+            },
+            spots: new[]
+            {
+                Spot("town_square_a", "Town", "square", "visitor_idle", new Point(28, 56), priority: 60),
+                Spot("town_square_b", "Town", "square", "visitor_idle", new Point(32, 58), priority: 55),
+                Spot("town_square_chat", "Town", "square", "chat_node", new Point(30, 55), priority: 50),
+                Spot("town_north_idle", "Town", "north_path", "visitor_idle", new Point(25, 20), priority: 40),
+                Spot("town_south_idle", "Town", "south_path", "visitor_idle", new Point(28, 85), priority: 40),
+                Spot("town_east_idle", "Town", "east_side", "visitor_idle", new Point(60, 55), priority: 35)
+            });
+
+        AddLayout(
+            "Beach",
+            "Sandy beach with pier, water, and shore. Elliott's cabin is to the east. Open public space.",
+            blockers: new[] { "water", "rocks", "pier edges" },
+            keepClear: Array.Empty<string>(),
+            norms: new[] { "NPCs wander the shore or sit near the water.", "Pier is a popular gathering spot." },
+            keepClearAreas: Array.Empty<Rectangle>(),
+            zoneAreas: new Dictionary<string, Rectangle[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["shore"] = new[] { Rect(10, 10, 30, 15) },
+                ["pier"] = new[] { Rect(40, 15, 15, 5) }
+            },
+            spots: new[]
+            {
+                Spot("beach_shore_a", "Beach", "shore", "visitor_idle", new Point(20, 15), priority: 55),
+                Spot("beach_shore_b", "Beach", "shore", "visitor_idle", new Point(15, 12), priority: 50),
+                Spot("beach_pier_a", "Beach", "pier", "visitor_idle", new Point(45, 17), priority: 50),
+                Spot("beach_chat", "Beach", "shore", "chat_node", new Point(25, 14), priority: 45)
+            });
+
+        AddLayout(
+            "Mountain",
+            "Mountain area with lake, mine entrance, Robin's shop entrance, and paths. Linus's tent is to the north.",
+            blockers: new[] { "water", "cliffs", "mine entrance" },
+            keepClear: Array.Empty<string>(),
+            norms: new[] { "NPCs walk along the paths.", "Lake area is scenic and popular." },
+            keepClearAreas: Array.Empty<Rectangle>(),
+            zoneAreas: new Dictionary<string, Rectangle[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["lake"] = new[] { Rect(15, 15, 20, 10) },
+                ["path"] = new[] { Rect(10, 8, 30, 5) }
+            },
+            spots: new[]
+            {
+                Spot("mountain_lake_a", "Mountain", "lake", "visitor_idle", new Point(20, 18), priority: 55),
+                Spot("mountain_lake_b", "Mountain", "lake", "visitor_idle", new Point(25, 20), priority: 50),
+                Spot("mountain_path_a", "Mountain", "path", "visitor_idle", new Point(18, 10), priority: 45),
+                Spot("mountain_chat", "Mountain", "lake", "chat_node", new Point(22, 17), priority: 45)
+            });
+
+        AddLayout(
+            "Forest",
+            "Cindersap Forest south of the farm, with Marnie's ranch, Leah's cottage, and the wizard's tower nearby.",
+            blockers: new[] { "trees", "water", "cliffs" },
+            keepClear: Array.Empty<string>(),
+            norms: new[] { "NPCs wander the paths.", "Ranch area is Marnie's domain." },
+            keepClearAreas: Array.Empty<Rectangle>(),
+            zoneAreas: new Dictionary<string, Rectangle[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["ranch_area"] = new[] { Rect(30, 60, 15, 10) },
+                ["north_clearing"] = new[] { Rect(30, 15, 15, 10) },
+                ["south_path"] = new[] { Rect(20, 85, 20, 10) }
+            },
+            spots: new[]
+            {
+                Spot("forest_ranch", "Forest", "ranch_area", "visitor_idle", new Point(35, 65), priority: 50),
+                Spot("forest_clearing", "Forest", "north_clearing", "visitor_idle", new Point(35, 18), priority: 50),
+                Spot("forest_chat", "Forest", "north_clearing", "chat_node", new Point(33, 20), priority: 45)
+            });
+
+        AddLayout(
+            "BusStop",
+            "Bus stop transit area between farm and town. Small open space with a bus shelter.",
+            blockers: new[] { "bus", "road edges" },
+            keepClear: Array.Empty<string>(),
+            norms: new[] { "NPCs passing through or waiting for the bus." },
+            keepClearAreas: Array.Empty<Rectangle>(),
+            zoneAreas: new Dictionary<string, Rectangle[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["shelter"] = new[] { Rect(12, 8, 8, 5) }
+            },
+            spots: new[]
+            {
+                Spot("busstop_shelter", "BusStop", "shelter", "visitor_idle", new Point(15, 10), priority: 50),
+                Spot("busstop_waiting", "BusStop", "shelter", "visitor_idle", new Point(17, 10), priority: 45)
+            });
+
+        // ─── NPC Home interiors ────────────────────────────────────────────
+
+        AddGenericHome("SamHouse", "Sam's family house. Sam, Jodi, Vincent, and Kent live here.",
+            new[] { "Sam", "Jodi", "Vincent", "Kent" },
+            livingRoom: Rect(3, 14, 10, 8), kitchen: Rect(14, 14, 10, 8), bedroom: Rect(3, 5, 12, 8));
+
+        AddGenericHome("HaleyHouse", "Haley and Emily's house.",
+            new[] { "Haley", "Emily" },
+            livingRoom: Rect(3, 14, 10, 8), kitchen: Rect(14, 14, 6, 6), bedroom: Rect(3, 5, 12, 8));
+
+        AddGenericHome("ElliottHouse", "Elliott's small seaside cabin on the beach.",
+            new[] { "Elliott" },
+            livingRoom: Rect(2, 4, 8, 6), kitchen: Rect(2, 4, 4, 3), bedroom: Rect(6, 4, 4, 3));
+
+        AddGenericHome("ManorHouse", "Mayor Lewis's house.",
+            new[] { "Lewis" },
+            livingRoom: Rect(3, 10, 10, 8), kitchen: Rect(13, 10, 6, 6), bedroom: Rect(3, 4, 8, 5));
+
+        AddGenericHome("JoshHouse", "Alex and Evelyn and George's house.",
+            new[] { "Alex", "Evelyn", "George" },
+            livingRoom: Rect(3, 14, 12, 8), kitchen: Rect(14, 14, 6, 6), bedroom: Rect(3, 5, 10, 8));
+
+        AddGenericHome("Trailer", "Penny and Pam's trailer home. Small interior.",
+            new[] { "Penny", "Pam" },
+            livingRoom: Rect(3, 5, 6, 5), kitchen: Rect(9, 5, 4, 4), bedroom: Rect(3, 3, 4, 3));
+
+        AddGenericHome("AnimalShop", "Marnie's ranch home and shop. Marnie, Shane, and Jas live here.",
+            new[] { "Marnie", "Shane", "Jas" },
+            livingRoom: Rect(3, 10, 10, 8), kitchen: Rect(14, 10, 6, 6), bedroom: Rect(3, 4, 10, 5));
+
+        AddGenericHome("LeahHouse", "Leah's cottage in the forest.",
+            new[] { "Leah" },
+            livingRoom: Rect(3, 8, 8, 6), kitchen: Rect(3, 5, 4, 3), bedroom: Rect(7, 5, 4, 3));
+
+        AddGenericHome("WizardHouse", "The Wizard's tower.",
+            new[] { "Wizard" },
+            livingRoom: Rect(3, 10, 10, 8), kitchen: Rect(3, 10, 5, 4), bedroom: Rect(7, 5, 6, 4));
+
+        AddGenericHome("JojaMart", "JojaMart store. Morris works here.",
+            new[] { "Morris" },
+            livingRoom: Rect(5, 15, 20, 10), kitchen: Rect(5, 15, 10, 5), bedroom: Rect(15, 15, 8, 5));
     }
 
     public bool SupportsLocation(string locationId)
@@ -412,6 +557,62 @@ public sealed class NpcLocationSpotService
             ZoneAreas = zoneAreas
         };
         _spotsByLocationId[locationId] = spots.OrderByDescending(spot => spot.Priority).ToList();
+    }
+
+    /// <summary>
+    /// Adds a generic home interior with standard zone layout (living room, kitchen, bedroom)
+    /// and auto-generated spots for residents and visitors.
+    /// </summary>
+    private void AddGenericHome(string locationId, string summary, string[] residentNpcIds,
+        Rectangle livingRoom, Rectangle kitchen, Rectangle bedroom)
+    {
+        var spots = new List<NpcLocationSpot>();
+        var priority = 80;
+
+        // Resident spots in living room and bedroom
+        foreach (var npcId in residentNpcIds)
+        {
+            spots.Add(Spot($"{locationId.ToLowerInvariant()}_{npcId.ToLowerInvariant()}_home",
+                locationId, "living_room", "home_idle",
+                new Point(livingRoom.X + livingRoom.Width / 2, livingRoom.Y + livingRoom.Height / 2),
+                allowedNpcIds: new[] { npcId }, priority: priority));
+            priority -= 5;
+        }
+
+        // Shared family spots
+        spots.Add(Spot($"{locationId.ToLowerInvariant()}_family_shared",
+            locationId, "living_room", "home_idle",
+            new Point(livingRoom.X + 2, livingRoom.Y + 2),
+            allowedNpcIds: residentNpcIds, priority: 60));
+
+        spots.Add(Spot($"{locationId.ToLowerInvariant()}_kitchen_idle",
+            locationId, "kitchen", "home_idle",
+            new Point(kitchen.X + kitchen.Width / 2, kitchen.Y + kitchen.Height / 2),
+            allowedNpcIds: residentNpcIds, priority: 55));
+
+        // Visitor spots
+        spots.Add(Spot($"{locationId.ToLowerInvariant()}_visitor_a",
+            locationId, "living_room", "visitor_idle",
+            new Point(livingRoom.X + 3, livingRoom.Y + livingRoom.Height / 2),
+            priority: 45));
+
+        spots.Add(Spot($"{locationId.ToLowerInvariant()}_visitor_chat",
+            locationId, "living_room", "chat_node",
+            new Point(livingRoom.X + livingRoom.Width / 2, livingRoom.Y + livingRoom.Height / 2 + 1),
+            priority: 40));
+
+        AddLayout(locationId, summary,
+            blockers: new[] { "furniture", "walls" },
+            keepClear: new[] { "entrance_buffer" },
+            norms: new[] { "Residents use their own rooms.", "Visitors stay in shared spaces." },
+            keepClearAreas: Array.Empty<Rectangle>(),
+            zoneAreas: new Dictionary<string, Rectangle[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["living_room"] = new[] { livingRoom },
+                ["kitchen"] = new[] { kitchen },
+                ["bedroom"] = new[] { bedroom }
+            },
+            spots: spots);
     }
 
     private static NpcLocationSpot Spot(

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using StardewLivingRPG.Config;
 using StardewLivingRPG.State;
@@ -11,8 +12,8 @@ public sealed class NpcAutonomyPlannerService
     private readonly DestinationRegistryService _destinationRegistryService;
     private readonly NpcDutyRosterService _dutyRosterService;
 
-    private static readonly string[] ScheduleLocationMemberCandidates = { "locationName", "LocationName", "location", "Location", "locationId", "LocationId" };
-    private static readonly string[] ScheduleTileMemberCandidates = { "endPoint", "EndPoint", "targetTile", "TargetTile", "tile", "Tile", "point", "Point" };
+    private static readonly string[] ScheduleLocationMemberCandidates = { "targetLocationName", "TargetLocationName", "locationName", "LocationName", "location", "Location", "locationId", "LocationId" };
+    private static readonly string[] ScheduleTileMemberCandidates = { "route", "Route", "endPoint", "EndPoint", "targetTile", "TargetTile", "tile", "Tile", "point", "Point" };
 
     public NpcAutonomyPlannerService(
         DestinationRegistryService destinationRegistryService,
@@ -126,9 +127,7 @@ public sealed class NpcAutonomyPlannerService
             if (block.Status == AutonomyPlanBlockStatus.Pending)
                 block.Status = AutonomyPlanBlockStatus.Active;
 
-            runtime.OverrideStatus = block.Type == AutonomyPlanBlockType.BaseAnchor
-                ? AutonomyOverrideStatus.Planned
-                : AutonomyOverrideStatus.Active;
+            runtime.OverrideStatus = AutonomyOverrideStatus.Active;
             runtime.CurrentTargetNpcId = block.TargetNpcId;
             runtime.CurrentTargetLocation = block.TargetLocation;
             runtime.LastProgressUtc = DateTime.UtcNow;
@@ -362,6 +361,13 @@ public sealed class NpcAutonomyPlannerService
             if (value is Vector2 vector)
             {
                 tile = new Point((int)vector.X, (int)vector.Y);
+                return true;
+            }
+
+            // SDV 1.6: SchedulePathDescription stores the route as List<Point>
+            if (value is IList<Point> routePoints && routePoints.Count > 0)
+            {
+                tile = routePoints[routePoints.Count - 1];
                 return true;
             }
         }

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using StardewLivingRPG.Config;
 using StardewValley;
 
@@ -35,7 +36,7 @@ public sealed class NpcSpeechBubbleService
 
     public void QueueTranscriptLine(string npcId, string text)
     {
-        var chunks = ChunkText(text, _config.BubbleMaxChars);
+        var chunks = ChunkText(SanitizeBubbleText(text), _config.BubbleMaxChars);
         if (chunks.Count == 0)
             return;
 
@@ -55,6 +56,7 @@ public sealed class NpcSpeechBubbleService
 
     public void QueueEncounterBubble(string encounterId, string speakerNpcId, string text, int sequenceIndex)
     {
+        text = SanitizeBubbleText(text);
         if (string.IsNullOrWhiteSpace(encounterId) || string.IsNullOrWhiteSpace(text))
             return;
 
@@ -112,7 +114,7 @@ public sealed class NpcSpeechBubbleService
         return !_encounterNextDisplayUtc.TryGetValue(encounterId, out var nextUtc) || DateTime.UtcNow >= nextUtc;
     }
 
-    public int Tick(Func<string, NPC?> resolveNpc)
+    public int Tick(Func<string, NPC?> resolveNpc, Func<string, string, bool>? validateEncounterSpeaker = null)
     {
         var displayed = 0;
 
@@ -136,7 +138,14 @@ public sealed class NpcSpeechBubbleService
                 continue;
             }
 
-            var chunk = pending.Chunks.Dequeue();
+            var chunk = SanitizeBubbleText(pending.Chunks.Dequeue());
+            if (string.IsNullOrWhiteSpace(chunk))
+            {
+                if (pending.Chunks.Count == 0)
+                    _pendingByNpcId.Remove(key);
+                continue;
+            }
+
             npc.showTextAboveHead(chunk);
             TrySetTextAboveHeadTimer(npc, GetBubbleDurationMs(chunk));
             pending.NextDisplayUtc = DateTime.UtcNow.AddMilliseconds(GetBubbleDurationMs(chunk) + _config.BubblePauseBetweenMs);
@@ -163,6 +172,14 @@ public sealed class NpcSpeechBubbleService
                 continue;
 
             var bubble = list[idx];
+            if (validateEncounterSpeaker is not null && !validateEncounterSpeaker(encId, bubble.SpeakerNpcId))
+            {
+                _encounterBubbles.Remove(encId);
+                _encounterDisplayIndex.Remove(encId);
+                _encounterNextDisplayUtc.Remove(encId);
+                continue;
+            }
+
             var npc = resolveNpc(bubble.SpeakerNpcId);
             if (npc is null)
             {
@@ -173,10 +190,17 @@ public sealed class NpcSpeechBubbleService
                 continue;
             }
 
-            npc.showTextAboveHead(bubble.Text);
-            TrySetTextAboveHeadTimer(npc, GetBubbleDurationMs(bubble.Text));
+            var sanitized = SanitizeBubbleText(bubble.Text);
+            if (string.IsNullOrWhiteSpace(sanitized))
+            {
+                _encounterDisplayIndex[encId] = idx + 1;
+                continue;
+            }
+
+            npc.showTextAboveHead(sanitized);
+            TrySetTextAboveHeadTimer(npc, GetBubbleDurationMs(sanitized));
             _encounterDisplayIndex[encId] = idx + 1;
-            _encounterNextDisplayUtc[encId] = DateTime.UtcNow.AddMilliseconds(GetBubbleDurationMs(bubble.Text) + _config.BubblePauseBetweenMs);
+            _encounterNextDisplayUtc[encId] = DateTime.UtcNow.AddMilliseconds(GetBubbleDurationMs(sanitized) + _config.BubblePauseBetweenMs);
             displayed += 1;
         }
 
@@ -243,6 +267,31 @@ public sealed class NpcSpeechBubbleService
             return split;
 
         return Math.Min(text.Length, maxChars);
+    }
+
+    private static readonly Regex LeadingMetadataRegex = new(
+        @"^\s*(?:(?:<\s*(?:emotion|mood|state)\s*:\s*[^>]+>\s*)|(?:\[\s*(?:emotion|mood|state)\s*:\s*[^\]]+\]\s*)|(?:\(\s*(?:emotion|mood|state)\s*:\s*[^)]+\)\s*)|(?:\*?\s*(?:emotion|mood|state)\s*[:=]\s*[a-z_]+\*?\s*))+\s*",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    private static readonly Regex InlineMetadataRegex = new(
+        @"(?:<\s*(?:emotion|mood|state)\s*:\s*[^>]+>)|(?:\[\s*(?:emotion|mood|state)\s*:\s*[^\]]+\])|(?:\(\s*(?:emotion|mood|state)\s*:\s*[^)]+\))",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    internal static string StripEmotionMetadata(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+        return LeadingMetadataRegex.Replace(text, string.Empty).TrimStart();
+    }
+
+    internal static string SanitizeBubbleText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        var cleaned = StripEmotionMetadata(text);
+        cleaned = InlineMetadataRegex.Replace(cleaned, string.Empty);
+        return Normalize(cleaned);
     }
 
     private static void TrySetTextAboveHeadTimer(NPC npc, int durationMs)

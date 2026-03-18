@@ -50,6 +50,8 @@ public sealed class ModEntry : Mod
     private const float AmbientPublishRumorMinConfidence = 0.62f;
     private const int AmbientConversationBeatRepeatCooldownDays = 1;
     private const int AmbientConversationBeatUsagePenalty = 3;
+    private const int EncounterSamePairCooldownSeconds = 90;
+    private const int EncounterContinuationWindowMinutes = 30;
     private const int AutoMarketMinSignals = 2;
     private const float AutoMarketScarcityThreshold = 0.05f;
     private const float AutoMarketStrongScarcityThreshold = 0.09f;
@@ -373,7 +375,9 @@ public sealed class ModEntry : Mod
     {
         public int Turn { get; init; }
         public string SpeakerShortName { get; init; } = string.Empty;
+        public string SpeakerNpcId { get; init; } = string.Empty;
         public string ListenerShortName { get; init; } = string.Empty;
+        public string ListenerNpcId { get; init; } = string.Empty;
         public string Message { get; init; } = string.Empty;
     }
 
@@ -408,6 +412,21 @@ public sealed class ModEntry : Mod
         public string Message { get; init; } = string.Empty;
         public int TimeoutCount { get; init; }
         public int RetryCount { get; init; }
+    }
+
+    private sealed class EncounterConversationCompletion
+    {
+        public string EncounterId { get; init; } = string.Empty;
+        public string SpeakerShortName { get; init; } = string.Empty;
+        public string ListenerShortName { get; init; } = string.Empty;
+        public string SpeakerNpcId { get; init; } = string.Empty;
+        public string ListenerNpcId { get; init; } = string.Empty;
+        public bool Completed { get; init; }
+        public string AbortReason { get; init; } = string.Empty;
+        public int TurnTarget { get; init; }
+        public int TurnCompleted { get; init; }
+        public double DurationMs { get; init; }
+        public List<AmbientConversationLine> Transcript { get; init; } = new();
     }
 
     private sealed class AutonomySpatialPlanCompletion
@@ -862,6 +881,9 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, int> _ambientNpcLastBeatDayByPairKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _ambientBeatUsageTodayByBeatId = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<AmbientConversationCompletion> _pendingAmbientConversationCompletions = new();
+    private readonly ConcurrentQueue<EncounterConversationCompletion> _pendingEncounterConversationCompletions = new();
+    private readonly Dictionary<string, EncounterConversationCompletion> _deferredEncounterConversationCompletions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _player2EncounterIds = new(StringComparer.OrdinalIgnoreCase);
     private int _ambientLastOverhearDay = -9999;
     private readonly Dictionary<string, RecentVanillaDialogueContext> _recentVanillaDialogueByNpcToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecentNpcGiftContext> _recentGiftContextByNpcToken = new(StringComparer.OrdinalIgnoreCase);
@@ -986,7 +1008,7 @@ public sealed class ModEntry : Mod
         var speechStyleConfig = helper.Data.ReadJsonFile<NpcSpeechStyleConfig>("npc_speech_profiles.json")
             ?? NpcSpeechStyleConfig.CreateDefault();
         _npcSpeechStyleService = new NpcSpeechStyleService(speechStyleConfig);
-        _npcConversationSimulationService = new NpcConversationSimulationService(_pairEmotionService, _config, _npcSpeechStyleService);
+        _npcConversationSimulationService = new NpcConversationSimulationService(_pairEmotionService, _config);
         _npcAskGateService = new NpcAskGateService();
         _commandPolicyService = new CommandPolicyService();
         _townSquareMagicianService = new TownSquareMagicianService(helper, Monitor);
@@ -1260,7 +1282,7 @@ public sealed class ModEntry : Mod
             changed = true;
         }
 
-        var clampedMinConversationTurns = Math.Clamp(_config.AutonomyMinimumConversationTurns, 2, 8);
+        var clampedMinConversationTurns = Math.Clamp(_config.AutonomyMinimumConversationTurns, 4, 8);
         if (_config.AutonomyMinimumConversationTurns != clampedMinConversationTurns)
         {
             _config.AutonomyMinimumConversationTurns = clampedMinConversationTurns;
@@ -4162,6 +4184,7 @@ public sealed class ModEntry : Mod
         TrySchedulePlayer2HealthPing();
         TryTriggerAmbientNpcConversation();
         TryApplyPendingAmbientConversationCompletions();
+        TryApplyPendingEncounterConversationCompletions();
         TryApplyCompletedAutonomySpatialPlanResults();
         TryAdvanceAutonomousRoutines(e);
         TryTriggerAmbientIndoorAutonomyChatter(e);
@@ -4761,7 +4784,9 @@ public sealed class ModEntry : Mod
             {
                 Turn = turn,
                 SpeakerShortName = currentSpeakerShortName,
+                SpeakerNpcId = currentSpeakerNpcId,
                 ListenerShortName = currentListenerShortName,
+                ListenerNpcId = currentListenerNpcId,
                 Message = turnResult.Message
             });
 
@@ -5450,7 +5475,9 @@ public sealed class ModEntry : Mod
 
                 var transcriptNpc = ResolveNpcByName(transcriptLine.SpeakerShortName);
                 if (_npcSpeechBubbleService is not null && transcriptNpc is not null)
-                    _npcSpeechBubbleService.QueueTranscriptLine(transcriptNpc.Name, transcriptLine.Message);
+                    Monitor.Log(
+                        $"Ambient dialogue kept off-bubble for {transcriptNpc.Name}: {NpcSpeechBubbleService.SanitizeBubbleText(transcriptLine.Message)}",
+                        LogLevel.Trace);
             }
 
             var completionContextTag = string.IsNullOrWhiteSpace(completion.ContextTag) ? "npc_to_npc_ambient" : completion.ContextTag;
@@ -12540,6 +12567,8 @@ public sealed class ModEntry : Mod
         ClearAutonomySpatialPlanningState();
 
         _autonomyRuntimeByNpcId.Clear();
+        _deferredEncounterConversationCompletions.Clear();
+        _player2EncounterIds.Clear();
         _npcSpeechBubbleService?.CancelAll();
         _pairEmotionService?.Decay(_state);
     }
@@ -12603,16 +12632,12 @@ public sealed class ModEntry : Mod
 
             ApplySpatialTargetsToPlan(npc, snapshot, plan);
 
-            // Cross-map: compile routes and apply schedule overrides
+            // Cross-map: compile routes and hand loaded movement back to vanilla schedules.
             if (_config.EnableCrossMapAutonomy && _routePlannerService is not null && _worldTopologyService is not null)
             {
                 var graph = _worldTopologyService.BuildGraph(Game1.locations);
                 _routePlannerService.CompileRoutesForPlan(graph, npc.Name, plan, npc.currentLocation?.Name ?? "Town", _config.AutonomyMaxTravelMinutesPerBlock);
-
-                if (_scheduleOverrideService is not null)
-                {
-                    _scheduleOverrideService.ApplyDailyOverride(npc, plan);
-                }
+                _scheduleOverrideService?.ApplyDailyOverride(npc, plan);
             }
 
             _autonomyRuntimeByNpcId[npc.Name] = new AutonomyRuntimeState
@@ -12627,6 +12652,8 @@ public sealed class ModEntry : Mod
             _state.Telemetry.Daily.AutonomyGoalsRejected += goals.Count(goal => goal.Score < _config.AutonomyEncounterScoreThreshold);
             _state.Telemetry.Daily.AutonomyPlansCreated += 1;
         }
+
+        Monitor.Log($"Autonomy: built {_autonomyRuntimeByNpcId.Count} daily plans.", LogLevel.Debug);
     }
 
     private void TryAdvanceAutonomousRoutines(UpdateTickedEventArgs e)
@@ -12651,59 +12678,76 @@ public sealed class ModEntry : Mod
             var block = _npcAutonomyPlannerService.AdvancePlan(runtime, Game1.timeOfDay, npc);
             if (block is null)
             {
+                // All blocks exhausted — let vanilla resume naturally
+                runtime.OverrideStatus = AutonomyOverrideStatus.Idle;
                 _npcTileReservationService?.Release(runtime.NpcId);
                 continue;
             }
 
-            var refreshedSpatialTarget = TryRefreshSpatialTarget(npc, runtime, block, forcePlayer2Replan: false);
-            if (block.RequiresExactTile && (block.TargetTile == Point.Zero || !refreshedSpatialTarget && block.Player2Planned == false))
-            {
-                runtime.MovementPhase = "waiting_player2";
-                continue;
-            }
+            var isAnchor = block.Type is AutonomyPlanBlockType.BaseAnchor or AutonomyPlanBlockType.RequiredDuty;
 
-            // Cross-map execution tick (movement/warp progression)
-            if (_config.EnableCrossMapAutonomy && _executionService is not null)
+            // ── Anchor blocks: 100% vanilla-driven, mod does NO movement ──
+            // Only the encounter check (below) runs for anchors.
+            if (!isAnchor && block.Status == AutonomyPlanBlockStatus.Active)
             {
-                var tickResult = _executionService.Tick(npc, runtime, block, Game1.timeOfDay);
-                if (tickResult == MovementTickResult.Stuck)
+                TryRefreshSpatialTarget(npc, runtime, block, forcePlayer2Replan: false);
+
+                // If tile is still zero after spatial refresh, resolve a fallback
+                if (block.TargetTile == Point.Zero && npc.currentLocation is not null && _executionService is not null)
+                    _executionService.TryResolveFallbackTile(npc.currentLocation, npc, block);
+
+                if (_config.EnableCrossMapAutonomy && _scheduleOverrideService is not null && _scheduleOverrideService.HasOverride(npc.Name))
                 {
-                    if (TryRefreshSpatialTarget(npc, runtime, block, forcePlayer2Replan: true))
-                    {
-                        runtime.NeedsLocalRepath = true;
-                        continue;
-                    }
-
-                    _npcAutonomyPlannerService.ReplanWithFallback(_state, runtime, npc.currentLocation?.Name ?? "Town", "stuck_detected");
-                    _state.Telemetry.Daily.AutonomyBlocksFailed += 1;
-                    _npcTileReservationService?.Release(runtime.NpcId);
-                    continue;
+                    if (block.TargetTile != Point.Zero)
+                        _scheduleOverrideService.PatchSingleEntry(npc, block.StartTime, block.TargetLocation, block.TargetTile);
+                    runtime.MovementPhase = "vanilla_schedule";
                 }
             }
-            if (block is null)
-                continue;
 
             if (block.Status == AutonomyPlanBlockStatus.Completed)
             {
+                // When a detour block finishes, release the mod's PathFindController so vanilla reclaims
+                if (!isAnchor)
+                {
+                    // Ensure NPC is on a walkable tile before handing back to vanilla
+                    if (npc.currentLocation is not null && _walkabilityService is not null)
+                    {
+                        var currentTile = new Point((int)npc.Tile.X, (int)npc.Tile.Y);
+                        if (!_walkabilityService.IsTileWalkable(npc.currentLocation, currentTile, npc))
+                        {
+                            if (_walkabilityService.TryFindNearestWalkableTile(npc.currentLocation, currentTile, 8, npc, out var safeTile))
+                                _executionService?.WarpNpcTo(npc, npc.currentLocation.Name, safeTile);
+                        }
+                    }
+                    npc.controller = null;
+                    npc.Halt();
+                    runtime.MovementPhase = "idle";
+                    runtime.StationaryTicks = 0;
+                    runtime.OscillationTicks = 0;
+                    _executionService?.ResetStuckTracking(runtime.NpcId);
+                }
                 _npcTileReservationService?.Release(runtime.NpcId);
                 _state.Telemetry.Daily.AutonomyBlocksCompleted += 1;
                 continue;
             }
 
+            // RequiredDuty: cancel active encounter, skip social checks
             if (block.Type == AutonomyPlanBlockType.RequiredDuty)
             {
                 if (!string.IsNullOrWhiteSpace(runtime.ActiveEncounterId)
                     && _npcSocialEncounterService.GetEncounter(runtime.ActiveEncounterId) is { } activeEncounter)
                 {
                     _npcSocialEncounterService.CancelEncounter(activeEncounter.EncounterId, "duty_recall");
-                    _faceToFaceService?.FinishTalking(activeEncounter.EncounterId);
+                    _faceToFaceService?.CancelEncounter(activeEncounter.EncounterId);
                     _npcSpeechBubbleService?.CancelEncounterBubbles(activeEncounter.EncounterId);
                     ClearEncounterRuntimeLinks(activeEncounter.EncounterId);
                 }
 
-                runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, _config.AutonomyMinEncounterIntervalMinutes));
+                runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
                 continue;
             }
+
+            // ── Encounter check (runs for both anchor and detour blocks) ──
 
             if ((_faceToFaceService?.IsInStaging(npc.Name) ?? false)
                 || _npcSocialEncounterService.IsNpcInActiveEncounter(npc.Name))
@@ -12721,12 +12765,22 @@ public sealed class ModEntry : Mod
             if (targetNpc is null)
                 continue;
             if (!IsWithinAutonomyTalkRange(npc, targetNpc))
+            {
+                if (e.IsMultipleOf(300))
+                    Monitor.Log($"Autonomy: {npc.Name} found target {targetNpc.Name} but out of talk range (dist={Math.Abs(npc.Tile.X - targetNpc.Tile.X) + Math.Abs(npc.Tile.Y - targetNpc.Tile.Y):F1}).", LogLevel.Trace);
                 continue;
+            }
 
             if (!_npcSocialEncounterService.ShouldStartEncounter(_state, npc, targetNpc, block))
+            {
+                Monitor.Log($"Autonomy: {npc.Name}->{targetNpc.Name} in range but ShouldStartEncounter=false (block={block.Type}).", LogLevel.Trace);
                 continue;
+            }
 
-            runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, _config.AutonomyMinEncounterIntervalMinutes));
+            Monitor.Log($"Autonomy: {npc.Name}->{targetNpc.Name} encounter approved! block={block.Type} location={npc.currentLocation?.Name}.", LogLevel.Debug);
+            runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
+            if (_autonomyRuntimeByNpcId.TryGetValue(targetNpc.Name, out var targetCooldownRuntime))
+                targetCooldownRuntime.NextEncounterAllowedUtc = runtime.NextEncounterAllowedUtc;
             _state.Telemetry.Daily.EncountersStarted += 1;
             if (block.Type == AutonomyPlanBlockType.VisitNpc)
                 _state.Telemetry.Daily.EncountersPlanned += 1;
@@ -12779,6 +12833,9 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
+            if (IsSamePairEncounterCoolingDown(speakerNpc.Name, listenerNpc.Name))
+                continue;
+
             if (speakerRuntime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay
                 || listenerRuntime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay)
             {
@@ -12811,7 +12868,7 @@ public sealed class ModEntry : Mod
             if (!TryStartAutonomyEncounter(speakerRuntime, speakerNpc, listenerNpc, block))
                 continue;
 
-            speakerRuntime.NextEncounterAllowedUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, _config.AutonomyMinEncounterIntervalMinutes));
+            speakerRuntime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
             listenerRuntime.NextEncounterAllowedUtc = speakerRuntime.NextEncounterAllowedUtc;
             speakerRuntime.EncountersToday += 1;
             listenerRuntime.EncountersToday += 1;
@@ -12869,21 +12926,18 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        var displayed = _npcSpeechBubbleService.Tick(ResolveNpcByName);
+        var displayed = _npcSpeechBubbleService.Tick(ResolveNpcByName, IsEncounterBubbleStillValid);
         if (displayed > 0)
             _state.Telemetry.Daily.BubblesDisplayed += displayed;
     }
 
     private void ApplySpatialTargetsToPlan(NPC npc, NpcContextSnapshot snapshot, NpcDailyPlan plan)
     {
-        if (_npcLocationSpotService is null || plan.Blocks.Count == 0)
+        if (plan.Blocks.Count == 0)
             return;
 
         foreach (var block in plan.Blocks)
         {
-            if (!_npcLocationSpotService.SupportsLocation(block.TargetLocation))
-                continue;
-
             if (block.Type is AutonomyPlanBlockType.BaseAnchor or AutonomyPlanBlockType.RequiredDuty
                 && block.TargetTile != Point.Zero)
             {
@@ -12891,18 +12945,29 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            block.RequiresExactTile = true;
-            if (!TryPlanSpatialIntent(npc, snapshot, block, forcePlayer2Replan: false, out var suggestion, out var plannedByPlayer2))
+            // For locations with hardcoded spot data, use the spot service
+            if (_npcLocationSpotService is not null && _npcLocationSpotService.SupportsLocation(block.TargetLocation))
             {
-                block.FailureReason = "player2_required";
-                continue;
-            }
+                block.RequiresExactTile = true;
+                if (!TryPlanSpatialIntent(npc, snapshot, block, forcePlayer2Replan: false, out var suggestion, out var plannedByPlayer2))
+                {
+                    // Don't block on Player2 — try procedural fallback
+                    TryResolveProceduralFallbackTile(npc, block);
+                    continue;
+                }
 
-            block.TargetZoneId = suggestion.TargetZoneId;
-            block.TargetSpotRole = suggestion.TargetSpotRole;
-            if (suggestion.TargetTileX.HasValue && suggestion.TargetTileY.HasValue)
-                block.TargetTile = new Point(suggestion.TargetTileX.Value, suggestion.TargetTileY.Value);
-            block.Player2Planned = plannedByPlayer2;
+                block.TargetZoneId = suggestion.TargetZoneId;
+                block.TargetSpotRole = suggestion.TargetSpotRole;
+                if (suggestion.TargetTileX.HasValue && suggestion.TargetTileY.HasValue)
+                    block.TargetTile = new Point(suggestion.TargetTileX.Value, suggestion.TargetTileY.Value);
+                block.Player2Planned = plannedByPlayer2;
+            }
+            else
+            {
+                // Unsupported location — resolve a procedural tile immediately
+                block.RequiresExactTile = false;
+                TryResolveProceduralFallbackTile(npc, block);
+            }
         }
     }
 
@@ -12911,12 +12976,23 @@ public sealed class ModEntry : Mod
         if (_npcLocationSpotService is null
             || _npcTileReservationService is null
             || _walkabilityService is null
-            || string.IsNullOrWhiteSpace(block.TargetLocation)
-            || !_npcLocationSpotService.SupportsLocation(block.TargetLocation))
+            || string.IsNullOrWhiteSpace(block.TargetLocation))
         {
+            // Even for unsupported locations, try a procedural fallback if tile is zero
+            if (block.TargetTile == Point.Zero && !string.IsNullOrWhiteSpace(block.TargetLocation))
+                return TryResolveProceduralFallbackTile(npc, block);
             if (block.TargetTile != Point.Zero && !string.IsNullOrWhiteSpace(block.TargetLocation))
                 _npcTileReservationService?.TryReserve(npc.Name, block.TargetLocation, block.TargetTile, block.TargetSpotId);
             return false;
+        }
+
+        // For locations the spot service doesn't support, use procedural fallback
+        if (!_npcLocationSpotService.SupportsLocation(block.TargetLocation))
+        {
+            if (block.TargetTile == Point.Zero)
+                return TryResolveProceduralFallbackTile(npc, block);
+            _npcTileReservationService?.TryReserve(npc.Name, block.TargetLocation, block.TargetTile, block.TargetSpotId);
+            return block.TargetTile != Point.Zero;
         }
 
         var location = Game1.getLocationFromName(block.TargetLocation);
@@ -12994,6 +13070,49 @@ public sealed class ModEntry : Mod
         runtime.StuckReason = string.Empty;
         runtime.NeedsLocalRepath = true;
         return true;
+    }
+
+    /// <summary>
+    /// Procedural tile fallback for locations without hardcoded spot data.
+    /// Picks a walkable tile near a warp entry point or map center.
+    /// </summary>
+    private bool TryResolveProceduralFallbackTile(NPC npc, AutonomyPlanBlock block)
+    {
+        if (_walkabilityService is null || string.IsNullOrWhiteSpace(block.TargetLocation))
+            return false;
+
+        var location = Game1.getLocationFromName(block.TargetLocation);
+        if (location is null)
+            return false;
+
+        // Use the execution service's fallback resolver if available
+        if (_executionService is not null && _executionService.TryResolveFallbackTile(location, npc, block))
+            return true;
+
+        // Manual fallback: prefer warp entry, else try map center with larger radius
+        var backLayer = location.Map?.GetLayer("Back");
+        Point seed;
+        if (location.warps.Count > 0)
+        {
+            var warp = location.warps[0];
+            seed = new Point(warp.X, Math.Max(0, warp.Y - 1));
+        }
+        else if (backLayer is not null)
+        {
+            seed = new Point(backLayer.LayerWidth / 2, backLayer.LayerHeight / 2);
+        }
+        else
+        {
+            seed = new Point(10, 10);
+        }
+
+        if (_walkabilityService.TryFindNearestWalkableTile(location, seed, 16, npc, out var safeTile))
+        {
+            block.TargetTile = safeTile;
+            return true;
+        }
+
+        return false;
     }
 
     private bool TryPlanSpatialIntent(
@@ -13385,11 +13504,93 @@ public sealed class ModEntry : Mod
         if (sourceNpc.currentLocation?.characters is null)
             return null;
 
-        return sourceNpc.currentLocation.characters
+        // Prefer a different partner than the last encounter to encourage variety
+        string? lastPartnerId = null;
+        if (_autonomyRuntimeByNpcId.TryGetValue(sourceNpc.Name, out var srcRuntime))
+            lastPartnerId = srcRuntime.LastEncounterPartnerNpcId;
+
+        var candidates = sourceNpc.currentLocation.characters
             .Where(candidate => candidate is not null
-                && !string.Equals(candidate.Name, sourceNpc.Name, StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(candidate.Name, sourceNpc.Name, StringComparison.OrdinalIgnoreCase)
+                && IsEligibleEncounterCandidate(sourceNpc.Name, candidate.Name))
             .OrderBy(candidate => Vector2.Distance(candidate.Tile, sourceNpc.Tile))
-            .FirstOrDefault();
+            .ToList();
+
+        // If there are multiple candidates, skip the last partner
+        if (candidates.Count > 1 && !string.IsNullOrWhiteSpace(lastPartnerId))
+        {
+            var rotated = candidates.FirstOrDefault(c => !string.Equals(c.Name, lastPartnerId, StringComparison.OrdinalIgnoreCase));
+            if (rotated is not null)
+                return rotated;
+        }
+
+        return candidates.FirstOrDefault();
+    }
+
+    private int ResolveEncounterCooldownSeconds()
+    {
+        var configuredMinutes = Math.Max(1, _config.AutonomyMinEncounterIntervalMinutes);
+        return Math.Clamp(configuredMinutes * 6, 8, 45);
+    }
+
+    private bool TryResolveConversationApproachTile(NPC speakerNpc, NPC listenerNpc, out Point tile)
+    {
+        tile = Point.Zero;
+        if (_walkabilityService is null
+            || speakerNpc.currentLocation is null
+            || listenerNpc.currentLocation is null
+            || !string.Equals(speakerNpc.currentLocation.Name, listenerNpc.currentLocation.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var location = speakerNpc.currentLocation;
+        var listenerTile = new Point((int)listenerNpc.Tile.X, (int)listenerNpc.Tile.Y);
+        var candidates = new[]
+        {
+            new Point(listenerTile.X + 1, listenerTile.Y),
+            new Point(listenerTile.X - 1, listenerTile.Y),
+            new Point(listenerTile.X, listenerTile.Y + 1),
+            new Point(listenerTile.X, listenerTile.Y - 1),
+            new Point(listenerTile.X + 2, listenerTile.Y),
+            new Point(listenerTile.X - 2, listenerTile.Y),
+            new Point(listenerTile.X, listenerTile.Y + 2),
+            new Point(listenerTile.X, listenerTile.Y - 2)
+        };
+
+        var bestScore = float.MaxValue;
+        foreach (var candidate in candidates.Distinct())
+        {
+            if (_walkabilityService.IsNearWarpTile(location, candidate, 1))
+                continue;
+            if (!_walkabilityService.IsTileWalkable(location, candidate, speakerNpc))
+                continue;
+
+            var distanceToListener = Math.Abs(candidate.X - listenerTile.X) + Math.Abs(candidate.Y - listenerTile.Y);
+            if (distanceToListener > Math.Max(2, _config.AutonomyFaceToFaceDistanceTiles))
+                continue;
+
+            var distanceToSpeaker = Vector2.Distance(new Vector2(candidate.X, candidate.Y), speakerNpc.Tile);
+            var score = distanceToListener + (distanceToSpeaker * 0.25f);
+            if (score >= bestScore)
+                continue;
+
+            bestScore = score;
+            tile = candidate;
+        }
+
+        if (tile != Point.Zero)
+            return true;
+
+        if (_walkabilityService.TryFindNearestWalkableTile(location, listenerTile, 2, speakerNpc, out var fallback)
+            && fallback != listenerTile
+            && !_walkabilityService.IsNearWarpTile(location, fallback, 1))
+        {
+            tile = fallback;
+            return true;
+        }
+
+        return false;
     }
 
     private bool TryStartAutonomyEncounter(AutonomyRuntimeState runtime, NPC speakerNpc, NPC listenerNpc, AutonomyPlanBlock block)
@@ -13401,28 +13602,77 @@ public sealed class ModEntry : Mod
             || speakerNpc.currentLocation is null
             || !string.Equals(speakerNpc.currentLocation.Name, listenerNpc.currentLocation?.Name, StringComparison.OrdinalIgnoreCase))
         {
+            var nullSvc = _npcSocialEncounterService is null ? "encounterSvc" : _npcSpeechBubbleService is null ? "bubbleSvc" : _npcConversationSimulationService is null ? "simSvc" : _faceToFaceService is null ? "f2fSvc" : speakerNpc.currentLocation is null ? "speakerLoc" : "locMismatch";
+            Monitor.Log($"Autonomy: TryStartAutonomyEncounter early-exit {speakerNpc.Name}->{listenerNpc.Name} ({nullSvc}).", LogLevel.Debug);
             return false;
         }
 
-        ActiveEncounter? encounter = block.Type == AutonomyPlanBlockType.VisitNpc
-            ? _npcSocialEncounterService.EvaluatePlannedVisit(_state, runtime, listenerNpc.Name, speakerNpc.currentLocation.Name)
-            : _npcSocialEncounterService.EvaluateOpportunistic(_state, speakerNpc.Name, listenerNpc.Name, speakerNpc.currentLocation.Name);
-        if (encounter is null)
+        if (IsSamePairEncounterCoolingDown(speakerNpc.Name, listenerNpc.Name))
+        {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked by same-pair cooldown.", LogLevel.Trace);
             return false;
+        }
+
+        // ShouldStartEncounter already validated via ScoreEncounter(). Use the same scoring
+        // to create directly — avoids mismatch with ScoreEncounterByNames() which uses
+        // Affinity/Familiarity/Tension (all zero for new pairs, producing scores below threshold).
+        var encounterSource = block.Type == AutonomyPlanBlockType.VisitNpc ? EncounterSource.PlannedVisit : EncounterSource.Opportunistic;
+        var encounterScore = _npcSocialEncounterService.ScoreEncounter(_state, speakerNpc, listenerNpc, block);
+        var encounter = _npcSocialEncounterService.CreateEncounterDirect(
+            speakerNpc.Name, listenerNpc.Name, speakerNpc.currentLocation.Name, encounterSource, encounterScore);
 
         if (!_faceToFaceService.TryStage(speakerNpc, listenerNpc, speakerNpc.currentLocation, encounter.EncounterId))
         {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} staging FAILED at {speakerNpc.currentLocation.Name}.", LogLevel.Debug);
             _npcSocialEncounterService.CancelEncounter(encounter.EncounterId, "staging_failed");
             return false;
         }
 
+        Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} staged successfully, starting conversation.", LogLevel.Debug);
+
+        // Initialize encounter with template scenario (used as context/fallback)
         var scenario = _npcConversationSimulationService.BuildScenario(_state, speakerNpc, listenerNpc, block);
         _npcConversationSimulationService.InitializeEncounter(encounter, scenario, block, speakerNpc.Name);
 
         _npcSocialEncounterService.MarkStaging(encounter.EncounterId);
         runtime.ActiveEncounterId = encounter.EncounterId;
+        runtime.EncounterLockedPartnerNpcId = listenerNpc.Name;
         if (_autonomyRuntimeByNpcId.TryGetValue(listenerNpc.Name, out var listenerRuntime))
+        {
             listenerRuntime.ActiveEncounterId = encounter.EncounterId;
+            listenerRuntime.EncounterLockedPartnerNpcId = speakerNpc.Name;
+        }
+
+        // Launch Player2-powered conversation if available; otherwise template dialogue takes over in TryAdvanceAutonomyEncounterStates
+        if (_config.EnablePlayer2
+            && _player2Client is not null
+            && !string.IsNullOrWhiteSpace(_player2Key)
+            && TryResolvePlayer2NpcIdForNpc(speakerNpc, out var speakerP2Id)
+            && TryResolvePlayer2NpcIdForNpc(listenerNpc, out var listenerP2Id))
+        {
+            var continuationContext = BuildEncounterContinuationContext(speakerNpc.Name, listenerNpc.Name);
+
+            StartEncounterConversationTask(
+                encounter.EncounterId,
+                speakerNpc.Name,
+                speakerP2Id,
+                listenerNpc.Name,
+                listenerP2Id,
+                scenario,
+                encounter.TurnBudgetSoftCap,
+                continuationContext);
+            _player2EncounterIds.Add(encounter.EncounterId);
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} Player2 encounter conversation launched (turns={encounter.TurnBudgetSoftCap}, continuation={continuationContext is not null}).", LogLevel.Debug);
+        }
+        else
+        {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} Player2 unavailable — cancelling encounter.", LogLevel.Debug);
+            _npcSocialEncounterService.CancelEncounter(encounter.EncounterId, "player2_unavailable");
+            _faceToFaceService?.CancelEncounter(encounter.EncounterId);
+            ClearEncounterRuntimeLinks(encounter.EncounterId);
+            _state.Telemetry.Daily.EncountersCancelled += 1;
+            return false;
+        }
 
         return true;
     }
@@ -13434,13 +13684,13 @@ public sealed class ModEntry : Mod
 
         foreach (var encounter in _npcSocialEncounterService.GetActiveEncounters().ToArray())
         {
+            var isPlayer2Encounter = _player2EncounterIds.Contains(encounter.EncounterId);
+
             if (encounter.Phase == EncounterPhase.Staging)
             {
                 if ((_faceToFaceService?.GetPhase(encounter.EncounterId) ?? StagingPhase.Idle) == StagingPhase.Idle)
                 {
-                    ClearEncounterRuntimeLinks(encounter.EncounterId);
-                    _npcSocialEncounterService.CancelEncounter(encounter.EncounterId, "staging_failed");
-                    _state.Telemetry.Daily.EncountersCancelled += 1;
+                    CancelEncounterScene(encounter, "staging_failed");
                     continue;
                 }
 
@@ -13448,97 +13698,638 @@ public sealed class ModEntry : Mod
                     continue;
 
                 _npcSocialEncounterService.MarkTalking(encounter.EncounterId);
-                if (TryQueueNextAutonomyEncounterTurn(encounter))
-                    continue;
 
-                ClearEncounterRuntimeLinks(encounter.EncounterId);
-                _faceToFaceService?.FinishTalking(encounter.EncounterId);
-                _npcSocialEncounterService.CancelEncounter(encounter.EncounterId, "opening_failed");
-                _state.Telemetry.Daily.EncountersCancelled += 1;
+                // Player2 encounters: transcript arrives via _pendingEncounterConversationCompletions queue,
+                // then gets queued as encounter bubbles — just wait for bubbles to arrive
+                if (isPlayer2Encounter)
+                {
+                    TryFlushDeferredEncounterConversationCompletion(encounter);
+                    if (_npcSpeechBubbleService.HasEncounterBubblesRemaining(encounter.EncounterId))
+                        continue;
+                    continue;
+                }
+
+                // Non-Player2 encounters should not reach here — cancel as safety net
+                CancelEncounterScene(encounter, "no_player2_unexpected");
                 continue;
             }
 
             if (encounter.Phase != EncounterPhase.Talking)
                 continue;
-            if (!_npcSpeechBubbleService.IsEncounterReadyForNextBubble(encounter.EncounterId))
-                continue;
 
-            if (TryQueueNextAutonomyEncounterTurn(encounter))
+            if (!TryValidateEncounterScene(encounter, out var invalidReason))
             {
+                CancelEncounterScene(encounter, invalidReason);
                 continue;
             }
 
-            if (encounter.Phase == EncounterPhase.Cancelled || encounter.ConversationPhase == ConversationPhase.Interrupted)
+            // Player2 encounters: wait for all bubbles to be displayed, then complete
+            if (isPlayer2Encounter)
             {
-                ClearEncounterRuntimeLinks(encounter.EncounterId);
+                TryFlushDeferredEncounterConversationCompletion(encounter);
+                if (_npcSpeechBubbleService.HasEncounterBubblesRemaining(encounter.EncounterId))
+                    continue;
+                if (!_npcSpeechBubbleService.IsEncounterReadyForNextBubble(encounter.EncounterId))
+                    continue;
+
+                // All Player2 dialogue displayed — complete the encounter
+                encounter.ConversationPhase = ConversationPhase.Released;
+                encounter.ArcOutcome = _npcConversationSimulationService.ResolveOutcome(encounter);
+                _npcSocialEncounterService.ProcessConsequences(_state, encounter, encounter.ArcOutcome);
                 _faceToFaceService?.FinishTalking(encounter.EncounterId);
-                _state.Telemetry.Daily.EncountersCancelled += 1;
+                _player2EncounterIds.Remove(encounter.EncounterId);
+                _state.Telemetry.Daily.EncountersCompleted += 1;
+                _state.Telemetry.Daily.PairEmotionUpdates += 1;
+                PopulateLastEncounterFields(encounter);
+                Monitor.Log($"Autonomy: Player2 encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} completed (outcome={encounter.ArcOutcome}).", LogLevel.Debug);
+                ClearEncounterRuntimeLinks(encounter.EncounterId);
                 continue;
             }
 
-            encounter.ConversationPhase = ConversationPhase.Released;
-            encounter.ArcOutcome = _npcConversationSimulationService.ResolveOutcome(encounter);
-            _npcSocialEncounterService.ProcessConsequences(_state, encounter, encounter.ArcOutcome);
-            _faceToFaceService?.FinishTalking(encounter.EncounterId);
-            _state.Telemetry.Daily.EncountersCompleted += 1;
-            _state.Telemetry.Daily.PairEmotionUpdates += 1;
-
-            if (!string.IsNullOrWhiteSpace(encounter.ArcOutcome))
-            {
-                var primaryAxis = encounter.ArcOutcome switch
-                {
-                    "warm_long_talk" => "friendship",
-                    "apology_softened" => "trust",
-                    "awkward_but_polite" => "awkwardness",
-                    "unresolved_tension" => "anger",
-                    "practical_exchange" => "trust",
-                    _ => "trust"
-                };
-                IncrementCounter(_state.Telemetry.Daily.PairEmotionUpdatesByAxis, primaryAxis);
-            }
-
-            ClearEncounterRuntimeLinks(encounter.EncounterId);
+            // Non-Player2 encounter in Talking phase — should not happen, cancel as safety net
+            CancelEncounterScene(encounter, "no_player2_talking");
         }
     }
 
-    private bool TryQueueNextAutonomyEncounterTurn(ActiveEncounter encounter)
+    private void StartEncounterConversationTask(
+        string encounterId,
+        string speakerShortName,
+        string speakerNpcId,
+        string listenerShortName,
+        string listenerNpcId,
+        ConversationScenario scenario,
+        int turnDepth,
+        string? continuationContext = null)
     {
-        if (_npcConversationSimulationService is null || _npcSpeechBubbleService is null || _npcSocialEncounterService is null)
-            return false;
+        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
+            return;
 
-        var npcA = ResolveNpcByName(encounter.NpcA);
-        var npcB = ResolveNpcByName(encounter.NpcB);
-        if (npcA is null
-            || npcB is null
-            || npcA.currentLocation is null
-            || npcB.currentLocation is null
-            || !string.Equals(npcA.currentLocation.Name, npcB.currentLocation.Name, StringComparison.OrdinalIgnoreCase)
-            || !IsWithinAutonomyTalkRange(npcA, npcB))
+        var player2Client = _player2Client;
+        var player2Key = _player2Key!;
+        var apiBaseUrl = _config.Player2ApiBaseUrl;
+        var speakerDialogueContext = BuildCompactGameStateInfo(
+            npcName: speakerShortName,
+            contextTag: "npc_encounter_dialogue",
+            referencedNpcName: listenerShortName);
+        var listenerDialogueContext = BuildCompactGameStateInfo(
+            npcName: listenerShortName,
+            contextTag: "npc_encounter_dialogue",
+            referencedNpcName: speakerShortName);
+
+        _ = Task.Run(async () =>
         {
-            encounter.ConversationPhase = ConversationPhase.Interrupted;
-            _npcSocialEncounterService.CancelEncounter(encounter.EncounterId, "conversation_broken");
-            return false;
+            try
+            {
+                var completion = await RunEncounterConversationAsync(
+                    player2Client,
+                    apiBaseUrl,
+                    player2Key,
+                    encounterId,
+                    speakerShortName,
+                    speakerNpcId,
+                    listenerShortName,
+                    listenerNpcId,
+                    scenario,
+                    turnDepth,
+                    speakerDialogueContext,
+                    listenerDialogueContext,
+                    continuationContext);
+                _pendingEncounterConversationCompletions.Enqueue(completion);
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log($"Encounter conversation task failed: {ex.Message}", LogLevel.Warn);
+                _pendingEncounterConversationCompletions.Enqueue(new EncounterConversationCompletion
+                {
+                    EncounterId = encounterId,
+                    SpeakerShortName = speakerShortName,
+                    ListenerShortName = listenerShortName,
+                    SpeakerNpcId = speakerNpcId,
+                    ListenerNpcId = listenerNpcId,
+                    Completed = false,
+                    AbortReason = "E_ENCOUNTER_TASK_EXCEPTION",
+                    TurnTarget = turnDepth,
+                    TurnCompleted = 0,
+                    DurationMs = 0
+                });
+            }
+        });
+    }
+
+    private async Task<EncounterConversationCompletion> RunEncounterConversationAsync(
+        Player2Client client,
+        string apiBaseUrl,
+        string player2Key,
+        string encounterId,
+        string speakerShortName,
+        string speakerNpcId,
+        string listenerShortName,
+        string listenerNpcId,
+        ConversationScenario scenario,
+        int turnDepth,
+        string speakerDialogueContext,
+        string listenerDialogueContext,
+        string? continuationContext = null)
+    {
+        var startedUtc = DateTime.UtcNow;
+        var transcript = new List<AmbientConversationLine>();
+        var abortReason = string.Empty;
+
+        var currentSpeakerShortName = speakerShortName;
+        var currentSpeakerNpcId = speakerNpcId;
+        var currentListenerShortName = listenerShortName;
+        var currentListenerNpcId = listenerNpcId;
+
+        var topicSeed = $"{scenario.Purpose} ({scenario.ToneAtStart} tone, {scenario.OpenerStyle} style)";
+        var currentMessage = BuildEncounterConversationTurnMessage(
+            turnNumber: 1,
+            turnDepth,
+            topicSeed,
+            scenario,
+            currentSpeakerShortName,
+            currentListenerShortName,
+            priorLine: null,
+            continuationContext: continuationContext);
+
+        for (var turn = 1; turn <= turnDepth; turn++)
+        {
+            var context = currentSpeakerNpcId.Equals(speakerNpcId, StringComparison.OrdinalIgnoreCase)
+                ? speakerDialogueContext
+                : listenerDialogueContext;
+
+            var turnResult = await TrySendAmbientConversationTurnAsync(
+                client,
+                apiBaseUrl,
+                player2Key,
+                currentSpeakerNpcId,
+                currentListenerShortName,
+                currentMessage,
+                context,
+                requireMessage: true);
+
+            if (!turnResult.Success)
+            {
+                abortReason = string.IsNullOrWhiteSpace(turnResult.FailureCode)
+                    ? "E_ENCOUNTER_TURN_FAILED"
+                    : turnResult.FailureCode;
+                break;
+            }
+
+            transcript.Add(new AmbientConversationLine
+            {
+                Turn = turn,
+                SpeakerShortName = currentSpeakerShortName,
+                SpeakerNpcId = currentSpeakerNpcId,
+                ListenerShortName = currentListenerShortName,
+                ListenerNpcId = currentListenerNpcId,
+                Message = turnResult.Message
+            });
+
+            if (_npcSocialEncounterService?.GetEncounter(encounterId) is { } activeEncounter)
+                UpdateEncounterProgress(activeEncounter, turn, turnDepth, currentSpeakerNpcId, turnResult.Message, scenario);
+
+            // Swap speaker and listener
+            var nextSpeakerShortName = currentListenerShortName;
+            var nextSpeakerNpcId = currentListenerNpcId;
+            currentListenerShortName = currentSpeakerShortName;
+            currentListenerNpcId = currentSpeakerNpcId;
+            currentSpeakerShortName = nextSpeakerShortName;
+            currentSpeakerNpcId = nextSpeakerNpcId;
+
+            currentMessage = BuildEncounterConversationTurnMessage(
+                turn + 1,
+                turnDepth,
+                topicSeed,
+                scenario,
+                currentSpeakerShortName,
+                currentListenerShortName,
+                turnResult.Message);
         }
 
-        var nextTurn = _npcConversationSimulationService.BuildNextTurn(_state, encounter, npcA, npcB);
-        if (nextTurn is null)
-            return false;
+        var duration = DateTime.UtcNow - startedUtc;
+        return new EncounterConversationCompletion
+        {
+            EncounterId = encounterId,
+            SpeakerShortName = speakerShortName,
+            ListenerShortName = listenerShortName,
+            SpeakerNpcId = speakerNpcId,
+            ListenerNpcId = listenerNpcId,
+            Completed = string.IsNullOrWhiteSpace(abortReason),
+            AbortReason = abortReason,
+            TurnTarget = turnDepth,
+            TurnCompleted = transcript.Count,
+            DurationMs = Math.Max(0, duration.TotalMilliseconds),
+            Transcript = transcript
+        };
+    }
 
-        _npcSpeechBubbleService.QueueEncounterBubble(
-            encounter.EncounterId,
-            nextTurn.SpeakerNpcId,
-            nextTurn.Text,
-            nextTurn.SequenceIndex);
-        return true;
+    private static string BuildEncounterConversationTurnMessage(
+        int turnNumber,
+        int turnDepth,
+        string topicSeed,
+        ConversationScenario scenario,
+        string speakerShortName,
+        string listenerShortName,
+        string? priorLine,
+        string? continuationContext = null)
+    {
+        var isContinuation = !string.IsNullOrWhiteSpace(continuationContext);
+        var priorLineWasClosing = IsLikelyConversationClosing(priorLine);
+
+        if (turnNumber <= 1 || string.IsNullOrWhiteSpace(priorLine))
+        {
+            if (isContinuation)
+            {
+                return
+                    $"You are {speakerShortName}, resuming a face-to-face conversation with {listenerShortName}. " +
+                    $"Continuation context: {continuationContext}. " +
+                    $"Face-to-face encounter turn 1/{turnDepth}. " +
+                    $"Context: {topicSeed}. " +
+                    $"Speak directly to {listenerShortName}, not the player or Farmer. " +
+                    "If you already said goodbye earlier, reopen naturally with one more thing before leaving. " +
+                    "Continue from the prior exchange without re-greeting or reusing the same goodbye/topic phrasing. " +
+                    "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+            }
+
+            return
+                $"You are {speakerShortName}, speaking face-to-face with {listenerShortName}. " +
+                $"Face-to-face encounter turn 1/{turnDepth}. " +
+                $"Context: {topicSeed}. " +
+                $"Opener style: {scenario.OpenerStyle}. " +
+                $"Speak directly to {listenerShortName}; do not address the player or Farmer. " +
+                "Greet them naturally and start a real conversation. " +
+                "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+        }
+
+        if (turnNumber >= turnDepth)
+        {
+            return
+                $"You are {speakerShortName}, still speaking only to {listenerShortName}. " +
+                $"Face-to-face encounter turn {turnNumber}/{turnDepth} (final). Continue from: \"{priorLine}\". " +
+                (priorLineWasClosing
+                    ? "The prior line already sounded like a goodbye, so do not repeat the same farewell wording; if needed, add one final short follow-up and close cleanly. "
+                    : "Wrap up the conversation naturally with a brief goodbye. ") +
+                "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+        }
+
+        if (priorLineWasClosing)
+        {
+            return
+                $"You are {speakerShortName}, still in the same face-to-face scene with {listenerShortName}. " +
+                $"The previous line already sounded like a goodbye: \"{priorLine}\". " +
+                $"Face-to-face encounter turn {turnNumber}/{turnDepth}. " +
+                "If you speak again, reopen with one more thing before leaving and shift to a related new angle. " +
+                "Do not repeat the same farewell or exact phrasing. " +
+                "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+        }
+
+        return
+            $"You are {speakerShortName}, still speaking only to {listenerShortName}. " +
+            $"Face-to-face encounter turn {turnNumber}/{turnDepth}. Continue naturally from: \"{priorLine}\". " +
+            $"Conversation tone: {scenario.ToneAtStart}. " +
+            "Keep it grounded and specific. Avoid generic pleasantries. " +
+            "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+    }
+
+    private void TryApplyPendingEncounterConversationCompletions()
+    {
+        while (_pendingEncounterConversationCompletions.TryDequeue(out var completion))
+        {
+            var activeEncounter = _npcSocialEncounterService?.GetEncounter(completion.EncounterId);
+            if (activeEncounter is null || activeEncounter.Phase == EncounterPhase.Cancelled)
+            {
+                _deferredEncounterConversationCompletions.Remove(completion.EncounterId);
+                continue;
+            }
+
+            if (activeEncounter.Phase == EncounterPhase.Staging)
+            {
+                _deferredEncounterConversationCompletions[completion.EncounterId] = completion;
+                continue;
+            }
+
+            TryApplyEncounterConversationCompletion(activeEncounter, completion);
+        }
+    }
+
+    private void TryApplyEncounterConversationCompletion(ActiveEncounter activeEncounter, EncounterConversationCompletion completion)
+    {
+        var status = completion.Completed
+            ? "completed"
+            : $"aborted({completion.AbortReason})";
+        Monitor.Log(
+            $"Encounter conversation {status}: {completion.SpeakerShortName}->{completion.ListenerShortName} enc={completion.EncounterId} turns={completion.TurnCompleted}/{completion.TurnTarget} duration_ms={completion.DurationMs:F0}.",
+            LogLevel.Debug);
+
+        _deferredEncounterConversationCompletions.Remove(completion.EncounterId);
+
+        if (activeEncounter.Phase == EncounterPhase.Talking
+            && !TryValidateEncounterScene(activeEncounter, out var invalidReason))
+        {
+            CancelEncounterScene(activeEncounter, invalidReason);
+            return;
+        }
+
+        if (!completion.Completed || completion.Transcript.Count == 0)
+        {
+            Monitor.Log($"Encounter {completion.EncounterId}: Player2 failed ({completion.AbortReason}), cancelling encounter.", LogLevel.Debug);
+            _npcSocialEncounterService?.CancelEncounter(completion.EncounterId, "player2_failed");
+            _faceToFaceService?.CancelEncounter(completion.EncounterId);
+            ClearEncounterRuntimeLinks(completion.EncounterId);
+            if (_state is not null)
+                _state.Telemetry.Daily.EncountersCancelled += 1;
+            return;
+        }
+
+        var sequenceIndex = 0;
+        foreach (var transcriptLine in completion.Transcript)
+        {
+            sequenceIndex++;
+            Monitor.Log(
+                $"Encounter transcript T{transcriptLine.Turn} {transcriptLine.SpeakerShortName}->{transcriptLine.ListenerShortName}: {transcriptLine.Message}",
+                LogLevel.Trace);
+
+            if (!IsEncounterTranscriptLineValid(activeEncounter, transcriptLine))
+            {
+                CancelEncounterScene(activeEncounter, "line_drift");
+                return;
+            }
+
+            _npcSpeechBubbleService?.QueueEncounterBubble(
+                completion.EncounterId,
+                transcriptLine.SpeakerNpcId,
+                transcriptLine.Message,
+                sequenceIndex);
+        }
+
+        if (_npcMemoryService is not null && _state is not null)
+        {
+            var lastLine = completion.Transcript.LastOrDefault();
+            var summaryText = lastLine is not null
+                ? $"Spoke with {lastLine.ListenerShortName}: {NpcSpeechBubbleService.StripEmotionMetadata(lastLine.Message)}"
+                : $"Had a conversation with {completion.ListenerShortName}.";
+            if (summaryText.Length > 120)
+                summaryText = summaryText[..120];
+
+            _npcMemoryService.WriteFact(_state, completion.SpeakerShortName, "encounter", summaryText, _state.Calendar.Day, weight: 3);
+            _npcMemoryService.WriteFact(_state, completion.ListenerShortName, "encounter",
+                $"Spoke with {completion.SpeakerShortName}: {NpcSpeechBubbleService.StripEmotionMetadata(completion.Transcript.FirstOrDefault()?.Message ?? "brief chat")}".Length > 120
+                    ? $"Spoke with {completion.SpeakerShortName}: {NpcSpeechBubbleService.StripEmotionMetadata(completion.Transcript.FirstOrDefault()?.Message ?? "brief chat")}"[..120]
+                    : $"Spoke with {completion.SpeakerShortName}: {NpcSpeechBubbleService.StripEmotionMetadata(completion.Transcript.FirstOrDefault()?.Message ?? "brief chat")}",
+                _state.Calendar.Day, weight: 3);
+        }
+    }
+
+    private void TryFlushDeferredEncounterConversationCompletion(ActiveEncounter encounter)
+    {
+        if (_deferredEncounterConversationCompletions.TryGetValue(encounter.EncounterId, out var completion))
+            TryApplyEncounterConversationCompletion(encounter, completion);
     }
 
     private void ClearEncounterRuntimeLinks(string encounterId)
     {
+        _deferredEncounterConversationCompletions.Remove(encounterId);
+        _player2EncounterIds.Remove(encounterId);
         foreach (var activeRuntime in _autonomyRuntimeByNpcId.Values)
         {
             if (string.Equals(activeRuntime.ActiveEncounterId, encounterId, StringComparison.OrdinalIgnoreCase))
+            {
                 activeRuntime.ActiveEncounterId = null;
+                activeRuntime.EncounterLockedPartnerNpcId = null;
+            }
         }
+    }
+
+    private void PopulateLastEncounterFields(ActiveEncounter encounter)
+    {
+        var summarySnippet = !string.IsNullOrWhiteSpace(encounter.Scenario?.Purpose)
+            ? encounter.Scenario.Purpose
+            : encounter.ArcOutcome ?? "brief chat";
+        var endedUtc = DateTime.UtcNow;
+        var closingLine = TrimEncounterLineForState(encounter.LastLineSummary);
+        var closedWithGoodbye = encounter.ClosingComplete
+            || encounter.HasGoodbyeExchange
+            || IsLikelyConversationClosing(encounter.LastLineSummary);
+        var samePairBlockedUntilUtc = closedWithGoodbye
+            ? endedUtc.AddSeconds(EncounterSamePairCooldownSeconds)
+            : DateTime.MinValue;
+
+        if (_autonomyRuntimeByNpcId.TryGetValue(encounter.NpcA, out var runtimeA))
+        {
+            runtimeA.LastEncounterPartnerNpcId = encounter.NpcB;
+            runtimeA.LastEncounterSummary = summarySnippet;
+            runtimeA.LastEncounterTopicTag = encounter.CurrentTopicTag;
+            runtimeA.LastEncounterClosingLine = closingLine;
+            runtimeA.LastEncounterClosedWithGoodbye = closedWithGoodbye;
+            runtimeA.LastEncounterEndedUtc = endedUtc;
+            runtimeA.SamePairEncounterBlockedUntilUtc = samePairBlockedUntilUtc;
+        }
+
+        if (_autonomyRuntimeByNpcId.TryGetValue(encounter.NpcB, out var runtimeB))
+        {
+            runtimeB.LastEncounterPartnerNpcId = encounter.NpcA;
+            runtimeB.LastEncounterSummary = summarySnippet;
+            runtimeB.LastEncounterTopicTag = encounter.CurrentTopicTag;
+            runtimeB.LastEncounterClosingLine = closingLine;
+            runtimeB.LastEncounterClosedWithGoodbye = closedWithGoodbye;
+            runtimeB.LastEncounterEndedUtc = endedUtc;
+            runtimeB.SamePairEncounterBlockedUntilUtc = samePairBlockedUntilUtc;
+        }
+    }
+
+    private string? BuildEncounterContinuationContext(string speakerNpcId, string listenerNpcId)
+    {
+        if (!TryGetContinuationRuntime(speakerNpcId, listenerNpcId, out var runtime))
+            return null;
+
+        var parts = new List<string>
+        {
+            runtime.LastEncounterSummary!
+        };
+
+        if (!string.IsNullOrWhiteSpace(runtime.LastEncounterTopicTag))
+            parts.Add($"Last topic: {runtime.LastEncounterTopicTag}.");
+        if (runtime.LastEncounterClosedWithGoodbye)
+            parts.Add("You already exchanged a goodbye.");
+        if (!string.IsNullOrWhiteSpace(runtime.LastEncounterClosingLine))
+            parts.Add($"Do not reuse this exact closing phrasing: \"{runtime.LastEncounterClosingLine}\".");
+
+        return string.Join(" ", parts);
+    }
+
+    private bool TryGetContinuationRuntime(string speakerNpcId, string listenerNpcId, out AutonomyRuntimeState runtime)
+    {
+        runtime = null!;
+        if (_autonomyRuntimeByNpcId.TryGetValue(speakerNpcId, out var directRuntime)
+            && string.Equals(directRuntime.LastEncounterPartnerNpcId, listenerNpcId, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(directRuntime.LastEncounterSummary)
+            && (DateTime.UtcNow - directRuntime.LastEncounterEndedUtc).TotalMinutes <= EncounterContinuationWindowMinutes)
+        {
+            runtime = directRuntime;
+            return true;
+        }
+
+        if (_autonomyRuntimeByNpcId.TryGetValue(listenerNpcId, out var reverseRuntime)
+            && string.Equals(reverseRuntime.LastEncounterPartnerNpcId, speakerNpcId, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(reverseRuntime.LastEncounterSummary)
+            && (DateTime.UtcNow - reverseRuntime.LastEncounterEndedUtc).TotalMinutes <= EncounterContinuationWindowMinutes)
+        {
+            runtime = reverseRuntime;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool IsSamePairEncounterCoolingDown(string npcAId, string npcBId)
+    {
+        var nowUtc = DateTime.UtcNow;
+        return (_autonomyRuntimeByNpcId.TryGetValue(npcAId, out var runtimeA)
+                && string.Equals(runtimeA.LastEncounterPartnerNpcId, npcBId, StringComparison.OrdinalIgnoreCase)
+                && runtimeA.SamePairEncounterBlockedUntilUtc > nowUtc)
+            || (_autonomyRuntimeByNpcId.TryGetValue(npcBId, out var runtimeB)
+                && string.Equals(runtimeB.LastEncounterPartnerNpcId, npcAId, StringComparison.OrdinalIgnoreCase)
+                && runtimeB.SamePairEncounterBlockedUntilUtc > nowUtc);
+    }
+
+    private bool IsEligibleEncounterCandidate(string sourceNpcId, string candidateNpcId)
+    {
+        if ((_npcSocialEncounterService?.IsNpcInActiveEncounter(candidateNpcId) ?? false)
+            || (_faceToFaceService?.IsInStaging(candidateNpcId) ?? false))
+        {
+            return false;
+        }
+
+        if (_autonomyRuntimeByNpcId.TryGetValue(candidateNpcId, out var candidateRuntime)
+            && (!string.IsNullOrWhiteSpace(candidateRuntime.ActiveEncounterId)
+                || !string.IsNullOrWhiteSpace(candidateRuntime.EncounterLockedPartnerNpcId)))
+        {
+            return false;
+        }
+
+        return !IsSamePairEncounterCoolingDown(sourceNpcId, candidateNpcId);
+    }
+
+    private bool TryValidateEncounterScene(ActiveEncounter encounter, out string reason)
+    {
+        return TryValidateEncounterScene(encounter.EncounterId, encounter.NpcA, encounter.NpcB, out reason);
+    }
+
+    private bool TryValidateEncounterScene(string encounterId, string npcAId, string npcBId, out string reason)
+    {
+        reason = string.Empty;
+
+        if ((_faceToFaceService?.GetPhase(encounterId) ?? StagingPhase.Idle) == StagingPhase.Idle)
+        {
+            reason = "scene_released";
+            return false;
+        }
+
+        var npcA = ResolveNpcByName(npcAId);
+        var npcB = ResolveNpcByName(npcBId);
+        if (npcA is null || npcB is null)
+        {
+            reason = "participant_missing";
+            return false;
+        }
+
+        if (npcA.currentLocation is null
+            || npcB.currentLocation is null
+            || !string.Equals(npcA.currentLocation.Name, npcB.currentLocation.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "location_mismatch";
+            return false;
+        }
+
+        if (!IsWithinAutonomyTalkRange(npcA, npcB))
+        {
+            reason = "partner_left_scene";
+            return false;
+        }
+
+        return true;
+    }
+
+    private void CancelEncounterScene(ActiveEncounter encounter, string reason)
+    {
+        Monitor.Log($"Autonomy: cancelling encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} ({reason}).", LogLevel.Trace);
+        var wasAlreadyTerminal = encounter.Phase is EncounterPhase.Cancelled or EncounterPhase.Complete;
+        _npcSpeechBubbleService?.CancelEncounterBubbles(encounter.EncounterId);
+        if (!wasAlreadyTerminal)
+            _npcSocialEncounterService?.CancelEncounter(encounter.EncounterId, reason);
+        _faceToFaceService?.CancelEncounter(encounter.EncounterId);
+        ClearEncounterRuntimeLinks(encounter.EncounterId);
+        if (!wasAlreadyTerminal)
+            _state.Telemetry.Daily.EncountersCancelled += 1;
+    }
+
+    private bool IsEncounterBubbleStillValid(string encounterId, string speakerNpcId)
+    {
+        if (_npcSocialEncounterService?.GetEncounter(encounterId) is not { } encounter)
+            return false;
+        if (encounter.Phase == EncounterPhase.Cancelled)
+            return false;
+        if (!IsEncounterParticipant(encounter, speakerNpcId))
+            return false;
+        return TryValidateEncounterScene(encounter, out _);
+    }
+
+    private static bool IsEncounterTranscriptLineValid(ActiveEncounter encounter, AmbientConversationLine transcriptLine)
+    {
+        if (string.IsNullOrWhiteSpace(transcriptLine.SpeakerNpcId)
+            || string.IsNullOrWhiteSpace(transcriptLine.ListenerNpcId)
+            || string.Equals(transcriptLine.SpeakerNpcId, transcriptLine.ListenerNpcId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return IsEncounterParticipant(encounter, transcriptLine.SpeakerNpcId)
+            && IsEncounterParticipant(encounter, transcriptLine.ListenerNpcId);
+    }
+
+    private static bool IsEncounterParticipant(ActiveEncounter encounter, string npcId)
+    {
+        return string.Equals(encounter.NpcA, npcId, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(encounter.NpcB, npcId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void UpdateEncounterProgress(ActiveEncounter encounter, int turn, int turnDepth, string speakerNpcId, string line, ConversationScenario scenario)
+    {
+        var cleanedLine = TrimEncounterLineForState(line);
+        encounter.TurnsCompleted = turn;
+        encounter.LastSpeakerNpcId = speakerNpcId;
+        encounter.LastLineSummary = cleanedLine;
+        encounter.ConversationPhase = turn >= turnDepth ? ConversationPhase.Closing : turn <= 1 ? ConversationPhase.Opening : ConversationPhase.Body;
+        encounter.HasMeaningfulOpening |= turn == 1 && !string.IsNullOrWhiteSpace(cleanedLine);
+        encounter.HasMutualEngagement |= turn >= 2;
+        encounter.HasGoodbyeExchange |= IsLikelyConversationClosing(cleanedLine);
+        encounter.ClosingComplete = turn >= turnDepth;
+        encounter.CurrentTopicTag = string.IsNullOrWhiteSpace(encounter.CurrentTopicTag) ? scenario.PrimaryTopicTag : encounter.CurrentTopicTag;
+    }
+
+    private static string TrimEncounterLineForState(string? line)
+    {
+        var cleaned = NpcSpeechBubbleService.StripEmotionMetadata(line);
+        if (string.IsNullOrWhiteSpace(cleaned))
+            return string.Empty;
+        return cleaned.Length <= 120 ? cleaned : cleaned[..120];
+    }
+
+    private static bool IsLikelyConversationClosing(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        var cleaned = NpcSpeechBubbleService.StripEmotionMetadata(line);
+        return cleaned.Contains("goodbye", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("bye", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("see you", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("see ya", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("later", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("take care", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("gotta go", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("have to go", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("farewell", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsWithinAutonomyTalkRange(NPC speakerNpc, NPC listenerNpc)
@@ -13569,7 +14360,14 @@ public sealed class ModEntry : Mod
         {
             if (string.IsNullOrWhiteSpace(candidate))
                 continue;
+
             if (_player2NpcIdsByShortName.TryGetValue(candidate, out var resolvedNpcId) && !string.IsNullOrWhiteSpace(resolvedNpcId))
+            {
+                npcId = resolvedNpcId;
+                return true;
+            }
+
+            if (TryEnsureNpcSession(candidate, out resolvedNpcId) && !string.IsNullOrWhiteSpace(resolvedNpcId))
             {
                 npcId = resolvedNpcId;
                 return true;
@@ -13599,8 +14397,16 @@ public sealed class ModEntry : Mod
                 && runtime.ActiveBlockIndex < runtime.ActivePlan.Blocks.Count
                 ? runtime.ActivePlan.Blocks[runtime.ActiveBlockIndex]
                 : null;
+
+            // Gather live position from the game NPC
+            var npc = Game1.getCharacterFromName(runtime.NpcId);
+            var posInfo = npc is not null
+                ? $"pos={npc.currentLocation?.Name ?? "?"}@({npc.TilePoint.X},{npc.TilePoint.Y})"
+                : "pos=unloaded";
+            var tileInfo = block is not null ? $"tile=({block.TargetTile.X},{block.TargetTile.Y})" : "tile=n/a";
+
             Monitor.Log(
-                $"Autonomy | npc={runtime.NpcId} status={runtime.OverrideStatus} block={(block?.Type.ToString() ?? "none")} targetNpc='{runtime.CurrentTargetNpcId}' targetLoc='{runtime.CurrentTargetLocation}' completed={runtime.CompletedBlocksToday} failed={runtime.FailedBlocksToday} replans={runtime.ReplanCount}",
+                $"Autonomy | npc={runtime.NpcId} {posInfo} {tileInfo} status={runtime.OverrideStatus} block={(block?.Type.ToString() ?? "none")} targetLoc='{runtime.CurrentTargetLocation}' targetNpc='{runtime.CurrentTargetNpcId}' completed={runtime.CompletedBlocksToday} failed={runtime.FailedBlocksToday} replans={runtime.ReplanCount}",
                 LogLevel.Info);
         }
     }
@@ -13624,7 +14430,7 @@ public sealed class ModEntry : Mod
         foreach (var block in runtime.ActivePlan.Blocks)
         {
             Monitor.Log(
-                $"- {block.BlockId} {block.Type} {block.StartTime}-{block.EndTime} targetNpc='{block.TargetNpcId}' targetLoc='{block.TargetLocation}' reason='{block.Reason}' status={block.Status}",
+                $"- {block.BlockId} {block.Type} {block.StartTime}-{block.EndTime} targetNpc='{block.TargetNpcId}' targetLoc='{block.TargetLocation}' tile=({block.TargetTile.X},{block.TargetTile.Y}) reason='{block.Reason}' status={block.Status}",
                 LogLevel.Info);
         }
     }
@@ -14678,6 +15484,19 @@ public sealed class ModEntry : Mod
         var ambientEventFirstRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
             ? "AMBIENT_EVENT_RULE: Prefer record_town_event first when anything notable happened; keep command use sparse and skip commands when nothing meaningful occurred."
             : string.Empty;
+        var isNpcEncounterDialogue = string.Equals(effectiveContextTag, "npc_encounter_dialogue", StringComparison.OrdinalIgnoreCase);
+        var encounterPartnerBlock = isNpcEncounterDialogue && !string.IsNullOrWhiteSpace(referencedNpcName)
+            ? $"NPC_ENCOUNTER_PARTNER: '{referencedNpcName}'."
+            : string.Empty;
+        var encounterPartnerRule = isNpcEncounterDialogue
+            ? "NPC_ENCOUNTER_RULE: This is direct NPC-to-NPC face-to-face dialogue. Your only addressee is NPC_ENCOUNTER_PARTNER, not the player or Farmer. Do not answer as if the player is the current conversation partner."
+            : string.Empty;
+        var encounterNoPortraitCueRule = isNpcEncounterDialogue
+            ? "STYLE: For NPC-to-NPC face-to-face dialogue, do not emit portrait cue tags, stage directions, or narration."
+            : "STYLE: Start each spoken player-facing reply with exactly one leading portrait cue tag: <emotion:neutral|happy|content|blush|sad|angry|surprised|worried>.";
+        var encounterPlayerIsolationRule = isNpcEncounterDialogue
+            ? "NPC_ENCOUNTER_PLAYER_RULE: PLAYER_KNOWLEDGE is background only here. The player is not present in this scene unless the prompt explicitly says otherwise."
+            : string.Empty;
         var ambientConditional = _commandPolicyService?.GetAmbientConditionalCommandsEnabled() ?? Array.Empty<string>();
         var ambientUnlockRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
             ? ambientConditional.Count == 0
@@ -14741,10 +15560,13 @@ public sealed class ModEntry : Mod
             $"STYLE: Reply strictly in-character as {(string.IsNullOrWhiteSpace(npcName) ? "the addressed NPC" : npcName)}, concise, natural, no assistant-speak.",
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
-            "STYLE: Start each spoken player-facing reply with exactly one leading portrait cue tag: <emotion:neutral|happy|content|blush|sad|angry|surprised|worried>.",
+            encounterNoPortraitCueRule,
             promptLanguageRule,
             "LANGUAGE_RULE: For structured command outputs, keep command names and argument keys in English; localize only string values.",
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
+            encounterPartnerBlock,
+            encounterPartnerRule,
+            encounterPlayerIsolationRule,
             vanillaDialogueFollowUpRule,
             followUpContextRule,
             giftFollowUpRule,

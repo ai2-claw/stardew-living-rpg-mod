@@ -11,39 +11,25 @@ public sealed class ScheduleOverrideService
 
     public void ApplyDailyOverride(NPC npc, NpcDailyPlan plan)
     {
-        if (npc is null || plan is null || plan.Blocks.Count == 0)
+        if (npc is null || plan is null || plan.Blocks.Count == 0 || npc.Schedule is null)
             return;
 
-        if (npc.Schedule is null)
-            return; // Can't modify a null schedule (read-only property in SDV 1.6)
-
-        // Back up the vanilla schedule on first override
         if (!_vanillaBackups.ContainsKey(npc.Name))
-        {
             _vanillaBackups[npc.Name] = new Dictionary<int, SchedulePathDescription>(npc.Schedule);
-        }
 
         foreach (var block in plan.Blocks)
         {
-            if (!IsDetourBlock(block))
+            if (!IsDetourBlock(block) || string.IsNullOrWhiteSpace(block.TargetLocation) || block.TargetTile == Point.Zero)
                 continue;
-
-            if (string.IsNullOrWhiteSpace(block.TargetLocation))
-                continue;
-
-            var targetLocation = block.TargetLocation;
-            var targetTile = block.TargetTile;
-            var facing = 2; // face down by default
 
             npc.Schedule.Remove(block.StartTime);
-
             npc.Schedule[block.StartTime] = new SchedulePathDescription(
-                new Stack<Point>(new[] { targetTile }),
-                facing,
-                targetLocation,
+                new Stack<Point>(new[] { block.TargetTile }),
+                2,
+                block.TargetLocation,
                 string.Empty,
                 string.Empty,
-                targetTile);
+                block.TargetTile);
         }
     }
 
@@ -77,7 +63,7 @@ public sealed class ScheduleOverrideService
 
     public void PatchSingleEntry(NPC npc, int gameTime, string locationId, Point tile, int facing = 2)
     {
-        if (npc is null || string.IsNullOrWhiteSpace(locationId) || npc.Schedule is null)
+        if (npc is null || string.IsNullOrWhiteSpace(locationId) || npc.Schedule is null || tile == Point.Zero)
             return;
 
         npc.Schedule[gameTime] = new SchedulePathDescription(

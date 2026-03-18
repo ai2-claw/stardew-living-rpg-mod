@@ -2,7 +2,7 @@ namespace StardewLivingRPG.Systems;
 
 public sealed class NpcConversationService
 {
-    public const int MinTurnDepth = 2;
+    public const int MinTurnDepth = 4;
     public const int MaxTurnDepth = 4;
     public const int DefaultDailyLimit = 3;
     public const int DefaultPairCooldownDays = 2;

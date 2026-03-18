@@ -21,6 +21,11 @@ public sealed class NpcWalkabilityService
         if (layer is null || tile.X >= layer.LayerWidth || tile.Y >= layer.LayerHeight)
             return false;
 
+        // Reject void tiles — interior maps have large black areas with no painted Back layer tile
+        var backLayer = location.Map.GetLayer("Back");
+        if (backLayer?.Tiles[tile.X, tile.Y] is null)
+            return false;
+
         var tileVector = new Vector2(tile.X, tile.Y);
         var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
         var tileViewport = new xTile.Dimensions.Rectangle(0, 0, TileSize, TileSize);
@@ -83,6 +88,100 @@ public sealed class NpcWalkabilityService
             && (int)Game1.player.Tile.Y == tile.Y)
         {
             return false;
+        }
+
+        // Reject tiles that fall inside building footprints
+        foreach (var building in location.buildings)
+        {
+            if (building is null)
+                continue;
+            var bx = building.tileX.Value;
+            var by = building.tileY.Value;
+            var bw = building.tilesWide.Value;
+            var bh = building.tilesHigh.Value;
+            if (tile.X >= bx && tile.X < bx + bw && tile.Y >= by && tile.Y < by + bh)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Lenient walkability check for staging tiles.
+    /// Skips character/player occupancy and isCollidingPosition so that tiles
+    /// where NPCs are already standing are valid staging candidates.
+    /// </summary>
+    public bool IsTileStageable(GameLocation? location, Point tile)
+    {
+        if (location is null || location.Map is null)
+            return false;
+        if (tile.X < 0 || tile.Y < 0)
+            return false;
+
+        var layer = location.Map.Layers.Count > 0 ? location.Map.Layers[0] : null;
+        if (layer is null || tile.X >= layer.LayerWidth || tile.Y >= layer.LayerHeight)
+            return false;
+
+        var backLayer = location.Map.GetLayer("Back");
+        if (backLayer?.Tiles[tile.X, tile.Y] is null)
+            return false;
+
+        var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
+        var tileViewport = new xTile.Dimensions.Rectangle(0, 0, TileSize, TileSize);
+        if (!location.isTilePassable(tileLocation, tileViewport))
+            return false;
+        if (HasNoPathProperty(location, tile))
+            return false;
+
+        var tileVector = new Vector2(tile.X, tile.Y);
+        var collisionRect = BuildCollisionRect(tile);
+
+        if (location.Objects.TryGetValue(tileVector, out var obj)
+            && obj is SObject placedObject
+            && !placedObject.isPassable())
+        {
+            return false;
+        }
+
+        if (location.terrainFeatures.TryGetValue(tileVector, out var terrainFeature)
+            && terrainFeature is TerrainFeature feature
+            && !feature.isPassable())
+        {
+            return false;
+        }
+
+        foreach (var largeTerrainFeature in location.largeTerrainFeatures)
+        {
+            if (largeTerrainFeature.getBoundingBox().Intersects(collisionRect))
+                return false;
+        }
+
+        foreach (var resourceClump in location.resourceClumps)
+        {
+            if (resourceClump.occupiesTile(tile.X, tile.Y))
+                return false;
+        }
+
+        foreach (var furniture in location.furniture)
+        {
+            if (furniture is Furniture placedFurniture
+                && placedFurniture.GetBoundingBox().Intersects(collisionRect))
+            {
+                return false;
+            }
+        }
+
+        // Reject tiles that fall inside building footprints
+        foreach (var building in location.buildings)
+        {
+            if (building is null)
+                continue;
+            var bx = building.tileX.Value;
+            var by = building.tileY.Value;
+            var bw = building.tilesWide.Value;
+            var bh = building.tilesHigh.Value;
+            if (tile.X >= bx && tile.X < bx + bw && tile.Y >= by && tile.Y < by + bh)
+                return false;
         }
 
         return true;
