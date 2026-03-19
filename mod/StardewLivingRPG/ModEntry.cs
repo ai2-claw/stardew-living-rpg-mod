@@ -1027,6 +1027,7 @@ public sealed class ModEntry : Mod
         InitializeVanillaCanonLoreFramework(helper);
         InitializePortraitProfileFramework();
         MarketSellPricePatcher.Apply(ModManifest.UniqueID);
+        NpcBubbleDrawPatcher.Apply(ModManifest.UniqueID);
 
         RegisterPlayerConsoleCommands(helper);
         if (_config.ShowDeveloperConsoleCommands)
@@ -14853,7 +14854,7 @@ public sealed class ModEntry : Mod
             _scheduleOverrideService.RestoreVanillaSchedule(npc);
 
         var method = TryResumeVanillaScheduleFromCurrentPosition(npc);
-        TrySetMemberValue(npc, "followSchedule", !string.IsNullOrWhiteSpace(method));
+        TrySetMemberValue(npc, "followSchedule", true);
         Monitor.Log(
             $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}, method={method}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             string.IsNullOrWhiteSpace(method) ? LogLevel.Debug : LogLevel.Trace);
@@ -14914,21 +14915,6 @@ public sealed class ModEntry : Mod
         if (TryInvokeVanillaMethod(npc, "pathfindToNextScheduleLocation")
             && npc.controller?.pathToEndPoint is { Count: > 0 })
             return "pathfindToNextScheduleLocation()";
-
-        if (!string.IsNullOrWhiteSpace(targetLocationName) && !isOnTargetMap)
-        {
-            var targetLocation = Game1.getLocationFromName(targetLocationName);
-            if (targetLocation is not null)
-            {
-                Game1.warpCharacter(npc, targetLocationName, new Vector2(targetTile.X, targetTile.Y));
-                return $"warp({targetLocationName}, {targetTile.X},{targetTile.Y})";
-            }
-        }
-        else if (isOnTargetMap && targetTile != Point.Zero)
-        {
-            npc.setTilePosition(targetTile);
-            return $"teleport({targetTile.X},{targetTile.Y})";
-        }
 
         return string.Empty;
     }
