@@ -2,6 +2,7 @@
 using System.Text;
 using System.Text.Json;
 using StardewLivingRPG.State;
+using StardewValley;
 
 namespace StardewLivingRPG.Systems;
 
@@ -13,6 +14,7 @@ public sealed class NpcIntentResolver
         "adjust_reputation",
         "shift_interest_influence",
         "apply_market_modifier",
+        "spread_rumor",
         "publish_rumor",
         "publish_article",
         "record_memory_fact",
@@ -141,6 +143,7 @@ public sealed class NpcIntentResolver
             "adjust_reputation" => ResolveAdjustReputation(state, npcId, intentId, args),
             "shift_interest_influence" => ResolveShiftInterestInfluence(state, npcId, intentId, args),
             "apply_market_modifier" => ResolveApplyMarketModifier(state, npcId, intentId, args),
+            "spread_rumor" => ResolveSpreadRumor(state, npcId, intentId, args),
             "publish_rumor" => ResolvePublishRumor(state, npcId, intentId, args),
             "publish_article" => ResolvePublishArticle(state, npcId, intentId, args),
             "record_memory_fact" => ResolveRecordMemoryFact(state, npcId, intentId, args),
@@ -304,6 +307,56 @@ public sealed class NpcIntentResolver
 
         state.Telemetry.Daily.WorldMutations += 1;
         return NpcIntentResolveResult.Applied(intentId, "apply_market_modifier", crop, fallbackUsed: false, proposal: null);
+    }
+
+    private NpcIntentResolveResult ResolveSpreadRumor(SaveState state, string npcId, string intentId, JsonElement args)
+    {
+        if (!args.TryGetProperty("topic", out var topicEl) || topicEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("spread_rumor missing topic");
+        if (!args.TryGetProperty("confidence", out var confidenceEl) || confidenceEl.ValueKind != JsonValueKind.Number || !confidenceEl.TryGetSingle(out var confidence))
+            return NpcIntentResolveResult.Rejected("spread_rumor missing numeric confidence");
+        if (!args.TryGetProperty("target_group", out var groupEl) || groupEl.ValueKind != JsonValueKind.String)
+            return NpcIntentResolveResult.Rejected("spread_rumor missing target_group");
+        if (confidence < 0f || confidence > 1f)
+            return NpcIntentResolveResult.Rejected("spread_rumor confidence out of range (0..1)", "E_CONFIDENCE_RANGE");
+        if (HasUnexpectedArgs(args, "topic", "confidence", "target_group", "target_npc"))
+            return NpcIntentResolveResult.Rejected("spread_rumor contains unexpected argument fields");
+
+        var topic = (topicEl.GetString() ?? string.Empty).Trim();
+        var targetGroup = (groupEl.GetString() ?? "town").Trim();
+        var targetNpc = args.TryGetProperty("target_npc", out var targetNpcEl) && targetNpcEl.ValueKind == JsonValueKind.String
+            ? (targetNpcEl.GetString() ?? string.Empty).Trim()
+            : string.Empty;
+        if (string.IsNullOrWhiteSpace(topic))
+            return NpcIntentResolveResult.Rejected("spread_rumor topic cannot be empty");
+        if (string.IsNullOrWhiteSpace(targetGroup))
+            targetGroup = "town";
+
+        var sourceLabel = string.IsNullOrWhiteSpace(npcId) ? "town" : npcId.Trim();
+        var location = Game1.currentLocation?.Name ?? "Town";
+        var eventId = _townMemoryService.SpreadRumor(
+            state,
+            sourceLabel,
+            topic,
+            targetGroup,
+            confidence,
+            state.Calendar.Day,
+            location,
+            originKind: "npc",
+            directRecipientNpc: targetNpc);
+        if (string.IsNullOrWhiteSpace(eventId))
+            return NpcIntentResolveResult.Rejected("spread_rumor could not be recorded", "E_RUMOR_RECORD_FAILED");
+
+        MarkIntentProcessed(state, intentId, npcId, "spread_rumor");
+        state.Facts.Facts[$"rumor:spread:{intentId}"] = new FactValue
+        {
+            Value = true,
+            SetDay = state.Calendar.Day,
+            Source = "npc_command"
+        };
+
+        state.Telemetry.Daily.WorldMutations += 1;
+        return NpcIntentResolveResult.Applied(intentId, "spread_rumor", eventId, fallbackUsed: false, proposal: null);
     }
 
     private static NpcIntentResolveResult ResolvePublishRumor(SaveState state, string npcId, string intentId, JsonElement args)

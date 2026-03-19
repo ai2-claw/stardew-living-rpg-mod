@@ -26,6 +26,10 @@ public sealed class NpcWalkabilityService
         if (backLayer?.Tiles[tile.X, tile.Y] is null)
             return false;
 
+        var buildingsLayer = location.Map.GetLayer("Buildings");
+        if (buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
+            return false;
+
         var tileVector = new Vector2(tile.X, tile.Y);
         var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
         var tileViewport = new xTile.Dimensions.Rectangle(0, 0, TileSize, TileSize);
@@ -124,6 +128,10 @@ public sealed class NpcWalkabilityService
 
         var backLayer = location.Map.GetLayer("Back");
         if (backLayer?.Tiles[tile.X, tile.Y] is null)
+            return false;
+
+        var buildingsLayer = location.Map.GetLayer("Buildings");
+        if (buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
             return false;
 
         var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
@@ -244,5 +252,54 @@ public sealed class NpcWalkabilityService
         return !string.IsNullOrWhiteSpace(location.doesTileHaveProperty(tile.X, tile.Y, "NoPath", layerName))
             || string.Equals(location.doesTileHaveProperty(tile.X, tile.Y, "NPCBarrier", layerName), "T", StringComparison.OrdinalIgnoreCase)
             || string.Equals(location.doesTileHaveProperty(tile.X, tile.Y, "TouchAction", layerName), "Door", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public bool HasLineOfSight(GameLocation? location, Point tileA, Point tileB)
+    {
+        if (location?.Map is null)
+            return false;
+
+        var buildingsLayer = location.Map.GetLayer("Buildings");
+        if (buildingsLayer is null)
+            return true;
+
+        var x0 = tileA.X;
+        var y0 = tileA.Y;
+        var x1 = tileB.X;
+        var y1 = tileB.Y;
+        var dx = Math.Abs(x1 - x0);
+        var dy = Math.Abs(y1 - y0);
+        var sx = x0 < x1 ? 1 : -1;
+        var sy = y0 < y1 ? 1 : -1;
+        var err = dx - dy;
+
+        while (true)
+        {
+            if (!(x0 == tileA.X && y0 == tileA.Y) && !(x0 == tileB.X && y0 == tileB.Y))
+            {
+                if (x0 < 0 || y0 < 0 || x0 >= buildingsLayer.LayerWidth || y0 >= buildingsLayer.LayerHeight)
+                    return false;
+                if (buildingsLayer.Tiles[x0, y0] is not null)
+                    return false;
+            }
+
+            if (x0 == x1 && y0 == y1)
+                break;
+
+            var e2 = 2 * err;
+            if (e2 > -dy)
+            {
+                err -= dy;
+                x0 += sx;
+            }
+
+            if (e2 < dx)
+            {
+                err += dx;
+                y0 += sy;
+            }
+        }
+
+        return true;
     }
 }

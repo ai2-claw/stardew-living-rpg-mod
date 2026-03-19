@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using StardewLivingRPG.Config;
@@ -11,6 +12,7 @@ public sealed class NpcAutonomyPlannerService
 {
     private readonly DestinationRegistryService _destinationRegistryService;
     private readonly NpcDutyRosterService _dutyRosterService;
+    private readonly Random _random = new();
 
     private static readonly string[] ScheduleLocationMemberCandidates = { "targetLocationName", "TargetLocationName", "locationName", "LocationName", "location", "Location", "locationId", "LocationId" };
     private static readonly string[] ScheduleTileMemberCandidates = { "route", "Route", "endPoint", "EndPoint", "targetTile", "TargetTile", "tile", "Tile", "point", "Point" };
@@ -240,7 +242,11 @@ public sealed class NpcAutonomyPlannerService
         int windowEnd)
     {
         var availableMinutes = DiffMinutes(windowStart, windowEnd);
-        if (availableMinutes < 50 || remainingGoals.Count == 0 || blockCount >= config.AutonomyMaxBlocksPerDay)
+        if (availableMinutes < 90 || remainingGoals.Count == 0 || blockCount >= config.AutonomyMaxBlocksPerDay)
+            return;
+
+        // Randomly skip ~50% of eligible windows to keep detours sparse
+        if (_random.NextDouble() < 0.5)
             return;
 
         var goal = remainingGoals[0];

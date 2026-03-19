@@ -8,6 +8,7 @@ public sealed class CommandPolicyService
         "adjust_reputation",
         "shift_interest_influence",
         "apply_market_modifier",
+        "spread_rumor",
         "publish_rumor",
         "publish_article",
         "record_memory_fact",
@@ -24,6 +25,7 @@ public sealed class CommandPolicyService
     {
         "record_town_event",
         "record_memory_fact",
+        "spread_rumor",
         "publish_rumor"
     };
     private static readonly string[] AmbientConditionalCommands =

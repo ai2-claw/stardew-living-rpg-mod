@@ -19,6 +19,7 @@
         "adjust_reputation",
         "shift_interest_influence",
         "apply_market_modifier",
+        "spread_rumor",
         "publish_rumor",
         "publish_article",
         "record_memory_fact",
@@ -104,6 +105,24 @@
               "delta_pct": { "type": "number", "minimum": -0.15, "maximum": 0.15 },
               "duration_days": { "type": "integer", "minimum": 1, "maximum": 7 },
               "reason": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "command": { "const": "spread_rumor" } } },
+      "then": {
+        "properties": {
+          "arguments": {
+            "type": "object",
+            "required": ["topic", "confidence", "target_group"],
+            "properties": {
+              "topic": { "type": "string", "minLength": 8, "maxLength": 140 },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+              "target_group": { "type": "string", "minLength": 1, "maxLength": 40 },
+              "target_npc": { "type": "string", "minLength": 1, "maxLength": 40 }
             },
             "additionalProperties": false
           }

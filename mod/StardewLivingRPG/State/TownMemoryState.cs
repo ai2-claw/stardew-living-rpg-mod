@@ -12,11 +12,15 @@ public sealed class TownMemoryEvent
     public string EventId { get; set; } = string.Empty;
     public string Kind { get; set; } = "incident";
     public string SourceNpc { get; set; } = string.Empty;
+    public string OriginKind { get; set; } = "npc";
     public string Summary { get; set; } = string.Empty;
     public int Day { get; set; }
     public string Location { get; set; } = string.Empty;
     public int Severity { get; set; } = 1;
     public string Visibility { get; set; } = "local";
+    public string TargetGroup { get; set; } = string.Empty;
+    public float Confidence { get; set; }
+    public int ToastShownDay { get; set; }
     public string[] Tags { get; set; } = Array.Empty<string>();
     public int MentionBudget { get; set; } = 3;
 }
@@ -33,4 +37,5 @@ public sealed class TownKnowledgeEntry
     public int MentionCount { get; set; }
     public int LastMentionDay { get; set; }
     public string Angle { get; set; } = "neutral";
+    public string LearnedFromNpc { get; set; } = string.Empty;
 }

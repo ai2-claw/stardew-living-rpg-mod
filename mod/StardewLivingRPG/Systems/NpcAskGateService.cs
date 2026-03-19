@@ -73,6 +73,7 @@ public sealed class NpcAskGateService
             "manual_market" => -1,
             "manual_interest" => 0,
             "manual_relationship" => 1,
+            "manual_rumor" => 0,
             _ => 0
         };
 
@@ -81,19 +82,24 @@ public sealed class NpcAskGateService
         {
             (NpcVerbalProfile.Professional, "manual_market") => 2,
             (NpcVerbalProfile.Professional, "manual_relationship") => -1,
+            (NpcVerbalProfile.Professional, "manual_rumor") => 0,
 
             (NpcVerbalProfile.Traditionalist, "manual_relationship") => 1,
             (NpcVerbalProfile.Traditionalist, "manual_interest") => 1,
+            (NpcVerbalProfile.Traditionalist, "manual_rumor") => 1,
 
             (NpcVerbalProfile.Intellectual, "manual_interest") => 1,
             (NpcVerbalProfile.Intellectual, "manual_market") => 1,
+            (NpcVerbalProfile.Intellectual, "manual_rumor") => 1,
 
             (NpcVerbalProfile.Enthusiast, "manual_relationship") => 1,
             (NpcVerbalProfile.Enthusiast, "manual_interest") => 1,
             (NpcVerbalProfile.Enthusiast, "manual_market") => 1,
+            (NpcVerbalProfile.Enthusiast, "manual_rumor") => 1,
 
             (NpcVerbalProfile.Recluse, "manual_relationship") => -2,
             (NpcVerbalProfile.Recluse, "manual_interest") => -1,
+            (NpcVerbalProfile.Recluse, "manual_rumor") => -1,
             _ => 0
         };
 
@@ -176,6 +182,7 @@ public sealed class NpcAskGateService
             "manual_relationship" => value,
             "manual_interest" => value,
             "manual_market" => value,
+            "manual_rumor" => value,
             _ => "manual_relationship"
         };
     }
@@ -197,6 +204,11 @@ public sealed class NpcAskGateService
             "manual_market" => t.Contains("market", StringComparison.Ordinal)
                 || t.Contains("price", StringComparison.Ordinal)
                 || t.Contains("crop", StringComparison.Ordinal),
+            "manual_rumor" => t.Contains("rumor", StringComparison.Ordinal)
+                || t.Contains("rumour", StringComparison.Ordinal)
+                || t.Contains("gossip", StringComparison.Ordinal)
+                || t.Contains("whisper", StringComparison.Ordinal)
+                || t.Contains("heard", StringComparison.Ordinal),
             _ => false
         };
     }
@@ -208,6 +220,8 @@ public sealed class NpcAskGateService
         if (topic == "manual_market" && dayOfWeek is "Fri" or "Sat")
             return -1;
         if (topic == "manual_relationship" && dayOfWeek is "Sun" or "Mon")
+            return 1;
+        if (topic == "manual_rumor" && dayOfWeek is "Fri" or "Sat")
             return 1;
         if (profile == NpcVerbalProfile.Recluse && dayOfWeek == "Fri")
             return -1;
@@ -255,6 +269,12 @@ public sealed class NpcAskGateService
                     "Ah, not now! Too many moving pieces at once.",
                     "Not this second. The market is all over the place!"
                 }
+                : topic == "manual_rumor"
+                    ? new[]
+                    {
+                        "Not out loud right now. Too many ears nearby.",
+                        "Maybe later. I don't want to stir the whole room."
+                    }
                 : new[]
                 {
                     "Maybe not right this second.",
@@ -281,6 +301,12 @@ public sealed class NpcAskGateService
                     "I can review that in a bit. Catch me later today.",
                     "Give me a little time to check the numbers first."
                 }
+                : topic == "manual_rumor"
+                    ? new[]
+                    {
+                        "Not here. Ask me again when things are quieter.",
+                        "Later. I would rather not spread half-heard talk in public."
+                    }
                 : new[]
                 {
                     "Give me a little time, then ask again.",

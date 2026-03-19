@@ -119,22 +119,34 @@ public sealed class NpcConversationSimulationService
     {
         return block.Type switch
         {
+            AutonomyPlanBlockType.VisitNpc when tension >= 45 => "grievance",
             AutonomyPlanBlockType.VisitNpc when tension >= 35 => "conflict",
+            AutonomyPlanBlockType.VisitNpc when friendship >= 45 => "gossip_visit",
             AutonomyPlanBlockType.VisitNpc when friendship >= 25 => "visit",
             AutonomyPlanBlockType.VisitNpc => "check_in",
+            AutonomyPlanBlockType.Errand when tension >= 25 => "work_strain",
             AutonomyPlanBlockType.Errand => "work_coordination",
+            AutonomyPlanBlockType.Work when tension >= 25 => "work_strain",
             AutonomyPlanBlockType.Work => "work_coordination",
+            AutonomyPlanBlockType.Socialize when tension >= 30 => "rumor_check",
+            AutonomyPlanBlockType.Socialize when friendship >= 30 => "gossip",
             AutonomyPlanBlockType.Socialize => "check_in",
-            _ => tension >= 30 ? "awkward_encounter" : "check_in"
+            _ => tension >= 35 ? "awkward_encounter" : "check_in"
         };
     }
 
     private static string ResolveTone(int friendship, int trust, int anger, int awkwardness, int jealousy)
     {
+        if (anger >= 45)
+            return "frustrated";
+        if (jealousy >= 40)
+            return "suspicious";
         if (anger >= 35 || jealousy >= 35)
             return "tense";
         if (awkwardness >= 30)
             return "awkward";
+        if (friendship + trust >= 90)
+            return "excited";
         if (friendship + trust >= 60)
             return "warm";
         return "neutral";
@@ -146,6 +158,10 @@ public sealed class NpcConversationSimulationService
             return "duty";
         if (age == ConversationAgeClass.Elder)
             return "formal";
+        if (toneAtStart == "frustrated" || toneAtStart == "suspicious")
+            return "blunt";
+        if (toneAtStart == "excited")
+            return "eager";
         if (toneAtStart == "warm")
             return "warm";
         if (toneAtStart == "awkward" || block.Type == AutonomyPlanBlockType.Wander)
@@ -157,6 +173,12 @@ public sealed class NpcConversationSimulationService
     {
         if (block.Type == AutonomyPlanBlockType.Work || IsDutyFirstNpc(speakerNpcId) || IsDutyFirstNpc(listenerNpcId))
             return toneAtStart == "warm" ? "practical_to_friendly" : "friendly_to_urgent";
+        if (toneAtStart == "frustrated")
+            return pair.FriendshipLikeValue() >= 25 ? "repair_or_escalate" : "escalating";
+        if (toneAtStart == "suspicious")
+            return "digging_for_answers";
+        if (toneAtStart == "excited")
+            return "story_hook";
         if (toneAtStart == "tense" && pair.FriendshipLikeValue() >= 20)
             return "warming_up";
         if (toneAtStart == "warm" && pair.Tension >= 25)
@@ -179,6 +201,14 @@ public sealed class NpcConversationSimulationService
     {
         if (toneAtStart == "warm" && purpose == "visit" && softCap >= 5)
             return "warm_long_talk";
+        if (toneAtStart == "excited")
+            return "story_hook";
+        if (toneAtStart == "suspicious" || purpose == "rumor_check")
+            return "mystery_hook";
+        if (toneAtStart == "frustrated" || purpose == "grievance" || purpose == "work_strain")
+            return "friction_left_hanging";
+        if (purpose == "gossip" || purpose == "gossip_visit")
+            return "rumor_shared";
         if (toneAtStart == "tense")
             return "unresolved_tension";
         if (toneAtStart == "awkward")

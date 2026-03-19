@@ -1,34 +1,34 @@
 using Microsoft.Xna.Framework;
+using StardewLivingRPG.Config;
 using StardewValley;
+
 namespace StardewLivingRPG.Systems;
 
-public enum StagingPhase { Idle, Approaching, Positioned, Talking, Releasing }
+public enum StagingPhase { Idle, Talking, Releasing }
 
 public sealed class NpcFaceToFaceService
 {
+    private enum SceneState { Active, Released }
+
     private sealed class StagingState
     {
         public string EncounterId { get; init; } = string.Empty;
         public string NpcAId { get; init; } = string.Empty;
         public string NpcBId { get; init; } = string.Empty;
         public string LocationName { get; init; } = string.Empty;
-        public Point TileA { get; init; }
-        public Point TileB { get; init; }
-        public StagingPhase Phase { get; set; } = StagingPhase.Approaching;
-        public int TicksInPhase { get; set; }
+        public SceneState Scene { get; set; } = SceneState.Active;
+        public StagingPhase Phase { get; set; } = StagingPhase.Talking;
     }
 
-    private readonly NpcSpeechBubbleService _bubbleService;
+    private readonly ModConfig _config;
     private readonly NpcWalkabilityService _walkabilityService;
-    private readonly Dictionary<string, StagingState> _activeByEncounterId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, StagingState> _statesByEncounterId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _npcToEncounter = new(StringComparer.OrdinalIgnoreCase);
 
-    private const int ApproachTimeoutTicks = 60;
-
-    public NpcFaceToFaceService(NpcSpeechBubbleService bubbleService, NpcWalkabilityService walkabilityService)
+    public NpcFaceToFaceService(NpcWalkabilityService walkabilityService, ModConfig config)
     {
-        _bubbleService = bubbleService;
         _walkabilityService = walkabilityService;
+        _config = config;
     }
 
     public bool TryStage(NPC npcA, NPC npcB, GameLocation location, string encounterId)
@@ -41,12 +41,15 @@ public sealed class NpcFaceToFaceService
             return false;
         if (IsInStaging(npcA.Name) || IsInStaging(npcB.Name))
             return false;
-        if (TileDistance(npcA.Tile, new Point((int)npcB.Tile.X, (int)npcB.Tile.Y)) > 5f)
+        if (TileDistance(npcA.Tile, new Point((int)npcB.Tile.X, (int)npcB.Tile.Y)) > Math.Max(1, _config.AutonomyFaceToFaceDistanceTiles))
             return false;
-
-        var tiles = FindStagingTiles(location, npcA.Tile, npcB.Tile, _walkabilityService);
-        if (tiles is null)
+        if (!_walkabilityService.HasLineOfSight(
+                location,
+                new Point((int)npcA.Tile.X, (int)npcA.Tile.Y),
+                new Point((int)npcB.Tile.X, (int)npcB.Tile.Y)))
+        {
             return false;
+        }
 
         var state = new StagingState
         {
@@ -54,102 +57,97 @@ public sealed class NpcFaceToFaceService
             NpcAId = npcA.Name,
             NpcBId = npcB.Name,
             LocationName = location.Name,
-            TileA = tiles.Value.tileA,
-            TileB = tiles.Value.tileB,
+            Scene = SceneState.Active,
             Phase = StagingPhase.Talking
         };
 
-        _activeByEncounterId[encounterId] = state;
+        _statesByEncounterId[encounterId] = state;
         _npcToEncounter[npcA.Name] = encounterId;
         _npcToEncounter[npcB.Name] = encounterId;
 
+        npcA.Halt();
+        npcB.Halt();
+        FaceEachOther(npcA, npcB);
         return true;
     }
 
     public void Tick(Func<string, NPC?> resolveNpc)
     {
-        foreach (var key in _activeByEncounterId.Keys.ToArray())
+        foreach (var key in _statesByEncounterId.Keys.ToArray())
         {
-            var state = _activeByEncounterId[key];
-            state.TicksInPhase++;
+            var state = _statesByEncounterId[key];
+            if (state.Scene != SceneState.Active)
+                continue;
 
             var npcA = resolveNpc(state.NpcAId);
             var npcB = resolveNpc(state.NpcBId);
-
             if (npcA is null || npcB is null)
             {
-                Release(state);
+                ReleaseScene(state);
                 continue;
             }
 
-            switch (state.Phase)
+            if (!string.Equals(npcA.currentLocation?.Name, state.LocationName, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(npcB.currentLocation?.Name, state.LocationName, StringComparison.OrdinalIgnoreCase))
             {
-                case StagingPhase.Approaching:
-                    if (!string.Equals(npcA.currentLocation?.Name, state.LocationName, StringComparison.OrdinalIgnoreCase)
-                        || !string.Equals(npcB.currentLocation?.Name, state.LocationName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        Release(state);
-                        break;
-                    }
-
-                    if (IsAtTile(npcA, state.TileA) && IsAtTile(npcB, state.TileB))
-                    {
-                        npcA.Halt();
-                        npcB.Halt();
-                        FaceEachOther(npcA, npcB);
-                        state.Phase = StagingPhase.Talking;
-                        state.TicksInPhase = 0;
-                    }
-                    else if (state.TicksInPhase > ApproachTimeoutTicks)
-                    {
-                        Release(state);
-                    }
-                    break;
-
-                case StagingPhase.Positioned:
-                    state.Phase = StagingPhase.Talking;
-                    state.TicksInPhase = 0;
-                    break;
-
-                case StagingPhase.Talking:
-                    FaceEachOther(npcA, npcB);
-                    npcA.Halt();
-                    npcB.Halt();
-                    if (state.TicksInPhase > 1800)
-                    {
-                        state.Phase = StagingPhase.Releasing;
-                        state.TicksInPhase = 0;
-                    }
-                    // Talking phase is driven externally by bubble exhaustion
-                    // or timeout (30 seconds ≈ 1800 ticks at 60fps)
-                    break;
-
-                case StagingPhase.Releasing:
-                    Release(state);
-                    break;
+                ReleaseScene(state);
+                continue;
             }
+
+            if (state.Phase == StagingPhase.Talking)
+            {
+                if (npcA.controller is not null || HasTemporaryController(npcA))
+                {
+                    npcA.controller = null;
+                    TrySetTemporaryController(npcA, null);
+                }
+
+                if (npcB.controller is not null || HasTemporaryController(npcB))
+                {
+                    npcB.controller = null;
+                    TrySetTemporaryController(npcB, null);
+                }
+
+                npcA.Halt();
+                npcB.Halt();
+                FaceEachOther(npcA, npcB);
+                continue;
+            }
+
+            if (state.Phase == StagingPhase.Releasing)
+                ReleaseScene(state);
         }
     }
 
     public void FinishTalking(string encounterId)
     {
-        if (_activeByEncounterId.TryGetValue(encounterId, out var state) && state.Phase == StagingPhase.Talking)
-        {
-            state.Phase = StagingPhase.Releasing;
-            state.TicksInPhase = 0;
-        }
+        if (_statesByEncounterId.TryGetValue(encounterId, out var state))
+            ReleaseScene(state);
     }
 
     public void CancelEncounter(string encounterId)
     {
-        if (_activeByEncounterId.TryGetValue(encounterId, out var state))
-            Release(state);
+        if (_statesByEncounterId.TryGetValue(encounterId, out var state))
+            ReleaseScene(state);
+    }
+
+    public bool ReleaseEncounter(string encounterId)
+    {
+        if (!_statesByEncounterId.TryGetValue(encounterId, out var state))
+            return false;
+
+        ReleaseScene(state);
+        DiscardState(state);
+        return true;
     }
 
     public void CancelAll(string reason)
     {
-        foreach (var state in _activeByEncounterId.Values.ToArray())
-            Release(state);
+        foreach (var state in _statesByEncounterId.Values.ToArray())
+        {
+            ReleaseScene(state);
+            DiscardState(state);
+        }
     }
 
     public bool IsInStaging(string npcId) => _npcToEncounter.ContainsKey(npcId);
@@ -158,16 +156,31 @@ public sealed class NpcFaceToFaceService
         _npcToEncounter.TryGetValue(npcId, out var id) ? id : null;
 
     public StagingPhase GetPhase(string encounterId) =>
-        _activeByEncounterId.TryGetValue(encounterId, out var s) ? s.Phase : StagingPhase.Idle;
+        _statesByEncounterId.TryGetValue(encounterId, out var state) && state.Scene == SceneState.Active
+            ? state.Phase
+            : StagingPhase.Idle;
 
     public bool IsReadyToTalk(string encounterId) =>
-        _activeByEncounterId.TryGetValue(encounterId, out var state) && state.Phase == StagingPhase.Talking;
+        _statesByEncounterId.TryGetValue(encounterId, out var state)
+        && state.Scene == SceneState.Active
+        && state.Phase == StagingPhase.Talking;
 
-    private void Release(StagingState state)
+    private void ReleaseScene(StagingState state)
+    {
+        if (state.Scene == SceneState.Released)
+            return;
+
+        state.Scene = SceneState.Released;
+        state.Phase = StagingPhase.Releasing;
+        _npcToEncounter.Remove(state.NpcAId);
+        _npcToEncounter.Remove(state.NpcBId);
+    }
+
+    private void DiscardState(StagingState state)
     {
         _npcToEncounter.Remove(state.NpcAId);
         _npcToEncounter.Remove(state.NpcBId);
-        _activeByEncounterId.Remove(state.EncounterId);
+        _statesByEncounterId.Remove(state.EncounterId);
     }
 
     private static void FaceEachOther(NPC a, NPC b)
@@ -175,49 +188,94 @@ public sealed class NpcFaceToFaceService
         var dx = b.Tile.X - a.Tile.X;
         var dy = b.Tile.Y - a.Tile.Y;
 
-        int dirA, dirB;
+        int dirA;
+        int dirB;
         if (Math.Abs(dx) >= Math.Abs(dy))
         {
-            dirA = dx > 0 ? 1 : 3; // 1=right, 3=left
+            dirA = dx > 0 ? 1 : 3;
             dirB = dx > 0 ? 3 : 1;
         }
         else
         {
-            dirA = dy > 0 ? 2 : 0; // 2=down, 0=up
+            dirA = dy > 0 ? 2 : 0;
             dirB = dy > 0 ? 0 : 2;
         }
 
-        a.FacingDirection = dirA;
-        b.FacingDirection = dirB;
+        a.faceDirection(dirA);
+        b.faceDirection(dirB);
     }
 
-    private static (Point tileA, Point tileB)? FindStagingTiles(GameLocation location, Vector2 npcATile, Vector2 npcBTile, NpcWalkabilityService walkabilityService)
+    private static int TileDistance(Vector2 tileA, Point tileB)
     {
-        var currentA = new Point((int)npcATile.X, (int)npcATile.Y);
-        var currentB = new Point((int)npcBTile.X, (int)npcBTile.Y);
+        var dx = Math.Abs((int)tileA.X - tileB.X);
+        var dy = Math.Abs((int)tileA.Y - tileB.Y);
+        return dx + dy;
+    }
 
-        if (walkabilityService.IsTileWalkable(location, currentA)
-            && walkabilityService.IsTileWalkable(location, currentB)
-            && !walkabilityService.IsNearWarpTile(location, currentA, 1)
-            && !walkabilityService.IsNearWarpTile(location, currentB, 1)
-            && TileDistance(npcATile, currentB) <= 1.5f)
+    private static bool HasTemporaryController(NPC npc)
+    {
+        return TryGetMemberValue(npc, "temporaryController", out var value) && value is not null;
+    }
+
+    private static void TrySetTemporaryController(NPC npc, object? value)
+    {
+        TrySetMemberValue(npc, "temporaryController", value);
+    }
+
+    private static bool TryGetMemberValue(object source, string memberName, out object? value)
+    {
+        value = null;
+        if (source is null || string.IsNullOrWhiteSpace(memberName))
+            return false;
+
+        const System.Reflection.BindingFlags flags =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+
+        var type = source.GetType();
+        var property = type.GetProperty(memberName, flags);
+        if (property is not null)
         {
-            return (currentA, currentB);
+            value = property.GetValue(source);
+            return true;
         }
 
-        // Spiral search using IsTileStageable (lenient — ignores NPC/player occupancy)
-        return null;
+        var field = type.GetField(memberName, flags);
+        if (field is null)
+            return false;
+
+        value = field.GetValue(source);
+        return true;
     }
 
-    private static bool IsAtTile(NPC npc, Point tile)
+    private static bool TrySetMemberValue(object source, string memberName, object? value)
     {
-        return Vector2.Distance(npc.Tile, new Vector2(tile.X, tile.Y)) <= 0.75f;
-    }
+        if (source is null || string.IsNullOrWhiteSpace(memberName))
+            return false;
 
-    private static float TileDistance(Vector2 a, Point b)
-    {
-        var dx = a.X - b.X;
-        var dy = a.Y - b.Y;
-        return MathF.Sqrt(dx * dx + dy * dy);
+        const System.Reflection.BindingFlags flags =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+
+        try
+        {
+            var type = source.GetType();
+            var property = type.GetProperty(memberName, flags);
+            if (property is not null && property.CanWrite)
+            {
+                property.SetValue(source, value);
+                return true;
+            }
+
+            var field = type.GetField(memberName, flags);
+            if (field is not null)
+            {
+                field.SetValue(source, value);
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
     }
 }

@@ -5,6 +5,7 @@ using StardewModdingAPI.Events;
 using StardewValley;
 using StardewValley.ItemTypeDefinitions;
 using StardewValley.Menus;
+using StardewValley.Pathfinding;
 using StardewLivingRPG.Config;
 using StardewLivingRPG.CustomNpcFramework.Models;
 using StardewLivingRPG.CustomNpcFramework.Services;
@@ -52,6 +53,9 @@ public sealed class ModEntry : Mod
     private const int AmbientConversationBeatUsagePenalty = 3;
     private const int EncounterSamePairCooldownSeconds = 90;
     private const int EncounterContinuationWindowMinutes = 30;
+    private const int EncounterMaxPerPairPerDay = 1;
+    private const int DefaultFaceToFaceDistanceTiles = 3;
+    private const int LegacyFaceToFaceDistanceTiles = 5;
     private const int AutoMarketMinSignals = 2;
     private const float AutoMarketScarcityThreshold = 0.05f;
     private const float AutoMarketStrongScarcityThreshold = 0.09f;
@@ -104,6 +108,10 @@ public sealed class ModEntry : Mod
     private const float GmcmDailyDeltaCapMin = 0.01f;
     private const float GmcmDailyDeltaCapMax = 1.00f;
     private static readonly string[] AllowedModeValues = { "cozy_canon", "story_depth", "living_chaos" };
+    private static readonly string[] AllowedEncounterChanceValues = { "0", "50", "75", "100" };
+    private static readonly Regex EncounterCommandRetryRegex = new(
+        @"(?:^\s*(?:adjust[_\s]+reputation|shift[_\s]+interest[_\s]+influence|apply[_\s]+market[_\s]+modifier|spread[_\s]+rumor|publish[_\s]+rumor|publish[_\s]+article|propose[_\s]+quest|record[_\s]+town[_\s]+event|record[_\s]+memory[_\s]+fact|adjust[_\s]+town[_\s]+sentiment|update[_\s]+romance[_\s]+profile|propose[_\s]+micro[_\s]+date)\b|""(?:command|arguments|npc_id|intent_id)""\s*:)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private static readonly string[] ShopMenuOwnerMemberCandidates =
     {
@@ -884,6 +892,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentQueue<EncounterConversationCompletion> _pendingEncounterConversationCompletions = new();
     private readonly Dictionary<string, EncounterConversationCompletion> _deferredEncounterConversationCompletions = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _player2EncounterIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _dailyEncounterPairs = new(StringComparer.OrdinalIgnoreCase);
     private int _ambientLastOverhearDay = -9999;
     private readonly Dictionary<string, RecentVanillaDialogueContext> _recentVanillaDialogueByNpcToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecentNpcGiftContext> _recentGiftContextByNpcToken = new(StringComparer.OrdinalIgnoreCase);
@@ -984,10 +993,10 @@ public sealed class ModEntry : Mod
         _npcConversationSimulationService = new NpcConversationSimulationService(_pairEmotionService, _config);
         _worldTopologyService = new WorldTopologyService();
         _routePlannerService = new NpcRoutePlannerService(_worldTopologyService, _destinationRegistryService);
-        _scheduleOverrideService = new ScheduleOverrideService();
+        _scheduleOverrideService = new ScheduleOverrideService(_walkabilityService);
         _executionService = new NpcAutonomyExecutionService(_config, _walkabilityService);
         _materializationService = new NpcMaterializationService(_config, _walkabilityService);
-        _faceToFaceService = new NpcFaceToFaceService(_npcSpeechBubbleService, _walkabilityService);
+        _faceToFaceService = new NpcFaceToFaceService(_walkabilityService, _config);
         _npcLocationSpotService = new NpcLocationSpotService();
         _npcTileReservationService = new NpcTileReservationService();
         _npcAmbientIndoorChatterService = new NpcAmbientIndoorChatterService(_config, _npcResidenceService);
@@ -1148,18 +1157,16 @@ public sealed class ModEntry : Mod
                 "gmcm.option.enable_autonomous_routines.tooltip",
                 "Allow NPCs to synthesize light autonomous social plans and queue ambient speech bubbles."));
 
-        gmcm.AddNumberOption(
+        gmcm.AddTextOption(
             mod: ModManifest,
-            getValue: () => _config.AutonomyEncounterScoreThreshold,
-            setValue: value => _config.AutonomyEncounterScoreThreshold = value,
-            name: () => I18n.Get("gmcm.option.autonomy_encounter_score_threshold.name", "Autonomy Encounter Threshold"),
+            getValue: () => _config.AutonomyFaceToFaceEncounterChancePct.ToString(CultureInfo.InvariantCulture),
+            setValue: value => _config.AutonomyFaceToFaceEncounterChancePct = NormalizeEncounterChancePercent(value),
+            name: () => I18n.Get("gmcm.option.autonomy_face_to_face_encounter_chance_pct.name", "Face-to-Face Encounter Chance"),
             tooltip: () => I18n.Get(
-                "gmcm.option.autonomy_encounter_score_threshold.tooltip",
-                "Minimum autonomy encounter score required before two NPCs start an autonomous social exchange."),
-            min: 0f,
-            max: 1f,
-            interval: 0.05f,
-            formatValue: value => value.ToString("0.00", CultureInfo.InvariantCulture));
+                "gmcm.option.autonomy_face_to_face_encounter_chance_pct.tooltip",
+                "Chance that an eligible NPC pair actually starts a face-to-face encounter after all other checks pass."),
+            allowedValues: AllowedEncounterChanceValues,
+            formatAllowedValue: FormatEncounterChanceValueLabel);
 
         gmcm.AddNumberOption(
             mod: ModManifest,
@@ -1169,8 +1176,8 @@ public sealed class ModEntry : Mod
             tooltip: () => I18n.Get(
                 "gmcm.option.bubble_max_chars.tooltip",
                 "Maximum characters shown in a single NPC speech bubble before it is split."),
-            min: 30,
-            max: 90,
+            min: 40,
+            max: 120,
             interval: 5);
 
         gmcm.AddSectionTitle(
@@ -1210,6 +1217,7 @@ public sealed class ModEntry : Mod
         _config.DailyPriceDeltaCapPct = defaults.DailyPriceDeltaCapPct;
         _config.EnableAutonomousRoutines = defaults.EnableAutonomousRoutines;
         _config.AutonomyEncounterScoreThreshold = defaults.AutonomyEncounterScoreThreshold;
+        _config.AutonomyFaceToFaceEncounterChancePct = defaults.AutonomyFaceToFaceEncounterChancePct;
         _config.BubbleMaxChars = defaults.BubbleMaxChars;
         _config.OpenBoardKey = defaults.OpenBoardKey;
         _config.OpenNewspaperKey = defaults.OpenNewspaperKey;
@@ -1275,10 +1283,24 @@ public sealed class ModEntry : Mod
             changed = true;
         }
 
-        var clampedBubbleChars = Math.Clamp(_config.BubbleMaxChars, 30, 90);
+        var normalizedEncounterChance = NormalizeEncounterChancePercent(_config.AutonomyFaceToFaceEncounterChancePct);
+        if (_config.AutonomyFaceToFaceEncounterChancePct != normalizedEncounterChance)
+        {
+            _config.AutonomyFaceToFaceEncounterChancePct = normalizedEncounterChance;
+            changed = true;
+        }
+
+        var clampedBubbleChars = Math.Clamp(_config.BubbleMaxChars, 40, 120);
         if (_config.BubbleMaxChars != clampedBubbleChars)
         {
             _config.BubbleMaxChars = clampedBubbleChars;
+            changed = true;
+        }
+
+        var normalizedFaceToFaceDistance = NormalizeFaceToFaceDistance(_config.AutonomyFaceToFaceDistanceTiles);
+        if (_config.AutonomyFaceToFaceDistanceTiles != normalizedFaceToFaceDistance)
+        {
+            _config.AutonomyFaceToFaceDistanceTiles = normalizedFaceToFaceDistance;
             changed = true;
         }
 
@@ -1318,6 +1340,36 @@ public sealed class ModEntry : Mod
             "living_chaos" => I18n.Get("gmcm.mode.living_chaos", "Living Chaos"),
             _ => I18n.Get("gmcm.mode.cozy_canon", "Cozy Canon")
         };
+    }
+
+    private static string FormatEncounterChanceValueLabel(string value)
+    {
+        return $"{NormalizeEncounterChancePercent(value)}%";
+    }
+
+    private static int NormalizeEncounterChancePercent(string? rawValue)
+    {
+        if (!int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            return 75;
+
+        return NormalizeEncounterChancePercent(parsed);
+    }
+
+    private static int NormalizeEncounterChancePercent(int rawValue)
+    {
+        return AllowedEncounterChanceValues
+            .Select(value => int.Parse(value, CultureInfo.InvariantCulture))
+            .OrderBy(value => Math.Abs(value - rawValue))
+            .ThenBy(value => value)
+            .FirstOrDefault(75);
+    }
+
+    private static int NormalizeFaceToFaceDistance(int rawValue)
+    {
+        if (rawValue == LegacyFaceToFaceDistanceTiles)
+            return DefaultFaceToFaceDistanceTiles;
+
+        return Math.Clamp(rawValue, 1, LegacyFaceToFaceDistanceTiles);
     }
 
     private void RegisterPlayerConsoleCommands(IModHelper helper)
@@ -3795,7 +3847,7 @@ public sealed class ModEntry : Mod
             ShortName = shortName,
             Name = shortName,
             CharacterDescription = $"{shortName} in {townName}, practical and grounded.",
-            SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. " + romanceCommandPromptRule + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
+            SystemPrompt = identityPrompt + " Stay in-character, grounded in Stardew canon. Never impersonate another NPC. For quest asks, and whenever you offer a task/request, you must emit propose_quest with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] and valid target/urgency. Never give a text-only task offer without propose_quest in the same reply. If no suitable request exists, say no request is available in-character. Use adjust_reputation sparingly for meaningful social outcomes. Use shift_interest_influence only for clear town-group dynamics. Use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. Use spread_rumor for person-to-person gossip and publish_rumor only for broad/public rumor suitable for the newspaper lane. For publish_article and publish_rumor, keep title+content within 100 characters total. " + romanceCommandPromptRule + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
             KeepGameState = true,
             Commands = new List<SpawnNpcCommand>
             {
@@ -3900,6 +3952,24 @@ public sealed class ModEntry : Mod
                             content = new { type = "string" },
                             confidence = new { type = "number" },
                             target_group = new { type = "string" }
+                        },
+                        required = new[] { "topic", "confidence", "target_group" },
+                        additionalProperties = false
+                    }
+                },
+                new()
+                {
+                    Name = "spread_rumor",
+                    Description = "Spread a rumor person-to-person without publishing it in the newspaper",
+                    Parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            topic = new { type = "string" },
+                            confidence = new { type = "number", minimum = 0.0, maximum = 1.0 },
+                            target_group = new { type = "string" },
+                            target_npc = new { type = "string" }
                         },
                         required = new[] { "topic", "confidence", "target_group" },
                         additionalProperties = false
@@ -4188,6 +4258,7 @@ public sealed class ModEntry : Mod
         TryApplyCompletedAutonomySpatialPlanResults();
         TryAdvanceAutonomousRoutines(e);
         TryTriggerAmbientIndoorAutonomyChatter(e);
+        _faceToFaceService?.Tick(ResolveNpcByName);
         TryTickNpcSpeechBubbles();
 
         if (e.IsMultipleOf(60))
@@ -4620,12 +4691,12 @@ public sealed class ModEntry : Mod
             promptLanguageRule + " " +
             "Keep command names and argument keys in English; localize only message/topic/title/content string values. " +
             "Ambient policy for this context: prefer record_town_event first and keep command usage sparse. " +
-            "Allowed command set here starts with record_town_event, record_memory_fact, publish_rumor. " +
+            "Allowed command set here starts with record_town_event, record_memory_fact, spread_rumor, publish_rumor. " +
             ambientConditionalText + " " +
             "If anything notable happened, capture it with record_town_event before considering publish commands. " +
             ambientArchetypeRule +
             "For record_town_event, provide complete fields: kind, summary, location, severity, visibility, and tags. " +
-            "Use publish_rumor only for gossip-level information with topic, confidence, and target_group. " +
+            "Use spread_rumor for private person-to-person gossip and publish_rumor only for broad/public rumor suitable for the newspaper lane. " +
             "Do not force a command when nothing notable happened.";
 
         SendPlayer2ChatInternal(
@@ -5209,6 +5280,10 @@ public sealed class ModEntry : Mod
 
     private (string Topic, bool HasRecentEvent, bool HasMarketSignal) BuildAmbientConversationBaseTopic(string speakerShortName, string listenerShortName)
     {
+        var recentRumor = GetRecentRumorTopicHook();
+        if (!string.IsNullOrWhiteSpace(recentRumor))
+            return ($"fresh rumor in circulation: {recentRumor}", true, false);
+
         var recentEvent = _state.TownMemory.Events
             .Where(ev =>
                 ev.Day >= _state.Calendar.Day - 2
@@ -5220,6 +5295,10 @@ public sealed class ModEntry : Mod
         if (recentEvent is not null)
             return ($"recent town event: {recentEvent.Summary}", true, false);
 
+        var autonomyHook = BuildConversationAutonomyHook(speakerShortName, listenerShortName);
+        if (!string.IsNullOrWhiteSpace(autonomyHook))
+            return (autonomyHook, false, false);
+
         var marketMover = _state.Economy.Crops
             .Select(kv => new { Crop = kv.Key, Delta = kv.Value.PriceToday - kv.Value.PriceYesterday })
             .OrderByDescending(x => Math.Abs(x.Delta))
@@ -5230,7 +5309,32 @@ public sealed class ModEntry : Mod
             return ($"market chatter around {marketMover.Crop} prices moving {direction}", false, true);
         }
 
-        return ($"{speakerShortName} and {listenerShortName} compare practical town observations from today", false, false);
+        return ($"{speakerShortName} and {listenerShortName} trade suspicions, ambitions, and small-town observations from today", false, false);
+    }
+
+    private string BuildEncounterConversationTopicSeed(string speakerShortName, string listenerShortName, ConversationScenario scenario)
+    {
+        var recentRumor = GetRecentRumorTopicHook();
+        if (!string.IsNullOrWhiteSpace(recentRumor))
+            return $"A fresh rumor is moving through town: {recentRumor}";
+
+        var recentEvent = _state.TownMemory.Events
+            .Where(ev =>
+                ev.Day >= _state.Calendar.Day - 2
+                && ev.Day <= _state.Calendar.Day
+                && !string.IsNullOrWhiteSpace(ev.Summary)
+                && !string.Equals(ev.Kind, "rumor", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Severity)
+            .FirstOrDefault();
+        if (recentEvent is not null)
+            return $"Something notable still hangs over town: {recentEvent.Summary}";
+
+        var autonomyHook = BuildConversationAutonomyHook(speakerShortName, listenerShortName);
+        if (!string.IsNullOrWhiteSpace(autonomyHook))
+            return autonomyHook;
+
+        return $"Their exchange should feel like {scenario.Purpose} with {scenario.ToneAtStart} tone and a concrete local detail.";
     }
 
     private static string BuildAmbientConversationTopicSeed(string baseTopic, AmbientConversationBeat beat)
@@ -5293,11 +5397,15 @@ public sealed class ModEntry : Mod
                     break;
                 case "market":
                     if (hasMarketSignal)
-                        weight += 7;
+                        weight += 2;
+                    else
+                        weight -= 3;
                     break;
                 case "work":
                     if (hasMarketSignal)
-                        weight += 3;
+                        weight += 1;
+                    else
+                        weight -= 2;
                     break;
                 case "community":
                     if (hasRecentEvent)
@@ -5338,6 +5446,120 @@ public sealed class ModEntry : Mod
         }
 
         return weighted[^1].Beat;
+    }
+
+    private string GetRecentRumorTopicHook()
+    {
+        var rumor = _state.TownMemory.Events
+            .Where(ev =>
+                ev.Day >= _state.Calendar.Day - 4
+                && ev.Day <= _state.Calendar.Day
+                && !string.IsNullOrWhiteSpace(ev.Summary)
+                && string.Equals(ev.Kind, "rumor", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(ev => ev.Day)
+            .ThenByDescending(ev => ev.Confidence)
+            .FirstOrDefault();
+        if (rumor is null)
+            return string.Empty;
+
+        return TrimForContext(rumor.Summary, 120, "town talk");
+    }
+
+    private string BuildConversationAutonomyHook(string speakerShortName, string listenerShortName)
+    {
+        var speakerHook = BuildNpcAutonomyTopicHook(speakerShortName);
+        var listenerHook = BuildNpcAutonomyTopicHook(listenerShortName);
+        if (!string.IsNullOrWhiteSpace(speakerHook) && !string.IsNullOrWhiteSpace(listenerHook))
+            return $"{speakerHook} Meanwhile, {listenerHook}";
+        if (!string.IsNullOrWhiteSpace(speakerHook))
+            return speakerHook;
+        if (!string.IsNullOrWhiteSpace(listenerHook))
+            return listenerHook;
+
+        return string.Empty;
+    }
+
+    private string BuildNpcAutonomyTopicHook(string? npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName)
+            || !_config.EnableAutonomousRoutines)
+        {
+            return string.Empty;
+        }
+
+        var resolvedNpc = ResolveNpcByName(npcName);
+        var runtimeKey = resolvedNpc?.Name ?? npcName.Trim();
+        if (!_autonomyRuntimeByNpcId.TryGetValue(runtimeKey, out var runtime))
+            return string.Empty;
+
+        var block = runtime.ActivePlan is not null
+            && runtime.ActiveBlockIndex >= 0
+            && runtime.ActiveBlockIndex < runtime.ActivePlan.Blocks.Count
+                ? runtime.ActivePlan.Blocks[runtime.ActiveBlockIndex]
+                : null;
+
+        var displayName = string.IsNullOrWhiteSpace(resolvedNpc?.displayName) ? runtimeKey : resolvedNpc!.displayName.Trim();
+        if (!string.IsNullOrWhiteSpace(block?.Reason))
+            return $"{displayName} is here because {TrimForContext(block.Reason, 90, "they have unfinished business")}";
+        if (!string.IsNullOrWhiteSpace(block?.TargetNpcId))
+            return $"{displayName} came looking for {block.TargetNpcId}";
+        if (!string.IsNullOrWhiteSpace(block?.TargetLocation))
+            return $"{displayName} has their mind on {block.TargetLocation}";
+        if (!string.IsNullOrWhiteSpace(runtime.ExpectedLocationId))
+            return $"{displayName} seems pulled toward {runtime.ExpectedLocationId}";
+
+        return string.Empty;
+    }
+
+    private bool HasStrongMarketSignal()
+    {
+        return _state.Economy.Crops.Any(kv => Math.Abs(kv.Value.PriceToday - kv.Value.PriceYesterday) >= 10)
+            || _state.Economy.Crops.Any(kv => kv.Value.ScarcityBonus >= AutoMarketStrongScarcityThreshold)
+            || _state.Economy.Crops.Any(kv => kv.Value.SupplyPressureFactor <= AutoMarketDeepOversupplyThreshold);
+    }
+
+    private bool ShouldForegroundMarketSignals(string contextTag, string? playerText, string? npcName)
+    {
+        if (string.Equals(contextTag, "manual_market", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (contextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(playerText)
+            && (playerText.Contains("market", StringComparison.OrdinalIgnoreCase)
+                || playerText.Contains("price", StringComparison.OrdinalIgnoreCase)
+                || playerText.Contains("sell", StringComparison.OrdinalIgnoreCase)
+                || playerText.Contains("crop", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (string.Equals(contextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(contextTag, "npc_encounter_dialogue", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasStrongMarketSignal()
+                && IsMarketRelevantNpc(npcName);
+        }
+
+        return HasStrongMarketSignal();
+    }
+
+    private static bool IsMarketRelevantNpc(string? npcName)
+    {
+        if (string.IsNullOrWhiteSpace(npcName))
+            return false;
+
+        return npcName.Equals("Pierre", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Caroline", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Lewis", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Gus", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Robin", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Demetrius", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Maru", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Jodi", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Shane", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Marnie", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Willy", StringComparison.OrdinalIgnoreCase)
+            || npcName.Equals("Clint", StringComparison.OrdinalIgnoreCase);
     }
 
     private void TrackAmbientConversationBeatUsage(string pairKey, string speakerShortName, string listenerShortName, string beatId)
@@ -5395,14 +5617,15 @@ public sealed class ModEntry : Mod
         {
             return
                 $"Offscreen NPC chat turn 1/{turnDepth}. Discuss {topicSeed}. " +
-                $"Beat guidance: {beatDirective} Open with a concrete claim or question. " +
-                "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+                $"Beat guidance: {beatDirective} Open with a concrete claim, rumor, complaint, suspicion, or question. " +
+                "Avoid flat niceties; let the scene carry some texture, subtext, or friction when it fits. " +
+                "Reply in 1 short in-character sentence (under 80 characters) only. Do not emit commands.";
         }
 
         return
             $"Offscreen NPC chat turn {turnNumber}/{turnDepth}. Continue naturally from this line: \"{priorLine}\". " +
-            $"Keep beat focus on {beat.Label}. {beatDirective} Avoid generic pleasantries. " +
-            "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+            $"Keep beat focus on {beat.Label}. {beatDirective} Avoid generic pleasantries. Let gossip, mystery, defensiveness, or excitement appear if the beat supports it. " +
+            "Reply in 1 short in-character sentence (under 80 characters) only. Do not emit commands.";
     }
 
     private static string BuildAmbientConversationExtractionPrompt(
@@ -5431,9 +5654,9 @@ public sealed class ModEntry : Mod
             "Target: if transcript contains a concrete opinion, preference, promise, relationship signal, scheme, suspicion, or notable event detail, emit at least one record_memory_fact.",
             $"Beat extraction focus: {beat.ExtractionHint}.",
             "Budget: maximum 3 commands total.",
-            "Allowed mix: either one record_town_event, or up to two record_memory_fact commands (max one per participant npc_id), plus optional one publish_rumor.",
+            "Allowed mix: either one record_town_event, or up to two record_memory_fact commands (max one per participant npc_id), plus optional one spread_rumor or publish_rumor.",
             "If emitting record_memory_fact, set npc_id to one of the participant IDs above.",
-            "Never emit publish_article.",
+            "Use spread_rumor for private person-to-person gossip. Use publish_rumor only when the rumor should feel broad/public beyond these two NPCs. Never emit publish_article.",
             "If nothing notable happened, reply with one short plain text sentence and no command.");
     }
 
@@ -5502,6 +5725,8 @@ public sealed class ModEntry : Mod
             }
 
             TryPersistAmbientConversationFallbackMemory(completion, appliedStructuredMemoryOrEvent);
+            if (completion.Completed)
+                TryShareRumorsBetweenNpcs(completion.SpeakerShortName, completion.ListenerShortName);
 
             if (completion.OverhearEligible
                 && completion.Completed
@@ -5867,6 +6092,76 @@ public sealed class ModEntry : Mod
         var resolvedName = string.IsNullOrWhiteSpace(npc.displayName) ? npc.Name : npc.displayName;
         var safeName = string.IsNullOrWhiteSpace(resolvedName) ? npcName.Trim() : resolvedName;
         return $"NPC_CURRENT_ACTIVITY[{safeName}]: {TrimForContext(activity, 140, "working")}.";
+    }
+
+    private string BuildNpcAutonomyContextBlock(string? npcName, string blockLabel)
+    {
+        if (string.IsNullOrWhiteSpace(npcName)
+            || string.IsNullOrWhiteSpace(blockLabel)
+            || !_config.EnableAutonomousRoutines)
+        {
+            return string.Empty;
+        }
+
+        var resolvedNpc = ResolveNpcByName(npcName);
+        var runtimeKey = resolvedNpc?.Name ?? npcName.Trim();
+        if (!_autonomyRuntimeByNpcId.TryGetValue(runtimeKey, out var runtime))
+            return string.Empty;
+
+        var block = runtime.ActivePlan is not null
+            && runtime.ActiveBlockIndex >= 0
+            && runtime.ActiveBlockIndex < runtime.ActivePlan.Blocks.Count
+                ? runtime.ActivePlan.Blocks[runtime.ActiveBlockIndex]
+                : null;
+
+        var targetLocation = !string.IsNullOrWhiteSpace(block?.TargetLocation)
+            ? block.TargetLocation
+            : !string.IsNullOrWhiteSpace(runtime.CurrentTargetLocation)
+                ? runtime.CurrentTargetLocation
+                : runtime.ExpectedLocationId;
+        var targetNpcId = !string.IsNullOrWhiteSpace(block?.TargetNpcId)
+            ? block.TargetNpcId
+            : runtime.CurrentTargetNpcId;
+        var reason = !string.IsNullOrWhiteSpace(block?.Reason)
+            ? block.Reason
+            : string.Empty;
+        var movementPhase = string.IsNullOrWhiteSpace(runtime.MovementPhase) ? "idle" : runtime.MovementPhase;
+        var hasSignal = block is not null
+            || !string.IsNullOrWhiteSpace(targetLocation)
+            || !string.IsNullOrWhiteSpace(targetNpcId)
+            || !string.IsNullOrWhiteSpace(reason)
+            || !string.IsNullOrWhiteSpace(runtime.ExpectedLocationId)
+            || !string.Equals(movementPhase, "idle", StringComparison.OrdinalIgnoreCase);
+        if (!hasSignal)
+            return string.Empty;
+
+        var displayName = resolvedNpc?.displayName;
+        var safeName = string.IsNullOrWhiteSpace(displayName) ? runtimeKey : displayName.Trim();
+        var ownership = ResolveAutonomyOwnershipLabel(block, movementPhase);
+        var blockType = block?.Type.ToString() ?? "none";
+        var status = block?.Status.ToString() ?? "none";
+        var expectedLocation = string.IsNullOrWhiteSpace(runtime.ExpectedLocationId) ? "none" : runtime.ExpectedLocationId;
+        var expectedTile = runtime.ExpectedTile == Point.Zero ? "none" : $"({runtime.ExpectedTile.X},{runtime.ExpectedTile.Y})";
+        var trimmedReason = string.IsNullOrWhiteSpace(reason) ? "none" : TrimForContext(reason, 100, "none");
+
+        return
+            $"{blockLabel}[{safeName}]: ownership='{ownership}' block='{blockType}' movement_phase='{movementPhase}' " +
+            $"target_location='{(string.IsNullOrWhiteSpace(targetLocation) ? "none" : targetLocation)}' " +
+            $"target_npc='{(string.IsNullOrWhiteSpace(targetNpcId) ? "none" : targetNpcId)}' " +
+            $"reason='{trimmedReason}' expected_location='{expectedLocation}' expected_tile='{expectedTile}' status='{status}'.";
+    }
+
+    private static string ResolveAutonomyOwnershipLabel(AutonomyPlanBlock? block, string movementPhase)
+    {
+        if (block?.Type is AutonomyPlanBlockType.BaseAnchor or AutonomyPlanBlockType.RequiredDuty)
+            return "vanilla_anchor";
+        if (string.Equals(movementPhase, "vanilla_schedule", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(movementPhase, "vanilla_driving", StringComparison.OrdinalIgnoreCase))
+        {
+            return "vanilla_schedule";
+        }
+
+        return block is null ? "ambient_background" : "ambient_detour";
     }
 
     private string ResolveNpcCurrentActivity(NPC npc, PromptLocationContext npcLocation)
@@ -11172,7 +11467,7 @@ public sealed class ModEntry : Mod
                 ShortName = "Lewis",
                 Name = "Mayor Lewis",
                 CharacterDescription = $"Mayor Lewis of {townProfile.CanonTown} in Stardew Valley. Canon-grounded, practical, cooperative, and non-fabricating.",
-                SystemPrompt = $"You are Mayor Lewis from Stardew Valley ({townProfile.CanonTown}). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For social outcomes, you may use adjust_reputation sparingly for meaningful shifts only. For town-group dynamics, you may use shift_interest_influence only when discussion clearly concerns a town group priority. For market dynamics, use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. For publish_article and publish_rumor, keep title+content within 100 characters total. " + romanceCommandPromptRule + "IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
+                SystemPrompt = $"You are Mayor Lewis from Stardew Valley ({townProfile.CanonTown}). Stay fully in-character as an NPC, not an AI assistant. Tone: warm, practical, brief. Prefer 1-3 short sentences and natural townfolk phrasing. Avoid bullet lists unless explicitly requested. Never say phrases like 'as an AI', 'canon list', 'provided context', or 'feel free to ask'. Strict canon mode: never invent town names, regions, NPCs, or lore. Use only game_state_info facts. If uncertain, say you are unsure in-character. When asked about the market, mention at least one concrete current market signal from game_state_info (movers, oversupply, scarcity, or recommendation). For quest asks, use the propose_quest command with template_id EXACTLY one of [gather_crop, deliver_item, mine_resource, social_visit] (never quest IDs). Use target types by template: gather/deliver=item or crop, mine=resource, social_visit=NPC name. Never offer or describe a concrete player task without emitting propose_quest in the same reply. If no suitable request exists, say so in-character and do not invent a task. For social outcomes, you may use adjust_reputation sparingly for meaningful shifts only. For town-group dynamics, you may use shift_interest_influence only when discussion clearly concerns a town group priority. For market dynamics, use apply_market_modifier only when there is a clear market anomaly and keep changes bounded. Use spread_rumor for person-to-person gossip and publish_rumor only for broad/public rumor suitable for the newspaper lane. For publish_article and publish_rumor, keep title+content within 100 characters total. " + romanceCommandPromptRule + "IMPORTANT: do not promise exact gold amounts unless they match REWARD_RULES in game_state_info; prefer wording like modest/solid/high payout band. " + promptLanguageRule + " Keep command names and argument keys in English; localize only player-facing values.",
                 KeepGameState = true,
                 Commands = new List<SpawnNpcCommand>
                 {
@@ -11282,6 +11577,25 @@ public sealed class ModEntry : Mod
                                 content = new { type = "string" },
                                 confidence = new { type = "number" },
                                 target_group = new { type = "string" }
+                            },
+                            required = new[] { "topic", "confidence", "target_group" },
+                            additionalProperties = false
+                        },
+                        NeverRespondWithMessage = false
+                    },
+                    new()
+                    {
+                        Name = "spread_rumor",
+                        Description = "Spread a rumor person-to-person without publishing it in the newspaper",
+                        Parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                topic = new { type = "string" },
+                                confidence = new { type = "number", minimum = 0.0, maximum = 1.0 },
+                                target_group = new { type = "string" },
+                                target_npc = new { type = "string" }
                             },
                             required = new[] { "topic", "confidence", "target_group" },
                             additionalProperties = false
@@ -11546,6 +11860,8 @@ public sealed class ModEntry : Mod
             var playerAcceptingQuest = IsPlayerAcceptingQuest(message, hasPendingQuestOffer);
             if (string.IsNullOrWhiteSpace(effectiveContextTag) && playerAskedForQuest)
                 effectiveContextTag = "player_chat_quest_request";
+
+            TryCapturePlayerOriginRumor(who, message);
 
             if (!string.IsNullOrWhiteSpace(effectiveContextTag)
                 && effectiveContextTag.StartsWith("manual_", StringComparison.OrdinalIgnoreCase))
@@ -12260,6 +12576,48 @@ public sealed class ModEntry : Mod
         Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
     }
 
+    private void TryShowNpcRumorSpreadToast(string eventId, string? sourceNpcId)
+    {
+        if (!Context.IsWorldReady
+            || _townMemoryService is null
+            || string.IsNullOrWhiteSpace(eventId)
+            || !_townMemoryService.TryMarkRumorToastShown(_state, eventId, _state.Calendar.Day))
+        {
+            return;
+        }
+
+        var sourceName = I18n.Get("hud.rumor.spread.source_fallback", "Someone");
+        if (!string.IsNullOrWhiteSpace(sourceNpcId)
+            && _player2NpcShortNameById.TryGetValue(sourceNpcId, out var shortName)
+            && !string.IsNullOrWhiteSpace(shortName))
+        {
+            sourceName = ResolvePublishSourceNpcName(shortName);
+        }
+        else if (!string.IsNullOrWhiteSpace(sourceNpcId))
+        {
+            sourceName = ResolvePublishSourceNpcName(sourceNpcId);
+        }
+
+        var message = I18n.Get(
+            "hud.rumor.spread_npc",
+            $"{sourceName} set a new whisper loose in town.",
+            new { source = sourceName });
+        Game1.addHUDMessage(new HUDMessage(message, HUDMessage.newQuest_type));
+    }
+
+    private void TryShareRumorsBetweenNpcs(string speakerNpcName, string listenerNpcName)
+    {
+        if (_townMemoryService is null
+            || string.IsNullOrWhiteSpace(speakerNpcName)
+            || string.IsNullOrWhiteSpace(listenerNpcName))
+        {
+            return;
+        }
+
+        _townMemoryService.TryShareRumorBetweenNpcs(_state, speakerNpcName, listenerNpcName, _state.Calendar.Day);
+        _townMemoryService.TryShareRumorBetweenNpcs(_state, listenerNpcName, speakerNpcName, _state.Calendar.Day);
+    }
+
     private NewspaperIssue BuildAndStoreNewspaperIssue()
     {
         if (_newspaperService is null)
@@ -12569,6 +12927,7 @@ public sealed class ModEntry : Mod
         _autonomyRuntimeByNpcId.Clear();
         _deferredEncounterConversationCompletions.Clear();
         _player2EncounterIds.Clear();
+        _dailyEncounterPairs.Clear();
         _npcSpeechBubbleService?.CancelAll();
         _pairEmotionService?.Decay(_state);
     }
@@ -12637,7 +12996,6 @@ public sealed class ModEntry : Mod
             {
                 var graph = _worldTopologyService.BuildGraph(Game1.locations);
                 _routePlannerService.CompileRoutesForPlan(graph, npc.Name, plan, npc.currentLocation?.Name ?? "Town", _config.AutonomyMaxTravelMinutesPerBlock);
-                _scheduleOverrideService?.ApplyDailyOverride(npc, plan);
             }
 
             _autonomyRuntimeByNpcId[npc.Name] = new AutonomyRuntimeState
@@ -12666,7 +13024,6 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        _faceToFaceService?.Tick(ResolveNpcByName);
         TryAdvanceAutonomyEncounterStates();
 
         foreach (var runtime in _autonomyRuntimeByNpcId.Values.ToArray())
@@ -12680,52 +13037,41 @@ public sealed class ModEntry : Mod
             {
                 // All blocks exhausted — let vanilla resume naturally
                 runtime.OverrideStatus = AutonomyOverrideStatus.Idle;
+                SyncExpectedStateToLoadedNpc(npc, runtime);
                 _npcTileReservationService?.Release(runtime.NpcId);
                 continue;
             }
 
             var isAnchor = block.Type is AutonomyPlanBlockType.BaseAnchor or AutonomyPlanBlockType.RequiredDuty;
 
+            // ── Skip movement/spatial updates for NPCs in active encounters ──
+            if ((_faceToFaceService?.IsInStaging(npc.Name) ?? false)
+                || _npcSocialEncounterService.IsNpcInActiveEncounter(npc.Name))
+            {
+                continue;
+            }
+
             // ── Anchor blocks: 100% vanilla-driven, mod does NO movement ──
             // Only the encounter check (below) runs for anchors.
-            if (!isAnchor && block.Status == AutonomyPlanBlockStatus.Active)
+            if (isAnchor)
             {
-                TryRefreshSpatialTarget(npc, runtime, block, forcePlayer2Replan: false);
-
-                // If tile is still zero after spatial refresh, resolve a fallback
-                if (block.TargetTile == Point.Zero && npc.currentLocation is not null && _executionService is not null)
-                    _executionService.TryResolveFallbackTile(npc.currentLocation, npc, block);
-
-                if (_config.EnableCrossMapAutonomy && _scheduleOverrideService is not null && _scheduleOverrideService.HasOverride(npc.Name))
-                {
-                    if (block.TargetTile != Point.Zero)
-                        _scheduleOverrideService.PatchSingleEntry(npc, block.StartTime, block.TargetLocation, block.TargetTile);
-                    runtime.MovementPhase = "vanilla_schedule";
-                }
+                SyncExpectedStateToLoadedNpc(npc, runtime);
+            }
+            else if (block.Status == AutonomyPlanBlockStatus.Active)
+            {
+                TryRefreshSpatialTarget(npc, runtime, block, forcePlayer2Replan: false, reserveTarget: false);
+                UpdateAmbientDetourProjection(npc, runtime, block);
             }
 
             if (block.Status == AutonomyPlanBlockStatus.Completed)
             {
-                // When a detour block finishes, release the mod's PathFindController so vanilla reclaims
                 if (!isAnchor)
                 {
-                    // Ensure NPC is on a walkable tile before handing back to vanilla
-                    if (npc.currentLocation is not null && _walkabilityService is not null)
-                    {
-                        var currentTile = new Point((int)npc.Tile.X, (int)npc.Tile.Y);
-                        if (!_walkabilityService.IsTileWalkable(npc.currentLocation, currentTile, npc))
-                        {
-                            if (_walkabilityService.TryFindNearestWalkableTile(npc.currentLocation, currentTile, 8, npc, out var safeTile))
-                                _executionService?.WarpNpcTo(npc, npc.currentLocation.Name, safeTile);
-                        }
-                    }
-                    npc.controller = null;
-                    npc.Halt();
                     runtime.MovementPhase = "idle";
                     runtime.StationaryTicks = 0;
                     runtime.OscillationTicks = 0;
-                    _executionService?.ResetStuckTracking(runtime.NpcId);
                 }
+                SyncExpectedStateToLoadedNpc(npc, runtime);
                 _npcTileReservationService?.Release(runtime.NpcId);
                 _state.Telemetry.Daily.AutonomyBlocksCompleted += 1;
                 continue;
@@ -12737,23 +13083,14 @@ public sealed class ModEntry : Mod
                 if (!string.IsNullOrWhiteSpace(runtime.ActiveEncounterId)
                     && _npcSocialEncounterService.GetEncounter(runtime.ActiveEncounterId) is { } activeEncounter)
                 {
-                    _npcSocialEncounterService.CancelEncounter(activeEncounter.EncounterId, "duty_recall");
-                    _faceToFaceService?.CancelEncounter(activeEncounter.EncounterId);
-                    _npcSpeechBubbleService?.CancelEncounterBubbles(activeEncounter.EncounterId);
-                    ClearEncounterRuntimeLinks(activeEncounter.EncounterId);
+                    CancelEncounterScene(activeEncounter, "duty_recall");
                 }
 
                 runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
                 continue;
             }
 
-            // ── Encounter check (runs for both anchor and detour blocks) ──
-
-            if ((_faceToFaceService?.IsInStaging(npc.Name) ?? false)
-                || _npcSocialEncounterService.IsNpcInActiveEncounter(npc.Name))
-            {
-                continue;
-            }
+            // ── New encounter eligibility ──
 
             if (runtime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay)
                 continue;
@@ -12776,6 +13113,9 @@ public sealed class ModEntry : Mod
                 Monitor.Log($"Autonomy: {npc.Name}->{targetNpc.Name} in range but ShouldStartEncounter=false (block={block.Type}).", LogLevel.Trace);
                 continue;
             }
+
+            if (!PassesEncounterApprovalChance(npc.Name, targetNpc.Name, block.Type, npc.currentLocation))
+                continue;
 
             Monitor.Log($"Autonomy: {npc.Name}->{targetNpc.Name} encounter approved! block={block.Type} location={npc.currentLocation?.Name}.", LogLevel.Debug);
             runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
@@ -12836,6 +13176,9 @@ public sealed class ModEntry : Mod
             if (IsSamePairEncounterCoolingDown(speakerNpc.Name, listenerNpc.Name))
                 continue;
 
+            if (GetDailyEncounterCount(speakerNpc.Name, listenerNpc.Name) >= EncounterMaxPerPairPerDay)
+                continue;
+
             if (speakerRuntime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay
                 || listenerRuntime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay)
             {
@@ -12844,6 +13187,16 @@ public sealed class ModEntry : Mod
 
             if (!IsWithinAutonomyTalkRange(speakerNpc, listenerNpc))
                 continue;
+
+            var walkabilityService = _walkabilityService;
+            if (walkabilityService is null
+                || !walkabilityService.HasLineOfSight(
+                    location,
+                    new Point((int)speakerNpc.Tile.X, (int)speakerNpc.Tile.Y),
+                    new Point((int)listenerNpc.Tile.X, (int)listenerNpc.Tile.Y)))
+            {
+                continue;
+            }
 
             var block = new AutonomyPlanBlock
             {
@@ -12863,6 +13216,9 @@ public sealed class ModEntry : Mod
             };
 
             if (!_npcSocialEncounterService.ShouldStartEncounter(_state, speakerNpc, listenerNpc, block))
+                continue;
+
+            if (!PassesEncounterApprovalChance(speakerNpc.Name, listenerNpc.Name, block.Type, location))
                 continue;
 
             if (!TryStartAutonomyEncounter(speakerRuntime, speakerNpc, listenerNpc, block))
@@ -12905,6 +13261,13 @@ public sealed class ModEntry : Mod
         return (hours * 100) + mins;
     }
 
+    private static int DiffMinutes(int startTime, int endTime)
+    {
+        var start = ((startTime / 100) * 60) + (startTime % 100);
+        var end = ((endTime / 100) * 60) + (endTime % 100);
+        return Math.Max(0, end - start);
+    }
+
     private void TryTickNpcSpeechBubbles()
     {
         if (_npcSpeechBubbleService is null)
@@ -12917,9 +13280,7 @@ public sealed class ModEntry : Mod
             {
                 foreach (var encounter in _npcSocialEncounterService.GetActiveEncounters().ToArray())
                 {
-                    _npcSocialEncounterService.CancelEncounter(encounter.EncounterId, "ui_interrupt");
-                    ClearEncounterRuntimeLinks(encounter.EncounterId);
-                    _state.Telemetry.Daily.EncountersCancelled += 1;
+                    CancelEncounterScene(encounter, "ui_interrupt");
                 }
             }
             _faceToFaceService?.CancelAll("ui_interrupt");
@@ -12971,7 +13332,7 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private bool TryRefreshSpatialTarget(NPC npc, AutonomyRuntimeState runtime, AutonomyPlanBlock block, bool forcePlayer2Replan)
+    private bool TryRefreshSpatialTarget(NPC npc, AutonomyRuntimeState runtime, AutonomyPlanBlock block, bool forcePlayer2Replan, bool reserveTarget = true)
     {
         if (_npcLocationSpotService is null
             || _npcTileReservationService is null
@@ -12981,9 +13342,9 @@ public sealed class ModEntry : Mod
             // Even for unsupported locations, try a procedural fallback if tile is zero
             if (block.TargetTile == Point.Zero && !string.IsNullOrWhiteSpace(block.TargetLocation))
                 return TryResolveProceduralFallbackTile(npc, block);
-            if (block.TargetTile != Point.Zero && !string.IsNullOrWhiteSpace(block.TargetLocation))
+            if (reserveTarget && block.TargetTile != Point.Zero && !string.IsNullOrWhiteSpace(block.TargetLocation))
                 _npcTileReservationService?.TryReserve(npc.Name, block.TargetLocation, block.TargetTile, block.TargetSpotId);
-            return false;
+            return block.TargetTile != Point.Zero;
         }
 
         // For locations the spot service doesn't support, use procedural fallback
@@ -12991,7 +13352,8 @@ public sealed class ModEntry : Mod
         {
             if (block.TargetTile == Point.Zero)
                 return TryResolveProceduralFallbackTile(npc, block);
-            _npcTileReservationService?.TryReserve(npc.Name, block.TargetLocation, block.TargetTile, block.TargetSpotId);
+            if (reserveTarget)
+                _npcTileReservationService?.TryReserve(npc.Name, block.TargetLocation, block.TargetTile, block.TargetSpotId);
             return block.TargetTile != Point.Zero;
         }
 
@@ -13038,7 +13400,8 @@ public sealed class ModEntry : Mod
                 return false;
             }
             _npcTileReservationService.Release(npc.Name ?? string.Empty);
-            return _npcTileReservationService.TryReserve(npc.Name ?? string.Empty, block.TargetLocation, block.TargetTile, block.TargetSpotId);
+            return !reserveTarget
+                || _npcTileReservationService.TryReserve(npc.Name ?? string.Empty, block.TargetLocation, block.TargetTile, block.TargetSpotId);
         }
 
         if (!TryPlanSpatialIntent(npc, snapshot, block, forcePlayer2Replan, out var suggestion, out var plannedByPlayer2))
@@ -13069,6 +13432,8 @@ public sealed class ModEntry : Mod
         block.Player2Planned = plannedByPlayer2;
         runtime.StuckReason = string.Empty;
         runtime.NeedsLocalRepath = true;
+        if (!reserveTarget)
+            _npcTileReservationService.Release(npc.Name ?? string.Empty);
         return true;
     }
 
@@ -13533,6 +13898,77 @@ public sealed class ModEntry : Mod
         return Math.Clamp(configuredMinutes * 6, 8, 45);
     }
 
+    private bool PassesEncounterApprovalChance(string speakerNpcId, string listenerNpcId, AutonomyPlanBlockType blockType, GameLocation? location)
+    {
+        var approvalChance = Math.Clamp(_config.AutonomyFaceToFaceEncounterChancePct, 0, 100) / 100d;
+        if (_ambientNpcRandom.NextDouble() < approvalChance)
+            return true;
+
+        Monitor.Log(
+            $"Autonomy: {speakerNpcId}->{listenerNpcId} skipped by {(int)Math.Round(approvalChance * 100d)}% encounter gate (block={blockType}).",
+            LogLevel.Trace);
+        return false;
+    }
+
+    private static void SyncExpectedStateToLoadedNpc(NPC npc, AutonomyRuntimeState runtime)
+    {
+        if (npc.currentLocation is not null)
+            runtime.ExpectedLocationId = npc.currentLocation.Name ?? runtime.ExpectedLocationId;
+        runtime.ExpectedTile = new Point((int)npc.Tile.X, (int)npc.Tile.Y);
+        runtime.OffscreenProgressMinutes = 0;
+        if (string.IsNullOrWhiteSpace(runtime.MovementPhase) || string.Equals(runtime.MovementPhase, "ambient_detour", StringComparison.OrdinalIgnoreCase))
+            runtime.MovementPhase = "vanilla_schedule";
+    }
+
+    private void UpdateAmbientDetourProjection(NPC npc, AutonomyRuntimeState runtime, AutonomyPlanBlock block)
+    {
+        if (string.IsNullOrWhiteSpace(block.TargetLocation))
+        {
+            SyncExpectedStateToLoadedNpc(npc, runtime);
+            return;
+        }
+
+        if (string.Equals(block.TargetLocation, npc.currentLocation?.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            SyncExpectedStateToLoadedNpc(npc, runtime);
+            return;
+        }
+
+        runtime.MovementPhase = "ambient_detour";
+        var elapsedMinutes = DiffMinutes(block.StartTime, Game1.timeOfDay);
+        runtime.OffscreenProgressMinutes = elapsedMinutes;
+
+        var route = block.Route;
+        if (route is null || route.Segments.Count == 0 || route.TotalEstimatedMinutes <= 0)
+        {
+            runtime.ExpectedLocationId = block.TargetLocation;
+            runtime.ExpectedTile = block.TargetTile != Point.Zero ? block.TargetTile : runtime.ExpectedTile;
+            return;
+        }
+
+        if (elapsedMinutes >= route.TotalEstimatedMinutes)
+        {
+            runtime.ExpectedLocationId = route.DestinationLocationId;
+            runtime.ExpectedTile = block.TargetTile != Point.Zero ? block.TargetTile : route.FinalArrivalTile;
+            return;
+        }
+
+        var cumulativeMinutes = 0;
+        foreach (var segment in route.Segments)
+        {
+            cumulativeMinutes += segment.EstimatedMinutes;
+            if (elapsedMinutes < cumulativeMinutes)
+            {
+                runtime.ExpectedLocationId = segment.FromLocationId;
+                runtime.ExpectedTile = segment.DepartureTile;
+                return;
+            }
+
+            runtime.ExpectedLocationId = segment.ToLocationId;
+            runtime.ExpectedTile = segment.ArrivalTile;
+        }
+    }
+
     private bool TryResolveConversationApproachTile(NPC speakerNpc, NPC listenerNpc, out Point tile)
     {
         tile = Point.Zero;
@@ -13595,15 +14031,27 @@ public sealed class ModEntry : Mod
 
     private bool TryStartAutonomyEncounter(AutonomyRuntimeState runtime, NPC speakerNpc, NPC listenerNpc, AutonomyPlanBlock block)
     {
+        var speakerLocation = speakerNpc.currentLocation;
         if (_npcSocialEncounterService is null
             || _npcSpeechBubbleService is null
             || _npcConversationSimulationService is null
             || _faceToFaceService is null
-            || speakerNpc.currentLocation is null
-            || !string.Equals(speakerNpc.currentLocation.Name, listenerNpc.currentLocation?.Name, StringComparison.OrdinalIgnoreCase))
+            || speakerLocation is null
+            || !string.Equals(speakerLocation.Name, listenerNpc.currentLocation?.Name, StringComparison.OrdinalIgnoreCase))
         {
-            var nullSvc = _npcSocialEncounterService is null ? "encounterSvc" : _npcSpeechBubbleService is null ? "bubbleSvc" : _npcConversationSimulationService is null ? "simSvc" : _faceToFaceService is null ? "f2fSvc" : speakerNpc.currentLocation is null ? "speakerLoc" : "locMismatch";
+            var nullSvc = _npcSocialEncounterService is null ? "encounterSvc" : _npcSpeechBubbleService is null ? "bubbleSvc" : _npcConversationSimulationService is null ? "simSvc" : _faceToFaceService is null ? "f2fSvc" : speakerLocation is null ? "speakerLoc" : "locMismatch";
             Monitor.Log($"Autonomy: TryStartAutonomyEncounter early-exit {speakerNpc.Name}->{listenerNpc.Name} ({nullSvc}).", LogLevel.Debug);
+            return false;
+        }
+
+        var walkabilityService = _walkabilityService;
+        if (walkabilityService is null
+            || !walkabilityService.HasLineOfSight(
+                speakerLocation,
+                new Point((int)speakerNpc.Tile.X, (int)speakerNpc.Tile.Y),
+                new Point((int)listenerNpc.Tile.X, (int)listenerNpc.Tile.Y)))
+        {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked by wall (no line of sight).", LogLevel.Trace);
             return false;
         }
 
@@ -13613,18 +14061,26 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        if (GetDailyEncounterCount(speakerNpc.Name, listenerNpc.Name) >= EncounterMaxPerPairPerDay)
+        {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked by pair daily cap.", LogLevel.Trace);
+            return false;
+        }
+
         // ShouldStartEncounter already validated via ScoreEncounter(). Use the same scoring
         // to create directly — avoids mismatch with ScoreEncounterByNames() which uses
         // Affinity/Familiarity/Tension (all zero for new pairs, producing scores below threshold).
         var encounterSource = block.Type == AutonomyPlanBlockType.VisitNpc ? EncounterSource.PlannedVisit : EncounterSource.Opportunistic;
         var encounterScore = _npcSocialEncounterService.ScoreEncounter(_state, speakerNpc, listenerNpc, block);
         var encounter = _npcSocialEncounterService.CreateEncounterDirect(
-            speakerNpc.Name, listenerNpc.Name, speakerNpc.currentLocation.Name, encounterSource, encounterScore);
+            speakerNpc.Name, listenerNpc.Name, speakerLocation.Name, encounterSource, encounterScore);
+        _dailyEncounterPairs[MakeEncounterPairKey(speakerNpc.Name, listenerNpc.Name)] = GetDailyEncounterCount(speakerNpc.Name, listenerNpc.Name) + 1;
 
-        if (!_faceToFaceService.TryStage(speakerNpc, listenerNpc, speakerNpc.currentLocation, encounter.EncounterId))
+        if (!_faceToFaceService.TryStage(speakerNpc, listenerNpc, speakerLocation, encounter.EncounterId))
         {
-            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} staging FAILED at {speakerNpc.currentLocation.Name}.", LogLevel.Debug);
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} staging FAILED at {speakerLocation.Name}.", LogLevel.Debug);
             _npcSocialEncounterService.CancelEncounter(encounter.EncounterId, "staging_failed");
+            ApplyEncounterPairCooldown(speakerNpc.Name, listenerNpc.Name);
             return false;
         }
 
@@ -13651,6 +14107,7 @@ public sealed class ModEntry : Mod
             && TryResolvePlayer2NpcIdForNpc(listenerNpc, out var listenerP2Id))
         {
             var continuationContext = BuildEncounterContinuationContext(speakerNpc.Name, listenerNpc.Name);
+            var alreadyTalkedToday = GetDailyEncounterCount(speakerNpc.Name, listenerNpc.Name) > 0;
 
             StartEncounterConversationTask(
                 encounter.EncounterId,
@@ -13660,17 +14117,15 @@ public sealed class ModEntry : Mod
                 listenerP2Id,
                 scenario,
                 encounter.TurnBudgetSoftCap,
-                continuationContext);
+                continuationContext,
+                alreadyTalkedToday);
             _player2EncounterIds.Add(encounter.EncounterId);
             Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} Player2 encounter conversation launched (turns={encounter.TurnBudgetSoftCap}, continuation={continuationContext is not null}).", LogLevel.Debug);
         }
         else
         {
             Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} Player2 unavailable — cancelling encounter.", LogLevel.Debug);
-            _npcSocialEncounterService.CancelEncounter(encounter.EncounterId, "player2_unavailable");
-            _faceToFaceService?.CancelEncounter(encounter.EncounterId);
-            ClearEncounterRuntimeLinks(encounter.EncounterId);
-            _state.Telemetry.Daily.EncountersCancelled += 1;
+            CancelEncounterScene(encounter, "player2_unavailable");
             return false;
         }
 
@@ -13727,16 +14182,24 @@ public sealed class ModEntry : Mod
             if (isPlayer2Encounter)
             {
                 TryFlushDeferredEncounterConversationCompletion(encounter);
+                if (!_npcSpeechBubbleService.WereEncounterBubblesEverQueued(encounter.EncounterId))
+                    continue; // Player2 conversation still in flight — wait for transcript
                 if (_npcSpeechBubbleService.HasEncounterBubblesRemaining(encounter.EncounterId))
                     continue;
                 if (!_npcSpeechBubbleService.IsEncounterReadyForNextBubble(encounter.EncounterId))
                     continue;
+                if (!_npcSpeechBubbleService.WereEncounterBubblesDisplayed(encounter.EncounterId))
+                {
+                    CancelEncounterScene(encounter, "bubble_display_failed");
+                    continue;
+                }
 
                 // All Player2 dialogue displayed — complete the encounter
                 encounter.ConversationPhase = ConversationPhase.Released;
                 encounter.ArcOutcome = _npcConversationSimulationService.ResolveOutcome(encounter);
                 _npcSocialEncounterService.ProcessConsequences(_state, encounter, encounter.ArcOutcome);
-                _faceToFaceService?.FinishTalking(encounter.EncounterId);
+                TryResumeEncounterParticipants(encounter, "complete");
+
                 _player2EncounterIds.Remove(encounter.EncounterId);
                 _state.Telemetry.Daily.EncountersCompleted += 1;
                 _state.Telemetry.Daily.PairEmotionUpdates += 1;
@@ -13759,7 +14222,8 @@ public sealed class ModEntry : Mod
         string listenerNpcId,
         ConversationScenario scenario,
         int turnDepth,
-        string? continuationContext = null)
+        string? continuationContext = null,
+        bool alreadyTalkedToday = false)
     {
         if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
             return;
@@ -13767,6 +14231,7 @@ public sealed class ModEntry : Mod
         var player2Client = _player2Client;
         var player2Key = _player2Key!;
         var apiBaseUrl = _config.Player2ApiBaseUrl;
+        var timeContext = FormatGameTimeContext();
         var speakerDialogueContext = BuildCompactGameStateInfo(
             npcName: speakerShortName,
             contextTag: "npc_encounter_dialogue",
@@ -13793,7 +14258,9 @@ public sealed class ModEntry : Mod
                     turnDepth,
                     speakerDialogueContext,
                     listenerDialogueContext,
-                    continuationContext);
+                    continuationContext,
+                    alreadyTalkedToday,
+                    timeContext);
                 _pendingEncounterConversationCompletions.Enqueue(completion);
             }
             catch (Exception ex)
@@ -13829,7 +14296,9 @@ public sealed class ModEntry : Mod
         int turnDepth,
         string speakerDialogueContext,
         string listenerDialogueContext,
-        string? continuationContext = null)
+        string? continuationContext = null,
+        bool alreadyTalkedToday = false,
+        string? timeContext = null)
     {
         var startedUtc = DateTime.UtcNow;
         var transcript = new List<AmbientConversationLine>();
@@ -13840,7 +14309,7 @@ public sealed class ModEntry : Mod
         var currentListenerShortName = listenerShortName;
         var currentListenerNpcId = listenerNpcId;
 
-        var topicSeed = $"{scenario.Purpose} ({scenario.ToneAtStart} tone, {scenario.OpenerStyle} style)";
+        var topicSeed = BuildEncounterConversationTopicSeed(speakerShortName, listenerShortName, scenario);
         var currentMessage = BuildEncounterConversationTurnMessage(
             turnNumber: 1,
             turnDepth,
@@ -13849,7 +14318,9 @@ public sealed class ModEntry : Mod
             currentSpeakerShortName,
             currentListenerShortName,
             priorLine: null,
-            continuationContext: continuationContext);
+            continuationContext: continuationContext,
+            alreadyTalkedToday: alreadyTalkedToday,
+            timeContext: timeContext);
 
         for (var turn = 1; turn <= turnDepth; turn++)
         {
@@ -13875,6 +14346,35 @@ public sealed class ModEntry : Mod
                 break;
             }
 
+            var encounterLine = turnResult.Message;
+            if (LooksLikeEncounterCommandOutput(encounterLine))
+            {
+                var repairedTurnResult = await TrySendAmbientConversationTurnAsync(
+                    client,
+                    apiBaseUrl,
+                    player2Key,
+                    currentSpeakerNpcId,
+                    currentListenerShortName,
+                    BuildEncounterCommandRepairPrompt(currentMessage),
+                    context,
+                    requireMessage: true);
+
+                if (!repairedTurnResult.Success)
+                {
+                    abortReason = string.IsNullOrWhiteSpace(repairedTurnResult.FailureCode)
+                        ? "E_ENCOUNTER_TURN_FAILED"
+                        : repairedTurnResult.FailureCode;
+                    break;
+                }
+
+                encounterLine = repairedTurnResult.Message;
+                if (LooksLikeEncounterCommandOutput(encounterLine))
+                {
+                    abortReason = "E_ENCOUNTER_TURN_COMMAND_OUTPUT";
+                    break;
+                }
+            }
+
             transcript.Add(new AmbientConversationLine
             {
                 Turn = turn,
@@ -13882,11 +14382,11 @@ public sealed class ModEntry : Mod
                 SpeakerNpcId = currentSpeakerNpcId,
                 ListenerShortName = currentListenerShortName,
                 ListenerNpcId = currentListenerNpcId,
-                Message = turnResult.Message
+                Message = encounterLine
             });
 
             if (_npcSocialEncounterService?.GetEncounter(encounterId) is { } activeEncounter)
-                UpdateEncounterProgress(activeEncounter, turn, turnDepth, currentSpeakerNpcId, turnResult.Message, scenario);
+                UpdateEncounterProgress(activeEncounter, turn, turnDepth, currentSpeakerNpcId, encounterLine, scenario);
 
             // Swap speaker and listener
             var nextSpeakerShortName = currentListenerShortName;
@@ -13903,7 +14403,8 @@ public sealed class ModEntry : Mod
                 scenario,
                 currentSpeakerShortName,
                 currentListenerShortName,
-                turnResult.Message);
+                encounterLine,
+                timeContext: timeContext);
         }
 
         var duration = DateTime.UtcNow - startedUtc;
@@ -13923,6 +14424,18 @@ public sealed class ModEntry : Mod
         };
     }
 
+    private static string FormatGameTimeContext()
+    {
+        var t = Game1.timeOfDay;
+        var hour24 = t / 100;
+        var minute = t % 100;
+        var ampm = hour24 >= 12 ? "PM" : "AM";
+        var hour12 = hour24 % 12;
+        if (hour12 == 0) hour12 = 12;
+        var season = Game1.currentSeason ?? "spring";
+        return $"{hour12}:{minute:D2} {ampm}, {season}";
+    }
+
     private static string BuildEncounterConversationTurnMessage(
         int turnNumber,
         int turnDepth,
@@ -13931,10 +14444,14 @@ public sealed class ModEntry : Mod
         string speakerShortName,
         string listenerShortName,
         string? priorLine,
-        string? continuationContext = null)
+        string? continuationContext = null,
+        bool alreadyTalkedToday = false,
+        string? timeContext = null)
     {
         var isContinuation = !string.IsNullOrWhiteSpace(continuationContext);
         var priorLineWasClosing = IsLikelyConversationClosing(priorLine);
+        var timeHint = !string.IsNullOrWhiteSpace(timeContext) ? $"It is {timeContext}. " : "";
+        const string lineRule = "Answer with one short in-character sentence (under 80 characters) that sounds like something said aloud in town. ";
 
         if (turnNumber <= 1 || string.IsNullOrWhiteSpace(priorLine))
         {
@@ -13942,34 +14459,44 @@ public sealed class ModEntry : Mod
             {
                 return
                     $"You are {speakerShortName}, resuming a face-to-face conversation with {listenerShortName}. " +
-                    $"Continuation context: {continuationContext}. " +
-                    $"Face-to-face encounter turn 1/{turnDepth}. " +
-                    $"Context: {topicSeed}. " +
-                    $"Speak directly to {listenerShortName}, not the player or Farmer. " +
+                    timeHint +
+                    $"Pick up from this thread: {continuationContext}. " +
+                    $"Scene pull: {topicSeed}. " +
+                    $"Keep the purpose around {scenario.Purpose} with a {scenario.ToneTrend} emotional drift. " +
+                    $"Speak directly to {listenerShortName}, not the player. " +
                     "If you already said goodbye earlier, reopen naturally with one more thing before leaving. " +
-                    "Continue from the prior exchange without re-greeting or reusing the same goodbye/topic phrasing. " +
-                    "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+                    "Continue from the prior exchange without re-greeting or repeating the same goodbye. " +
+                    "Let the exchange carry subtext, friction, gossip, mystery, or warmth when it fits; avoid flat pleasantries. " +
+                    lineRule;
             }
+
+            var greetingHint = alreadyTalkedToday
+                ? $"You already spoke with {listenerShortName} earlier today. Skip the greeting — jump straight into a new topic. "
+                : "Greet them naturally and start a real conversation. ";
 
             return
                 $"You are {speakerShortName}, speaking face-to-face with {listenerShortName}. " +
-                $"Face-to-face encounter turn 1/{turnDepth}. " +
-                $"Context: {topicSeed}. " +
-                $"Opener style: {scenario.OpenerStyle}. " +
-                $"Speak directly to {listenerShortName}; do not address the player or Farmer. " +
-                "Greet them naturally and start a real conversation. " +
-                "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+                timeHint +
+                $"Start from this scene pull: {topicSeed}. " +
+                $"Use a {scenario.OpenerStyle} opener and keep the exchange around {scenario.Purpose} with a {scenario.ToneTrend} tone trend. " +
+                $"Speak directly to {listenerShortName}; do not address the player. " +
+                greetingHint +
+                "Use a concrete detail, feeling, or rumor hook. Let disagreement, defensiveness, excitement, or gossip appear when it fits. " +
+                lineRule;
         }
 
         if (turnNumber >= turnDepth)
         {
             return
                 $"You are {speakerShortName}, still speaking only to {listenerShortName}. " +
-                $"Face-to-face encounter turn {turnNumber}/{turnDepth} (final). Continue from: \"{priorLine}\". " +
+                timeHint +
+                $"Continue from: \"{priorLine}\". " +
+                $"Arc target: {scenario.ArcOutcome}. " +
                 (priorLineWasClosing
                     ? "The prior line already sounded like a goodbye, so do not repeat the same farewell wording; if needed, add one final short follow-up and close cleanly. "
-                    : "Wrap up the conversation naturally with a brief goodbye. ") +
-                "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+                    : "Wrap up the conversation naturally. Both of you are staying here, so say something like 'anyway...' or 'well, back to it' instead of 'goodbye' or 'see you later'. ") +
+                "Keep the ending specific; if there is tension, leave a little unresolved edge instead of flattening it. " +
+                lineRule;
         }
 
         if (priorLineWasClosing)
@@ -13977,18 +14504,34 @@ public sealed class ModEntry : Mod
             return
                 $"You are {speakerShortName}, still in the same face-to-face scene with {listenerShortName}. " +
                 $"The previous line already sounded like a goodbye: \"{priorLine}\". " +
-                $"Face-to-face encounter turn {turnNumber}/{turnDepth}. " +
                 "If you speak again, reopen with one more thing before leaving and shift to a related new angle. " +
                 "Do not repeat the same farewell or exact phrasing. " +
-                "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+                "A rumor, warning, complaint, or sudden detail is better than idle filler. " +
+                lineRule;
         }
 
         return
             $"You are {speakerShortName}, still speaking only to {listenerShortName}. " +
-            $"Face-to-face encounter turn {turnNumber}/{turnDepth}. Continue naturally from: \"{priorLine}\". " +
-            $"Conversation tone: {scenario.ToneAtStart}. " +
-            "Keep it grounded and specific. Avoid generic pleasantries. " +
-            "Reply in 1-2 short in-character sentences only. Do not emit commands.";
+            $"Continue naturally from: \"{priorLine}\". " +
+            $"Keep the exchange around {scenario.Purpose} with {scenario.ToneAtStart} tone and a {scenario.ToneTrend} drift. " +
+            "Keep it grounded and specific. Avoid generic pleasantries. Let the exchange carry gossip, mystery, frustration, defensiveness, or warmth when it fits. " +
+            lineRule;
+    }
+
+    private static string BuildEncounterCommandRepairPrompt(string currentMessage)
+    {
+        return currentMessage + " Your previous reply sounded like instructions instead of spoken dialogue. Say only what the character would actually say aloud.";
+    }
+
+    private static bool LooksLikeEncounterCommandOutput(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        return !string.IsNullOrWhiteSpace(TryExtractCommandNameFromLine(text))
+            || EncounterCommandRetryRegex.IsMatch(text)
+            || NpcSpeechBubbleService.LooksLikeEncounterCommandLeak(text)
+            || NpcSpeechBubbleService.LooksLikeEncounterPromptLeak(text);
     }
 
     private void TryApplyPendingEncounterConversationCompletions()
@@ -14033,15 +14576,12 @@ public sealed class ModEntry : Mod
         if (!completion.Completed || completion.Transcript.Count == 0)
         {
             Monitor.Log($"Encounter {completion.EncounterId}: Player2 failed ({completion.AbortReason}), cancelling encounter.", LogLevel.Debug);
-            _npcSocialEncounterService?.CancelEncounter(completion.EncounterId, "player2_failed");
-            _faceToFaceService?.CancelEncounter(completion.EncounterId);
-            ClearEncounterRuntimeLinks(completion.EncounterId);
-            if (_state is not null)
-                _state.Telemetry.Daily.EncountersCancelled += 1;
+            CancelEncounterScene(activeEncounter, "player2_failed");
             return;
         }
 
         var sequenceIndex = 0;
+        var queuedEncounterLines = 0;
         foreach (var transcriptLine in completion.Transcript)
         {
             sequenceIndex++;
@@ -14055,11 +14595,28 @@ public sealed class ModEntry : Mod
                 return;
             }
 
+            if (LooksLikeEncounterCommandOutput(transcriptLine.Message))
+            {
+                CancelEncounterScene(activeEncounter, "line_command_output");
+                return;
+            }
+
+            var bubbleText = NpcSpeechBubbleService.SanitizeEncounterBubbleText(transcriptLine.Message);
+            if (string.IsNullOrWhiteSpace(bubbleText))
+                continue;
+
             _npcSpeechBubbleService?.QueueEncounterBubble(
                 completion.EncounterId,
-                transcriptLine.SpeakerNpcId,
-                transcriptLine.Message,
+                transcriptLine.SpeakerShortName,
+                bubbleText,
                 sequenceIndex);
+            queuedEncounterLines += 1;
+        }
+
+        if (queuedEncounterLines == 0)
+        {
+            CancelEncounterScene(activeEncounter, "bubble_sanitized_empty");
+            return;
         }
 
         if (_npcMemoryService is not null && _state is not null)
@@ -14078,6 +14635,8 @@ public sealed class ModEntry : Mod
                     : $"Spoke with {completion.SpeakerShortName}: {NpcSpeechBubbleService.StripEmotionMetadata(completion.Transcript.FirstOrDefault()?.Message ?? "brief chat")}",
                 _state.Calendar.Day, weight: 3);
         }
+
+        TryShareRumorsBetweenNpcs(completion.SpeakerShortName, completion.ListenerShortName);
     }
 
     private void TryFlushDeferredEncounterConversationCompletion(ActiveEncounter encounter)
@@ -14110,9 +14669,7 @@ public sealed class ModEntry : Mod
         var closedWithGoodbye = encounter.ClosingComplete
             || encounter.HasGoodbyeExchange
             || IsLikelyConversationClosing(encounter.LastLineSummary);
-        var samePairBlockedUntilUtc = closedWithGoodbye
-            ? endedUtc.AddSeconds(EncounterSamePairCooldownSeconds)
-            : DateTime.MinValue;
+        var samePairBlockedUntilUtc = endedUtc.AddSeconds(EncounterSamePairCooldownSeconds);
 
         if (_autonomyRuntimeByNpcId.TryGetValue(encounter.NpcA, out var runtimeA))
         {
@@ -14135,6 +14692,20 @@ public sealed class ModEntry : Mod
             runtimeB.LastEncounterEndedUtc = endedUtc;
             runtimeB.SamePairEncounterBlockedUntilUtc = samePairBlockedUntilUtc;
         }
+    }
+
+    private static string MakeEncounterPairKey(string npcA, string npcB)
+    {
+        return string.Compare(npcA, npcB, StringComparison.OrdinalIgnoreCase) < 0
+            ? $"{npcA}|{npcB}"
+            : $"{npcB}|{npcA}";
+    }
+
+    private int GetDailyEncounterCount(string npcA, string npcB)
+    {
+        return _dailyEncounterPairs.TryGetValue(MakeEncounterPairKey(npcA, npcB), out var count)
+            ? count
+            : 0;
     }
 
     private string? BuildEncounterContinuationContext(string speakerNpcId, string listenerNpcId)
@@ -14207,7 +14778,92 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        if (GetDailyEncounterCount(sourceNpcId, candidateNpcId) >= EncounterMaxPerPairPerDay)
+            return false;
+
         return !IsSamePairEncounterCoolingDown(sourceNpcId, candidateNpcId);
+    }
+
+    private void ApplyEncounterPairCooldown(string npcAId, string npcBId)
+    {
+        if (string.IsNullOrWhiteSpace(npcAId) || string.IsNullOrWhiteSpace(npcBId))
+            return;
+
+        var blockedUntilUtc = DateTime.UtcNow.AddSeconds(EncounterSamePairCooldownSeconds);
+
+        if (_autonomyRuntimeByNpcId.TryGetValue(npcAId, out var runtimeA))
+        {
+            runtimeA.LastEncounterPartnerNpcId = npcBId;
+            runtimeA.SamePairEncounterBlockedUntilUtc = blockedUntilUtc;
+        }
+
+        if (_autonomyRuntimeByNpcId.TryGetValue(npcBId, out var runtimeB))
+        {
+            runtimeB.LastEncounterPartnerNpcId = npcAId;
+            runtimeB.SamePairEncounterBlockedUntilUtc = blockedUntilUtc;
+        }
+    }
+
+    private void ClearEncounterParticipantRuntime(string npcId)
+    {
+        if (string.IsNullOrWhiteSpace(npcId))
+            return;
+
+        if (_autonomyRuntimeByNpcId.TryGetValue(npcId, out var runtime))
+        {
+            runtime.ActiveEncounterId = null;
+            runtime.EncounterLockedPartnerNpcId = null;
+            runtime.StagingTargetNpcId = null;
+            runtime.MovementPhase = "idle";
+            runtime.StationaryTicks = 0;
+            runtime.OscillationTicks = 0;
+        }
+    }
+
+    private void TryResumeEncounterParticipants(ActiveEncounter encounter, string phase)
+    {
+        var npcA = ResolveNpcByName(encounter.NpcA);
+        var npcB = ResolveNpcByName(encounter.NpcB);
+        ClearEncounterParticipantRuntime(encounter.NpcA);
+        ClearEncounterParticipantRuntime(encounter.NpcB);
+        _npcTileReservationService?.Release(encounter.NpcA);
+        _npcTileReservationService?.Release(encounter.NpcB);
+
+        if (_faceToFaceService?.ReleaseEncounter(encounter.EncounterId) ?? false)
+        {
+            Monitor.Log(
+                $"Autonomy: released vanilla encounter scene for {encounter.NpcA}->{encounter.NpcB} after {phase}.",
+                LogLevel.Trace);
+        }
+
+        HandoffNpcToVanillaAfterEncounter(npcA, encounter.EncounterId, phase);
+        HandoffNpcToVanillaAfterEncounter(npcB, encounter.EncounterId, phase);
+    }
+
+    private void HandoffNpcToVanillaAfterEncounter(NPC? npc, string encounterId, string phase)
+    {
+        if (npc is null)
+            return;
+
+        npc.Halt();
+        npc.controller = null;
+        TrySetMemberValue(npc, "temporaryController", null);
+        TrySetMemberValue(npc, "followSchedule", true);
+
+        if (_scheduleOverrideService?.HasOverride(npc.Name) == true)
+            _scheduleOverrideService.RestoreVanillaSchedule(npc);
+
+        if (npc.Schedule is not null)
+        {
+            Monitor.Log(
+                $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}); released without forced invocation and waiting for vanilla update loop.",
+                LogLevel.Trace);
+            return;
+        }
+
+        Monitor.Log(
+            $"Autonomy: released {npc.Name} after encounter {encounterId} ({phase}) without forced schedule invocation; no active schedule entry was available at map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}.",
+            LogLevel.Debug);
     }
 
     private bool TryValidateEncounterScene(ActiveEncounter encounter, out string reason)
@@ -14257,8 +14913,9 @@ public sealed class ModEntry : Mod
         _npcSpeechBubbleService?.CancelEncounterBubbles(encounter.EncounterId);
         if (!wasAlreadyTerminal)
             _npcSocialEncounterService?.CancelEncounter(encounter.EncounterId, reason);
-        _faceToFaceService?.CancelEncounter(encounter.EncounterId);
+        TryResumeEncounterParticipants(encounter, reason);
         ClearEncounterRuntimeLinks(encounter.EncounterId);
+        ApplyEncounterPairCooldown(encounter.NpcA, encounter.NpcB);
         if (!wasAlreadyTerminal)
             _state.Telemetry.Daily.EncountersCancelled += 1;
     }
@@ -14276,15 +14933,15 @@ public sealed class ModEntry : Mod
 
     private static bool IsEncounterTranscriptLineValid(ActiveEncounter encounter, AmbientConversationLine transcriptLine)
     {
-        if (string.IsNullOrWhiteSpace(transcriptLine.SpeakerNpcId)
-            || string.IsNullOrWhiteSpace(transcriptLine.ListenerNpcId)
-            || string.Equals(transcriptLine.SpeakerNpcId, transcriptLine.ListenerNpcId, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(transcriptLine.SpeakerShortName)
+            || string.IsNullOrWhiteSpace(transcriptLine.ListenerShortName)
+            || string.Equals(transcriptLine.SpeakerShortName, transcriptLine.ListenerShortName, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        return IsEncounterParticipant(encounter, transcriptLine.SpeakerNpcId)
-            && IsEncounterParticipant(encounter, transcriptLine.ListenerNpcId);
+        return IsEncounterParticipant(encounter, transcriptLine.SpeakerShortName)
+            && IsEncounterParticipant(encounter, transcriptLine.ListenerShortName);
     }
 
     private static bool IsEncounterParticipant(ActiveEncounter encounter, string npcId)
@@ -14332,7 +14989,7 @@ public sealed class ModEntry : Mod
             || cleaned.Contains("farewell", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsWithinAutonomyTalkRange(NPC speakerNpc, NPC listenerNpc)
+    private bool IsWithinAutonomyTalkRange(NPC speakerNpc, NPC listenerNpc)
     {
         if (speakerNpc.currentLocation is null || listenerNpc.currentLocation is null)
             return false;
@@ -14341,7 +14998,7 @@ public sealed class ModEntry : Mod
 
         var dx = Math.Abs(speakerNpc.Tile.X - listenerNpc.Tile.X);
         var dy = Math.Abs(speakerNpc.Tile.Y - listenerNpc.Tile.Y);
-        return dx + dy <= 5f;
+        return dx + dy <= Math.Max(1, _config.AutonomyFaceToFaceDistanceTiles);
     }
 
     private bool TryResolvePlayer2NpcIdForNpc(NPC npc, out string npcId)
@@ -15433,8 +16090,11 @@ public sealed class ModEntry : Mod
 
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
+        var knownRumors = string.Empty;
         var romanceContext = string.Empty;
         var speakerCurrentActivity = string.Empty;
+        var speakerAutonomyContext = string.Empty;
+        var referencedAutonomyContext = string.Empty;
         var ambientGossipCue = string.Empty;
         var liveNpcWhereabouts = string.Empty;
         var newsContext = BuildNewsAwarenessBlock();
@@ -15480,11 +16140,25 @@ public sealed class ModEntry : Mod
         var ambientGossipRule = string.Empty;
         var liveWhereaboutsRule = string.Empty;
         var currentActivityRule = string.Empty;
-        var commandPolicyRule = _commandPolicyService?.BuildPromptRule(effectiveContextTag) ?? string.Empty;
+        var autonomyContextRule = string.Empty;
+        var rumorContextRule = string.Empty;
+        var isNpcAmbientDialogue = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase);
+        var isNpcEncounterDialogue = string.Equals(effectiveContextTag, "npc_encounter_dialogue", StringComparison.OrdinalIgnoreCase);
+        var isNpcSocialDialogue = isNpcAmbientDialogue || isNpcEncounterDialogue;
+        var allowStructuredCommandRules = !isNpcSocialDialogue;
+        var shouldForegroundMarketSignals = ShouldForegroundMarketSignals(effectiveContextTag, playerText, npcName);
+        var ordinaryTopicVarietyRule = (isNpcSocialDialogue || effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase))
+            ? "TOPIC_VARIETY_RULE: In ordinary conversation, do not default to crops, prices, or farm chores. Prefer rumors, relationships, visits, grudges, ambitions, mysteries, and fresh town incidents unless market context is clearly relevant."
+            : string.Empty;
+        var marketTopicRule = string.Equals(effectiveContextTag, "manual_market", StringComparison.OrdinalIgnoreCase)
+            ? "MARKET_RULE: For market questions, mention at least one live signal from MARKET_SIGNALS."
+            : "MARKET_RULE: Treat MARKET_SIGNALS as background only. Bring them up only when the topic is explicitly about prices, selling, shortages, shop stock, or a strong local anomaly.";
+        var commandPolicyRule = allowStructuredCommandRules
+            ? _commandPolicyService?.BuildPromptRule(effectiveContextTag) ?? string.Empty
+            : string.Empty;
         var ambientEventFirstRule = string.Equals(effectiveContextTag, "npc_to_npc_ambient", StringComparison.OrdinalIgnoreCase)
             ? "AMBIENT_EVENT_RULE: Prefer record_town_event first when anything notable happened; keep command use sparse and skip commands when nothing meaningful occurred."
             : string.Empty;
-        var isNpcEncounterDialogue = string.Equals(effectiveContextTag, "npc_encounter_dialogue", StringComparison.OrdinalIgnoreCase);
         var encounterPartnerBlock = isNpcEncounterDialogue && !string.IsNullOrWhiteSpace(referencedNpcName)
             ? $"NPC_ENCOUNTER_PARTNER: '{referencedNpcName}'."
             : string.Empty;
@@ -15513,6 +16187,7 @@ public sealed class ModEntry : Mod
             "manual_relationship" => "MANUAL_INTENT_RULE: Player explicitly asked a relationship check. If trust is low or context is poor, reject or defer in-character with a brief reason.",
             "manual_interest" => "MANUAL_INTENT_RULE: Player explicitly asked about town groups. If evidence is weak, defer or decline in-character rather than forcing a shift.",
             "manual_market" => "MANUAL_INTENT_RULE: Player explicitly asked market pulse. If no anomaly exists, decline market modifiers and explain briefly in-character.",
+            "manual_rumor" => "MANUAL_INTENT_RULE: Player explicitly asked about rumors or gossip. Answer from KNOWN_RUMORS first; if you do not know anything solid, say so in-character instead of inventing details.",
             _ => string.Empty
         };
         var vanillaTownBlendRule = string.Empty;
@@ -15521,7 +16196,10 @@ public sealed class ModEntry : Mod
             if (_npcMemoryService is not null)
                 npcMemory = _npcMemoryService.BuildMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
             if (_townMemoryService is not null)
+            {
                 townMemory = _townMemoryService.BuildTownMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
+                knownRumors = _townMemoryService.BuildRumorBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
+            }
             if (_config.EnableLoveLanguageEngine
                 && _loveLanguageEngineService is not null
                 && _loveLanguageEngineService.TryBuildPromptBlock(_state, npcName, _state.Calendar.Day, out var romanceBlock))
@@ -15533,6 +16211,7 @@ public sealed class ModEntry : Mod
             {
                 currentActivityRule = "CURRENT_ACTIVITY_RULE: If the player asks what you're doing right now, answer from NPC_CURRENT_ACTIVITY first and do not replace it with a different task.";
             }
+            speakerAutonomyContext = BuildNpcAutonomyContextBlock(npcName, "NPC_AUTONOMY_CONTEXT");
             ambientGossipCue = BuildAmbientOverheardGossipCueBlock(effectiveContextTag, npcName, playerText);
             if (!string.IsNullOrWhiteSpace(ambientGossipCue))
                 ambientGossipRule = "AMBIENT_GOSSIP_RULE: If AMBIENT_GOSSIP_CUE exists and the player's tone is casual, naturally mention it as brief town chatter in your own words (do not quote verbatim).";
@@ -15544,6 +16223,23 @@ public sealed class ModEntry : Mod
                 effectiveContextTag);
             if (!string.IsNullOrWhiteSpace(liveNpcWhereabouts))
                 liveWhereaboutsRule = "LIVE_WHEREABOUTS_RULE: For any NPC listed in LIVE_NPC_WHEREABOUTS, treat that location as current truth and prioritize it over stale lore. If same_location_as_speaker=true, answer that they are nearby/in the same place right now.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(referencedNpcName))
+            referencedAutonomyContext = BuildNpcAutonomyContextBlock(referencedNpcName, "REFERENCED_NPC_AUTONOMY_CONTEXT");
+
+        if (!string.IsNullOrWhiteSpace(speakerAutonomyContext) || !string.IsNullOrWhiteSpace(referencedAutonomyContext))
+        {
+            autonomyContextRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
+                ? "AUTONOMY_CONTEXT_RULE: NPC_AUTONOMY_CONTEXT and REFERENCED_NPC_AUTONOMY_CONTEXT are current background intent. Use them first when asked what someone is doing, why they are here, where they are headed, or who they came to see. Otherwise keep them in the background and mention them only when naturally relevant."
+                : "AUTONOMY_CONTEXT_RULE: NPC_AUTONOMY_CONTEXT and REFERENCED_NPC_AUTONOMY_CONTEXT explain current detours, visits, and immediate intent. Let them shape the scene when relevant, but do not force them into every reply.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(knownRumors))
+        {
+            rumorContextRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
+                ? "RUMOR_CONTEXT_RULE: KNOWN_RUMORS are selective, person-to-person knowledge. Use them first when the player asks what people are saying, who spread something, or what rumors are going around. If KNOWN_RUMORS is empty or weak, say you have only half-heard talk instead of inventing facts."
+                : "RUMOR_CONTEXT_RULE: KNOWN_RUMORS are background social knowledge. Let them color gossip, tension, mystery, or suspicion when relevant, but do not force every exchange into rumor talk.";
         }
 
         if (!string.IsNullOrWhiteSpace(vanillaDialogueContext) && !string.IsNullOrWhiteSpace(townMemory))
@@ -15561,8 +16257,8 @@ public sealed class ModEntry : Mod
             "STYLE: Prefer 1-3 short sentences; avoid bullet lists unless explicitly requested.",
             "STYLE: Do not mention 'canon list', 'context', or other meta-AI framing.",
             encounterNoPortraitCueRule,
-            promptLanguageRule,
-            "LANGUAGE_RULE: For structured command outputs, keep command names and argument keys in English; localize only string values.",
+            allowStructuredCommandRules ? promptLanguageRule : string.Empty,
+            allowStructuredCommandRules ? "LANGUAGE_RULE: For structured command outputs, keep command names and argument keys in English; localize only string values." : string.Empty,
             "RULE: If unsure, say unsure in-character and ask a short follow-up.",
             encounterPartnerBlock,
             encounterPartnerRule,
@@ -15594,29 +16290,34 @@ public sealed class ModEntry : Mod
             locationAwarenessRule,
             locationPrecisionRule,
             currentActivityRule,
-            "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply.",
-            "QUEST_RULE: Never give text-only task offers without propose_quest.",
-            "QUEST_RULE: If your request includes an exact amount, set propose_quest.count to that number and keep target as only the item/resource/NPC name.",
-            "QUEST_RULE: If no suitable request exists, explicitly say none is available in-character.",
-            "QUEST_RULE: Do not proactively offer a new quest during normal small talk. Offer quests only when the player asks for work/request or explicitly agrees to help.",
-            "QUEST_TARGET_RULE: Valid targets include market produce, animal goods, forage items, fish, and mine resources when appropriate to template.",
-            "QUEST_DIVERSITY_RULE: Avoid repeating the same crop request across many NPCs. If recent requests cluster on one target, choose another valid target or another template.",
-            "QUEST_DIVERSITY_RULE: When player asks for work, prioritize PreferredTemplates and PreferredTargets from QUEST_DIVERSITY; repeat a recent target only with a clear market/event reason.",
-            "EVENT_QUALITY_RULE: record_town_event requires kind, summary, location, severity(1-5), visibility(local/public), and concise tags.",
-            "EVENT_QUALITY_RULE: Keep summary concrete, location specific, severity proportional, and tags short/non-duplicated.",
-            "SOCIAL_RULE: Use adjust_reputation only for meaningful interaction outcomes, not routine greetings.",
-            "INTEREST_RULE: Use shift_interest_influence only when the conversation clearly concerns town groups or priorities.",
-            "MARKET_MOD_RULE: Use apply_market_modifier only when MARKET_SIGNALS show a clear anomaly, and keep changes bounded/temporary.",
+            autonomyContextRule,
+            rumorContextRule,
+            allowStructuredCommandRules ? "QUEST_RULE: If you offer or describe a concrete task/request/quest, include propose_quest in the same reply." : string.Empty,
+            allowStructuredCommandRules ? "QUEST_RULE: Never give text-only task offers without propose_quest." : string.Empty,
+            allowStructuredCommandRules ? "QUEST_RULE: If your request includes an exact amount, set propose_quest.count to that number and keep target as only the item/resource/NPC name." : string.Empty,
+            allowStructuredCommandRules ? "QUEST_RULE: If no suitable request exists, explicitly say none is available in-character." : string.Empty,
+            allowStructuredCommandRules ? "QUEST_RULE: Do not proactively offer a new quest during normal small talk. Offer quests only when the player asks for work/request or explicitly agrees to help." : string.Empty,
+            allowStructuredCommandRules ? "QUEST_TARGET_RULE: Valid targets include market produce, animal goods, forage items, fish, and mine resources when appropriate to template." : string.Empty,
+            allowStructuredCommandRules ? "QUEST_DIVERSITY_RULE: Avoid repeating the same crop request across many NPCs. If recent requests cluster on one target, choose another valid target or another template." : string.Empty,
+            allowStructuredCommandRules ? "QUEST_DIVERSITY_RULE: When player asks for work, prioritize PreferredTemplates and PreferredTargets from QUEST_DIVERSITY; repeat a recent target only with a clear market/event reason." : string.Empty,
+            allowStructuredCommandRules ? "EVENT_QUALITY_RULE: record_town_event requires kind, summary, location, severity(1-5), visibility(local/public), and concise tags." : string.Empty,
+            allowStructuredCommandRules ? "EVENT_QUALITY_RULE: Keep summary concrete, location specific, severity proportional, and tags short/non-duplicated." : string.Empty,
+            allowStructuredCommandRules ? "SOCIAL_RULE: Use adjust_reputation only for meaningful interaction outcomes, not routine greetings." : string.Empty,
+            allowStructuredCommandRules ? "INTEREST_RULE: Use shift_interest_influence only when the conversation clearly concerns town groups or priorities." : string.Empty,
+            allowStructuredCommandRules ? "MARKET_MOD_RULE: Use apply_market_modifier only when MARKET_SIGNALS show a clear anomaly, and keep changes bounded/temporary." : string.Empty,
             "DECLINE_RULE: If a request is not appropriate for personality/relationship/context, reject or defer naturally in-character with a short reason.",
             manualIntentRule,
+            ordinaryTopicVarietyRule,
             playerAskedForRequest
                 ? "QUEST_CONTEXT: Player explicitly asked for work/request now. You must either emit propose_quest or decline clearly; no text-only task offers."
                 : string.Empty,
             "NEWS_RULE: If asked about news, rumors, or recent events, answer using NEWS_CONTEXT and RECENT_EVENTS first.",
+            "RUMOR_RULE: If asked about gossip, whispers, rumors, or who told whom, answer from KNOWN_RUMORS first and keep uncertainty honest.",
             "EVENT_TIME_RULE: Treat UPCOMING_EVENTS as future-only and use future tense. Never describe UPCOMING_EVENTS as already happened.",
             "EVENT_TIME_RULE: RECENT_EVENTS are already observed and can be described in past/present tense.",
-            "RULE: For publish_article/publish_rumor commands, keep title+content within 100 characters total.",
-            "MARKET_RULE: For market questions, mention at least one live signal from MARKET_SIGNALS.",
+            allowStructuredCommandRules ? "RUMOR_CMD_RULE: Use spread_rumor for person-to-person gossip and publish_rumor only for broad/public rumor fit for the newspaper lane." : string.Empty,
+            allowStructuredCommandRules ? "RULE: For publish_article/publish_rumor commands, keep title+content within 100 characters total." : string.Empty,
+            marketTopicRule,
             "REWARD_RULE: Never promise arbitrary gold numbers; follow REWARD_RULES bands.",
             "REWARD_RULES: Rewards are dynamic from target value x count with urgency bands (low=modest, medium=solid, high=premium). Social visits stay in a small fixed band.",
             $"STATE: CurrentSeason {currentSeason}.",
@@ -15639,13 +16340,18 @@ public sealed class ModEntry : Mod
             $"STATE: PlayerStats Charisma={charismaStat} Social={socialStat}.",
             $"STATE: Day {_state.Calendar.Day} {currentSeason}.",
             $"STATE: EconomySentiment {_state.Social.TownSentiment.Economy}.",
-            $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}.",
+            shouldForegroundMarketSignals
+                ? $"MARKET_SIGNALS: TopMovers [{string.Join(", ", movers)}]. Oversupply {oversupplyText}. Scarcity {scarcityText}. RecommendedAlternative {recText}."
+                : "MARKET_SIGNALS: background only; no strong price anomaly should dominate this conversation.",
             questDiversityContext,
             newsContext,
             eventsContext,
             passOutContext,
+            knownRumors,
             ambientGossipCue,
             liveNpcWhereabouts,
+            speakerAutonomyContext,
+            referencedAutonomyContext,
             $"STATE: AvailableTownRequests {_state.Quests.Available.Count} by_template=[{availableQuestTemplateCounts}].",
             $"STATE: ActiveTownRequests {_state.Quests.Active.Count} by_template=[{activeQuestTemplateCounts}].",
             npcMemory,
@@ -17271,6 +17977,64 @@ public sealed class ModEntry : Mod
             || text.Contains("favor", StringComparison.Ordinal);
     }
 
+    private bool TryCapturePlayerOriginRumor(string npcName, string? playerText)
+    {
+        if (_townMemoryService is null
+            || string.IsNullOrWhiteSpace(npcName)
+            || !LooksLikePlayerRumorStatement(playerText, out var rumorTopic))
+        {
+            return false;
+        }
+
+        var location = Game1.currentLocation?.Name ?? "Town";
+        var playerSource = GetPlayerDisplayNameForContext();
+        var eventId = _townMemoryService.SpreadRumor(
+            _state,
+            playerSource,
+            rumorTopic,
+            targetGroup: "town",
+            confidence: 0.55f,
+            day: _state.Calendar.Day,
+            location: location,
+            originKind: "player",
+            directRecipientNpc: npcName);
+        return !string.IsNullOrWhiteSpace(eventId);
+    }
+
+    private static bool LooksLikePlayerRumorStatement(string? playerText, out string rumorTopic)
+    {
+        rumorTopic = string.Empty;
+        if (string.IsNullOrWhiteSpace(playerText))
+            return false;
+
+        var text = playerText.Trim();
+        if (text.EndsWith("?", StringComparison.Ordinal))
+            return false;
+
+        var lowered = text.ToLowerInvariant();
+        if (!ContainsAny(
+                lowered,
+                "i heard",
+                "heard that",
+                "word is",
+                "people are saying",
+                "someone said",
+                "i was told",
+                "apparently",
+                "there's a rumor",
+                "theres a rumor",
+                "there is a rumor",
+                "whisper is"))
+        {
+            return false;
+        }
+
+        rumorTopic = Regex.Replace(text, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+        if (rumorTopic.Length > 140)
+            rumorTopic = rumorTopic[..140].Trim();
+        return rumorTopic.Length >= 12;
+    }
+
     private static bool TryInferManualAskContextTag(string? playerText, out string contextTag)
     {
         contextTag = string.Empty;
@@ -17325,6 +18089,23 @@ public sealed class ModEntry : Mod
                 "how are you feeling about me"))
         {
             contextTag = "manual_relationship";
+            return true;
+        }
+
+        if (ContainsAny(
+                text,
+                "rumor",
+                "rumour",
+                "gossip",
+                "heard anything",
+                "what are people saying",
+                "what's going around",
+                "whats going around",
+                "any whispers",
+                "who told you",
+                "spread a rumor"))
+        {
+            contextTag = "manual_rumor";
             return true;
         }
 
@@ -17569,6 +18350,9 @@ public sealed class ModEntry : Mod
             {
                 ShowQuestPostedToast(result.OutcomeId, sourceNpcId);
             }
+
+            if (result.Command.Equals("spread_rumor", StringComparison.OrdinalIgnoreCase))
+                TryShowNpcRumorSpreadToast(result.OutcomeId, sourceNpcId);
 
             _player2LastCommandApplied = $"{result.Command}:{result.OutcomeId}";
             _player2LastCommandAppliedUtc = DateTime.UtcNow;

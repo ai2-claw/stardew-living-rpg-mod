@@ -2,7 +2,6 @@ using Microsoft.Xna.Framework;
 using StardewLivingRPG.Config;
 using StardewLivingRPG.State;
 using StardewValley;
-using StardewValley.Pathfinding;
 
 namespace StardewLivingRPG.Systems;
 
@@ -178,7 +177,7 @@ public sealed class NpcAutonomyExecutionService
         if (currentLocation is null)
             return MovementTickResult.WaitingForLoad;
 
-        runtime.MovementPhase = "walking";
+        runtime.MovementPhase = "vanilla_schedule";
         runtime.ExpectedLocationId = currentLocation.Name ?? runtime.ExpectedLocationId;
         runtime.ExpectedTile = new Point((int)npc.Tile.X, (int)npc.Tile.Y);
 
@@ -190,175 +189,13 @@ public sealed class NpcAutonomyExecutionService
             runtime.NeedsLocalRepath = false;
             runtime.StationaryTicks = 0;
             runtime.OscillationTicks = 0;
-            npc.controller = null;
-            npc.Halt();
             ResetStuckTracking(runtime.NpcId);
             return MovementTickResult.Arrived;
         }
 
-        // If no route and no tile, try resolving a fallback tile first
-        if (activeBlock.TargetTile == Point.Zero && currentLocation is not null)
-            TryResolveFallbackTile(currentLocation, npc, activeBlock);
-
-        if (activeBlock.Route is null || activeBlock.Route.Segments.Count == 0)
-            return MoveWithinCurrentLocation(npc, runtime, activeBlock.TargetTile, "local_target", activeBlock.RequiresExactTile);
-
-        if (runtime.ActiveRouteSegmentIndex < 0)
-            runtime.ActiveRouteSegmentIndex = 0;
-
-        if (runtime.ActiveRouteSegmentIndex >= activeBlock.Route.Segments.Count)
-            return MoveWithinCurrentLocation(npc, runtime, activeBlock.TargetTile, "final_approach", activeBlock.RequiresExactTile);
-
-        var segment = activeBlock.Route.Segments[runtime.ActiveRouteSegmentIndex];
-        if (string.Equals(currentLocation.Name, segment.FromLocationId, StringComparison.OrdinalIgnoreCase))
-        {
-            var departureTile = segment.DepartureTile;
-            if (departureTile != Point.Zero)
-            {
-                var departureDistance = Vector2.Distance(npc.Tile, new Vector2(departureTile.X, departureTile.Y));
-                if (departureDistance > 0.75f)
-                    return MoveWithinCurrentLocation(npc, runtime, departureTile, "segment_departure");
-            }
-
-            var destinationLocation = Game1.getLocationFromName(segment.ToLocationId);
-            if (destinationLocation is null)
-            {
-                runtime.StuckReason = "missing_destination";
-                return IncrementStuck(runtime);
-            }
-
-            var arrivalTile = segment.ArrivalTile != Point.Zero ? segment.ArrivalTile : activeBlock.TargetTile;
-            if (!_walkabilityService.TryFindNearestWalkableTile(destinationLocation, arrivalTile, _config.AutonomyMaterializationMaxRadius, npc, out var safeArrivalTile))
-            {
-                runtime.StuckReason = "no_safe_tile";
-                return IncrementStuck(runtime);
-            }
-
-            WarpNpcTo(npc, segment.ToLocationId, safeArrivalTile);
-            segment.Status = RouteSegmentStatus.Completed;
-            runtime.ActiveRouteSegmentIndex += 1;
-            runtime.ExpectedLocationId = segment.ToLocationId;
-            runtime.ExpectedTile = safeArrivalTile;
-            runtime.CurrentSegmentTargetTile = Point.Zero;
-            runtime.CurrentSegmentPath.Clear();
-            runtime.NeedsLocalRepath = false;
-            runtime.StationaryTicks = 0;
-            runtime.OscillationTicks = 0;
-            ResetStuckTracking(runtime.NpcId);
-            return MovementTickResult.InProgress;
-        }
-
-        if (string.Equals(currentLocation.Name, activeBlock.TargetLocation, StringComparison.OrdinalIgnoreCase))
-            return MoveWithinCurrentLocation(npc, runtime, activeBlock.TargetTile, "final_approach", activeBlock.RequiresExactTile);
-
-        runtime.StuckReason = "route_desync";
-        return IncrementStuck(runtime);
-    }
-
-    private MovementTickResult MoveWithinCurrentLocation(NPC npc, AutonomyRuntimeState runtime, Point preferredTargetTile, string movementPhase, bool exactOnly = false)
-    {
-        if (preferredTargetTile == Point.Zero)
-        {
-            // Resolve a fallback tile instead of doing nothing
-            var fallbackLoc = npc.currentLocation;
-            if (fallbackLoc is not null)
-            {
-                var seed = FindWarpEntryOrMapCenter(fallbackLoc);
-                if (_walkabilityService.TryFindNearestWalkableTile(fallbackLoc, seed, 8, npc, out var fallback))
-                    preferredTargetTile = fallback;
-                else
-                    return MovementTickResult.InProgress;
-            }
-            else
-            {
-                return MovementTickResult.InProgress;
-            }
-        }
-
-        var location = npc.currentLocation;
-        if (location is null)
-            return MovementTickResult.WaitingForLoad;
-
-        Point targetTile;
-        if (exactOnly)
-        {
-            if (!_walkabilityService.IsTileWalkable(location, preferredTargetTile, npc))
-            {
-                runtime.StuckReason = "blocked_target";
-                return IncrementStuck(runtime);
-            }
-
-            targetTile = preferredTargetTile;
-        }
-        else if (!_walkabilityService.TryFindNearestWalkableTile(location, preferredTargetTile, 2, npc, out targetTile))
-        {
-            runtime.StuckReason = "blocked_target";
-            return IncrementStuck(runtime);
-        }
-
-        runtime.MovementPhase = movementPhase;
-        runtime.ExpectedLocationId = location.Name ?? runtime.ExpectedLocationId;
-        runtime.ExpectedTile = targetTile;
-
-        var currentTile = new Point((int)npc.Tile.X, (int)npc.Tile.Y);
-        var previousTile = runtime.LastKnownTile;
-        var movedThisTick = currentTile != previousTile;
-        if (!movedThisTick)
-            runtime.StationaryTicks += 1;
-        else
-            runtime.StationaryTicks = 0;
-
-        if (currentTile == runtime.PreviousKnownTile && currentTile != previousTile)
-            runtime.OscillationTicks += 1;
-        else if (movedThisTick)
-            runtime.OscillationTicks = 0;
-
-        runtime.PreviousKnownTile = previousTile;
-        runtime.LastKnownTile = currentTile;
-
-        if (Vector2.Distance(npc.Tile, new Vector2(targetTile.X, targetTile.Y)) <= 1.25f)
-        {
-            npc.controller = null;
-            npc.Halt();
-            runtime.CurrentSegmentTargetTile = Point.Zero;
-            runtime.StationaryTicks = 0;
-            runtime.OscillationTicks = 0;
-            ResetStuckTracking(runtime.NpcId);
-            return MovementTickResult.Arrived;
-        }
-
-        if (npc.controller is null
-            || runtime.NeedsLocalRepath
-            || runtime.CurrentSegmentTargetTile != targetTile)
-        {
-            npc.Halt();
-            npc.controller = new PathFindController(npc, location, targetTile, 2);
-            runtime.CurrentSegmentTargetTile = targetTile;
-            runtime.NeedsLocalRepath = false;
-        }
-
-        if (movedThisTick || npc.isMoving())
-        {
-            if (_walkabilityService.IsNearWarpTile(location, currentTile, 1))
-                runtime.StuckReason = string.Empty;
-            ResetStuckTracking(runtime.NpcId);
-            return MovementTickResult.InProgress;
-        }
-
-        if (_walkabilityService.IsNearWarpTile(location, currentTile, 1)
-            && runtime.StationaryTicks >= Math.Max(20, _config.AutonomyStuckDetectionTicks / 6))
-        {
-            runtime.StuckReason = "doorway_cluster";
-            return IncrementStuck(runtime, repathFirst: true);
-        }
-
-        if (runtime.OscillationTicks >= 4)
-        {
-            runtime.StuckReason = "micro_oscillation";
-            return IncrementStuck(runtime, repathFirst: true);
-        }
-
-        return IncrementStuck(runtime, repathFirst: true);
+        // Loaded NPC movement stays vanilla-owned.
+        // The mod does not assign path controllers or drive loaded detour traversal.
+        return MovementTickResult.InProgress;
     }
 
     private MovementTickResult TickUnloadedNpc(AutonomyRuntimeState runtime, AutonomyPlanBlock activeBlock)
@@ -395,23 +232,5 @@ public sealed class NpcAutonomyExecutionService
         }
 
         return MovementTickResult.WaitingForLoad;
-    }
-
-    private MovementTickResult IncrementStuck(AutonomyRuntimeState runtime, bool repathFirst = false)
-    {
-        _stuckTickCountByNpcId.TryGetValue(runtime.NpcId, out var stuckTicks);
-        stuckTicks++;
-        _stuckTickCountByNpcId[runtime.NpcId] = stuckTicks;
-
-        if (repathFirst && stuckTicks >= Math.Max(20, _config.AutonomyStuckDetectionTicks / 4))
-            runtime.NeedsLocalRepath = true;
-
-        if (stuckTicks < _config.AutonomyStuckDetectionTicks)
-            return MovementTickResult.InProgress;
-
-        runtime.RetryCount++;
-        _stuckTickCountByNpcId[runtime.NpcId] = 0;
-        runtime.MovementPhase = "stuck";
-        return runtime.RetryCount > 3 ? MovementTickResult.Stuck : MovementTickResult.InProgress;
     }
 }
