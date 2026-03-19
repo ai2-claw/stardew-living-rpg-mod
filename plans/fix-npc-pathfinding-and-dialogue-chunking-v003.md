@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-20
 **Branch:** living-v2
-**Status:** Pending implementation
+**Status:** Implemented on 2026-03-20 04:23; dotnet build passed, manual in-game validation pending
 
 ---
 

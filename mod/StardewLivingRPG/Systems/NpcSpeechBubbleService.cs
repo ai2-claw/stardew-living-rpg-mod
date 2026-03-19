@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using StardewLivingRPG.Config;
 using StardewLivingRPG.Utils;
+using StardewValley.BellsAndWhistles;
 using StardewValley;
 
 namespace StardewLivingRPG.Systems;
@@ -11,6 +12,7 @@ public sealed class NpcSpeechBubbleService
     private const int EncounterBubbleMaxDurationMs = 3000;
     private const int EncounterBubblePauseBetweenMs = 120;
     private const int EncounterBubbleCharDurationMs = 22;
+    private const int BubbleMaxTileWidth = 15;
 
     private sealed class PendingBubble
     {
@@ -158,7 +160,8 @@ public sealed class NpcSpeechBubbleService
                 continue;
             }
 
-            npc.showTextAboveHead(chunk);
+            var wrappedChunk = WrapForBubble(chunk);
+            npc.showTextAboveHead(wrappedChunk);
             TrySetTextAboveHeadTimer(npc, GetBubbleDurationMs(chunk));
             pending.NextDisplayUtc = DateTime.UtcNow.AddMilliseconds(GetBubbleDurationMs(chunk) + _config.BubblePauseBetweenMs);
             displayed += 1;
@@ -210,7 +213,8 @@ public sealed class NpcSpeechBubbleService
             }
 
             var durationMs = GetEncounterBubbleDurationMs(sanitized);
-            npc.showTextAboveHead(sanitized);
+            var wrappedSanitized = WrapForBubble(sanitized);
+            npc.showTextAboveHead(wrappedSanitized);
             TrySetTextAboveHeadTimer(npc, durationMs);
             _encounterBubblesDisplayed.Add(encId);
             _encounterDisplayIndex[encId] = idx + 1;
@@ -314,6 +318,45 @@ public sealed class NpcSpeechBubbleService
                 .Replace("\r", " ", StringComparison.Ordinal)
                 .Replace("\n", " ", StringComparison.Ordinal)
                 .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    internal static string WrapForBubble(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return text;
+
+        var maxPixelWidth = BubbleMaxTileWidth * Game1.tileSize;
+        if (SpriteText.getWidthOfString(text) <= maxPixelWidth)
+            return text;
+
+        var words = text.Split(' ');
+        var sb = new System.Text.StringBuilder();
+        var currentLine = string.Empty;
+
+        foreach (var word in words)
+        {
+            var testLine = currentLine.Length == 0 ? word : $"{currentLine} {word}";
+            if (SpriteText.getWidthOfString(testLine) > maxPixelWidth && currentLine.Length > 0)
+            {
+                if (sb.Length > 0)
+                    sb.Append('\n');
+                sb.Append(currentLine);
+                currentLine = word;
+            }
+            else
+            {
+                currentLine = testLine;
+            }
+        }
+
+        if (currentLine.Length > 0)
+        {
+            if (sb.Length > 0)
+                sb.Append('\n');
+            sb.Append(currentLine);
+        }
+
+        return sb.ToString();
     }
 
     private static List<string> SplitSentenceUnits(string text)

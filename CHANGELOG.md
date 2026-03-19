@@ -318,8 +318,8 @@
 - External NPC support is additive and compatibility-safe: integrated custom NPC content pack lore remains authoritative and overrides generated fallback lore.
 - Player2 roster readiness now tracks only required spawn roster entries, so auto-discovered external NPCs do not stall auto-connect/session health checks.
 - Expanded NPC targeting, social-visit inference, and prompt canon lists now include auto-discovered external NPCs when enabled.
-- Post-encounter NPC handoff now actively rebuilds vanilla schedule movement from each NPC's current position, preferring fresh `PathFindController` routes, then `pathfindToNextScheduleLocation()`, with `checkSchedule()` only as the last fallback.
-- NPC speech bubbles now keep full sentences intact, raise the default bubble limit to `90`, expand the GMCM range to `40-120`, and keep longer encounter bubbles visible for up to `3000ms`.
+- Post-encounter NPC handoff now actively rebuilds vanilla schedule movement from each NPC's current position, keeps successful `PathFindController` routes, only accepts `pathfindToNextScheduleLocation()` when it actually creates a controller, disables `followSchedule` when no recovery method succeeded, and uses direct warp/teleport as the final recovery instead of falling back to `checkSchedule()`.
+- NPC speech bubbles now keep full sentences intact and word-wrap using `SpriteText` width measurement so multi-line `showTextAboveHead` rendering matches the actual vanilla bubble font, while keeping the default bubble limit at `90`, the GMCM range at `40-120`, and longer encounter bubbles visible for up to `3000ms`.
 - Ambient and face-to-face NPC conversation prompts now explicitly ask for a single spoken line under `80` characters to reduce overflow.
 - Ambient command policy now blocks `publish_article` in `npc_to_npc_ambient` lane.
 - Added config knobs for ambient chat depth/limit/pair-cooldown/overhear cadence.

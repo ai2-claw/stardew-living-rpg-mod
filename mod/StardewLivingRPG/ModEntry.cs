@@ -14848,18 +14848,18 @@ public sealed class ModEntry : Mod
         npc.Halt();
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
-        TrySetMemberValue(npc, "followSchedule", true);
 
         if (_scheduleOverrideService?.HasOverride(npc.Name) == true)
             _scheduleOverrideService.RestoreVanillaSchedule(npc);
 
         var method = TryResumeVanillaScheduleFromCurrentPosition(npc);
+        TrySetMemberValue(npc, "followSchedule", !string.IsNullOrWhiteSpace(method));
         Monitor.Log(
             $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}, method={method}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             string.IsNullOrWhiteSpace(method) ? LogLevel.Debug : LogLevel.Trace);
     }
 
-    private static string TryResumeVanillaScheduleFromCurrentPosition(NPC npc)
+    private string TryResumeVanillaScheduleFromCurrentPosition(NPC npc)
     {
         if (npc.currentLocation is null || npc.Schedule is null || npc.Schedule.Count == 0)
             return string.Empty;
@@ -14911,11 +14911,24 @@ public sealed class ModEntry : Mod
             }
         }
 
-        if (TryInvokeVanillaMethod(npc, "pathfindToNextScheduleLocation"))
+        if (TryInvokeVanillaMethod(npc, "pathfindToNextScheduleLocation")
+            && npc.controller?.pathToEndPoint is { Count: > 0 })
             return "pathfindToNextScheduleLocation()";
 
-        if (TryInvokeVanillaMethod(npc, "checkSchedule", Game1.timeOfDay))
-            return $"checkSchedule({Game1.timeOfDay})";
+        if (!string.IsNullOrWhiteSpace(targetLocationName) && !isOnTargetMap)
+        {
+            var targetLocation = Game1.getLocationFromName(targetLocationName);
+            if (targetLocation is not null)
+            {
+                Game1.warpCharacter(npc, targetLocationName, new Vector2(targetTile.X, targetTile.Y));
+                return $"warp({targetLocationName}, {targetTile.X},{targetTile.Y})";
+            }
+        }
+        else if (isOnTargetMap && targetTile != Point.Zero)
+        {
+            npc.setTilePosition(targetTile);
+            return $"teleport({targetTile.X},{targetTile.Y})";
+        }
 
         return string.Empty;
     }
