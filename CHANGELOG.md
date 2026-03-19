@@ -318,7 +318,7 @@
 - External NPC support is additive and compatibility-safe: integrated custom NPC content pack lore remains authoritative and overrides generated fallback lore.
 - Player2 roster readiness now tracks only required spawn roster entries, so auto-discovered external NPCs do not stall auto-connect/session health checks.
 - Expanded NPC targeting, social-visit inference, and prompt canon lists now include auto-discovered external NPCs when enabled.
-- Post-encounter NPC handoff now releases back to vanilla scheduling without force-invoking schedule methods, avoiding stale-route wall walking after face-to-face conversations.
+- Post-encounter NPC handoff now actively rebuilds vanilla schedule movement from each NPC's current position, preferring fresh `PathFindController` routes, then `pathfindToNextScheduleLocation()`, with `checkSchedule()` only as the last fallback.
 - NPC speech bubbles now keep full sentences intact, raise the default bubble limit to `90`, expand the GMCM range to `40-120`, and keep longer encounter bubbles visible for up to `3000ms`.
 - Ambient and face-to-face NPC conversation prompts now explicitly ask for a single spoken line under `80` characters to reduce overflow.
 - Ambient command policy now blocks `publish_article` in `npc_to_npc_ambient` lane.

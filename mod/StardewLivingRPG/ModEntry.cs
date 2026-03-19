@@ -14853,17 +14853,99 @@ public sealed class ModEntry : Mod
         if (_scheduleOverrideService?.HasOverride(npc.Name) == true)
             _scheduleOverrideService.RestoreVanillaSchedule(npc);
 
-        if (npc.Schedule is not null)
+        var method = TryResumeVanillaScheduleFromCurrentPosition(npc);
+        Monitor.Log(
+            $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}, method={method}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            string.IsNullOrWhiteSpace(method) ? LogLevel.Debug : LogLevel.Trace);
+    }
+
+    private static string TryResumeVanillaScheduleFromCurrentPosition(NPC npc)
+    {
+        if (npc.currentLocation is null || npc.Schedule is null || npc.Schedule.Count == 0)
+            return string.Empty;
+
+        var currentTime = Game1.timeOfDay;
+        var bestTime = -1;
+        SchedulePathDescription? bestDesc = null;
+        foreach (var kvp in npc.Schedule)
         {
-            Monitor.Log(
-                $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}); released without forced invocation and waiting for vanilla update loop.",
-                LogLevel.Trace);
-            return;
+            if (kvp.Key <= currentTime && kvp.Key > bestTime)
+            {
+                bestTime = kvp.Key;
+                bestDesc = kvp.Value;
+            }
         }
 
-        Monitor.Log(
-            $"Autonomy: released {npc.Name} after encounter {encounterId} ({phase}) without forced schedule invocation; no active schedule entry was available at map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}.",
-            LogLevel.Debug);
+        if (bestDesc is null)
+            return string.Empty;
+
+        string? targetLocationName = null;
+        var targetTile = Point.Zero;
+        var facingDirection = Game1.down;
+
+        if (TryGetMemberValue(bestDesc, "targetLocationName", out var locationValue) && locationValue is string locationName)
+            targetLocationName = locationName;
+        if (TryGetMemberValue(bestDesc, "targetTile", out var tileValue) && tileValue is Point tile)
+            targetTile = tile;
+        if (TryGetMemberValue(bestDesc, "facingDirection", out var facingValue) && facingValue is int direction)
+            facingDirection = direction;
+
+        if (targetTile == Point.Zero)
+            return string.Empty;
+
+        var isOnTargetMap = string.IsNullOrWhiteSpace(targetLocationName)
+            || string.Equals(npc.currentLocation.Name, targetLocationName, StringComparison.OrdinalIgnoreCase);
+        if (isOnTargetMap)
+        {
+            try
+            {
+                npc.controller = new PathFindController(npc, npc.currentLocation, targetTile, facingDirection);
+                if (npc.controller?.pathToEndPoint is { Count: > 0 })
+                    return $"PathFindController({npc.currentLocation.Name}, {targetTile.X},{targetTile.Y})";
+
+                npc.controller = null;
+            }
+            catch
+            {
+                npc.controller = null;
+            }
+        }
+
+        if (TryInvokeVanillaMethod(npc, "pathfindToNextScheduleLocation"))
+            return "pathfindToNextScheduleLocation()";
+
+        if (TryInvokeVanillaMethod(npc, "checkSchedule", Game1.timeOfDay))
+            return $"checkSchedule({Game1.timeOfDay})";
+
+        return string.Empty;
+    }
+
+    private static bool TryInvokeVanillaMethod(object source, string methodName, params object[] arguments)
+    {
+        if (source is null || string.IsNullOrWhiteSpace(methodName))
+            return false;
+
+        const BindingFlags flags =
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+        var argTypes = arguments.Select(static a => a?.GetType() ?? typeof(object)).ToArray();
+
+        try
+        {
+            var method = source.GetType().GetMethod(methodName, flags, binder: null, types: argTypes, modifiers: null);
+            if (method is null && arguments.Length == 1 && arguments[0] is int)
+                method = source.GetType().GetMethod(methodName, flags, binder: null, types: new[] { typeof(int) }, modifiers: null);
+            if (method is null && arguments.Length == 0)
+                method = source.GetType().GetMethod(methodName, flags);
+            if (method is null)
+                return false;
+
+            method.Invoke(source, arguments.Length == 0 ? null : arguments);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private bool TryValidateEncounterScene(ActiveEncounter encounter, out string reason)
