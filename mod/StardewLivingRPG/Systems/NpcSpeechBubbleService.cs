@@ -314,16 +314,24 @@ public sealed class NpcSpeechBubbleService
     public int GetBubbleDurationMs(string? text)
     {
         var clean = Normalize(text);
-        return Math.Clamp(_config.BubbleMinDurationMs + (clean.Length * 35), _config.BubbleMinDurationMs, _config.BubbleMaxDurationMs);
+        var multiplier = Math.Clamp(_config.BubbleDurationMultiplier, 0.5f, 3.0f);
+        var minDuration = (int)Math.Round(_config.BubbleMinDurationMs * multiplier);
+        var maxDuration = (int)Math.Round(_config.BubbleMaxDurationMs * multiplier);
+        var scaledDuration = (int)Math.Round((_config.BubbleMinDurationMs + (clean.Length * 35)) * multiplier);
+        return Math.Clamp(scaledDuration, minDuration, maxDuration);
     }
 
     public int GetEncounterBubbleDurationMs(string? text)
     {
         var clean = Normalize(text);
+        var multiplier = Math.Clamp(_config.BubbleDurationMultiplier, 0.5f, 3.0f);
+        var minDuration = (int)Math.Round(EncounterBubbleMinDurationMs * multiplier);
+        var maxDuration = (int)Math.Round(EncounterBubbleMaxDurationMs * multiplier);
+        var scaledDuration = (int)Math.Round((EncounterBubbleMinDurationMs + (clean.Length * EncounterBubbleCharDurationMs)) * multiplier);
         return Math.Clamp(
-            EncounterBubbleMinDurationMs + (clean.Length * EncounterBubbleCharDurationMs),
-            EncounterBubbleMinDurationMs,
-            EncounterBubbleMaxDurationMs);
+            scaledDuration,
+            minDuration,
+            maxDuration);
     }
 
     private static string Normalize(string? text)

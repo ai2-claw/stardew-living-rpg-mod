@@ -44,10 +44,11 @@ public sealed class ModConfig
     public int AutonomyMinEncounterIntervalMinutes { get; set; } = 8;
     public int AutonomyMaxEncountersPerNpcPerDay { get; set; } = 6;
     public float AutonomyEncounterScoreThreshold { get; set; } = 0.12f;
-    public int AutonomyFaceToFaceEncounterChancePct { get; set; } = 75;
+    public int AutonomyFaceToFaceEncounterChancePct { get; set; } = 50;
     public int PairEmotionMaxDeltaPerCommand { get; set; } = 5;
     public int PairEmotionMaxDeltaPerDayPerAxis { get; set; } = 15;
     public int BubbleMaxChars { get; set; } = 50;
+    public float BubbleDurationMultiplier { get; set; } = 1.75f;
     public int BubbleMinDurationMs { get; set; } = 2000;
     public int BubbleMaxDurationMs { get; set; } = 5000;
     public int BubblePauseBetweenMs { get; set; } = 400;

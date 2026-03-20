@@ -111,7 +111,7 @@ public sealed class ModEntry : Mod
     private const float GmcmDailyDeltaCapMin = 0.01f;
     private const float GmcmDailyDeltaCapMax = 1.00f;
     private static readonly string[] AllowedModeValues = { "cozy_canon", "story_depth", "living_chaos" };
-    private static readonly string[] AllowedEncounterChanceValues = { "0", "50", "75", "100" };
+    private static readonly string[] AllowedEncounterChanceValues = { "0", "25", "50", "75", "100" };
     private static readonly Regex EncounterCommandRetryRegex = new(
         @"(?:^\s*(?:adjust[_\s]+reputation|shift[_\s]+interest[_\s]+influence|apply[_\s]+market[_\s]+modifier|spread[_\s]+rumor|publish[_\s]+rumor|publish[_\s]+article|propose[_\s]+quest|record[_\s]+town[_\s]+event|record[_\s]+memory[_\s]+fact|adjust[_\s]+town[_\s]+sentiment|update[_\s]+romance[_\s]+profile|propose[_\s]+micro[_\s]+date)\b|""(?:command|arguments|npc_id|intent_id)""\s*:)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
@@ -1246,6 +1246,19 @@ public sealed class ModEntry : Mod
             max: 120,
             interval: 5);
 
+        gmcm.AddNumberOption(
+            mod: ModManifest,
+            getValue: () => _config.BubbleDurationMultiplier,
+            setValue: value => _config.BubbleDurationMultiplier = value,
+            name: () => I18n.Get("gmcm.option.bubble_duration_multiplier.name", "Speech Bubble Duration"),
+            tooltip: () => I18n.Get(
+                "gmcm.option.bubble_duration_multiplier.tooltip",
+                "Adjust how long NPC speech bubbles stay visible for reading. Higher values keep bubbles on screen longer."),
+            min: 0.5f,
+            max: 3.0f,
+            interval: 0.25f,
+            formatValue: value => $"{value * 100f:0}%");
+
         gmcm.AddSectionTitle(
             mod: ModManifest,
             text: () => I18n.Get("gmcm.section.hotkeys", "Hotkeys"));
@@ -1285,6 +1298,7 @@ public sealed class ModEntry : Mod
         _config.AutonomyEncounterScoreThreshold = defaults.AutonomyEncounterScoreThreshold;
         _config.AutonomyFaceToFaceEncounterChancePct = defaults.AutonomyFaceToFaceEncounterChancePct;
         _config.BubbleMaxChars = defaults.BubbleMaxChars;
+        _config.BubbleDurationMultiplier = defaults.BubbleDurationMultiplier;
         _config.OpenBoardKey = defaults.OpenBoardKey;
         _config.OpenNewspaperKey = defaults.OpenNewspaperKey;
         _config.OpenRumorBoardKey = defaults.OpenRumorBoardKey;
@@ -1363,6 +1377,13 @@ public sealed class ModEntry : Mod
             changed = true;
         }
 
+        var clampedBubbleDurationMultiplier = Math.Clamp(_config.BubbleDurationMultiplier, 0.5f, 3.0f);
+        if (Math.Abs(_config.BubbleDurationMultiplier - clampedBubbleDurationMultiplier) > float.Epsilon)
+        {
+            _config.BubbleDurationMultiplier = clampedBubbleDurationMultiplier;
+            changed = true;
+        }
+
         var normalizedFaceToFaceDistance = NormalizeFaceToFaceDistance(_config.AutonomyFaceToFaceDistanceTiles);
         if (_config.AutonomyFaceToFaceDistanceTiles != normalizedFaceToFaceDistance)
         {
@@ -1416,7 +1437,7 @@ public sealed class ModEntry : Mod
     private static int NormalizeEncounterChancePercent(string? rawValue)
     {
         if (!int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
-            return 75;
+            return 50;
 
         return NormalizeEncounterChancePercent(parsed);
     }
@@ -1427,7 +1448,7 @@ public sealed class ModEntry : Mod
             .Select(value => int.Parse(value, CultureInfo.InvariantCulture))
             .OrderBy(value => Math.Abs(value - rawValue))
             .ThenBy(value => value)
-            .FirstOrDefault(75);
+            .FirstOrDefault(50);
     }
 
     private static int NormalizeFaceToFaceDistance(int rawValue)

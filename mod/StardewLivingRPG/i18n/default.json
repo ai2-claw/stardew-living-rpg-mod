@@ -239,6 +239,8 @@
   "gmcm.option.autonomy_face_to_face_encounter_chance_pct.tooltip": "Percent chance that eligible NPCs will start a face-to-face interaction.",
   "gmcm.option.bubble_max_chars.name": "Speech Bubble Limit",
   "gmcm.option.bubble_max_chars.tooltip": "Max characters per speech bubble before the text splits.",
+  "gmcm.option.bubble_duration_multiplier.name": "Speech Bubble Duration",
+  "gmcm.option.bubble_duration_multiplier.tooltip": "Multiplier for how long NPC speech bubbles remain visible.",
   "gmcm.option.open_board_key.name": "Open Market Board Key",
   "gmcm.option.open_board_key.tooltip": "Keybind to open the Market Board.",
   "gmcm.option.open_newspaper_key.name": "Open Newspaper Key",
