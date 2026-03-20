@@ -513,9 +513,6 @@ public sealed class ModEntry : Mod
         public ulong FallbackLastProgressTick { get; set; }
         public int FallbackLegRetryCount { get; set; }
         public bool FallbackWarpIssued { get; set; }
-        public List<Point> FallbackWaypointPath { get; set; } = new();
-        public int FallbackWaypointIndex { get; set; }
-        public Point? FallbackRouteTargetTile { get; set; }
         public int FallbackRepathCount { get; set; }
         public int? LastRejectedResumeTimeOfDay { get; set; }
         public string LastRejectedResumeReason { get; set; } = string.Empty;
@@ -15671,25 +15668,13 @@ public sealed class ModEntry : Mod
         string mismatchReason,
         Point? expectedLegTile)
     {
-        var shouldReject = pending.LastRejectedResumeTimeOfDay != Game1.timeOfDay
+        var shouldLogRejection = pending.LastRejectedResumeTimeOfDay != Game1.timeOfDay
             || !string.Equals(pending.LastRejectedResumeReason, mismatchReason, StringComparison.Ordinal);
-
-        if (!shouldReject)
-        {
-            Monitor.Log(
-                $"Autonomy: deferred repeat invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                LogLevel.Debug);
-            pending.NextAttemptTick = currentTick + 1;
-            return true;
-        }
-
-        pending.LastRejectedResumeTimeOfDay = Game1.timeOfDay;
-        pending.LastRejectedResumeReason = mismatchReason;
-        pending.RejectedResumeCountForCurrentSlot += 1;
 
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
+        ClearEncounterMotionState(npc);
         ClearEncounterMovementBlockingState(npc);
 
         object? fallbackController = null;
@@ -15698,9 +15683,22 @@ public sealed class ModEntry : Mod
         if (restartedFallback)
             SetTemporaryActiveSlotFallback(pending, fallbackController);
 
-        Monitor.Log(
-            $"Autonomy: rejected invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-            LogLevel.Warn);
+        if (shouldLogRejection)
+        {
+            pending.LastRejectedResumeTimeOfDay = Game1.timeOfDay;
+            pending.LastRejectedResumeReason = mismatchReason;
+            pending.RejectedResumeCountForCurrentSlot += 1;
+
+            Monitor.Log(
+                $"Autonomy: rejected invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                LogLevel.Warn);
+        }
+        else
+        {
+            Monitor.Log(
+                $"Autonomy: reapplied ownership over repeat invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                LogLevel.Debug);
+        }
 
         pending.NextAttemptTick = currentTick + 1;
         return true;
@@ -15795,6 +15793,15 @@ public sealed class ModEntry : Mod
     {
         expectedLegTile = Point.Zero;
 
+        if (pending.FallbackMode == EncounterFallbackMode.CrossMapLeg
+            && npc.currentLocation is not null
+            && string.Equals(npc.currentLocation.Name, pending.FallbackLegFromLocation, StringComparison.OrdinalIgnoreCase)
+            && pending.FallbackLegApproachTile.HasValue)
+        {
+            expectedLegTile = pending.FallbackLegApproachTile.Value;
+            return true;
+        }
+
         if (npc.currentLocation is null
             || string.IsNullOrWhiteSpace(pending.ActiveTargetLocation)
             || !TryPlanNextCrossMapFallbackLeg(npc, pending.ActiveTargetLocation, out var segment))
@@ -15830,7 +15837,7 @@ public sealed class ModEntry : Mod
         if (pending.ActiveTargetTile.HasValue)
             TrySetMemberValue(npc, "previousEndPoint", pending.ActiveTargetTile.Value);
         ClearEncounterMovementBlockingState(npc);
-        npc.Halt();
+        ClearEncounterMotionState(npc);
         if (pending.ActiveFacingDirection.HasValue)
             npc.faceDirection(pending.ActiveFacingDirection.Value);
 
@@ -15848,6 +15855,17 @@ public sealed class ModEntry : Mod
         TrySetMemberValue(npc, "movementPause", 0);
         if (TryGetMemberValue(npc, "halted", out var halted) && halted is bool isHalted && isHalted)
             TrySetMemberValue(npc, "halted", false);
+    }
+
+    private static void ClearEncounterMotionState(NPC npc)
+    {
+        npc.Halt();
+        TrySetMemberValue(npc, "moveUp", false);
+        TrySetMemberValue(npc, "moveDown", false);
+        TrySetMemberValue(npc, "moveLeft", false);
+        TrySetMemberValue(npc, "moveRight", false);
+        TrySetMemberValue(npc, "xVelocity", 0f);
+        TrySetMemberValue(npc, "yVelocity", 0f);
     }
 
     private static void ClearEncounterMovementBlockingState(NPC npc)
@@ -16069,23 +16087,24 @@ public sealed class ModEntry : Mod
 
         pending.FallbackMode = EncounterFallbackMode.SameMapTarget;
         pending.ActiveTargetTile = resolvedTargetTile;
-        pending.FallbackRouteTargetTile = resolvedTargetTile;
-        pending.FallbackWaypointPath = waypointPath;
-        pending.FallbackWaypointIndex = 0;
         pending.FallbackLastObservedLocation = targetLocation.Name ?? string.Empty;
         pending.FallbackLastObservedTile = npc.TilePoint;
         pending.FallbackLastProgressTick = currentTick;
         pending.FallbackRepathCount = 0;
         pending.UsedTemporaryActiveSlotFallback = true;
 
-        if (!TryAdvanceFallbackWaypointController(npc, pending, targetLocation, out fallbackController))
+        if (!TryCreatePathFindController(npc, targetLocation, resolvedTargetTile, out fallbackController))
         {
             ClearTemporaryActiveSlotFallback(npc, pending);
             return false;
         }
 
+        TrySetMemberValue(npc, "controller", fallbackController);
+        TrySetMemberValue(npc, "previousEndPoint", resolvedTargetTile);
+        SetTemporaryActiveSlotFallback(pending, fallbackController);
+
         Monitor.Log(
-            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (path_mode=A*, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, requested_tile={DescribeNullablePoint(requestedTile)}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, degraded_target={degradedTarget}, path_length={waypointPath.Count}, time={Game1.timeOfDay}).",
+            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (path_mode=validated_A*_single_leg, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, requested_tile={DescribeNullablePoint(requestedTile)}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, degraded_target={degradedTarget}, path_length={waypointPath.Count}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         return true;
     }
@@ -16144,19 +16163,20 @@ public sealed class ModEntry : Mod
         pending.FallbackLastObservedTile = npc.TilePoint;
         pending.FallbackLastProgressTick = currentTick;
         pending.FallbackWarpIssued = false;
-        pending.FallbackRouteTargetTile = departureTile;
-        pending.FallbackWaypointPath = waypointPath;
-        pending.FallbackWaypointIndex = 0;
         pending.UsedTemporaryActiveSlotFallback = true;
 
-        if (!TryAdvanceFallbackWaypointController(npc, pending, npc.currentLocation, out fallbackController))
+        if (!TryCreatePathFindController(npc, npc.currentLocation, departureTile, out fallbackController))
         {
             ClearTemporaryActiveSlotFallback(npc, pending);
             return false;
         }
 
+        TrySetMemberValue(npc, "controller", fallbackController);
+        TrySetMemberValue(npc, "previousEndPoint", departureTile);
+        SetTemporaryActiveSlotFallback(pending, fallbackController);
+
         Monitor.Log(
-            $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} arrival_resolved={pending.FallbackLegArrivalTileResolved} degraded_target={degradedTarget} path_mode=A* path_length={waypointPath.Count} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} time={Game1.timeOfDay}.",
+            $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} arrival_resolved={pending.FallbackLegArrivalTileResolved} degraded_target={degradedTarget} path_mode=validated_A*_single_leg path_length={waypointPath.Count} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} time={Game1.timeOfDay}.",
             LogLevel.Debug);
         return true;
     }
@@ -16167,7 +16187,9 @@ public sealed class ModEntry : Mod
             return;
 
         UpdateFallbackProgressObservation(npc, pending, currentTick);
-        if (TryAdvanceFallbackWaypointController(npc, pending, npc.currentLocation, out _))
+        if (pending.TemporaryFallbackController is not null
+            && ReferenceEquals(npc.controller, pending.TemporaryFallbackController)
+            && currentTick - pending.FallbackLastProgressTick < EncounterVanillaResumeFallbackStaleTicks)
             return;
 
         if (currentTick - pending.FallbackLastProgressTick < EncounterVanillaResumeFallbackStaleTicks)
@@ -16183,6 +16205,8 @@ public sealed class ModEntry : Mod
         }
 
         pending.FallbackRepathCount += 1;
+        ClearTemporaryActiveSlotFallbackController(npc, pending);
+        ClearEncounterMotionState(npc);
         if (pending.ActiveTargetTile.HasValue
             && TryPlanEncounterFallbackRoute(
                 npc,
@@ -16195,17 +16219,23 @@ public sealed class ModEntry : Mod
                 out var degradedTarget))
         {
             pending.ActiveTargetTile = resolvedTargetTile;
-            pending.FallbackRouteTargetTile = resolvedTargetTile;
-            pending.FallbackWaypointPath = waypointPath;
-            pending.FallbackWaypointIndex = 0;
             pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
             pending.FallbackLastObservedTile = npc.TilePoint;
             pending.FallbackLastProgressTick = currentTick;
-            pending.TemporaryFallbackController = null;
-            pending.FallbackControllerStartedAtTime = null;
-            TryAdvanceFallbackWaypointController(npc, pending, npc.currentLocation, out _);
+            if (!TryCreatePathFindController(npc, npc.currentLocation, resolvedTargetTile, out var fallbackController))
+            {
+                ClearTemporaryActiveSlotFallback(npc, pending);
+                Monitor.Log(
+                    $"Autonomy: [FORCE_PATH] {npc.Name} failed to recreate same-map active-slot fallback controller for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
+                    LogLevel.Warn);
+                return;
+            }
+
+            TrySetMemberValue(npc, "controller", fallbackController);
+            TrySetMemberValue(npc, "previousEndPoint", resolvedTargetTile);
+            SetTemporaryActiveSlotFallback(pending, fallbackController);
             Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (repath_count={pending.FallbackRepathCount}, tile={DescribeNullablePoint(resolvedTargetTile)}, degraded_target={degradedTarget}, path_length={waypointPath.Count}).",
+                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (path_mode=validated_A*_single_leg, repath_count={pending.FallbackRepathCount}, tile={DescribeNullablePoint(resolvedTargetTile)}, degraded_target={degradedTarget}, path_length={waypointPath.Count}).",
                 LogLevel.Debug);
             return;
         }
@@ -16305,9 +16335,6 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        if (!pending.FallbackWarpIssued)
-            TryAdvanceFallbackWaypointController(npc, pending, npc.currentLocation, out _);
-
         if (currentTick - pending.FallbackLastProgressTick < EncounterVanillaResumeFallbackStaleTicks)
             return;
 
@@ -16373,9 +16400,6 @@ public sealed class ModEntry : Mod
         pending.FallbackLastObservedLocation = string.Empty;
         pending.FallbackLastProgressTick = 0;
         pending.FallbackWarpIssued = false;
-        pending.FallbackWaypointPath.Clear();
-        pending.FallbackWaypointIndex = 0;
-        pending.FallbackRouteTargetTile = null;
         pending.FallbackRepathCount = 0;
         if (!preserveLegRetryCount)
             pending.FallbackLegRetryCount = 0;
@@ -16401,43 +16425,6 @@ public sealed class ModEntry : Mod
         pending.FallbackLastObservedLocation = currentLocationName;
         pending.FallbackLastObservedTile = currentTile;
         pending.FallbackLastProgressTick = currentTick;
-    }
-
-    private bool TryAdvanceFallbackWaypointController(
-        NPC npc,
-        PendingVanillaEncounterResume pending,
-        GameLocation location,
-        out object? fallbackController)
-    {
-        fallbackController = null;
-        if (pending.FallbackWaypointPath.Count == 0)
-            return false;
-
-        var currentTile = npc.TilePoint;
-        while (pending.FallbackWaypointIndex < pending.FallbackWaypointPath.Count
-               && pending.FallbackWaypointPath[pending.FallbackWaypointIndex] == currentTile)
-        {
-            pending.FallbackWaypointIndex += 1;
-        }
-
-        if (pending.FallbackWaypointIndex >= pending.FallbackWaypointPath.Count)
-        {
-            pending.TemporaryFallbackController = null;
-            pending.FallbackControllerStartedAtTime = null;
-            return false;
-        }
-
-        if (ReferenceEquals(npc.controller, pending.TemporaryFallbackController) && pending.TemporaryFallbackController is not null)
-            return true;
-
-        var nextWaypoint = pending.FallbackWaypointPath[pending.FallbackWaypointIndex];
-        if (!TryCreatePathFindController(npc, location, nextWaypoint, out fallbackController))
-            return false;
-
-        TrySetMemberValue(npc, "controller", fallbackController);
-        TrySetMemberValue(npc, "previousEndPoint", nextWaypoint);
-        SetTemporaryActiveSlotFallback(pending, fallbackController);
-        return true;
     }
 
     private bool TryPlanEncounterFallbackRoute(
@@ -16955,7 +16942,7 @@ public sealed class ModEntry : Mod
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         foreach (var ctor in typeof(PathFindController).GetConstructors(flags).OrderBy(ctor => ctor.GetParameters().Length))
         {
-            if (!TryBuildSupportedPathFindControllerArguments(npc, location, targetTile, ctor.GetParameters(), out var args))
+            if (!TryBuildVerifiedPathFindControllerArguments(npc, location, targetTile, ctor.GetParameters(), out var args))
                 continue;
 
             try
@@ -16975,7 +16962,7 @@ public sealed class ModEntry : Mod
         return false;
     }
 
-    private static bool TryBuildSupportedPathFindControllerArguments(
+    private static bool TryBuildVerifiedPathFindControllerArguments(
         NPC npc,
         GameLocation location,
         Point targetTile,
@@ -16983,76 +16970,54 @@ public sealed class ModEntry : Mod
         out object?[] args)
     {
         args = new object?[parameters.Length];
-        if (parameters.Length < 3)
+        if (parameters.Length < 3
+            || !parameters[0].ParameterType.IsInstanceOfType(npc)
+            || !parameters[1].ParameterType.IsInstanceOfType(location))
             return false;
 
-        var assignedCharacter = false;
-        var assignedLocation = false;
-        var assignedTargetX = false;
-        var assignedTargetY = false;
-        var assignedTargetPoint = false;
+        args[0] = npc;
+        args[1] = location;
+
+        var assignedTarget = false;
         var assignedFacing = false;
 
-        for (var i = 0; i < parameters.Length; i++)
+        for (var i = 2; i < parameters.Length; i++)
         {
             var parameter = parameters[i];
             var parameterType = parameter.ParameterType;
             var parameterName = parameter.Name ?? string.Empty;
             var normalizedParameterName = parameterName.Trim();
 
-            if (!assignedCharacter && parameterType.IsInstanceOfType(npc))
-            {
-                args[i] = npc;
-                assignedCharacter = true;
-                continue;
-            }
-
-            if (!assignedLocation && parameterType.IsInstanceOfType(location))
-            {
-                args[i] = location;
-                assignedLocation = true;
-                continue;
-            }
-
-            if (!assignedTargetPoint && parameterType == typeof(Point))
+            if (!assignedTarget && parameterType == typeof(Point))
             {
                 args[i] = targetTile;
-                assignedTargetPoint = true;
+                assignedTarget = true;
                 continue;
             }
 
-            if (!assignedTargetPoint && parameterType == typeof(Vector2))
+            if (!assignedTarget && parameterType == typeof(Vector2))
             {
                 args[i] = new Vector2(targetTile.X, targetTile.Y);
-                assignedTargetPoint = true;
+                assignedTarget = true;
                 continue;
             }
 
             if (parameterType == typeof(int))
             {
-                if (!assignedTargetX
-                    && (normalizedParameterName.Equals("x", StringComparison.OrdinalIgnoreCase)
-                        || normalizedParameterName.Contains("endX", StringComparison.OrdinalIgnoreCase)
-                        || normalizedParameterName.Contains("tileX", StringComparison.OrdinalIgnoreCase)
-                        || normalizedParameterName.Contains("targetX", StringComparison.OrdinalIgnoreCase)))
+                if (!assignedTarget
+                    && IsPathFindTargetXParameter(normalizedParameterName)
+                    && i + 1 < parameters.Length
+                    && parameters[i + 1].ParameterType == typeof(int)
+                    && IsPathFindTargetYParameter((parameters[i + 1].Name ?? string.Empty).Trim()))
                 {
                     args[i] = targetTile.X;
-                    assignedTargetX = true;
+                    args[i + 1] = targetTile.Y;
+                    assignedTarget = true;
+                    i += 1;
                     continue;
                 }
 
-                if (!assignedTargetY
-                    && (normalizedParameterName.Equals("y", StringComparison.OrdinalIgnoreCase)
-                        || normalizedParameterName.Contains("endY", StringComparison.OrdinalIgnoreCase)
-                        || normalizedParameterName.Contains("tileY", StringComparison.OrdinalIgnoreCase)
-                        || normalizedParameterName.Contains("targetY", StringComparison.OrdinalIgnoreCase)))
-                {
-                    args[i] = targetTile.Y;
-                    assignedTargetY = true;
-                    continue;
-                }
-
-                if (!assignedFacing && (normalizedParameterName.Contains("face", StringComparison.OrdinalIgnoreCase) || normalizedParameterName.Contains("direction", StringComparison.OrdinalIgnoreCase)))
+                if (!assignedFacing && IsPathFindFacingParameter(normalizedParameterName))
                 {
                     args[i] = npc.FacingDirection;
                     assignedFacing = true;
@@ -17062,27 +17027,6 @@ public sealed class ModEntry : Mod
                 if (parameter.HasDefaultValue)
                 {
                     args[i] = parameter.DefaultValue;
-                    continue;
-                }
-
-                if (!assignedTargetX)
-                {
-                    args[i] = targetTile.X;
-                    assignedTargetX = true;
-                    continue;
-                }
-
-                if (!assignedTargetY)
-                {
-                    args[i] = targetTile.Y;
-                    assignedTargetY = true;
-                    continue;
-                }
-
-                if (!assignedFacing)
-                {
-                    args[i] = npc.FacingDirection;
-                    assignedFacing = true;
                     continue;
                 }
 
@@ -17124,8 +17068,29 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        var hasTarget = assignedTargetPoint || (assignedTargetX && assignedTargetY);
-        return assignedCharacter && assignedLocation && hasTarget;
+        return assignedTarget;
+    }
+
+    private static bool IsPathFindTargetXParameter(string parameterName)
+    {
+        return parameterName.Equals("x", StringComparison.OrdinalIgnoreCase)
+            || parameterName.Contains("endX", StringComparison.OrdinalIgnoreCase)
+            || parameterName.Contains("tileX", StringComparison.OrdinalIgnoreCase)
+            || parameterName.Contains("targetX", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPathFindTargetYParameter(string parameterName)
+    {
+        return parameterName.Equals("y", StringComparison.OrdinalIgnoreCase)
+            || parameterName.Contains("endY", StringComparison.OrdinalIgnoreCase)
+            || parameterName.Contains("tileY", StringComparison.OrdinalIgnoreCase)
+            || parameterName.Contains("targetY", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPathFindFacingParameter(string parameterName)
+    {
+        return parameterName.Contains("face", StringComparison.OrdinalIgnoreCase)
+            || parameterName.Contains("direction", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool HasVanillaResumeState(NPC npc)
