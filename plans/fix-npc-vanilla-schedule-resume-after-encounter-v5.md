@@ -171,3 +171,9 @@ The timer clearing in `TryRebindVanillaScheduleAtCurrentTime` is correct - it ru
 4. **Clearing timer in rebind** (v4's step 2) still happens as a safety net after the delay
 
 The "last speaker stuck" issue is resolved because we now wait for their bubble to finish before resuming. The "walking through walls" issue should be resolved because the schedule rebind happens after the text timer has expired, when vanilla state is cleaner.
+
+## Status
+
+- Implemented on 2026-03-20.
+- Added real last-bubble finish tracking in `NpcSpeechBubbleService` and gated Player2 encounter completion on `IsLastBubbleFinished()`.
+- Removed early speech-timer clearing from encounter handoff; timer clearing now remains only in the schedule rebind step.

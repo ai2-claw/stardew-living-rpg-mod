@@ -33,6 +33,7 @@ public sealed class NpcSpeechBubbleService
     private readonly Dictionary<string, List<EncounterBubble>> _encounterBubbles = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _encounterDisplayIndex = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _encounterNextDisplayUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _encounterLastBubbleEndUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _encounterBubblesEverQueued = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _encounterBubblesDisplayed = new(StringComparer.OrdinalIgnoreCase);
     private long _encounterBubbleOrderCounter;
@@ -100,9 +101,12 @@ public sealed class NpcSpeechBubbleService
 
     public void CancelEncounterBubbles(string encounterId)
     {
-        _encounterBubbles.Remove(encounterId);
-        _encounterDisplayIndex.Remove(encounterId);
-        _encounterNextDisplayUtc.Remove(encounterId);
+        ForgetEncounter(encounterId);
+    }
+
+    public void ForgetEncounter(string encounterId)
+    {
+        ClearEncounterActiveState(encounterId);
         _encounterBubblesEverQueued.Remove(encounterId);
         _encounterBubblesDisplayed.Remove(encounterId);
     }
@@ -124,6 +128,11 @@ public sealed class NpcSpeechBubbleService
             return false;
 
         return !_encounterNextDisplayUtc.TryGetValue(encounterId, out var nextUtc) || DateTime.UtcNow >= nextUtc;
+    }
+
+    public bool IsLastBubbleFinished(string encounterId)
+    {
+        return !_encounterLastBubbleEndUtc.TryGetValue(encounterId, out var endUtc) || DateTime.UtcNow >= endUtc;
     }
 
     public int Tick(Func<string, NPC?> resolveNpc, Func<string, string, bool>? validateEncounterSpeaker = null)
@@ -172,11 +181,17 @@ public sealed class NpcSpeechBubbleService
         {
             if (!_encounterDisplayIndex.TryGetValue(encId, out var idx))
                 continue;
-            if (!_encounterBubbles.TryGetValue(encId, out var list) || idx >= list.Count)
+            if (!_encounterBubbles.TryGetValue(encId, out var list))
             {
-                _encounterBubbles.Remove(encId);
-                _encounterDisplayIndex.Remove(encId);
-                _encounterNextDisplayUtc.Remove(encId);
+                ClearEncounterActiveState(encId);
+                continue;
+            }
+            if (idx >= list.Count)
+            {
+                if (!IsLastBubbleFinished(encId))
+                    continue;
+
+                ClearEncounterActiveState(encId);
                 continue;
             }
 
@@ -186,9 +201,7 @@ public sealed class NpcSpeechBubbleService
             var bubble = list[idx];
             if (validateEncounterSpeaker is not null && !validateEncounterSpeaker(encId, bubble.SpeakerNpcId))
             {
-                _encounterBubbles.Remove(encId);
-                _encounterDisplayIndex.Remove(encId);
-                _encounterNextDisplayUtc.Remove(encId);
+                ClearEncounterActiveState(encId);
                 continue;
             }
 
@@ -196,9 +209,7 @@ public sealed class NpcSpeechBubbleService
             if (npc is null)
             {
                 // Cancel encounter bubbles if speaker unavailable
-                _encounterBubbles.Remove(encId);
-                _encounterDisplayIndex.Remove(encId);
-                _encounterNextDisplayUtc.Remove(encId);
+                ClearEncounterActiveState(encId);
                 continue;
             }
 
@@ -215,6 +226,8 @@ public sealed class NpcSpeechBubbleService
             _encounterBubblesDisplayed.Add(encId);
             _encounterDisplayIndex[encId] = idx + 1;
             _encounterNextDisplayUtc[encId] = DateTime.UtcNow.AddMilliseconds(durationMs + EncounterBubblePauseBetweenMs);
+            if (idx + 1 >= list.Count)
+                _encounterLastBubbleEndUtc[encId] = _encounterNextDisplayUtc[encId];
             displayed += 1;
         }
 
@@ -227,8 +240,17 @@ public sealed class NpcSpeechBubbleService
         _encounterBubbles.Clear();
         _encounterDisplayIndex.Clear();
         _encounterNextDisplayUtc.Clear();
+        _encounterLastBubbleEndUtc.Clear();
         _encounterBubblesEverQueued.Clear();
         _encounterBubblesDisplayed.Clear();
+    }
+
+    private void ClearEncounterActiveState(string encounterId)
+    {
+        _encounterBubbles.Remove(encounterId);
+        _encounterDisplayIndex.Remove(encounterId);
+        _encounterNextDisplayUtc.Remove(encounterId);
+        _encounterLastBubbleEndUtc.Remove(encounterId);
     }
 
     public bool WereEncounterBubblesEverQueued(string encounterId)

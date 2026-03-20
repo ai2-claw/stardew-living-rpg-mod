@@ -468,6 +468,21 @@ public sealed class ModEntry : Mod
         public int RouteCloneCount { get; set; }
         public bool PathfindAttempted { get; set; }
         public string PathfindMethod { get; set; } = "none";
+        public Point InitialTilePoint { get; set; }
+        public int LoggedControllerTickCount { get; set; }
+        public int? LastAttemptedTimeOfDay { get; set; }
+        public int? NextScheduleTime { get; set; }
+        public bool CheckScheduleInvoked { get; set; }
+        public string CheckScheduleMethod { get; set; } = "none";
+    }
+
+    private sealed class VanillaEncounterResumeMonitor
+    {
+        public string NpcId { get; init; } = string.Empty;
+        public string EncounterId { get; init; } = string.Empty;
+        public Point InitialTilePoint { get; init; }
+        public int LoggedControllerTickCount { get; set; }
+        public ulong NextLogTick { get; set; }
     }
 
     private sealed class NpcShipmentProfile
@@ -912,6 +927,7 @@ public sealed class ModEntry : Mod
     private readonly HashSet<string> _player2EncounterIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _dailyEncounterPairs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingVanillaEncounterResume> _pendingVanillaEncounterResumeByNpcId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, VanillaEncounterResumeMonitor> _vanillaEncounterResumeMonitorByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private int _ambientLastOverhearDay = -9999;
     private readonly Dictionary<string, RecentVanillaDialogueContext> _recentVanillaDialogueByNpcToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecentNpcGiftContext> _recentGiftContextByNpcToken = new(StringComparer.OrdinalIgnoreCase);
@@ -1537,6 +1553,7 @@ public sealed class ModEntry : Mod
         _state = StateStore.LoadOrCreate(Helper, Monitor);
         _state.ApplyConfig(_config);
         _pendingVanillaEncounterResumeByNpcId.Clear();
+        _vanillaEncounterResumeMonitorByNpcId.Clear();
         _recentVanillaDialogueByNpcToken.Clear();
         _recentGiftContextByNpcToken.Clear();
         ClearNpcDialogueHook();
@@ -4282,6 +4299,7 @@ public sealed class ModEntry : Mod
         TryTriggerAmbientIndoorAutonomyChatter(e);
         _faceToFaceService?.Tick(ResolveNpcByName);
         TryProcessPendingVanillaEncounterResumes(_lastUpdateTick);
+        TryProcessVanillaEncounterResumeMonitors(_lastUpdateTick);
         TryTickNpcSpeechBubbles();
 
         if (e.IsMultipleOf(60))
@@ -12951,6 +12969,7 @@ public sealed class ModEntry : Mod
         _deferredEncounterConversationCompletions.Clear();
         _player2EncounterIds.Clear();
         _pendingVanillaEncounterResumeByNpcId.Clear();
+        _vanillaEncounterResumeMonitorByNpcId.Clear();
         _dailyEncounterPairs.Clear();
         _npcSpeechBubbleService?.CancelAll();
         _pairEmotionService?.Decay(_state);
@@ -14277,6 +14296,8 @@ public sealed class ModEntry : Mod
                     continue;
                 if (!_npcSpeechBubbleService.IsEncounterReadyForNextBubble(encounter.EncounterId))
                     continue;
+                if (!_npcSpeechBubbleService.IsLastBubbleFinished(encounter.EncounterId))
+                    continue;
                 if (!_npcSpeechBubbleService.WereEncounterBubblesDisplayed(encounter.EncounterId))
                 {
                     CancelEncounterScene(encounter, "bubble_display_failed");
@@ -14932,7 +14953,14 @@ public sealed class ModEntry : Mod
     private void HandoffNpcToVanillaAfterEncounter(NPC? npc, string encounterId, string phase)
     {
         if (npc is null)
+        {
+            Monitor.Log($"Autonomy: [HANDOFF] Skipping null NPC for encounter {encounterId}.", LogLevel.Warn);
             return;
+        }
+
+        Monitor.Log(
+            $"Autonomy: [HANDOFF] {npc.Name} starting handoff: TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), controller={DescribeControllerType(npc)}, followSchedule={DescribeMemberValue(npc, "followSchedule")}, time={Game1.timeOfDay}, map={npc.currentLocation?.Name ?? "null"}.",
+            LogLevel.Debug);
 
         var scheduleOverrideService = _scheduleOverrideService;
         var restoredSchedule = scheduleOverrideService?.HasOverride(npc.Name) == true;
@@ -14942,7 +14970,7 @@ public sealed class ModEntry : Mod
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
-        ClearEncounterMovementBlockingState(npc);
+        ClearEncounterReleaseHoldState(npc);
 
         _pendingVanillaEncounterResumeByNpcId[npc.Name] = new PendingVanillaEncounterResume
         {
@@ -14976,54 +15004,99 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            pending.Attempts += 1;
-            var resumeMethod = string.Empty;
-            var reloadTodayOk = false;
-            var reloadCurrentTimeOk = false;
-            var injectedCurrentEntry = false;
-            int? mirroredFromTime = null;
-            var routeCloneType = "none";
-            var routeCloneCount = 0;
-            var pathfindAttempted = false;
-            var pathfindMethod = "none";
+            if (pending.Attempts == 0)
+                pending.InitialTilePoint = npc.TilePoint;
 
-            if (pending.Attempts == 1 || npc.Schedule is null || npc.Schedule.Count == 0)
+            if (HasVanillaResumeState(npc))
             {
-                resumeMethod = TryRebindVanillaScheduleAtCurrentTime(
+                var hasTempController = TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null;
+                _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
+                {
+                    NpcId = npc.Name,
+                    EncounterId = pending.EncounterId,
+                    InitialTilePoint = pending.InitialTilePoint,
+                    LoggedControllerTickCount = 0,
+                    NextLogTick = currentTick + 10
+                };
+                Monitor.Log(
+                    $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, resumed=true, method=VanillaSchedule(update), controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTempController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                    LogLevel.Debug);
+                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+                continue;
+            }
+
+            var shouldReloadSchedule = pending.Attempts == 0 || npc.Schedule is null || npc.Schedule.Count == 0;
+            var shouldAttemptCheck = shouldReloadSchedule;
+            if (!shouldAttemptCheck)
+            {
+                if (pending.NextScheduleTime.HasValue)
+                    shouldAttemptCheck = Game1.timeOfDay >= pending.NextScheduleTime.Value && pending.LastAttemptedTimeOfDay != Game1.timeOfDay;
+                else if (pending.LastAttemptedTimeOfDay.HasValue)
+                    shouldAttemptCheck = pending.LastAttemptedTimeOfDay.Value != Game1.timeOfDay;
+                else
+                    shouldAttemptCheck = true;
+            }
+
+            if (!shouldAttemptCheck)
+            {
+                pending.NextAttemptTick = currentTick + 1;
+                continue;
+            }
+
+            pending.Attempts += 1;
+            var reloadTodayOk = false;
+            var nextScheduleTime = pending.NextScheduleTime;
+            var checkScheduleInvoked = false;
+            var checkScheduleMethod = "none";
+
+            if (shouldReloadSchedule)
+            {
+                TryRebindVanillaScheduleAtCurrentTime(
                     npc,
                     out reloadTodayOk,
-                    out reloadCurrentTimeOk,
-                    out injectedCurrentEntry,
-                    out mirroredFromTime,
-                    out routeCloneType,
-                    out routeCloneCount,
-                    out pathfindAttempted,
-                    out pathfindMethod);
+                    out nextScheduleTime,
+                    out checkScheduleInvoked,
+                    out checkScheduleMethod);
             }
-            else if (HasVanillaResumeState(npc))
+            else
             {
-                resumeMethod = "VanillaSchedule(update)";
+                TryAdvanceVanillaScheduleAtCurrentTime(
+                    npc,
+                    out nextScheduleTime,
+                    out checkScheduleInvoked,
+                    out checkScheduleMethod);
             }
 
             pending.ReloadTodayOk |= reloadTodayOk;
-            pending.ReloadCurrentTimeOk |= reloadCurrentTimeOk;
-            pending.InjectedCurrentEntry |= injectedCurrentEntry;
-            if (!pending.MirroredFromTime.HasValue && mirroredFromTime.HasValue)
-                pending.MirroredFromTime = mirroredFromTime;
-            if (!string.IsNullOrWhiteSpace(routeCloneType) && !string.Equals(routeCloneType, "none", StringComparison.OrdinalIgnoreCase))
-                pending.RouteCloneType = routeCloneType;
-            if (routeCloneCount > 0)
-                pending.RouteCloneCount = routeCloneCount;
-            pending.PathfindAttempted |= pathfindAttempted;
-            if (pathfindAttempted)
-                pending.PathfindMethod = !string.IsNullOrWhiteSpace(pathfindMethod) && !string.Equals(pathfindMethod, "none", StringComparison.OrdinalIgnoreCase) ? pathfindMethod : "failed";
+            pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
+            pending.NextScheduleTime = nextScheduleTime;
+            pending.CheckScheduleInvoked |= checkScheduleInvoked;
+            if (checkScheduleInvoked)
+                pending.CheckScheduleMethod = checkScheduleMethod;
 
             var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
-            if (!string.IsNullOrWhiteSpace(resumeMethod))
+            if (HasVanillaResumeState(npc))
+            {
+                _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
+                {
+                    NpcId = npc.Name,
+                    EncounterId = pending.EncounterId,
+                    InitialTilePoint = pending.InitialTilePoint,
+                    LoggedControllerTickCount = 0,
+                    NextLogTick = currentTick + 10
+                };
+                Monitor.Log(
+                    $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, resumed=true, method={pending.CheckScheduleMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                    LogLevel.Debug);
+                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+                continue;
+            }
+
+            if (!pending.NextScheduleTime.HasValue)
             {
                 Monitor.Log(
-                    $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, injected_current={pending.InjectedCurrentEntry}, mirrored_from={(pending.MirroredFromTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, reload_today={pending.ReloadTodayOk}, reload_current_time={pending.ReloadCurrentTimeOk}, route_clone_type={pending.RouteCloneType}, route_clone_count={pending.RouteCloneCount}, pathfind_attempted={pending.PathfindAttempted}, pathfind_method={pending.PathfindMethod}, attempts={pending.Attempts}, resumed=true, method={resumeMethod}, controller={npc.controller is not null}, temporary_controller={hasTemporaryController}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                    LogLevel.Trace);
+                    $"Autonomy: vanilla schedule for {npc.Name} has no future slot after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time=none, resumed=false, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                    LogLevel.Debug);
                 _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
                 continue;
             }
@@ -15031,50 +15104,123 @@ public sealed class ModEntry : Mod
             if (pending.Attempts >= EncounterVanillaResumeMaxAttempts)
             {
                 Monitor.Log(
-                    $"Autonomy: failed to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, injected_current={pending.InjectedCurrentEntry}, mirrored_from={(pending.MirroredFromTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, reload_today={pending.ReloadTodayOk}, reload_current_time={pending.ReloadCurrentTimeOk}, route_clone_type={pending.RouteCloneType}, route_clone_count={pending.RouteCloneCount}, pathfind_attempted={pending.PathfindAttempted}, pathfind_method={pending.PathfindMethod}, attempts={pending.Attempts}, controller={npc.controller is not null}, temporary_controller={hasTemporaryController}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                    $"Autonomy: failed to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
                     LogLevel.Warn);
                 _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
                 continue;
             }
 
+            Monitor.Log(
+                $"Autonomy: waiting to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                LogLevel.Debug);
             pending.NextAttemptTick = currentTick + 1;
         }
     }
 
-    private string TryRebindVanillaScheduleAtCurrentTime(
+    private void TryProcessVanillaEncounterResumeMonitors(ulong currentTick)
+    {
+        if (_vanillaEncounterResumeMonitorByNpcId.Count == 0)
+            return;
+
+        foreach (var npcId in _vanillaEncounterResumeMonitorByNpcId.Keys.ToArray())
+        {
+            var monitorState = _vanillaEncounterResumeMonitorByNpcId[npcId];
+            if (currentTick < monitorState.NextLogTick)
+                continue;
+
+            var npc = ResolveNpcByName(monitorState.NpcId);
+            if (npc is null)
+            {
+                _vanillaEncounterResumeMonitorByNpcId.Remove(npcId);
+                continue;
+            }
+
+            monitorState.LoggedControllerTickCount += 1;
+            Monitor.Log(
+                $"Autonomy: [MONITOR] {npc.Name} encounter={monitorState.EncounterId} tick={monitorState.LoggedControllerTickCount}: controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), moved_from_initial={(!npc.TilePoint.Equals(monitorState.InitialTilePoint) ? "yes" : "no")}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, followSchedule={DescribeMemberValue(npc, "followSchedule")}.",
+                LogLevel.Debug);
+
+            if (monitorState.LoggedControllerTickCount >= 5)
+            {
+                _vanillaEncounterResumeMonitorByNpcId.Remove(npcId);
+                continue;
+            }
+
+            monitorState.NextLogTick = currentTick + 10;
+        }
+    }
+
+    private void TryRebindVanillaScheduleAtCurrentTime(
         NPC npc,
         out bool reloadTodayOk,
-        out bool reloadCurrentTimeOk,
-        out bool injectedCurrentEntry,
-        out int? mirroredFromTime,
-        out string routeCloneType,
-        out int routeCloneCount,
-        out bool pathfindAttempted,
-        out string pathfindMethod)
+        out int? nextScheduleTime,
+        out bool checkScheduleInvoked,
+        out string checkScheduleMethod)
     {
         reloadTodayOk = false;
-        reloadCurrentTimeOk = false;
-        injectedCurrentEntry = false;
-        mirroredFromTime = null;
-        routeCloneType = "none";
-        routeCloneCount = 0;
-        pathfindAttempted = false;
-        pathfindMethod = "none";
+        nextScheduleTime = null;
+        checkScheduleInvoked = false;
+        checkScheduleMethod = "none";
+
+        Monitor.Log(
+            $"Autonomy: [REBIND] {npc.Name} starting rebind at TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), controller={DescribeControllerType(npc)}, followSchedule={DescribeMemberValue(npc, "followSchedule")}, temporaryController={DescribeMemberValue(npc, "temporaryController")}, map={npc.currentLocation?.Name ?? "null"}, time={Game1.timeOfDay}.",
+            LogLevel.Debug);
 
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
         ClearEncounterMovementBlockingState(npc);
         npc.ClearSchedule();
+        Monitor.Log($"Autonomy: [REBIND] {npc.Name} cleared schedule, calling TryLoadSchedule().", LogLevel.Debug);
         reloadTodayOk = npc.TryLoadSchedule();
+        Monitor.Log(
+            $"Autonomy: [REBIND] {npc.Name} TryLoadSchedule returned={reloadTodayOk}, schedule_count={(npc.Schedule?.Count ?? 0)}, first_keys={DescribeScheduleKeys(npc, 5)}.",
+            LogLevel.Debug);
         if (!reloadTodayOk || npc.Schedule is null || npc.Schedule.Count == 0)
-            return string.Empty;
+        {
+            Monitor.Log($"Autonomy: [REBIND] {npc.Name} aborting rebind because no schedule loaded.", LogLevel.Warn);
+            return;
+        }
 
+        Monitor.Log(
+            $"Autonomy: [REBIND] {npc.Name} current_time={Game1.timeOfDay}, entries_before_current={DescribeScheduleEntriesAtOrBeforeCurrentTime(npc, 5)}.",
+            LogLevel.Debug);
+
+        TryAdvanceVanillaScheduleAtCurrentTime(
+            npc,
+            out nextScheduleTime,
+            out checkScheduleInvoked,
+            out checkScheduleMethod);
+    }
+
+    private void TryAdvanceVanillaScheduleAtCurrentTime(
+        NPC npc,
+        out int? nextScheduleTime,
+        out bool checkScheduleInvoked,
+        out string checkScheduleMethod)
+    {
+        nextScheduleTime = null;
+        checkScheduleInvoked = false;
+        checkScheduleMethod = "none";
+
+        TrySetMemberValue(npc, "followSchedule", true);
         TrySetMemberValue(npc, "lastAttemptedSchedule", -1);
         TrySetMemberValue(npc, "previousEndPoint", npc.TilePoint);
-        TrySetMemberValue(npc, "currentScheduleDelay", 0.001f);
         ClearEncounterMovementBlockingState(npc);
-        return "ScheduleRebound";
+        checkScheduleInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out checkScheduleMethod);
+        nextScheduleTime = TryGetNextScheduleTime(npc, Game1.timeOfDay);
+        Monitor.Log(
+            $"Autonomy: [REBIND] {npc.Name} reset complete: lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, check_schedule_invoked={checkScheduleInvoked}, check_schedule_method={checkScheduleMethod}, next_schedule_time={(nextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}.",
+            LogLevel.Debug);
+    }
+
+    private static void ClearEncounterReleaseHoldState(NPC npc)
+    {
+        TrySetMemberValue(npc, "isRaider", false);
+        TrySetMemberValue(npc, "isCharging", false);
+        TrySetMemberValue(npc, "movementPause", 0);
+        if (TryGetMemberValue(npc, "halted", out var halted) && halted is bool isHalted && isHalted)
+            TrySetMemberValue(npc, "halted", false);
     }
 
     private static void ClearEncounterMovementBlockingState(NPC npc)
@@ -15082,11 +15228,130 @@ public sealed class ModEntry : Mod
         // Release any lingering vanilla speech or halt state before schedule resume.
         TrySetMemberValue(npc, "textAboveHeadTimer", 0);
         TrySetMemberValue(npc, "textAboveHeadAlpha", 0f);
-        TrySetMemberValue(npc, "isRaider", false);
-        TrySetMemberValue(npc, "isCharging", false);
-        TrySetMemberValue(npc, "movementPause", 0);
-        if (TryGetMemberValue(npc, "halted", out var halted) && halted is bool isHalted && isHalted)
-            TrySetMemberValue(npc, "halted", false);
+        ClearEncounterReleaseHoldState(npc);
+    }
+
+    private static string DescribeControllerType(NPC npc)
+    {
+        return npc.controller?.GetType().Name ?? "null";
+    }
+
+    private static string DescribeMemberValue(object source, string memberName)
+    {
+        if (!TryGetMemberValue(source, memberName, out var value) || value is null)
+            return "null";
+
+        return value.ToString() ?? "null";
+    }
+
+    private static string DescribePointMember(object source, string memberName)
+    {
+        if (!TryGetMemberValue(source, memberName, out var value) || value is not Point point)
+            return "null";
+
+        return $"({point.X},{point.Y})";
+    }
+
+    private static string DescribeScheduleKeys(NPC npc, int take)
+    {
+        if (npc.Schedule is null || npc.Schedule.Count == 0)
+            return "none";
+
+        return string.Join(",", npc.Schedule.Keys.OrderBy(key => key).Take(take).Select(key => key.ToString(CultureInfo.InvariantCulture)));
+    }
+
+    private static string DescribeScheduleEntriesAtOrBeforeCurrentTime(NPC npc, int take)
+    {
+        if (npc.Schedule is null || npc.Schedule.Count == 0)
+            return "none";
+
+        return string.Join(",",
+            npc.Schedule
+                .Where(entry => entry.Key <= Game1.timeOfDay)
+                .OrderBy(entry => entry.Key)
+                .Take(take)
+                .Select(entry => $"{entry.Key.ToString(CultureInfo.InvariantCulture)}:{DescribeScheduleDestination(entry.Value)}"));
+    }
+
+    private static int? TryGetNextScheduleTime(NPC npc, int timeOfDay)
+    {
+        if (npc.Schedule is null || npc.Schedule.Count == 0)
+            return null;
+
+        return npc.Schedule.Keys
+            .Where(key => key > timeOfDay)
+            .OrderBy(key => key)
+            .Cast<int?>()
+            .FirstOrDefault();
+    }
+
+    private void TryLogCheckScheduleFailure(NPC npc, Exception ex, string methodLabel)
+    {
+        var root = ex is TargetInvocationException tie && tie.InnerException is not null
+            ? tie.InnerException
+            : ex;
+        Monitor.Log(
+            $"Autonomy: [REBIND] {npc.Name} {methodLabel} failed: {root.GetType().Name}: {root.Message}",
+            LogLevel.Warn);
+    }
+
+    private bool TryCallCheckSchedule(NPC npc, int timeOfDay, out string methodLabel)
+    {
+        methodLabel = "none";
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+
+        var methods = npc.GetType()
+            .GetMethods(flags)
+            .Where(method => string.Equals(method.Name, "checkSchedule", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        var intOverload = methods.FirstOrDefault(method =>
+        {
+            var parameters = method.GetParameters();
+            return parameters.Length == 1 && parameters[0].ParameterType == typeof(int);
+        });
+        if (intOverload is not null)
+        {
+            try
+            {
+                intOverload.Invoke(npc, new object[] { timeOfDay });
+                methodLabel = "checkSchedule(int)";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                TryLogCheckScheduleFailure(npc, ex, "checkSchedule(int)");
+            }
+        }
+
+        var parameterlessOverload = methods.FirstOrDefault(method => method.GetParameters().Length == 0);
+        if (parameterlessOverload is null)
+            return false;
+
+        try
+        {
+            parameterlessOverload.Invoke(npc, null);
+            methodLabel = "checkSchedule()";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TryLogCheckScheduleFailure(npc, ex, "checkSchedule()");
+            return false;
+        }
+    }
+
+    private static string DescribeScheduleDestination(object? scheduleEntry)
+    {
+        if (scheduleEntry is null)
+            return "null";
+
+        if (TryGetMemberValue(scheduleEntry, "targetLocationName", out var locationValue) && locationValue is not null)
+            return locationValue.ToString() ?? "null";
+        if (TryGetMemberValue(scheduleEntry, "destination", out var destinationValue) && destinationValue is not null)
+            return destinationValue.ToString() ?? "null";
+
+        return scheduleEntry.ToString() ?? "null";
     }
 
     private static bool HasVanillaResumeState(NPC npc)
