@@ -14,7 +14,6 @@ using StardewLivingRPG.State;
 using StardewLivingRPG.Systems;
 using StardewLivingRPG.UI;
 using StardewLivingRPG.Utils;
-using System.Collections;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
@@ -505,9 +504,6 @@ public sealed class ModEntry : Mod
         public ulong FallbackLastProgressTick { get; set; }
         public int FallbackLegRetryCount { get; set; }
         public bool FallbackWarpIssued { get; set; }
-        public bool WaitingForActiveSlotAction { get; set; }
-        public bool ArrivalRebindInvoked { get; set; }
-        public string ArrivalRebindMethod { get; set; } = "none";
     }
 
     private sealed class VanillaEncounterResumeMonitor
@@ -15084,10 +15080,10 @@ public sealed class ModEntry : Mod
                 usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
             }
 
-            if (TryHandleActiveSlotArrivalHandoff(npc, pending, currentTick))
+            if (TryHandleActiveSlotArrivalSettle(npc, pending))
                 continue;
 
-            if (HasVanillaResumeState(npc) && !usingTemporaryActiveSlotFallback && !pending.WaitingForActiveSlotAction)
+            if (HasVanillaResumeState(npc) && !usingTemporaryActiveSlotFallback)
             {
                 var hasTempController = TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null;
                 _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
@@ -15117,8 +15113,6 @@ public sealed class ModEntry : Mod
             {
                 if (pending.NextScheduleTime.HasValue)
                     shouldAttemptCheck = Game1.timeOfDay >= pending.NextScheduleTime.Value && pending.LastAttemptedTimeOfDay != Game1.timeOfDay;
-                else if (pending.WaitingForActiveSlotAction && pending.LastAttemptedTimeOfDay != Game1.timeOfDay)
-                    shouldAttemptCheck = true;
                 else if (pending.LastAttemptedTimeOfDay.HasValue)
                     shouldAttemptCheck = pending.LastAttemptedTimeOfDay.Value != Game1.timeOfDay;
                 else
@@ -15166,7 +15160,7 @@ public sealed class ModEntry : Mod
 
             var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
             var usingTemporaryActiveSlotFallbackAfterAttempt = IsUsingTemporaryActiveSlotFallback(npc, pending);
-            if (HasVanillaResumeState(npc) && !usingTemporaryActiveSlotFallbackAfterAttempt && !pending.WaitingForActiveSlotAction)
+            if (HasVanillaResumeState(npc) && !usingTemporaryActiveSlotFallbackAfterAttempt)
             {
                 _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
                 {
@@ -15189,7 +15183,7 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            if (!pending.NextScheduleTime.HasValue && !pending.WaitingForActiveSlotAction)
+            if (!pending.NextScheduleTime.HasValue)
             {
                 Monitor.Log(
                     $"Autonomy: vanilla schedule for {npc.Name} has no future slot after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time=none, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=false, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
@@ -15307,9 +15301,6 @@ public sealed class ModEntry : Mod
         TrySetMemberValue(npc, "lastAttemptedSchedule", -1);
         TrySetMemberValue(npc, "previousEndPoint", npc.TilePoint);
         ClearEncounterMovementBlockingState(npc);
-        pending.WaitingForActiveSlotAction = false;
-        pending.ArrivalRebindInvoked = false;
-        pending.ArrivalRebindMethod = "none";
         UpdatePendingActiveScheduleState(npc, pending);
 
         checkScheduleInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out checkScheduleMethod);
@@ -15356,251 +15347,30 @@ public sealed class ModEntry : Mod
             pending.ActiveBehavior = activeBehavior;
     }
 
-    private bool TryHandleActiveSlotArrivalHandoff(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
+    private bool TryHandleActiveSlotArrivalSettle(NPC npc, PendingVanillaEncounterResume pending)
     {
         if (!HasReachedActiveFallbackTarget(npc, pending))
             return false;
 
-        if (pending.WaitingForActiveSlotAction && pending.LastAttemptedTimeOfDay == Game1.timeOfDay)
+        if (pending.NextScheduleTime.HasValue && Game1.timeOfDay >= pending.NextScheduleTime.Value)
             return false;
 
         ClearTemporaryActiveSlotFallback(npc, pending);
-        pending.WaitingForActiveSlotAction = true;
-
-        var arrivalRebindSucceeded = TryRebindActiveScheduleActionAtCurrentTile(
-            npc,
-            pending,
-            out var arrivalRebindInvoked,
-            out var arrivalRebindMethod);
-
-        pending.ArrivalRebindInvoked |= arrivalRebindInvoked;
-        if (arrivalRebindInvoked)
-            pending.ArrivalRebindMethod = arrivalRebindMethod;
-
-        pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
-        pending.NextAttemptTick = currentTick + 1;
-
-        if (!arrivalRebindSucceeded)
-        {
-            Monitor.Log(
-                $"Autonomy: waiting for active-slot action after encounter {pending.EncounterId} on {npc.Name} ({pending.Phase}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null)}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                LogLevel.Debug);
-            return true;
-        }
-
-        pending.WaitingForActiveSlotAction = false;
-        _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
-        {
-            NpcId = npc.Name,
-            EncounterId = pending.EncounterId,
-            InitialTilePoint = pending.InitialTilePoint,
-            LoggedControllerTickCount = 0,
-            NextLogTick = currentTick + 10
-        };
-
-        Monitor.Log(
-            $"Autonomy: returned {npc.Name} to active-slot schedule action after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out var arrivalTempCtrl) && arrivalTempCtrl is not null)}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-            LogLevel.Debug);
-        _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
-        return true;
-    }
-
-    private bool TryRebindActiveScheduleActionAtCurrentTile(
-        NPC npc,
-        PendingVanillaEncounterResume pending,
-        out bool arrivalRebindInvoked,
-        out string arrivalRebindMethod)
-    {
-        arrivalRebindInvoked = false;
-        arrivalRebindMethod = "none";
-
-        if (!pending.ActiveScheduleTime.HasValue
-            || pending.ActiveTargetTile is null
-            || string.IsNullOrWhiteSpace(pending.ActiveTargetLocation))
-        {
-            return false;
-        }
-
-        if (pending.NextScheduleTime.HasValue && Game1.timeOfDay >= pending.NextScheduleTime.Value)
-        {
-            pending.WaitingForActiveSlotAction = false;
-            return false;
-        }
-
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
-        TrySetMemberValue(npc, "lastAttemptedSchedule", -1);
-        TrySetMemberValue(npc, "previousEndPoint", pending.ActiveTargetTile.Value);
+        if (pending.ActiveTargetTile.HasValue)
+            TrySetMemberValue(npc, "previousEndPoint", pending.ActiveTargetTile.Value);
         ClearEncounterMovementBlockingState(npc);
-
-        if (!TryMirrorActiveScheduleEntryAtCurrentTime(npc, pending.ActiveScheduleTime.Value, out var degradedClone))
-        {
-            Monitor.Log(
-                $"Autonomy: [ARRIVAL] {npc.Name} could not mirror active schedule entry {pending.ActiveScheduleTime.Value.ToString(CultureInfo.InvariantCulture)} at current time {Game1.timeOfDay}.",
-                LogLevel.Warn);
-            pending.WaitingForActiveSlotAction = true;
-            return false;
-        }
-
-        arrivalRebindInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out arrivalRebindMethod);
-        pending.WaitingForActiveSlotAction = !HasSatisfiedActiveSlotActionState(npc, pending);
+        npc.Halt();
+        if (pending.ActiveFacingDirection.HasValue)
+            npc.faceDirection(pending.ActiveFacingDirection.Value);
 
         Monitor.Log(
-            $"Autonomy: [ARRIVAL] {npc.Name} active-slot handoff at tile {DescribeNullablePoint(pending.ActiveTargetTile)} in {DescribeText(pending.ActiveTargetLocation)} (active_schedule_time={pending.ActiveScheduleTime.Value.ToString(CultureInfo.InvariantCulture)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, degraded_clone={degradedClone}, arrival_rebind_invoked={arrivalRebindInvoked}, arrival_rebind_method={arrivalRebindMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out var tempController) && tempController is not null)}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), facing={npc.FacingDirection}, time={Game1.timeOfDay}).",
+            $"Autonomy: settled {npc.Name} at active-slot destination after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null)}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
-
-        return !pending.WaitingForActiveSlotAction;
-    }
-
-    private bool TryMirrorActiveScheduleEntryAtCurrentTime(NPC npc, int activeScheduleTime, out bool degradedClone)
-    {
-        degradedClone = false;
-
-        if (npc.Schedule is null || npc.Schedule.Count == 0)
-            return false;
-
-        if (!TryGetScheduleEntry(npc, activeScheduleTime, out var activeEntry))
-            return false;
-
-        if (activeScheduleTime == Game1.timeOfDay)
-            return true;
-
-        if (!TryCloneScheduleEntry(activeEntry, out var clonedEntry, out degradedClone) || clonedEntry is null)
-            return false;
-
-        npc.Schedule[Game1.timeOfDay] = clonedEntry;
+        _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
         return true;
-    }
-
-    private static bool TryCloneScheduleEntry(
-        SchedulePathDescription source,
-        out SchedulePathDescription? clone,
-        out bool degradedClone)
-    {
-        clone = null;
-        degradedClone = false;
-
-        try
-        {
-            var memberwiseClone = typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (memberwiseClone is null)
-                return false;
-
-            clone = memberwiseClone.Invoke(source, null) as SchedulePathDescription;
-            if (clone is null)
-                return false;
-
-            var sourceMembers = source.GetType().GetMembers(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            foreach (var member in sourceMembers)
-            {
-                if (!TryGetScheduleEntryMemberValue(source, member, out var memberValue) || memberValue is null)
-                    continue;
-
-                var clonedValue = TryCloneScheduleEntryMemberValue(memberValue, ref degradedClone);
-                if (!ReferenceEquals(clonedValue, memberValue))
-                    TrySetScheduleEntryMemberValue(clone, member, clonedValue);
-            }
-
-            return true;
-        }
-        catch
-        {
-            clone = null;
-            degradedClone = true;
-            return false;
-        }
-    }
-
-    private static object? TryCloneScheduleEntryMemberValue(object memberValue, ref bool degradedClone)
-    {
-        switch (memberValue)
-        {
-            case Stack<Point> pointStack:
-                return new Stack<Point>(pointStack.Reverse());
-            case Point[] pointArray:
-                return pointArray.ToArray();
-            case IList<Point> pointList:
-                return new List<Point>(pointList);
-            case IEnumerable<Point> pointEnumerable:
-                degradedClone = true;
-                return pointEnumerable.ToList();
-            default:
-                return memberValue;
-        }
-    }
-
-    private static bool TryGetScheduleEntryMemberValue(object source, MemberInfo member, out object? value)
-    {
-        value = null;
-        try
-        {
-            switch (member)
-            {
-                case FieldInfo field:
-                    value = field.GetValue(source);
-                    return true;
-                case PropertyInfo property when property.CanRead && property.GetIndexParameters().Length == 0:
-                    value = property.GetValue(source);
-                    return true;
-                default:
-                    return false;
-            }
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool TrySetScheduleEntryMemberValue(object target, MemberInfo member, object? value)
-    {
-        try
-        {
-            switch (member)
-            {
-                case FieldInfo field:
-                    field.SetValue(target, value);
-                    return true;
-                case PropertyInfo property when property.CanWrite && property.GetIndexParameters().Length == 0:
-                    property.SetValue(target, value);
-                    return true;
-                default:
-                    return false;
-            }
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool HasSatisfiedActiveSlotActionState(NPC npc, PendingVanillaEncounterResume pending)
-    {
-        if (!HasReachedActiveFallbackTarget(npc, pending))
-            return false;
-
-        if (HasVanillaResumeState(npc))
-            return true;
-
-        if (pending.ActiveFacingDirection.HasValue && npc.FacingDirection != pending.ActiveFacingDirection.Value)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(pending.ActiveBehavior))
-            return true;
-
-        return TryNpcHasActiveAnimation(npc);
-    }
-
-    private static bool TryNpcHasActiveAnimation(NPC npc)
-    {
-        var sprite = npc.Sprite;
-        if (sprite is null)
-            return false;
-
-        return (TryGetMemberValue(sprite, "CurrentAnimation", out var currentAnimation) && currentAnimation is not null)
-            || (TryGetMemberValue(sprite, "currentAnimation", out currentAnimation) && currentAnimation is not null)
-            || (TryGetMemberValue(sprite, "animationFrames", out var animationFrames) && animationFrames is ICollection collection && collection.Count > 0);
     }
 
     private static void ClearEncounterReleaseHoldState(NPC npc)
