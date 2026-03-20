@@ -15,13 +15,21 @@ public sealed class WorldTopologyService
         if (_cachedGraph is not null && _cachedDay == currentDay)
             return _cachedGraph;
 
+        var locationList = locations
+            .Where(location => location is not null && !string.IsNullOrWhiteSpace(location.Name))
+            .ToList();
+        var locationByName = new Dictionary<string, GameLocation>(StringComparer.OrdinalIgnoreCase);
+        foreach (var location in locationList)
+        {
+            var locationName = location.Name?.Trim();
+            if (!string.IsNullOrWhiteSpace(locationName) && !locationByName.ContainsKey(locationName))
+                locationByName[locationName] = location;
+        }
+
         var graph = new WorldGraph();
 
-        foreach (var location in locations)
+        foreach (var location in locationList)
         {
-            if (location is null || string.IsNullOrWhiteSpace(location.Name))
-                continue;
-
             var locId = location.Name.Trim();
             if (graph.Nodes.ContainsKey(locId))
                 continue;
@@ -68,12 +76,13 @@ public sealed class WorldTopologyService
                     if (string.IsNullOrWhiteSpace(door.Value))
                         continue;
 
+                    var targetLocationId = door.Value.Trim();
                     graph.AdjacencyBySource[locId].Add(new TopologyEdge
                     {
                         FromLocationId = locId,
-                        ToLocationId = door.Value.Trim(),
+                        ToLocationId = targetLocationId,
                         WarpFromTile = new Point(door.Key.X, door.Key.Y),
-                        WarpToTile = Point.Zero,
+                        WarpToTile = ResolveDoorArrivalTile(locationByName, locId, targetLocationId),
                         EstimatedTravelMinutes = 2,
                         IsDoor = true
                     });
@@ -166,6 +175,26 @@ public sealed class WorldTopologyService
     {
         _cachedGraph = null;
         _cachedDay = -1;
+    }
+
+    private static Point ResolveDoorArrivalTile(
+        Dictionary<string, GameLocation> locationByName,
+        string sourceLocationId,
+        string targetLocationId)
+    {
+        if (!locationByName.TryGetValue(targetLocationId, out var targetLocation)
+            || targetLocation.doors?.Pairs is null)
+        {
+            return Point.Zero;
+        }
+
+        foreach (var reverseDoor in targetLocation.doors.Pairs)
+        {
+            if (string.Equals(reverseDoor.Value?.Trim(), sourceLocationId, StringComparison.OrdinalIgnoreCase))
+                return new Point(reverseDoor.Key.X, reverseDoor.Key.Y);
+        }
+
+        return Point.Zero;
     }
 
     private static string InferCategory(string locationName, GameLocation location)
