@@ -14942,6 +14942,7 @@ public sealed class ModEntry : Mod
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
+        ClearEncounterMovementBlockingState(npc);
 
         _pendingVanillaEncounterResumeByNpcId[npc.Name] = new PendingVanillaEncounterResume
         {
@@ -15063,6 +15064,7 @@ public sealed class ModEntry : Mod
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
+        ClearEncounterMovementBlockingState(npc);
         npc.ClearSchedule();
         reloadTodayOk = npc.TryLoadSchedule();
         if (!reloadTodayOk || npc.Schedule is null || npc.Schedule.Count == 0)
@@ -15071,7 +15073,20 @@ public sealed class ModEntry : Mod
         TrySetMemberValue(npc, "lastAttemptedSchedule", -1);
         TrySetMemberValue(npc, "previousEndPoint", npc.TilePoint);
         TrySetMemberValue(npc, "currentScheduleDelay", 0.001f);
+        ClearEncounterMovementBlockingState(npc);
         return "ScheduleRebound";
+    }
+
+    private static void ClearEncounterMovementBlockingState(NPC npc)
+    {
+        // Release any lingering vanilla speech or halt state before schedule resume.
+        TrySetMemberValue(npc, "textAboveHeadTimer", 0);
+        TrySetMemberValue(npc, "textAboveHeadAlpha", 0f);
+        TrySetMemberValue(npc, "isRaider", false);
+        TrySetMemberValue(npc, "isCharging", false);
+        TrySetMemberValue(npc, "movementPause", 0);
+        if (TryGetMemberValue(npc, "halted", out var halted) && halted is bool isHalted && isHalted)
+            TrySetMemberValue(npc, "halted", false);
     }
 
     private static bool HasVanillaResumeState(NPC npc)
