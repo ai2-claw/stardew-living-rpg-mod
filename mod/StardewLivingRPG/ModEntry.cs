@@ -66,6 +66,7 @@ public sealed class ModEntry : Mod
     private const int AmbientMarketModifierDailyCap = 1;
     private const int AmbientSentimentDailyCap = 1;
     private const int AmbientSentimentAxisDailyCap = 1;
+    private const int EncounterVanillaResumeMaxAttempts = 10;
     private const int NpcShipmentDebugTopDefault = 5;
     private const int MaxSimulationToastsPerDay = 2;
     private const int SimulationToastCooldownSeconds = 25;
@@ -110,7 +111,6 @@ public sealed class ModEntry : Mod
     private static readonly string[] AllowedEncounterChanceValues = { "0", "50", "75", "100" };
     private static readonly string[] ScheduleLocationMemberCandidates = { "targetLocationName", "TargetLocationName", "locationName", "LocationName", "location", "Location", "locationId", "LocationId" };
     private static readonly string[] ScheduleTileMemberCandidates = { "route", "Route", "endPoint", "EndPoint", "targetTile", "TargetTile", "tile", "Tile", "point", "Point" };
-    private static readonly string[] ScheduleFacingMemberCandidates = { "facingDirection", "FacingDirection", "facing", "Facing" };
     private static readonly Regex EncounterCommandRetryRegex = new(
         @"(?:^\s*(?:adjust[_\s]+reputation|shift[_\s]+interest[_\s]+influence|apply[_\s]+market[_\s]+modifier|spread[_\s]+rumor|publish[_\s]+rumor|publish[_\s]+article|propose[_\s]+quest|record[_\s]+town[_\s]+event|record[_\s]+memory[_\s]+fact|adjust[_\s]+town[_\s]+sentiment|update[_\s]+romance[_\s]+profile|propose[_\s]+micro[_\s]+date)\b|""(?:command|arguments|npc_id|intent_id)""\s*:)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
@@ -452,6 +452,24 @@ public sealed class ModEntry : Mod
     {
         public Player2SpatialPlanSuggestion Suggestion { get; init; } = new();
         public DateTime CompletedUtc { get; init; }
+    }
+
+    private sealed class PendingVanillaEncounterResume
+    {
+        public string NpcId { get; init; } = string.Empty;
+        public string EncounterId { get; init; } = string.Empty;
+        public string Phase { get; init; } = string.Empty;
+        public bool RestoredSchedule { get; init; }
+        public ulong NextAttemptTick { get; set; }
+        public int Attempts { get; set; }
+        public bool InjectedCurrentEntry { get; set; }
+        public int? MirroredFromTime { get; set; }
+        public bool ReloadTodayOk { get; set; }
+        public bool ReloadCurrentTimeOk { get; set; }
+        public string RouteCloneType { get; set; } = "none";
+        public int RouteCloneCount { get; set; }
+        public bool PathfindAttempted { get; set; }
+        public string PathfindMethod { get; set; } = "none";
     }
 
     private sealed class NpcShipmentProfile
@@ -895,9 +913,11 @@ public sealed class ModEntry : Mod
     private readonly Dictionary<string, EncounterConversationCompletion> _deferredEncounterConversationCompletions = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _player2EncounterIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _dailyEncounterPairs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingVanillaEncounterResume> _pendingVanillaEncounterResumeByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private int _ambientLastOverhearDay = -9999;
     private readonly Dictionary<string, RecentVanillaDialogueContext> _recentVanillaDialogueByNpcToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecentNpcGiftContext> _recentGiftContextByNpcToken = new(StringComparer.OrdinalIgnoreCase);
+    private ulong _lastUpdateTick;
 
     private string? _pendingNpcDialogueHookName;
     private NPC? _pendingNpcDialogueHookNpc;
@@ -1518,6 +1538,7 @@ public sealed class ModEntry : Mod
     {
         _state = StateStore.LoadOrCreate(Helper, Monitor);
         _state.ApplyConfig(_config);
+        _pendingVanillaEncounterResumeByNpcId.Clear();
         _recentVanillaDialogueByNpcToken.Clear();
         _recentGiftContextByNpcToken.Clear();
         ClearNpcDialogueHook();
@@ -4229,6 +4250,7 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
+        _lastUpdateTick = (ulong)e.Ticks;
         TryUpdateTownSquareMagicianHud();
         SyncCalendarSeasonFromWorld();
         SyncPlayer2DeviceAuthModal();
@@ -4261,6 +4283,7 @@ public sealed class ModEntry : Mod
         TryAdvanceAutonomousRoutines(e);
         TryTriggerAmbientIndoorAutonomyChatter(e);
         _faceToFaceService?.Tick(ResolveNpcByName);
+        TryProcessPendingVanillaEncounterResumes(_lastUpdateTick);
         TryTickNpcSpeechBubbles();
 
         if (e.IsMultipleOf(60))
@@ -12929,6 +12952,7 @@ public sealed class ModEntry : Mod
         _autonomyRuntimeByNpcId.Clear();
         _deferredEncounterConversationCompletions.Clear();
         _player2EncounterIds.Clear();
+        _pendingVanillaEncounterResumeByNpcId.Clear();
         _dailyEncounterPairs.Clear();
         _npcSpeechBubbleService?.CancelAll();
         _pairEmotionService?.Decay(_state);
@@ -14920,54 +14944,219 @@ public sealed class ModEntry : Mod
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
-        var resumeMethod = TryRebindVanillaScheduleAtCurrentTime(npc, out var checkScheduleInvoked, out var injectedCurrentEntry, out var mirroredFromTime);
-        var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
+
+        _pendingVanillaEncounterResumeByNpcId[npc.Name] = new PendingVanillaEncounterResume
+        {
+            NpcId = npc.Name,
+            EncounterId = encounterId,
+            Phase = phase,
+            RestoredSchedule = restoredSchedule,
+            NextAttemptTick = _lastUpdateTick + 1
+        };
+
         Monitor.Log(
-            $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}, restored={restoredSchedule}, injected_current={injectedCurrentEntry}, mirrored_from={(mirroredFromTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, checkSchedule={checkScheduleInvoked}, fallback={(string.Equals(resumeMethod, "pathfindToNextScheduleLocation()", StringComparison.Ordinal) ? "pathfindToNextScheduleLocation()" : "none")}, resumed={!string.IsNullOrWhiteSpace(resumeMethod)}, controller={npc.controller is not null}, temporary_controller={hasTemporaryController}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-            string.IsNullOrWhiteSpace(resumeMethod) ? LogLevel.Debug : LogLevel.Trace);
+            $"Autonomy: queued {npc.Name} for vanilla schedule resume after encounter {encounterId} ({phase}, restored={restoredSchedule}, next_tick={(_lastUpdateTick + 1).ToString(CultureInfo.InvariantCulture)}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            LogLevel.Trace);
     }
 
-    private string TryRebindVanillaScheduleAtCurrentTime(NPC npc, out bool checkScheduleInvoked, out bool injectedCurrentEntry, out int? mirroredFromTime)
+    private void TryProcessPendingVanillaEncounterResumes(ulong currentTick)
     {
-        checkScheduleInvoked = false;
+        if (_pendingVanillaEncounterResumeByNpcId.Count == 0)
+            return;
+
+        foreach (var npcId in _pendingVanillaEncounterResumeByNpcId.Keys.ToArray())
+        {
+            var pending = _pendingVanillaEncounterResumeByNpcId[npcId];
+            if (currentTick < pending.NextAttemptTick)
+                continue;
+
+            var npc = ResolveNpcByName(pending.NpcId);
+            if (npc is null)
+            {
+                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+                continue;
+            }
+
+            pending.Attempts += 1;
+            var resumeMethod = string.Empty;
+            var reloadTodayOk = false;
+            var reloadCurrentTimeOk = false;
+            var injectedCurrentEntry = false;
+            int? mirroredFromTime = null;
+            var routeCloneType = "none";
+            var routeCloneCount = 0;
+            var pathfindAttempted = false;
+            var pathfindMethod = "none";
+
+            if (pending.Attempts == 1 || npc.Schedule is null || npc.Schedule.Count == 0)
+            {
+                resumeMethod = TryRebindVanillaScheduleAtCurrentTime(
+                    npc,
+                    out reloadTodayOk,
+                    out reloadCurrentTimeOk,
+                    out injectedCurrentEntry,
+                    out mirroredFromTime,
+                    out routeCloneType,
+                    out routeCloneCount,
+                    out pathfindAttempted,
+                    out pathfindMethod);
+            }
+            else if (HasVanillaResumeState(npc))
+            {
+                resumeMethod = "VanillaSchedule(update)";
+            }
+
+            pending.ReloadTodayOk |= reloadTodayOk;
+            pending.ReloadCurrentTimeOk |= reloadCurrentTimeOk;
+            pending.InjectedCurrentEntry |= injectedCurrentEntry;
+            if (!pending.MirroredFromTime.HasValue && mirroredFromTime.HasValue)
+                pending.MirroredFromTime = mirroredFromTime;
+            if (!string.IsNullOrWhiteSpace(routeCloneType) && !string.Equals(routeCloneType, "none", StringComparison.OrdinalIgnoreCase))
+                pending.RouteCloneType = routeCloneType;
+            if (routeCloneCount > 0)
+                pending.RouteCloneCount = routeCloneCount;
+            pending.PathfindAttempted |= pathfindAttempted;
+            if (pathfindAttempted)
+                pending.PathfindMethod = !string.IsNullOrWhiteSpace(pathfindMethod) && !string.Equals(pathfindMethod, "none", StringComparison.OrdinalIgnoreCase) ? pathfindMethod : "failed";
+
+            var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
+            if (!string.IsNullOrWhiteSpace(resumeMethod))
+            {
+                Monitor.Log(
+                    $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, injected_current={pending.InjectedCurrentEntry}, mirrored_from={(pending.MirroredFromTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, reload_today={pending.ReloadTodayOk}, reload_current_time={pending.ReloadCurrentTimeOk}, route_clone_type={pending.RouteCloneType}, route_clone_count={pending.RouteCloneCount}, pathfind_attempted={pending.PathfindAttempted}, pathfind_method={pending.PathfindMethod}, attempts={pending.Attempts}, resumed=true, method={resumeMethod}, controller={npc.controller is not null}, temporary_controller={hasTemporaryController}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                    LogLevel.Trace);
+                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+                continue;
+            }
+
+            if (pending.Attempts >= EncounterVanillaResumeMaxAttempts)
+            {
+                if (npc.Schedule is not { Count: > 0 })
+                {
+                    npc.ClearSchedule();
+                    npc.TryLoadSchedule();
+                }
+
+                if (npc.Schedule is { Count: > 0 }
+                    && TryExtractScheduleDestination(npc.Schedule, Game1.timeOfDay, out var targetLocationName, out var targetTile, out _)
+                    && TryWarpToScheduleDestination(npc, targetLocationName, targetTile, out var warpMethod))
+                {
+                    pending.PathfindAttempted = true;
+                    pending.PathfindMethod = warpMethod;
+                    Monitor.Log(
+                        $"Autonomy: warped {npc.Name} to vanilla schedule destination after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, injected_current={pending.InjectedCurrentEntry}, mirrored_from={(pending.MirroredFromTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, reload_today={pending.ReloadTodayOk}, reload_current_time={pending.ReloadCurrentTimeOk}, route_clone_type={pending.RouteCloneType}, route_clone_count={pending.RouteCloneCount}, pathfind_attempted={pending.PathfindAttempted}, pathfind_method={pending.PathfindMethod}, attempts={pending.Attempts}, controller={npc.controller is not null}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out temporaryController) && temporaryController is not null)}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                        LogLevel.Warn);
+                    _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+                    continue;
+                }
+
+                Monitor.Log(
+                    $"Autonomy: failed to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, injected_current={pending.InjectedCurrentEntry}, mirrored_from={(pending.MirroredFromTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, reload_today={pending.ReloadTodayOk}, reload_current_time={pending.ReloadCurrentTimeOk}, route_clone_type={pending.RouteCloneType}, route_clone_count={pending.RouteCloneCount}, pathfind_attempted={pending.PathfindAttempted}, pathfind_method={pending.PathfindMethod}, attempts={pending.Attempts}, controller={npc.controller is not null}, temporary_controller={hasTemporaryController}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                    LogLevel.Warn);
+                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+                continue;
+            }
+
+            pending.NextAttemptTick = currentTick + 1;
+        }
+    }
+
+    private string TryRebindVanillaScheduleAtCurrentTime(
+        NPC npc,
+        out bool reloadTodayOk,
+        out bool reloadCurrentTimeOk,
+        out bool injectedCurrentEntry,
+        out int? mirroredFromTime,
+        out string routeCloneType,
+        out int routeCloneCount,
+        out bool pathfindAttempted,
+        out string pathfindMethod)
+    {
+        reloadTodayOk = false;
+        reloadCurrentTimeOk = false;
         injectedCurrentEntry = false;
         mirroredFromTime = null;
-        if (npc.Schedule is null || npc.Schedule.Count == 0)
+        routeCloneType = "none";
+        routeCloneCount = 0;
+        pathfindAttempted = false;
+        pathfindMethod = "none";
+
+        npc.controller = null;
+        TrySetMemberValue(npc, "temporaryController", null);
+        TrySetMemberValue(npc, "followSchedule", true);
+        npc.ClearSchedule();
+        reloadTodayOk = npc.TryLoadSchedule();
+        if (!reloadTodayOk || npc.Schedule is null || npc.Schedule.Count == 0)
             return string.Empty;
 
-        TryEnsureCurrentTimeScheduleEntry(npc, out injectedCurrentEntry, out mirroredFromTime);
+        if (HasVanillaResumeState(npc))
+            return "TryLoadSchedule()";
 
-        if (TryInvokeVanillaMethod(npc, "checkSchedule", Game1.timeOfDay)
-            || TryInvokeVanillaMethod(npc, "checkSchedule"))
+        if (!TryCloneScheduleWithCurrentEntry(
+                npc.Schedule,
+                Game1.timeOfDay,
+                out var clonedSchedule,
+                out injectedCurrentEntry,
+                out mirroredFromTime,
+                out routeCloneType,
+                out routeCloneCount))
         {
-            checkScheduleInvoked = true;
-            if (HasVanillaResumeState(npc))
-                return "checkSchedule()";
+            return string.Empty;
         }
 
-        if (TryInvokeVanillaMethod(npc, "pathfindToNextScheduleLocation")
-            && HasVanillaResumeState(npc))
+        npc.controller = null;
+        TrySetMemberValue(npc, "temporaryController", null);
+        TrySetMemberValue(npc, "followSchedule", true);
+        npc.ClearSchedule();
+        reloadCurrentTimeOk = npc.TryLoadSchedule("slrpg_encounter_resume", clonedSchedule);
+        if (reloadCurrentTimeOk && HasVanillaResumeState(npc))
+            return "TryLoadSchedule(current)";
+
+        var scheduleForDirectPathfind = reloadCurrentTimeOk && npc.Schedule is { Count: > 0 }
+            ? npc.Schedule
+            : clonedSchedule;
+        if (TryExtractScheduleDestination(scheduleForDirectPathfind, Game1.timeOfDay, out var targetLocationName, out var targetTile, out _))
         {
-            return "pathfindToNextScheduleLocation()";
+            pathfindAttempted = true;
+            pathfindMethod = TryPathfindToScheduleDestination(npc, targetLocationName, targetTile);
+            if (!string.IsNullOrWhiteSpace(pathfindMethod))
+                return pathfindMethod;
         }
 
         return string.Empty;
     }
 
-    private void TryEnsureCurrentTimeScheduleEntry(NPC npc, out bool injectedCurrentEntry, out int? mirroredFromTime)
+    private static bool TryCloneScheduleWithCurrentEntry(
+        Dictionary<int, StardewValley.Pathfinding.SchedulePathDescription> sourceSchedule,
+        int currentTime,
+        out Dictionary<int, StardewValley.Pathfinding.SchedulePathDescription> clonedSchedule,
+        out bool injectedCurrentEntry,
+        out int? mirroredFromTime,
+        out string routeCloneType,
+        out int routeCloneCount)
     {
+        clonedSchedule = new Dictionary<int, StardewValley.Pathfinding.SchedulePathDescription>();
         injectedCurrentEntry = false;
         mirroredFromTime = null;
+        routeCloneType = "none";
+        routeCloneCount = 0;
 
-        if (npc.Schedule is null || npc.Schedule.Count == 0)
-            return;
+        foreach (var entry in sourceSchedule)
+        {
+            if (!TryCloneScheduleEntry(entry.Value, out var clonedEntry, out _, out _))
+                return false;
 
-        var currentTime = Game1.timeOfDay;
-        if (npc.Schedule.ContainsKey(currentTime))
-            return;
+            clonedSchedule[entry.Key] = clonedEntry;
+        }
+
+        if (clonedSchedule.TryGetValue(currentTime, out var currentEntry))
+        {
+            TryGetRouteCloneInfo(currentEntry, out routeCloneType, out routeCloneCount);
+            return true;
+        }
 
         KeyValuePair<int, StardewValley.Pathfinding.SchedulePathDescription>? activeEntry = null;
-        foreach (var entry in npc.Schedule)
+        foreach (var entry in sourceSchedule)
         {
             if (entry.Key > currentTime)
                 continue;
@@ -14977,30 +15166,203 @@ public sealed class ModEntry : Mod
         }
 
         if (!activeEntry.HasValue)
-            return;
+            return clonedSchedule.Count > 0;
 
-        if (!TryReadScheduleDestination(activeEntry.Value.Value, out var locationId, out var tile, out var facingDirection))
-            return;
-
-        _scheduleOverrideService?.PatchSingleEntry(npc, currentTime, locationId, tile, facingDirection);
-        if (!npc.Schedule.ContainsKey(currentTime))
-            return;
-
-        injectedCurrentEntry = true;
-        mirroredFromTime = activeEntry.Value.Key;
-    }
-
-    private static bool TryReadScheduleDestination(object scheduleEntry, out string locationId, out Point tile, out int facingDirection)
-    {
-        locationId = string.Empty;
-        tile = Point.Zero;
-        facingDirection = Game1.down;
-
-        if (!TryReadScheduleLocation(scheduleEntry, out locationId) || !TryReadScheduleTile(scheduleEntry, out tile))
+        if (!TryCloneScheduleEntry(activeEntry.Value.Value, out var mirroredEntry, out routeCloneType, out routeCloneCount))
             return false;
 
-        TryReadScheduleFacing(scheduleEntry, out facingDirection);
+        clonedSchedule[currentTime] = mirroredEntry;
+        injectedCurrentEntry = true;
+        mirroredFromTime = activeEntry.Value.Key;
         return true;
+    }
+
+    private static bool TryCloneScheduleEntry(
+        StardewValley.Pathfinding.SchedulePathDescription sourceEntry,
+        out StardewValley.Pathfinding.SchedulePathDescription clonedEntry,
+        out string routeCloneType,
+        out int routeCloneCount)
+    {
+        routeCloneType = "none";
+        routeCloneCount = 0;
+        clonedEntry = sourceEntry;
+
+        var cloneMethod = typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (cloneMethod?.Invoke(sourceEntry, null) is not StardewValley.Pathfinding.SchedulePathDescription rawClone)
+            return false;
+
+        clonedEntry = rawClone;
+
+        foreach (var memberName in ScheduleTileMemberCandidates)
+        {
+            if (!TryGetMemberValue(sourceEntry, memberName, out var value) || value is null)
+                continue;
+
+            var clonedRoute = CloneScheduleRouteValue(value, out routeCloneType, out routeCloneCount);
+            if (!TrySetMemberValue(clonedEntry, memberName, clonedRoute))
+            {
+                routeCloneType = "set_failed";
+                routeCloneCount = 0;
+            }
+
+            return true;
+        }
+
+        return true;
+    }
+
+    private static object CloneScheduleRouteValue(object value, out string routeCloneType, out int routeCloneCount)
+    {
+        routeCloneType = value.GetType().Name;
+        routeCloneCount = 0;
+
+        if (value is Stack<Point> stackPoints)
+        {
+            routeCloneCount = stackPoints.Count;
+            return new Stack<Point>(stackPoints.Reverse());
+        }
+
+        if (value is IList<Point> routePoints)
+        {
+            routeCloneCount = routePoints.Count;
+            return new List<Point>(routePoints);
+        }
+
+        if (value is Queue<Point> queuePoints)
+        {
+            routeCloneCount = queuePoints.Count;
+            return new Queue<Point>(queuePoints);
+        }
+
+        if (value is Point point)
+        {
+            routeCloneCount = 1;
+            return point;
+        }
+
+        if (value is Vector2 vector)
+        {
+            routeCloneCount = 1;
+            return vector;
+        }
+
+        return value;
+    }
+
+    private static void TryGetRouteCloneInfo(
+        StardewValley.Pathfinding.SchedulePathDescription scheduleEntry,
+        out string routeCloneType,
+        out int routeCloneCount)
+    {
+        routeCloneType = "none";
+        routeCloneCount = 0;
+
+        foreach (var memberName in ScheduleTileMemberCandidates)
+        {
+            if (!TryGetMemberValue(scheduleEntry, memberName, out var value) || value is null)
+                continue;
+
+            CloneScheduleRouteValue(value, out routeCloneType, out routeCloneCount);
+            return;
+        }
+    }
+
+    private static bool TryExtractScheduleDestination(
+        Dictionary<int, StardewValley.Pathfinding.SchedulePathDescription> schedule,
+        int currentTime,
+        out string targetLocationName,
+        out Point targetTile,
+        out int? sourceTime)
+    {
+        targetLocationName = string.Empty;
+        targetTile = Point.Zero;
+        sourceTime = null;
+
+        if (schedule.Count == 0)
+            return false;
+
+        KeyValuePair<int, StardewValley.Pathfinding.SchedulePathDescription>? selectedEntry = null;
+        foreach (var entry in schedule.OrderBy(pair => pair.Key))
+        {
+            if (entry.Key <= currentTime)
+            {
+                selectedEntry = entry;
+                continue;
+            }
+
+            if (!selectedEntry.HasValue)
+                selectedEntry = entry;
+
+            break;
+        }
+
+        if (!selectedEntry.HasValue)
+            return false;
+
+        sourceTime = selectedEntry.Value.Key;
+        if (!TryReadScheduleLocation(selectedEntry.Value.Value, out targetLocationName))
+            return false;
+        if (!TryReadScheduleTile(selectedEntry.Value.Value, out targetTile))
+            return false;
+
+        return true;
+    }
+
+    private bool TryWarpToScheduleDestination(NPC npc, string targetLocationName, Point targetTile, out string method)
+    {
+        method = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(targetLocationName))
+            return false;
+
+        var targetLocation = Game1.getLocationFromName(targetLocationName);
+        if (targetLocation is null)
+            return false;
+
+        if (_walkabilityService is not null
+            && !_walkabilityService.IsTileWalkable(targetLocation, targetTile, npc)
+            && _walkabilityService.TryFindNearestWalkableTile(targetLocation, targetTile, 16, npc, out var safeTile))
+        {
+            targetTile = safeTile;
+        }
+
+        npc.controller = null;
+        TrySetMemberValue(npc, "temporaryController", null);
+        npc.Halt();
+        Game1.warpCharacter(npc, targetLocationName, new Vector2(targetTile.X, targetTile.Y));
+        method = "WarpCharacter(schedule)";
+        return true;
+    }
+
+    private string TryPathfindToScheduleDestination(NPC npc, string targetLocationName, Point targetTile)
+    {
+        if (npc.currentLocation is null || string.IsNullOrWhiteSpace(targetLocationName))
+            return string.Empty;
+
+        if (string.Equals(npc.currentLocation.Name, targetLocationName, StringComparison.OrdinalIgnoreCase))
+        {
+            var currentTile = npc.TilePoint;
+            if (currentTile == targetTile)
+                return "AlreadyAtScheduleDestination";
+
+            try
+            {
+                npc.controller = new StardewValley.Pathfinding.PathFindController(npc, npc.currentLocation, targetTile, npc.FacingDirection);
+                if (npc.controller is not null)
+                    return "PathFindController(direct)";
+            }
+            catch
+            {
+                npc.controller = null;
+            }
+
+            npc.controller = null;
+            return string.Empty;
+        }
+
+        return TryWarpToScheduleDestination(npc, targetLocationName, targetTile, out var warpMethod)
+            ? warpMethod
+            : string.Empty;
     }
 
     private static bool TryReadScheduleLocation(object scheduleEntry, out string locationId)
@@ -15009,7 +15371,9 @@ public sealed class ModEntry : Mod
 
         foreach (var memberName in ScheduleLocationMemberCandidates)
         {
-            if (TryGetMemberValue(scheduleEntry, memberName, out var value) && value is string text && !string.IsNullOrWhiteSpace(text))
+            if (TryGetMemberValue(scheduleEntry, memberName, out var value)
+                && value is string text
+                && !string.IsNullOrWhiteSpace(text))
             {
                 locationId = text;
                 return true;
@@ -15022,8 +15386,16 @@ public sealed class ModEntry : Mod
     private static bool TryReadScheduleTile(object scheduleEntry, out Point tile)
     {
         tile = Point.Zero;
+        var candidateNames = new[]
+        {
+            "endPoint", "EndPoint",
+            "targetTile", "TargetTile",
+            "tile", "Tile",
+            "point", "Point",
+            "route", "Route"
+        };
 
-        foreach (var memberName in ScheduleTileMemberCandidates)
+        foreach (var memberName in candidateNames)
         {
             if (!TryGetMemberValue(scheduleEntry, memberName, out var value) || value is null)
                 continue;
@@ -15045,23 +15417,16 @@ public sealed class ModEntry : Mod
                 tile = routePoints[routePoints.Count - 1];
                 return true;
             }
-        }
 
-        return false;
-    }
-
-    private static bool TryReadScheduleFacing(object scheduleEntry, out int facingDirection)
-    {
-        facingDirection = Game1.down;
-
-        foreach (var memberName in ScheduleFacingMemberCandidates)
-        {
-            if (!TryGetMemberValue(scheduleEntry, memberName, out var value) || value is null)
-                continue;
-
-            if (value is int facing)
+            if (value is Stack<Point> stackPoints && stackPoints.Count > 0)
             {
-                facingDirection = facing;
+                tile = stackPoints.Last();
+                return true;
+            }
+
+            if (value is Queue<Point> queuePoints && queuePoints.Count > 0)
+            {
+                tile = queuePoints.Last();
                 return true;
             }
         }
@@ -15074,34 +15439,6 @@ public sealed class ModEntry : Mod
         return npc.controller is not null
             || npc.isMoving()
             || (TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null);
-    }
-
-    private static bool TryInvokeVanillaMethod(object source, string methodName, params object[] arguments)
-    {
-        if (source is null || string.IsNullOrWhiteSpace(methodName))
-            return false;
-
-        const BindingFlags flags =
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
-        var argTypes = arguments.Select(static a => a?.GetType() ?? typeof(object)).ToArray();
-
-        try
-        {
-            var method = source.GetType().GetMethod(methodName, flags, binder: null, types: argTypes, modifiers: null);
-            if (method is null && arguments.Length == 1 && arguments[0] is int)
-                method = source.GetType().GetMethod(methodName, flags, binder: null, types: new[] { typeof(int) }, modifiers: null);
-            if (method is null && arguments.Length == 0)
-                method = source.GetType().GetMethod(methodName, flags);
-            if (method is null)
-                return false;
-
-            method.Invoke(source, arguments.Length == 0 ? null : arguments);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     private bool TryValidateEncounterScene(ActiveEncounter encounter, out string reason)
