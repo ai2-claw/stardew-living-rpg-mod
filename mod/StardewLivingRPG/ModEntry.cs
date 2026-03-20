@@ -70,6 +70,7 @@ public sealed class ModEntry : Mod
     private const int EncounterVanillaResumeMaxAttempts = 5;
     private const int EncounterVanillaResumeFallbackStaleTicks = 180;
     private const int EncounterVanillaResumeFallbackLegRetryLimit = 1;
+    private const int EncounterVanillaResumeFallbackRepathLimit = 2;
     private const int NpcShipmentDebugTopDefault = 5;
     private const int MaxSimulationToastsPerDay = 2;
     private const int SimulationToastCooldownSeconds = 25;
@@ -512,9 +513,34 @@ public sealed class ModEntry : Mod
         public ulong FallbackLastProgressTick { get; set; }
         public int FallbackLegRetryCount { get; set; }
         public bool FallbackWarpIssued { get; set; }
+        public List<Point> FallbackWaypointPath { get; set; } = new();
+        public int FallbackWaypointIndex { get; set; }
+        public Point? FallbackRouteTargetTile { get; set; }
+        public int FallbackRepathCount { get; set; }
         public int? LastRejectedResumeTimeOfDay { get; set; }
         public string LastRejectedResumeReason { get; set; } = string.Empty;
         public int RejectedResumeCountForCurrentSlot { get; set; }
+    }
+
+    private sealed class ConversationTopicCandidate
+    {
+        public string SourceType { get; init; } = "fallback";
+        public string TopicText { get; init; } = string.Empty;
+        public int Weight { get; init; } = 1;
+        public bool HasRecentEvent { get; init; }
+        public bool HasMarketSignal { get; init; }
+    }
+
+    private sealed class EncounterSchedulePromptContext
+    {
+        public string NpcName { get; init; } = string.Empty;
+        public string CurrentLocation { get; init; } = "Unknown";
+        public int? ActiveTime { get; init; }
+        public string ActiveLocation { get; init; } = string.Empty;
+        public Point? ActiveTile { get; init; }
+        public int? NextTime { get; init; }
+        public string NextLocation { get; init; } = string.Empty;
+        public Point? NextTile { get; init; }
     }
 
     private sealed class VanillaEncounterResumeMonitor
@@ -962,6 +988,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, string> _ambientNpcLastBeatByPairKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _ambientNpcLastBeatDayByPairKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _ambientBeatUsageTodayByBeatId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _npcConversationTopicUsageTodayByKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<AmbientConversationCompletion> _pendingAmbientConversationCompletions = new();
     private readonly ConcurrentQueue<EncounterConversationCompletion> _pendingEncounterConversationCompletions = new();
     private readonly Dictionary<string, EncounterConversationCompletion> _deferredEncounterConversationCompletions = new(StringComparer.OrdinalIgnoreCase);
@@ -1618,6 +1645,7 @@ public sealed class ModEntry : Mod
         _vanillaEncounterResumeMonitorByNpcId.Clear();
         _recentVanillaDialogueByNpcToken.Clear();
         _recentGiftContextByNpcToken.Clear();
+        _npcConversationTopicUsageTodayByKey.Clear();
         ClearNpcDialogueHook();
         ClearManualNpcFollowUpState();
         ClearPendingNpcGiftSelectionState();
@@ -4619,6 +4647,7 @@ public sealed class ModEntry : Mod
         _ambientNpcConversationsToday = 0;
         _ambientNpcLastConversationUtcByNpcId.Clear();
         _ambientBeatUsageTodayByBeatId.Clear();
+        _npcConversationTopicUsageTodayByKey.Clear();
         var pairCooldownDays = _npcConversationService?.ResolvePairCooldownDays(_config.AmbientNpcPairCooldownDays)
             ?? NpcConversationService.DefaultPairCooldownDays;
         var pruneBeforeDay = _state.Calendar.Day - Math.Max(3, pairCooldownDays + 1);
@@ -5383,43 +5412,35 @@ public sealed class ModEntry : Mod
 
     private (string Topic, bool HasRecentEvent, bool HasMarketSignal) BuildAmbientConversationBaseTopic(string speakerShortName, string listenerShortName)
     {
-        var recentRumor = GetRecentRumorTopicHook();
-        if (!string.IsNullOrWhiteSpace(recentRumor))
-            return ($"fresh rumor in circulation: {recentRumor}", true, false);
-
-        var recentEvent = _state.TownMemory.Events
-            .Where(ev =>
-                ev.Day >= _state.Calendar.Day - 2
-                && ev.Day <= _state.Calendar.Day
-                && !string.IsNullOrWhiteSpace(ev.Summary))
-            .OrderByDescending(ev => ev.Day)
-            .ThenByDescending(ev => ev.Severity)
-            .FirstOrDefault();
-        if (recentEvent is not null)
-            return ($"recent town event: {recentEvent.Summary}", true, false);
-
-        var autonomyHook = BuildConversationAutonomyHook(speakerShortName, listenerShortName);
-        if (!string.IsNullOrWhiteSpace(autonomyHook))
-            return (autonomyHook, false, false);
-
-        var marketMover = _state.Economy.Crops
-            .Select(kv => new { Crop = kv.Key, Delta = kv.Value.PriceToday - kv.Value.PriceYesterday })
-            .OrderByDescending(x => Math.Abs(x.Delta))
-            .FirstOrDefault();
-        if (marketMover is not null && Math.Abs(marketMover.Delta) >= 5)
-        {
-            var direction = marketMover.Delta > 0 ? "up" : "down";
-            return ($"market chatter around {marketMover.Crop} prices moving {direction}", false, true);
-        }
-
-        return ($"{speakerShortName} and {listenerShortName} trade suspicions, ambitions, and small-town observations from today", false, false);
+        var candidate = SelectNpcConversationTopicCandidate(speakerShortName, listenerShortName, includeMarketFallback: true);
+        TrackNpcConversationTopicUsage(candidate);
+        return (candidate.TopicText, candidate.HasRecentEvent, candidate.HasMarketSignal);
     }
 
     private string BuildEncounterConversationTopicSeed(string speakerShortName, string listenerShortName, ConversationScenario scenario)
     {
-        var recentRumor = GetRecentRumorTopicHook();
-        if (!string.IsNullOrWhiteSpace(recentRumor))
-            return $"A fresh rumor is moving through town: {recentRumor}";
+        var candidate = SelectNpcConversationTopicCandidate(speakerShortName, listenerShortName, includeMarketFallback: false);
+        TrackNpcConversationTopicUsage(candidate);
+        return candidate.TopicText;
+    }
+
+    private ConversationTopicCandidate SelectNpcConversationTopicCandidate(string speakerShortName, string listenerShortName, bool includeMarketFallback)
+    {
+        var candidates = new List<ConversationTopicCandidate>();
+
+        if (TryGetLatestGroundingArticle(out var article))
+        {
+            var title = TrimForContext(article.Title, 120, "today's newspaper");
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                candidates.Add(CreateConversationTopicCandidate(
+                    "headline",
+                    $"today's newspaper headline: {title}",
+                    42,
+                    hasRecentEvent: true,
+                    hasMarketSignal: false));
+            }
+        }
 
         var recentEvent = _state.TownMemory.Events
             .Where(ev =>
@@ -5431,13 +5452,213 @@ public sealed class ModEntry : Mod
             .ThenByDescending(ev => ev.Severity)
             .FirstOrDefault();
         if (recentEvent is not null)
-            return $"Something notable still hangs over town: {recentEvent.Summary}";
+        {
+            candidates.Add(CreateConversationTopicCandidate(
+                "event",
+                $"recent town event: {TrimForContext(recentEvent.Summary, 120, "something notable around town")}",
+                32,
+                hasRecentEvent: true,
+                hasMarketSignal: false));
+        }
 
         var autonomyHook = BuildConversationAutonomyHook(speakerShortName, listenerShortName);
         if (!string.IsNullOrWhiteSpace(autonomyHook))
-            return autonomyHook;
+        {
+            candidates.Add(CreateConversationTopicCandidate(
+                "autonomy",
+                autonomyHook,
+                22,
+                hasRecentEvent: false,
+                hasMarketSignal: false));
+        }
 
-        return $"Their exchange should feel like {scenario.Purpose} with {scenario.ToneAtStart} tone and a concrete local detail.";
+        var recentRumor = GetRecentRumorTopicHook();
+        if (!string.IsNullOrWhiteSpace(recentRumor))
+        {
+            candidates.Add(CreateConversationTopicCandidate(
+                "rumor",
+                $"fresh rumor in circulation: {recentRumor}",
+                14,
+                hasRecentEvent: true,
+                hasMarketSignal: false));
+        }
+
+        if (includeMarketFallback)
+        {
+            var marketMover = _state.Economy.Crops
+                .Select(kv => new { Crop = kv.Key, Delta = kv.Value.PriceToday - kv.Value.PriceYesterday })
+                .OrderByDescending(x => Math.Abs(x.Delta))
+                .FirstOrDefault();
+            if (marketMover is not null && Math.Abs(marketMover.Delta) >= 5)
+            {
+                var direction = marketMover.Delta > 0 ? "up" : "down";
+                candidates.Add(CreateConversationTopicCandidate(
+                    "market",
+                    $"market chatter around {marketMover.Crop} prices moving {direction}",
+                    12,
+                    hasRecentEvent: false,
+                    hasMarketSignal: true));
+            }
+        }
+
+        candidates.Add(CreateConversationTopicCandidate(
+            "fallback",
+            $"{speakerShortName} and {listenerShortName} trade suspicions, ambitions, and small-town observations from today",
+            8,
+            hasRecentEvent: false,
+            hasMarketSignal: false));
+
+        var totalWeight = candidates.Sum(candidate => Math.Max(1, candidate.Weight));
+        if (totalWeight <= 0)
+            return candidates[^1];
+
+        var roll = _ambientNpcRandom.Next(totalWeight);
+        foreach (var candidate in candidates)
+        {
+            var weight = Math.Max(1, candidate.Weight);
+            if (roll < weight)
+                return candidate;
+            roll -= weight;
+        }
+
+        return candidates[^1];
+    }
+
+    private ConversationTopicCandidate CreateConversationTopicCandidate(
+        string sourceType,
+        string topicText,
+        int baseWeight,
+        bool hasRecentEvent,
+        bool hasMarketSignal)
+    {
+        var usageCount = 0;
+        var topicKey = BuildNpcConversationTopicUsageKey(sourceType, topicText);
+        _npcConversationTopicUsageTodayByKey.TryGetValue(topicKey, out usageCount);
+
+        var penalty = sourceType switch
+        {
+            "headline" => 16,
+            "event" => 14,
+            "rumor" => 18,
+            "autonomy" => 8,
+            _ => 6
+        };
+        var adjustedWeight = Math.Max(1, baseWeight - (usageCount * penalty));
+        return new ConversationTopicCandidate
+        {
+            SourceType = sourceType,
+            TopicText = topicText,
+            Weight = adjustedWeight,
+            HasRecentEvent = hasRecentEvent,
+            HasMarketSignal = hasMarketSignal
+        };
+    }
+
+    private void TrackNpcConversationTopicUsage(ConversationTopicCandidate candidate)
+    {
+        if (candidate is null || string.IsNullOrWhiteSpace(candidate.TopicText))
+            return;
+
+        var topicKey = BuildNpcConversationTopicUsageKey(candidate.SourceType, candidate.TopicText);
+        _npcConversationTopicUsageTodayByKey.AddOrUpdate(topicKey, 1, (_, value) => value + 1);
+    }
+
+    private static string BuildNpcConversationTopicUsageKey(string sourceType, string topicText)
+    {
+        var normalizedTopic = Regex.Replace((topicText ?? string.Empty).Trim().ToLowerInvariant(), @"\W+", " ", RegexOptions.CultureInvariant).Trim();
+        return $"{(sourceType ?? "fallback").Trim().ToLowerInvariant()}|{normalizedTopic}";
+    }
+
+    private string BuildEncounterScheduleContextBlock(string speakerShortName, string listenerShortName)
+    {
+        var speakerContext = BuildEncounterSchedulePromptContext(speakerShortName);
+        var listenerContext = BuildEncounterSchedulePromptContext(listenerShortName);
+        var parts = new List<string>
+        {
+            $"ENCOUNTER_SCHEDULE_CONTEXT[{speakerContext.NpcName}]: current='{speakerContext.CurrentLocation}' active={DescribeEncounterScheduleSnapshot(speakerContext.ActiveTime, speakerContext.ActiveLocation, speakerContext.ActiveTile)} next={DescribeEncounterScheduleSnapshot(speakerContext.NextTime, speakerContext.NextLocation, speakerContext.NextTile)}.",
+            $"ENCOUNTER_SCHEDULE_CONTEXT[{listenerContext.NpcName}]: current='{listenerContext.CurrentLocation}' active={DescribeEncounterScheduleSnapshot(listenerContext.ActiveTime, listenerContext.ActiveLocation, listenerContext.ActiveTile)} next={DescribeEncounterScheduleSnapshot(listenerContext.NextTime, listenerContext.NextLocation, listenerContext.NextTile)}."
+        };
+        return string.Join(" ", parts);
+    }
+
+    private string BuildEncounterClosingHint(string speakerShortName, string listenerShortName)
+    {
+        var speakerContext = BuildEncounterSchedulePromptContext(speakerShortName);
+        var listenerContext = BuildEncounterSchedulePromptContext(listenerShortName);
+
+        var speakerHint = BuildEncounterClosingHintForNpc(speakerContext);
+        var listenerHint = BuildEncounterClosingHintForNpc(listenerContext);
+        return $"{speakerHint} {listenerContext.NpcName} is currently tied to {listenerHint}".Trim();
+    }
+
+    private EncounterSchedulePromptContext BuildEncounterSchedulePromptContext(string npcName)
+    {
+        var npc = ResolveNpcByName(npcName);
+        if (npc is null)
+        {
+            return new EncounterSchedulePromptContext
+            {
+                NpcName = ResolveNpcDisplayNameOrFallback(npcName),
+                CurrentLocation = "Unknown"
+            };
+        }
+
+        var currentLocation = ResolvePromptLocationDisplayName(npc.currentLocation?.Name);
+        var activeTime = TryGetActiveScheduleTime(npc, Game1.timeOfDay);
+        var nextTime = TryGetNextScheduleTime(npc, Game1.timeOfDay);
+        var activeLocation = string.Empty;
+        Point? activeTile = null;
+        var nextLocation = string.Empty;
+        Point? nextTile = null;
+
+        if (activeTime.HasValue && TryResolveScheduleEntryTarget(npc, activeTime.Value, out var activeLocationInternal, out var activeScheduleTile))
+        {
+            activeLocation = ResolvePromptLocationDisplayName(activeLocationInternal);
+            activeTile = activeScheduleTile;
+        }
+
+        if (nextTime.HasValue && TryResolveScheduleEntryTarget(npc, nextTime.Value, out var nextLocationInternal, out var nextScheduleTile))
+        {
+            nextLocation = ResolvePromptLocationDisplayName(nextLocationInternal);
+            nextTile = nextScheduleTile;
+        }
+
+        return new EncounterSchedulePromptContext
+        {
+            NpcName = ResolveNpcDisplayNameOrFallback(npc.Name),
+            CurrentLocation = currentLocation,
+            ActiveTime = activeTime,
+            ActiveLocation = activeLocation,
+            ActiveTile = activeTile,
+            NextTime = nextTime,
+            NextLocation = nextLocation,
+            NextTile = nextTile
+        };
+    }
+
+    private string BuildEncounterClosingHintForNpc(EncounterSchedulePromptContext context)
+    {
+        var currentLocation = context.CurrentLocation;
+        if (context.ActiveTime.HasValue && !string.IsNullOrWhiteSpace(context.ActiveLocation))
+        {
+            if (string.Equals(context.ActiveLocation, currentLocation, StringComparison.OrdinalIgnoreCase))
+                return $"{context.NpcName} is still at {currentLocation} for the active part of the day";
+
+            return $"{context.NpcName} should still be headed for {context.ActiveLocation} right now";
+        }
+
+        if (context.NextTime.HasValue && !string.IsNullOrWhiteSpace(context.NextLocation))
+            return $"{context.NpcName}'s next immediate stop later today is {context.NextLocation}";
+
+        return $"{context.NpcName} is currently at {currentLocation}";
+    }
+
+    private static string DescribeEncounterScheduleSnapshot(int? timeOfDay, string locationName, Point? tile)
+    {
+        if (!timeOfDay.HasValue || string.IsNullOrWhiteSpace(locationName) || !tile.HasValue)
+            return "unreadable";
+
+        return $"{timeOfDay.Value.ToString(CultureInfo.InvariantCulture)}:{locationName}{DescribeNullablePoint(tile)}";
     }
 
     private static string BuildAmbientConversationTopicSeed(string baseTopic, AmbientConversationBeat beat)
@@ -13033,6 +13254,7 @@ public sealed class ModEntry : Mod
         _pendingVanillaEncounterResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
         _dailyEncounterPairs.Clear();
+        _npcConversationTopicUsageTodayByKey.Clear();
         _npcSpeechBubbleService?.CancelAll();
         _pairEmotionService?.Decay(_state);
     }
@@ -14508,6 +14730,7 @@ public sealed class ModEntry : Mod
         var currentListenerShortName = listenerShortName;
         var currentListenerNpcId = listenerNpcId;
 
+        var encounterScheduleContext = BuildEncounterScheduleContextBlock(speakerShortName, listenerShortName);
         var topicSeed = BuildEncounterConversationTopicSeed(speakerShortName, listenerShortName, scenario);
         var currentMessage = BuildEncounterConversationTurnMessage(
             turnNumber: 1,
@@ -14519,13 +14742,17 @@ public sealed class ModEntry : Mod
             priorLine: null,
             continuationContext: continuationContext,
             alreadyTalkedToday: alreadyTalkedToday,
-            timeContext: timeContext);
+            timeContext: timeContext,
+            scheduleContext: encounterScheduleContext,
+            scheduleClosingHint: BuildEncounterClosingHint(currentSpeakerShortName, currentListenerShortName));
 
         for (var turn = 1; turn <= turnDepth; turn++)
         {
             var context = currentSpeakerNpcId.Equals(speakerNpcId, StringComparison.OrdinalIgnoreCase)
                 ? speakerDialogueContext
                 : listenerDialogueContext;
+            if (!string.IsNullOrWhiteSpace(encounterScheduleContext))
+                context = context + Environment.NewLine + encounterScheduleContext;
 
             var turnResult = await TrySendAmbientConversationTurnAsync(
                 client,
@@ -14603,7 +14830,9 @@ public sealed class ModEntry : Mod
                 currentSpeakerShortName,
                 currentListenerShortName,
                 encounterLine,
-                timeContext: timeContext);
+                timeContext: timeContext,
+                scheduleContext: encounterScheduleContext,
+                scheduleClosingHint: BuildEncounterClosingHint(currentSpeakerShortName, currentListenerShortName));
         }
 
         var duration = DateTime.UtcNow - startedUtc;
@@ -14645,11 +14874,15 @@ public sealed class ModEntry : Mod
         string? priorLine,
         string? continuationContext = null,
         bool alreadyTalkedToday = false,
-        string? timeContext = null)
+        string? timeContext = null,
+        string? scheduleContext = null,
+        string? scheduleClosingHint = null)
     {
         var isContinuation = !string.IsNullOrWhiteSpace(continuationContext);
         var priorLineWasClosing = IsLikelyConversationClosing(priorLine);
         var timeHint = !string.IsNullOrWhiteSpace(timeContext) ? $"It is {timeContext}. " : "";
+        var scheduleHint = !string.IsNullOrWhiteSpace(scheduleContext) ? scheduleContext + " " : "";
+        var closingHint = !string.IsNullOrWhiteSpace(scheduleClosingHint) ? scheduleClosingHint + " " : "";
         const string lineRule = "Answer with one short in-character sentence (under 80 characters) that sounds like something said aloud in town. ";
 
         if (turnNumber <= 1 || string.IsNullOrWhiteSpace(priorLine))
@@ -14659,6 +14892,7 @@ public sealed class ModEntry : Mod
                 return
                     $"You are {speakerShortName}, resuming a face-to-face conversation with {listenerShortName}. " +
                     timeHint +
+                    scheduleHint +
                     $"Pick up from this thread: {continuationContext}. " +
                     $"Scene pull: {topicSeed}. " +
                     $"Keep the purpose around {scenario.Purpose} with a {scenario.ToneTrend} emotional drift. " +
@@ -14676,6 +14910,7 @@ public sealed class ModEntry : Mod
             return
                 $"You are {speakerShortName}, speaking face-to-face with {listenerShortName}. " +
                 timeHint +
+                scheduleHint +
                 $"Start from this scene pull: {topicSeed}. " +
                 $"Use a {scenario.OpenerStyle} opener and keep the exchange around {scenario.Purpose} with a {scenario.ToneTrend} tone trend. " +
                 $"Speak directly to {listenerShortName}; do not address the player. " +
@@ -14689,11 +14924,12 @@ public sealed class ModEntry : Mod
             return
                 $"You are {speakerShortName}, still speaking only to {listenerShortName}. " +
                 timeHint +
+                scheduleHint +
                 $"Continue from: \"{priorLine}\". " +
                 $"Arc target: {scenario.ArcOutcome}. " +
                 (priorLineWasClosing
                     ? "The prior line already sounded like a goodbye, so do not repeat the same farewell wording; if needed, add one final short follow-up and close cleanly. "
-                    : "Wrap up the conversation naturally. Both of you are staying here, so say something like 'anyway...' or 'well, back to it' instead of 'goodbye' or 'see you later'. ") +
+                    : $"Wrap up the conversation naturally. {closingHint}Do not invent a destination that is not supported by the schedule context. ") +
                 "Keep the ending specific; if there is tension, leave a little unresolved edge instead of flattening it. " +
                 lineRule;
         }
@@ -14711,6 +14947,7 @@ public sealed class ModEntry : Mod
 
         return
             $"You are {speakerShortName}, still speaking only to {listenerShortName}. " +
+            scheduleHint +
             $"Continue naturally from: \"{priorLine}\". " +
             $"Keep the exchange around {scenario.Purpose} with {scenario.ToneAtStart} tone and a {scenario.ToneTrend} drift. " +
             "Keep it grounded and specific. Avoid generic pleasantries. Let the exchange carry gossip, mystery, frustration, defensiveness, or warmth when it fits. " +
@@ -15109,6 +15346,11 @@ public sealed class ModEntry : Mod
             if (usingTemporaryActiveSlotFallback && pending.FallbackMode == EncounterFallbackMode.CrossMapLeg)
             {
                 TryAdvanceCrossMapFallbackLeg(npc, pending, currentTick);
+                usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
+            }
+            else if (usingTemporaryActiveSlotFallback && pending.FallbackMode == EncounterFallbackMode.SameMapTarget)
+            {
+                TryAdvanceSameMapActiveSlotFallback(npc, pending, currentTick);
                 usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
             }
 
@@ -15796,41 +16038,54 @@ public sealed class ModEntry : Mod
     {
         fallbackController = null;
 
-        var walkabilityService = _walkabilityService;
-        if (walkabilityService is null || pending.ActiveTargetTile is null)
+        if (pending.ActiveTargetTile is null)
             return false;
 
         var requestedTile = pending.ActiveTargetTile.Value;
-        if (!walkabilityService.TryFindNearestWalkableTile(targetLocation, requestedTile, 16, npc, out var safeTile))
+        if (!TryPlanEncounterFallbackRoute(
+                npc,
+                targetLocation,
+                requestedTile,
+                allowAdjacentFallback: true,
+                adjacentRadius: 2,
+                out var resolvedTargetTile,
+                out var waypointPath,
+                out var degradedTarget))
         {
             Monitor.Log(
-                $"Autonomy: [REBIND] {npc.Name} unable to resolve walkable active-slot tile for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(requestedTile)} in {pending.ActiveTargetLocation}.",
+                $"Autonomy: [REBIND] {npc.Name} unable to plan obstacle-aware route for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(requestedTile)} in {pending.ActiveTargetLocation}.",
                 LogLevel.Debug);
             return false;
         }
 
-        if (Vector2.Distance(npc.Tile, new Vector2(safeTile.X, safeTile.Y)) <= 1.25f)
+        if (Vector2.Distance(npc.Tile, new Vector2(resolvedTargetTile.X, resolvedTargetTile.Y)) <= 1.25f)
         {
             Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} already at active-slot destination after encounter {pending.EncounterId} (active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, tile={DescribeNullablePoint(safeTile)}, time={Game1.timeOfDay}).",
+                $"Autonomy: [FORCE_PATH] {npc.Name} already at active-slot destination after encounter {pending.EncounterId} (active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, tile={DescribeNullablePoint(resolvedTargetTile)}, time={Game1.timeOfDay}).",
                 LogLevel.Debug);
-            pending.ActiveTargetTile = safeTile;
+            pending.ActiveTargetTile = resolvedTargetTile;
             return false;
         }
 
-        if (!TryCreatePathFindController(npc, targetLocation, safeTile, out fallbackController))
-            return false;
-
-        TrySetMemberValue(npc, "controller", fallbackController);
-        TrySetMemberValue(npc, "previousEndPoint", safeTile);
         pending.FallbackMode = EncounterFallbackMode.SameMapTarget;
-        pending.ActiveTargetTile = safeTile;
-        pending.FallbackLastObservedLocation = npc.currentLocation?.Name ?? string.Empty;
+        pending.ActiveTargetTile = resolvedTargetTile;
+        pending.FallbackRouteTargetTile = resolvedTargetTile;
+        pending.FallbackWaypointPath = waypointPath;
+        pending.FallbackWaypointIndex = 0;
+        pending.FallbackLastObservedLocation = targetLocation.Name ?? string.Empty;
         pending.FallbackLastObservedTile = npc.TilePoint;
         pending.FallbackLastProgressTick = currentTick;
+        pending.FallbackRepathCount = 0;
+        pending.UsedTemporaryActiveSlotFallback = true;
+
+        if (!TryAdvanceFallbackWaypointController(npc, pending, targetLocation, out fallbackController))
+        {
+            ClearTemporaryActiveSlotFallback(npc, pending);
+            return false;
+        }
 
         Monitor.Log(
-            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, time={Game1.timeOfDay}).",
+            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (path_mode=A*, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, requested_tile={DescribeNullablePoint(requestedTile)}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, degraded_target={degradedTarget}, path_length={waypointPath.Count}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         return true;
     }
@@ -15854,7 +16109,15 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        if (!TryResolveCrossMapLegDepartureTile(npc, segment.DepartureTile, out var departureTile))
+        if (!TryPlanEncounterFallbackRoute(
+                npc,
+                npc.currentLocation,
+                segment.DepartureTile,
+                allowAdjacentFallback: true,
+                adjacentRadius: 2,
+                out var departureTile,
+                out var waypointPath,
+                out var degradedTarget))
         {
             Monitor.Log(
                 $"Autonomy: [CrossMapLeg(start)] {npc.Name} could not resolve departure tile {DescribeNullablePoint(segment.DepartureTile)} on {npc.currentLocation.Name} for leg to {segment.ToLocationId}.",
@@ -15870,11 +16133,6 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        if (!TryCreatePathFindController(npc, npc.currentLocation, departureTile, out fallbackController))
-            return false;
-
-        TrySetMemberValue(npc, "controller", fallbackController);
-        TrySetMemberValue(npc, "previousEndPoint", departureTile);
         pending.FallbackMode = EncounterFallbackMode.CrossMapLeg;
         pending.FallbackLegFromLocation = npc.currentLocation.Name ?? string.Empty;
         pending.FallbackLegToLocation = segment.ToLocationId;
@@ -15886,11 +16144,76 @@ public sealed class ModEntry : Mod
         pending.FallbackLastObservedTile = npc.TilePoint;
         pending.FallbackLastProgressTick = currentTick;
         pending.FallbackWarpIssued = false;
+        pending.FallbackRouteTargetTile = departureTile;
+        pending.FallbackWaypointPath = waypointPath;
+        pending.FallbackWaypointIndex = 0;
+        pending.UsedTemporaryActiveSlotFallback = true;
+
+        if (!TryAdvanceFallbackWaypointController(npc, pending, npc.currentLocation, out fallbackController))
+        {
+            ClearTemporaryActiveSlotFallback(npc, pending);
+            return false;
+        }
 
         Monitor.Log(
-            $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} arrival_resolved={pending.FallbackLegArrivalTileResolved} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} time={Game1.timeOfDay}.",
+            $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} arrival_resolved={pending.FallbackLegArrivalTileResolved} degraded_target={degradedTarget} path_mode=A* path_length={waypointPath.Count} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} time={Game1.timeOfDay}.",
             LogLevel.Debug);
         return true;
+    }
+
+    private void TryAdvanceSameMapActiveSlotFallback(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        if (pending.FallbackMode != EncounterFallbackMode.SameMapTarget || npc.currentLocation is null)
+            return;
+
+        UpdateFallbackProgressObservation(npc, pending, currentTick);
+        if (TryAdvanceFallbackWaypointController(npc, pending, npc.currentLocation, out _))
+            return;
+
+        if (currentTick - pending.FallbackLastProgressTick < EncounterVanillaResumeFallbackStaleTicks)
+            return;
+
+        if (pending.FallbackRepathCount >= EncounterVanillaResumeFallbackRepathLimit)
+        {
+            Monitor.Log(
+                $"Autonomy: [FORCE_PATH] {npc.Name} same-map fallback exhausted repath attempts for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
+                LogLevel.Warn);
+            ClearTemporaryActiveSlotFallback(npc, pending);
+            return;
+        }
+
+        pending.FallbackRepathCount += 1;
+        if (pending.ActiveTargetTile.HasValue
+            && TryPlanEncounterFallbackRoute(
+                npc,
+                npc.currentLocation,
+                pending.ActiveTargetTile.Value,
+                allowAdjacentFallback: true,
+                adjacentRadius: 2,
+                out var resolvedTargetTile,
+                out var waypointPath,
+                out var degradedTarget))
+        {
+            pending.ActiveTargetTile = resolvedTargetTile;
+            pending.FallbackRouteTargetTile = resolvedTargetTile;
+            pending.FallbackWaypointPath = waypointPath;
+            pending.FallbackWaypointIndex = 0;
+            pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
+            pending.FallbackLastObservedTile = npc.TilePoint;
+            pending.FallbackLastProgressTick = currentTick;
+            pending.TemporaryFallbackController = null;
+            pending.FallbackControllerStartedAtTime = null;
+            TryAdvanceFallbackWaypointController(npc, pending, npc.currentLocation, out _);
+            Monitor.Log(
+                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (repath_count={pending.FallbackRepathCount}, tile={DescribeNullablePoint(resolvedTargetTile)}, degraded_target={degradedTarget}, path_length={waypointPath.Count}).",
+                LogLevel.Debug);
+            return;
+        }
+
+        Monitor.Log(
+            $"Autonomy: [FORCE_PATH] {npc.Name} failed to repath same-map active-slot fallback for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
+            LogLevel.Warn);
+        ClearTemporaryActiveSlotFallback(npc, pending);
     }
 
     private void ClearTemporaryActiveSlotFallback(NPC npc, PendingVanillaEncounterResume pending)
@@ -15905,8 +16228,7 @@ public sealed class ModEntry : Mod
             return true;
 
         return pending.UsedTemporaryActiveSlotFallback
-            && pending.TemporaryFallbackController is not null
-            && ReferenceEquals(npc.controller, pending.TemporaryFallbackController);
+            && pending.FallbackMode != EncounterFallbackMode.None;
     }
 
     private static bool HasReachedActiveFallbackTarget(NPC npc, PendingVanillaEncounterResume pending)
@@ -15928,9 +16250,7 @@ public sealed class ModEntry : Mod
         var tileChanged = pending.FallbackLastObservedTile != currentTile;
         if (locationChanged || tileChanged)
         {
-            pending.FallbackLastObservedLocation = currentLocationName;
-            pending.FallbackLastObservedTile = currentTile;
-            pending.FallbackLastProgressTick = currentTick;
+            UpdateFallbackProgressObservation(npc, pending, currentTick);
             Monitor.Log(
                 $"Autonomy: [CrossMapLeg(progress)] {npc.Name} encounter={pending.EncounterId} map={currentLocationName} tile=({currentTile.X},{currentTile.Y}) target_leg={pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)}.",
                 LogLevel.Debug);
@@ -15985,6 +16305,9 @@ public sealed class ModEntry : Mod
             return;
         }
 
+        if (!pending.FallbackWarpIssued)
+            TryAdvanceFallbackWaypointController(npc, pending, npc.currentLocation, out _);
+
         if (currentTick - pending.FallbackLastProgressTick < EncounterVanillaResumeFallbackStaleTicks)
             return;
 
@@ -16022,10 +16345,9 @@ public sealed class ModEntry : Mod
 
     private static void ClearTemporaryActiveSlotFallbackController(NPC npc, PendingVanillaEncounterResume pending)
     {
-        if (IsUsingTemporaryActiveSlotFallback(npc, pending))
+        if (pending.TemporaryFallbackController is not null && ReferenceEquals(npc.controller, pending.TemporaryFallbackController))
             TrySetMemberValue(npc, "controller", null);
 
-        pending.UsedTemporaryActiveSlotFallback = false;
         pending.FallbackControllerStartedAtTime = null;
         pending.TemporaryFallbackController = null;
     }
@@ -16051,15 +16373,244 @@ public sealed class ModEntry : Mod
         pending.FallbackLastObservedLocation = string.Empty;
         pending.FallbackLastProgressTick = 0;
         pending.FallbackWarpIssued = false;
+        pending.FallbackWaypointPath.Clear();
+        pending.FallbackWaypointIndex = 0;
+        pending.FallbackRouteTargetTile = null;
+        pending.FallbackRepathCount = 0;
         if (!preserveLegRetryCount)
             pending.FallbackLegRetryCount = 0;
     }
 
     private static void SetTemporaryActiveSlotFallback(PendingVanillaEncounterResume pending, object? fallbackController)
     {
-        pending.UsedTemporaryActiveSlotFallback = fallbackController is not null;
+        pending.UsedTemporaryActiveSlotFallback = pending.FallbackMode != EncounterFallbackMode.None;
         pending.FallbackControllerStartedAtTime = fallbackController is not null ? Game1.timeOfDay : null;
         pending.TemporaryFallbackController = fallbackController;
+    }
+
+    private void UpdateFallbackProgressObservation(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        var currentLocationName = npc.currentLocation?.Name ?? string.Empty;
+        var currentTile = npc.TilePoint;
+        if (string.Equals(currentLocationName, pending.FallbackLastObservedLocation, StringComparison.OrdinalIgnoreCase)
+            && pending.FallbackLastObservedTile == currentTile)
+        {
+            return;
+        }
+
+        pending.FallbackLastObservedLocation = currentLocationName;
+        pending.FallbackLastObservedTile = currentTile;
+        pending.FallbackLastProgressTick = currentTick;
+    }
+
+    private bool TryAdvanceFallbackWaypointController(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        GameLocation location,
+        out object? fallbackController)
+    {
+        fallbackController = null;
+        if (pending.FallbackWaypointPath.Count == 0)
+            return false;
+
+        var currentTile = npc.TilePoint;
+        while (pending.FallbackWaypointIndex < pending.FallbackWaypointPath.Count
+               && pending.FallbackWaypointPath[pending.FallbackWaypointIndex] == currentTile)
+        {
+            pending.FallbackWaypointIndex += 1;
+        }
+
+        if (pending.FallbackWaypointIndex >= pending.FallbackWaypointPath.Count)
+        {
+            pending.TemporaryFallbackController = null;
+            pending.FallbackControllerStartedAtTime = null;
+            return false;
+        }
+
+        if (ReferenceEquals(npc.controller, pending.TemporaryFallbackController) && pending.TemporaryFallbackController is not null)
+            return true;
+
+        var nextWaypoint = pending.FallbackWaypointPath[pending.FallbackWaypointIndex];
+        if (!TryCreatePathFindController(npc, location, nextWaypoint, out fallbackController))
+            return false;
+
+        TrySetMemberValue(npc, "controller", fallbackController);
+        TrySetMemberValue(npc, "previousEndPoint", nextWaypoint);
+        SetTemporaryActiveSlotFallback(pending, fallbackController);
+        return true;
+    }
+
+    private bool TryPlanEncounterFallbackRoute(
+        NPC npc,
+        GameLocation location,
+        Point requestedTile,
+        bool allowAdjacentFallback,
+        int adjacentRadius,
+        out Point resolvedTargetTile,
+        out List<Point> waypointPath,
+        out bool degradedTarget)
+    {
+        resolvedTargetTile = Point.Zero;
+        waypointPath = new List<Point>();
+        degradedTarget = false;
+
+        if (TryBuildEncounterAStarRoute(location, npc, npc.TilePoint, requestedTile, out waypointPath))
+        {
+            resolvedTargetTile = requestedTile;
+            return true;
+        }
+
+        if (!allowAdjacentFallback)
+            return false;
+
+        foreach (var candidate in EnumerateFallbackAdjacentTargets(requestedTile, adjacentRadius))
+        {
+            if (!TryBuildEncounterAStarRoute(location, npc, npc.TilePoint, candidate, out waypointPath))
+                continue;
+
+            resolvedTargetTile = candidate;
+            degradedTarget = candidate != requestedTile;
+            return true;
+        }
+
+        waypointPath = new List<Point>();
+        return false;
+    }
+
+    private IEnumerable<Point> EnumerateFallbackAdjacentTargets(Point centerTile, int radius)
+    {
+        var seen = new HashSet<Point>();
+        for (var currentRadius = 1; currentRadius <= radius; currentRadius++)
+        {
+            var candidates = new List<Point>();
+            for (var dx = -currentRadius; dx <= currentRadius; dx++)
+            {
+                for (var dy = -currentRadius; dy <= currentRadius; dy++)
+                {
+                    if (Math.Abs(dx) != currentRadius && Math.Abs(dy) != currentRadius)
+                        continue;
+
+                    var candidate = new Point(centerTile.X + dx, centerTile.Y + dy);
+                    if (!seen.Add(candidate))
+                        continue;
+
+                    candidates.Add(candidate);
+                }
+            }
+
+            foreach (var candidate in candidates
+                         .OrderBy(candidate => Math.Abs(candidate.X - centerTile.X) + Math.Abs(candidate.Y - centerTile.Y))
+                         .ThenBy(candidate => candidate.Y)
+                         .ThenBy(candidate => candidate.X))
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private bool TryBuildEncounterAStarRoute(
+        GameLocation location,
+        NPC npc,
+        Point startTile,
+        Point targetTile,
+        out List<Point> waypointPath)
+    {
+        waypointPath = new List<Point>();
+        var walkabilityService = _walkabilityService;
+        if (walkabilityService is null || location.Map is null)
+            return false;
+
+        if (startTile == targetTile)
+            return true;
+
+        if (!walkabilityService.IsTileWalkable(location, targetTile, npc))
+            return false;
+
+        var frontier = new PriorityQueue<Point, int>();
+        var cameFrom = new Dictionary<Point, Point>();
+        var gScore = new Dictionary<Point, int> { [startTile] = 0 };
+        var visited = new HashSet<Point>();
+        frontier.Enqueue(startTile, 0);
+
+        while (frontier.Count > 0)
+        {
+            var current = frontier.Dequeue();
+            if (!visited.Add(current))
+                continue;
+
+            if (current == targetTile)
+            {
+                waypointPath = ReconstructEncounterPath(cameFrom, startTile, targetTile);
+                return true;
+            }
+
+            foreach (var neighbor in EnumerateEncounterNeighborTiles(location, current))
+            {
+                if (!walkabilityService.IsTileWalkable(location, neighbor, npc))
+                    continue;
+
+                var tentativeScore = gScore[current] + 1;
+                if (gScore.TryGetValue(neighbor, out var existingScore) && tentativeScore >= existingScore)
+                    continue;
+
+                cameFrom[neighbor] = current;
+                gScore[neighbor] = tentativeScore;
+                frontier.Enqueue(neighbor, tentativeScore + ComputeEncounterPathHeuristic(neighbor, targetTile));
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<Point> EnumerateEncounterNeighborTiles(GameLocation location, Point tile)
+    {
+        var map = location.Map;
+        var backLayer = map?.GetLayer("Back");
+        var width = backLayer?.LayerWidth ?? 0;
+        var height = backLayer?.LayerHeight ?? 0;
+        if (width <= 0 || height <= 0)
+            yield break;
+
+        var offsets = new[]
+        {
+            new Point(0, -1),
+            new Point(1, 0),
+            new Point(0, 1),
+            new Point(-1, 0)
+        };
+
+        foreach (var offset in offsets)
+        {
+            var neighbor = new Point(tile.X + offset.X, tile.Y + offset.Y);
+            if (neighbor.X < 0 || neighbor.Y < 0 || neighbor.X >= width || neighbor.Y >= height)
+                continue;
+
+            yield return neighbor;
+        }
+    }
+
+    private static int ComputeEncounterPathHeuristic(Point fromTile, Point toTile)
+    {
+        return Math.Abs(fromTile.X - toTile.X) + Math.Abs(fromTile.Y - toTile.Y);
+    }
+
+    private static List<Point> ReconstructEncounterPath(Dictionary<Point, Point> cameFrom, Point startTile, Point targetTile)
+    {
+        var path = new List<Point>();
+        var cursor = targetTile;
+        path.Add(cursor);
+        while (cameFrom.TryGetValue(cursor, out var previous))
+        {
+            cursor = previous;
+            path.Add(cursor);
+            if (cursor == startTile)
+                break;
+        }
+
+        path.Reverse();
+        if (path.Count > 0 && path[0] == startTile)
+            path.RemoveAt(0);
+        return path;
     }
 
     private bool TryPlanNextCrossMapFallbackLeg(NPC npc, string targetLocationName, out RouteSegment segment)
@@ -16401,17 +16952,10 @@ public sealed class ModEntry : Mod
     {
         controller = null;
 
-        var controllerType = Type.GetType("StardewValley.Pathfinding.PathFindController, Stardew Valley");
-        if (controllerType is null)
-        {
-            Monitor.Log($"Autonomy: [FORCE_PATH] {npc.Name} could not resolve PathFindController type.", LogLevel.Warn);
-            return false;
-        }
-
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-        foreach (var ctor in controllerType.GetConstructors(flags).OrderBy(ctor => ctor.GetParameters().Length))
+        foreach (var ctor in typeof(PathFindController).GetConstructors(flags).OrderBy(ctor => ctor.GetParameters().Length))
         {
-            if (!TryBuildPathFindControllerArguments(npc, location, targetTile, ctor.GetParameters(), out var args))
+            if (!TryBuildSupportedPathFindControllerArguments(npc, location, targetTile, ctor.GetParameters(), out var args))
                 continue;
 
             try
@@ -16431,7 +16975,7 @@ public sealed class ModEntry : Mod
         return false;
     }
 
-    private static bool TryBuildPathFindControllerArguments(
+    private static bool TryBuildSupportedPathFindControllerArguments(
         NPC npc,
         GameLocation location,
         Point targetTile,
@@ -16442,10 +16986,11 @@ public sealed class ModEntry : Mod
         if (parameters.Length < 3)
             return false;
 
-        var remainingIntValues = new Queue<int>(new[] { targetTile.X, targetTile.Y, 2 });
         var assignedCharacter = false;
         var assignedLocation = false;
-        var assignedTarget = false;
+        var assignedTargetX = false;
+        var assignedTargetY = false;
+        var assignedTargetPoint = false;
         var assignedFacing = false;
 
         for (var i = 0; i < parameters.Length; i++)
@@ -16453,6 +16998,7 @@ public sealed class ModEntry : Mod
             var parameter = parameters[i];
             var parameterType = parameter.ParameterType;
             var parameterName = parameter.Name ?? string.Empty;
+            var normalizedParameterName = parameterName.Trim();
 
             if (!assignedCharacter && parameterType.IsInstanceOfType(npc))
             {
@@ -16468,37 +17014,79 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            if (!assignedTarget && parameterType == typeof(Point))
+            if (!assignedTargetPoint && parameterType == typeof(Point))
             {
                 args[i] = targetTile;
-                assignedTarget = true;
+                assignedTargetPoint = true;
                 continue;
             }
 
-            if (!assignedTarget && parameterType == typeof(Vector2))
+            if (!assignedTargetPoint && parameterType == typeof(Vector2))
             {
                 args[i] = new Vector2(targetTile.X, targetTile.Y);
-                assignedTarget = true;
+                assignedTargetPoint = true;
                 continue;
             }
 
             if (parameterType == typeof(int))
             {
-                if (!assignedFacing && (parameterName.Contains("face", StringComparison.OrdinalIgnoreCase) || parameterName.Contains("direction", StringComparison.OrdinalIgnoreCase)))
+                if (!assignedTargetX
+                    && (normalizedParameterName.Equals("x", StringComparison.OrdinalIgnoreCase)
+                        || normalizedParameterName.Contains("endX", StringComparison.OrdinalIgnoreCase)
+                        || normalizedParameterName.Contains("tileX", StringComparison.OrdinalIgnoreCase)
+                        || normalizedParameterName.Contains("targetX", StringComparison.OrdinalIgnoreCase)))
                 {
-                    args[i] = 2;
+                    args[i] = targetTile.X;
+                    assignedTargetX = true;
+                    continue;
+                }
+
+                if (!assignedTargetY
+                    && (normalizedParameterName.Equals("y", StringComparison.OrdinalIgnoreCase)
+                        || normalizedParameterName.Contains("endY", StringComparison.OrdinalIgnoreCase)
+                        || normalizedParameterName.Contains("tileY", StringComparison.OrdinalIgnoreCase)
+                        || normalizedParameterName.Contains("targetY", StringComparison.OrdinalIgnoreCase)))
+                {
+                    args[i] = targetTile.Y;
+                    assignedTargetY = true;
+                    continue;
+                }
+
+                if (!assignedFacing && (normalizedParameterName.Contains("face", StringComparison.OrdinalIgnoreCase) || normalizedParameterName.Contains("direction", StringComparison.OrdinalIgnoreCase)))
+                {
+                    args[i] = npc.FacingDirection;
                     assignedFacing = true;
                     continue;
                 }
 
-                if (remainingIntValues.Count > 0)
+                if (parameter.HasDefaultValue)
                 {
-                    var nextValue = remainingIntValues.Dequeue();
-                    args[i] = nextValue;
-                    if (remainingIntValues.Count == 0)
-                        assignedFacing = true;
+                    args[i] = parameter.DefaultValue;
                     continue;
                 }
+
+                if (!assignedTargetX)
+                {
+                    args[i] = targetTile.X;
+                    assignedTargetX = true;
+                    continue;
+                }
+
+                if (!assignedTargetY)
+                {
+                    args[i] = targetTile.Y;
+                    assignedTargetY = true;
+                    continue;
+                }
+
+                if (!assignedFacing)
+                {
+                    args[i] = npc.FacingDirection;
+                    assignedFacing = true;
+                    continue;
+                }
+
+                return false;
             }
 
             if (parameter.HasDefaultValue)
@@ -16513,6 +17101,20 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
+            if (parameterType == typeof(string))
+            {
+                args[i] = string.Empty;
+                continue;
+            }
+
+            if (typeof(Delegate).IsAssignableFrom(parameterType)
+                || parameterType.Name.IndexOf("endBehavior", StringComparison.OrdinalIgnoreCase) >= 0
+                || parameterType.Name.IndexOf("behavior", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                args[i] = null;
+                continue;
+            }
+
             if (!parameterType.IsValueType || Nullable.GetUnderlyingType(parameterType) is not null)
             {
                 args[i] = null;
@@ -16522,7 +17124,8 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        return assignedCharacter && assignedLocation && assignedTarget;
+        var hasTarget = assignedTargetPoint || (assignedTargetX && assignedTargetY);
+        return assignedCharacter && assignedLocation && hasTarget;
     }
 
     private static bool HasVanillaResumeState(NPC npc)
