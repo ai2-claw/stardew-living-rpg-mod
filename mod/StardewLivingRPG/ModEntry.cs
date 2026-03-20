@@ -462,6 +462,14 @@ public sealed class ModEntry : Mod
         CrossMapLeg
     }
 
+    private enum ResumeValidationOutcome
+    {
+        Unknown,
+        Valid,
+        Invalid,
+        Degraded
+    }
+
     private sealed class PendingVanillaEncounterResume
     {
         public string NpcId { get; init; } = string.Empty;
@@ -504,6 +512,9 @@ public sealed class ModEntry : Mod
         public ulong FallbackLastProgressTick { get; set; }
         public int FallbackLegRetryCount { get; set; }
         public bool FallbackWarpIssued { get; set; }
+        public int? LastRejectedResumeTimeOfDay { get; set; }
+        public string LastRejectedResumeReason { get; set; } = string.Empty;
+        public int RejectedResumeCountForCurrentSlot { get; set; }
     }
 
     private sealed class VanillaEncounterResumeMonitor
@@ -15104,22 +15115,23 @@ public sealed class ModEntry : Mod
             if (TryHandleActiveSlotArrivalSettle(npc, pending))
                 continue;
 
-            if (HasVanillaResumeState(npc) && !usingTemporaryActiveSlotFallback)
+            var resumeValidation = ResumeValidationOutcome.Unknown;
+            var resumeMismatchReason = string.Empty;
+            Point? expectedLegTile = null;
+            if (!usingTemporaryActiveSlotFallback)
             {
-                var hasTempController = TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null;
-                _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
+                resumeValidation = EvaluateResumeStateForActiveSchedule(npc, pending, out resumeMismatchReason, out expectedLegTile);
+                if (TryHandleValidatedResumeState(
+                        npc,
+                        pending,
+                        currentTick,
+                        resumeValidation,
+                        resumeMismatchReason,
+                        expectedLegTile,
+                        "VanillaSchedule(update)"))
                 {
-                    NpcId = npc.Name,
-                    EncounterId = pending.EncounterId,
-                    InitialTilePoint = pending.InitialTilePoint,
-                    LoggedControllerTickCount = 0,
-                    NextLogTick = currentTick + 10
-                };
-                Monitor.Log(
-                    $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=true, method=VanillaSchedule(update), controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTempController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                    LogLevel.Debug);
-                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
-                continue;
+                    continue;
+                }
             }
 
             if (usingTemporaryActiveSlotFallback)
@@ -15181,21 +15193,23 @@ public sealed class ModEntry : Mod
 
             var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
             var usingTemporaryActiveSlotFallbackAfterAttempt = IsUsingTemporaryActiveSlotFallback(npc, pending);
-            if (HasVanillaResumeState(npc) && !usingTemporaryActiveSlotFallbackAfterAttempt)
+            resumeValidation = ResumeValidationOutcome.Unknown;
+            resumeMismatchReason = string.Empty;
+            expectedLegTile = null;
+            if (!usingTemporaryActiveSlotFallbackAfterAttempt)
             {
-                _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
+                resumeValidation = EvaluateResumeStateForActiveSchedule(npc, pending, out resumeMismatchReason, out expectedLegTile);
+                if (TryHandleValidatedResumeState(
+                        npc,
+                        pending,
+                        currentTick,
+                        resumeValidation,
+                        resumeMismatchReason,
+                        expectedLegTile,
+                        pending.CheckScheduleMethod))
                 {
-                    NpcId = npc.Name,
-                    EncounterId = pending.EncounterId,
-                    InitialTilePoint = pending.InitialTilePoint,
-                    LoggedControllerTickCount = 0,
-                    NextLogTick = currentTick + 10
-                };
-                Monitor.Log(
-                    $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=true, method={pending.CheckScheduleMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                    LogLevel.Debug);
-                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
-                continue;
+                    continue;
+                }
             }
 
             if (usingTemporaryActiveSlotFallbackAfterAttempt)
@@ -15207,7 +15221,7 @@ public sealed class ModEntry : Mod
             if (!pending.NextScheduleTime.HasValue)
             {
                 Monitor.Log(
-                    $"Autonomy: vanilla schedule for {npc.Name} has no future slot after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time=none, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=false, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                    $"Autonomy: vanilla schedule for {npc.Name} has no future slot after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time=none, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=false, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
                     LogLevel.Debug);
                 _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
                 continue;
@@ -15216,14 +15230,14 @@ public sealed class ModEntry : Mod
             if (pending.Attempts >= EncounterVanillaResumeMaxAttempts)
             {
                 Monitor.Log(
-                    $"Autonomy: failed to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                    $"Autonomy: failed to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
                     LogLevel.Warn);
                 _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
                 continue;
             }
 
             Monitor.Log(
-                $"Autonomy: waiting to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                $"Autonomy: waiting to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
                 LogLevel.Debug);
             pending.NextAttemptTick = currentTick + 1;
         }
@@ -15343,11 +15357,18 @@ public sealed class ModEntry : Mod
 
     private void UpdatePendingActiveScheduleState(NPC npc, PendingVanillaEncounterResume pending)
     {
+        var previousActiveScheduleTime = pending.ActiveScheduleTime;
         pending.ActiveScheduleTime = TryGetActiveScheduleTime(npc, Game1.timeOfDay);
         pending.ActiveTargetLocation = string.Empty;
         pending.ActiveTargetTile = null;
         pending.ActiveFacingDirection = null;
         pending.ActiveBehavior = string.Empty;
+        if (pending.ActiveScheduleTime != previousActiveScheduleTime)
+        {
+            pending.LastRejectedResumeTimeOfDay = null;
+            pending.LastRejectedResumeReason = string.Empty;
+            pending.RejectedResumeCountForCurrentSlot = 0;
+        }
 
         if (!pending.ActiveScheduleTime.HasValue
             || !TryGetScheduleEntry(npc, pending.ActiveScheduleTime.Value, out var scheduleEntry))
@@ -15366,6 +15387,190 @@ public sealed class ModEntry : Mod
 
         if (TryReadScheduleEntryBehavior(scheduleEntry, out var activeBehavior))
             pending.ActiveBehavior = activeBehavior;
+    }
+
+    private bool TryHandleValidatedResumeState(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        ulong currentTick,
+        ResumeValidationOutcome validation,
+        string mismatchReason,
+        Point? expectedLegTile,
+        string successMethod)
+    {
+        if (validation == ResumeValidationOutcome.Invalid)
+        {
+            return TryRejectInvalidResumeState(npc, pending, currentTick, mismatchReason, expectedLegTile);
+        }
+
+        if (validation != ResumeValidationOutcome.Valid && validation != ResumeValidationOutcome.Degraded)
+            return false;
+
+        var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
+        _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
+        {
+            NpcId = npc.Name,
+            EncounterId = pending.EncounterId,
+            InitialTilePoint = pending.InitialTilePoint,
+            LoggedControllerTickCount = 0,
+            NextLogTick = currentTick + 10
+        };
+        Monitor.Log(
+            $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(validation)}, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=true, method={successMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            LogLevel.Debug);
+        _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
+        return true;
+    }
+
+    private bool TryRejectInvalidResumeState(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        ulong currentTick,
+        string mismatchReason,
+        Point? expectedLegTile)
+    {
+        var shouldReject = pending.LastRejectedResumeTimeOfDay != Game1.timeOfDay
+            || !string.Equals(pending.LastRejectedResumeReason, mismatchReason, StringComparison.Ordinal);
+
+        if (!shouldReject)
+        {
+            Monitor.Log(
+                $"Autonomy: deferred repeat invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                LogLevel.Debug);
+            pending.NextAttemptTick = currentTick + 1;
+            return true;
+        }
+
+        pending.LastRejectedResumeTimeOfDay = Game1.timeOfDay;
+        pending.LastRejectedResumeReason = mismatchReason;
+        pending.RejectedResumeCountForCurrentSlot += 1;
+
+        npc.controller = null;
+        TrySetMemberValue(npc, "temporaryController", null);
+        TrySetMemberValue(npc, "followSchedule", true);
+        ClearEncounterMovementBlockingState(npc);
+
+        object? fallbackController = null;
+        var restartedFallback = pending.ActiveScheduleTime.HasValue
+            && TryForcePathToActiveScheduleEntry(npc, pending, currentTick, false, out fallbackController);
+        if (restartedFallback)
+            SetTemporaryActiveSlotFallback(pending, fallbackController);
+
+        Monitor.Log(
+            $"Autonomy: rejected invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            LogLevel.Warn);
+
+        pending.NextAttemptTick = currentTick + 1;
+        return true;
+    }
+
+    private ResumeValidationOutcome EvaluateResumeStateForActiveSchedule(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        out string mismatchReason,
+        out Point? expectedLegTile)
+    {
+        mismatchReason = string.Empty;
+        expectedLegTile = null;
+
+        if (!HasVanillaResumeState(npc))
+        {
+            mismatchReason = "no_resume_state";
+            return ResumeValidationOutcome.Unknown;
+        }
+
+        if (!pending.ActiveScheduleTime.HasValue)
+        {
+            mismatchReason = "no_active_schedule";
+            return ResumeValidationOutcome.Degraded;
+        }
+
+        if (npc.currentLocation is null)
+        {
+            mismatchReason = "current_map_unavailable";
+            return ResumeValidationOutcome.Unknown;
+        }
+
+        var currentMapName = npc.currentLocation.Name ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(pending.ActiveTargetLocation) || !pending.ActiveTargetTile.HasValue)
+        {
+            mismatchReason = "unreadable_target";
+            return ResumeValidationOutcome.Degraded;
+        }
+
+        var activeTargetTile = pending.ActiveTargetTile.Value;
+        var onTargetMap = string.Equals(currentMapName, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase);
+
+        if (onTargetMap)
+        {
+            if (HasReachedActiveFallbackTarget(npc, pending))
+                return ResumeValidationOutcome.Valid;
+
+            if (!TryGetCurrentResumeEndpoint(npc, out var sameMapEndpoint))
+            {
+                mismatchReason = "same_map_endpoint_unreadable";
+                return ResumeValidationOutcome.Unknown;
+            }
+
+            if (sameMapEndpoint == activeTargetTile)
+                return ResumeValidationOutcome.Valid;
+
+            mismatchReason = $"wrong_same_map_endpoint(actual={DescribeNullablePoint(sameMapEndpoint)}, expected={DescribeNullablePoint(activeTargetTile)})";
+            return ResumeValidationOutcome.Invalid;
+        }
+
+        if (!TryResolveExpectedCrossMapResumeLegTile(npc, pending, out var plannedLegTile))
+        {
+            mismatchReason = "cross_map_leg_unresolved";
+            return ResumeValidationOutcome.Unknown;
+        }
+
+        expectedLegTile = plannedLegTile;
+
+        if (!TryGetCurrentResumeEndpoint(npc, out var crossMapEndpoint))
+        {
+            mismatchReason = "cross_map_endpoint_unreadable";
+            return ResumeValidationOutcome.Unknown;
+        }
+
+        if (crossMapEndpoint == plannedLegTile)
+            return ResumeValidationOutcome.Valid;
+
+        if (crossMapEndpoint == activeTargetTile)
+        {
+            mismatchReason = $"wrong_map_remote_endpoint(actual={DescribeNullablePoint(crossMapEndpoint)}, expected_leg={DescribeNullablePoint(plannedLegTile)}, remote_target={DescribeNullablePoint(activeTargetTile)})";
+            return ResumeValidationOutcome.Invalid;
+        }
+
+        mismatchReason = $"wrong_cross_map_endpoint(actual={DescribeNullablePoint(crossMapEndpoint)}, expected_leg={DescribeNullablePoint(plannedLegTile)}, remote_target={DescribeNullablePoint(activeTargetTile)})";
+        return ResumeValidationOutcome.Invalid;
+    }
+
+    private bool TryResolveExpectedCrossMapResumeLegTile(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        out Point expectedLegTile)
+    {
+        expectedLegTile = Point.Zero;
+
+        if (npc.currentLocation is null
+            || string.IsNullOrWhiteSpace(pending.ActiveTargetLocation)
+            || !TryPlanNextCrossMapFallbackLeg(npc, pending.ActiveTargetLocation, out var segment))
+        {
+            return false;
+        }
+
+        return TryResolveCrossMapLegDepartureTile(npc, segment.DepartureTile, out expectedLegTile);
+    }
+
+    private static bool TryGetCurrentResumeEndpoint(NPC npc, out Point endpoint)
+    {
+        endpoint = Point.Zero;
+        if (!TryGetMemberValue(npc, "previousEndPoint", out var previousEndPoint) || previousEndPoint is not Point point)
+            return false;
+
+        endpoint = point;
+        return true;
     }
 
     private bool TryHandleActiveSlotArrivalSettle(NPC npc, PendingVanillaEncounterResume pending)
@@ -16324,7 +16529,12 @@ public sealed class ModEntry : Mod
     {
         return npc.controller is not null
             || npc.isMoving()
-            || (TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null);
+            || HasTemporaryController(npc);
+    }
+
+    private static bool HasTemporaryController(NPC npc)
+    {
+        return TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
     }
 
     private static string DescribeNullablePoint(Point? point)
@@ -16332,6 +16542,17 @@ public sealed class ModEntry : Mod
         return point.HasValue
             ? $"({point.Value.X},{point.Value.Y})"
             : "none";
+    }
+
+    private static string DescribeResumeValidation(ResumeValidationOutcome validation)
+    {
+        return validation switch
+        {
+            ResumeValidationOutcome.Valid => "valid",
+            ResumeValidationOutcome.Invalid => "invalid",
+            ResumeValidationOutcome.Degraded => "degraded",
+            _ => "unknown"
+        };
     }
 
     private static string DescribeText(string? text)
