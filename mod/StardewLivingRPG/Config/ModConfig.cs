@@ -47,7 +47,7 @@ public sealed class ModConfig
     public int AutonomyFaceToFaceEncounterChancePct { get; set; } = 75;
     public int PairEmotionMaxDeltaPerCommand { get; set; } = 5;
     public int PairEmotionMaxDeltaPerDayPerAxis { get; set; } = 15;
-    public int BubbleMaxChars { get; set; } = 90;
+    public int BubbleMaxChars { get; set; } = 50;
     public int BubbleMinDurationMs { get; set; } = 2000;
     public int BubbleMaxDurationMs { get; set; } = 5000;
     public int BubblePauseBetweenMs { get; set; } = 400;

@@ -108,6 +108,9 @@ public sealed class ModEntry : Mod
     private const float GmcmDailyDeltaCapMax = 1.00f;
     private static readonly string[] AllowedModeValues = { "cozy_canon", "story_depth", "living_chaos" };
     private static readonly string[] AllowedEncounterChanceValues = { "0", "50", "75", "100" };
+    private static readonly string[] ScheduleLocationMemberCandidates = { "targetLocationName", "TargetLocationName", "locationName", "LocationName", "location", "Location", "locationId", "LocationId" };
+    private static readonly string[] ScheduleTileMemberCandidates = { "route", "Route", "endPoint", "EndPoint", "targetTile", "TargetTile", "tile", "Tile", "point", "Point" };
+    private static readonly string[] ScheduleFacingMemberCandidates = { "facingDirection", "FacingDirection", "facing", "Facing" };
     private static readonly Regex EncounterCommandRetryRegex = new(
         @"(?:^\s*(?:adjust[_\s]+reputation|shift[_\s]+interest[_\s]+influence|apply[_\s]+market[_\s]+modifier|spread[_\s]+rumor|publish[_\s]+rumor|publish[_\s]+article|propose[_\s]+quest|record[_\s]+town[_\s]+event|record[_\s]+memory[_\s]+fact|adjust[_\s]+town[_\s]+sentiment|update[_\s]+romance[_\s]+profile|propose[_\s]+micro[_\s]+date)\b|""(?:command|arguments|npc_id|intent_id)""\s*:)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
@@ -14917,18 +14920,22 @@ public sealed class ModEntry : Mod
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
-        var resumeMethod = TryRebindVanillaScheduleAtCurrentTime(npc, out var checkScheduleInvoked);
+        var resumeMethod = TryRebindVanillaScheduleAtCurrentTime(npc, out var checkScheduleInvoked, out var injectedCurrentEntry, out var mirroredFromTime);
         var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
         Monitor.Log(
-            $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}, restored={restoredSchedule}, checkSchedule={checkScheduleInvoked}, fallback={(string.Equals(resumeMethod, "pathfindToNextScheduleLocation()", StringComparison.Ordinal) ? "pathfindToNextScheduleLocation()" : "none")}, resumed={!string.IsNullOrWhiteSpace(resumeMethod)}, controller={npc.controller is not null}, temporary_controller={hasTemporaryController}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}, restored={restoredSchedule}, injected_current={injectedCurrentEntry}, mirrored_from={(mirroredFromTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, checkSchedule={checkScheduleInvoked}, fallback={(string.Equals(resumeMethod, "pathfindToNextScheduleLocation()", StringComparison.Ordinal) ? "pathfindToNextScheduleLocation()" : "none")}, resumed={!string.IsNullOrWhiteSpace(resumeMethod)}, controller={npc.controller is not null}, temporary_controller={hasTemporaryController}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             string.IsNullOrWhiteSpace(resumeMethod) ? LogLevel.Debug : LogLevel.Trace);
     }
 
-    private string TryRebindVanillaScheduleAtCurrentTime(NPC npc, out bool checkScheduleInvoked)
+    private string TryRebindVanillaScheduleAtCurrentTime(NPC npc, out bool checkScheduleInvoked, out bool injectedCurrentEntry, out int? mirroredFromTime)
     {
         checkScheduleInvoked = false;
+        injectedCurrentEntry = false;
+        mirroredFromTime = null;
         if (npc.Schedule is null || npc.Schedule.Count == 0)
             return string.Empty;
+
+        TryEnsureCurrentTimeScheduleEntry(npc, out injectedCurrentEntry, out mirroredFromTime);
 
         if (TryInvokeVanillaMethod(npc, "checkSchedule", Game1.timeOfDay)
             || TryInvokeVanillaMethod(npc, "checkSchedule"))
@@ -14945,6 +14952,121 @@ public sealed class ModEntry : Mod
         }
 
         return string.Empty;
+    }
+
+    private void TryEnsureCurrentTimeScheduleEntry(NPC npc, out bool injectedCurrentEntry, out int? mirroredFromTime)
+    {
+        injectedCurrentEntry = false;
+        mirroredFromTime = null;
+
+        if (npc.Schedule is null || npc.Schedule.Count == 0)
+            return;
+
+        var currentTime = Game1.timeOfDay;
+        if (npc.Schedule.ContainsKey(currentTime))
+            return;
+
+        KeyValuePair<int, StardewValley.Pathfinding.SchedulePathDescription>? activeEntry = null;
+        foreach (var entry in npc.Schedule)
+        {
+            if (entry.Key > currentTime)
+                continue;
+
+            if (!activeEntry.HasValue || entry.Key > activeEntry.Value.Key)
+                activeEntry = entry;
+        }
+
+        if (!activeEntry.HasValue)
+            return;
+
+        if (!TryReadScheduleDestination(activeEntry.Value.Value, out var locationId, out var tile, out var facingDirection))
+            return;
+
+        _scheduleOverrideService?.PatchSingleEntry(npc, currentTime, locationId, tile, facingDirection);
+        if (!npc.Schedule.ContainsKey(currentTime))
+            return;
+
+        injectedCurrentEntry = true;
+        mirroredFromTime = activeEntry.Value.Key;
+    }
+
+    private static bool TryReadScheduleDestination(object scheduleEntry, out string locationId, out Point tile, out int facingDirection)
+    {
+        locationId = string.Empty;
+        tile = Point.Zero;
+        facingDirection = Game1.down;
+
+        if (!TryReadScheduleLocation(scheduleEntry, out locationId) || !TryReadScheduleTile(scheduleEntry, out tile))
+            return false;
+
+        TryReadScheduleFacing(scheduleEntry, out facingDirection);
+        return true;
+    }
+
+    private static bool TryReadScheduleLocation(object scheduleEntry, out string locationId)
+    {
+        locationId = string.Empty;
+
+        foreach (var memberName in ScheduleLocationMemberCandidates)
+        {
+            if (TryGetMemberValue(scheduleEntry, memberName, out var value) && value is string text && !string.IsNullOrWhiteSpace(text))
+            {
+                locationId = text;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryReadScheduleTile(object scheduleEntry, out Point tile)
+    {
+        tile = Point.Zero;
+
+        foreach (var memberName in ScheduleTileMemberCandidates)
+        {
+            if (!TryGetMemberValue(scheduleEntry, memberName, out var value) || value is null)
+                continue;
+
+            if (value is Point point)
+            {
+                tile = point;
+                return true;
+            }
+
+            if (value is Vector2 vector)
+            {
+                tile = new Point((int)vector.X, (int)vector.Y);
+                return true;
+            }
+
+            if (value is IList<Point> routePoints && routePoints.Count > 0)
+            {
+                tile = routePoints[routePoints.Count - 1];
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryReadScheduleFacing(object scheduleEntry, out int facingDirection)
+    {
+        facingDirection = Game1.down;
+
+        foreach (var memberName in ScheduleFacingMemberCandidates)
+        {
+            if (!TryGetMemberValue(scheduleEntry, memberName, out var value) || value is null)
+                continue;
+
+            if (value is int facing)
+            {
+                facingDirection = facing;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool HasVanillaResumeState(NPC npc)

@@ -319,7 +319,7 @@
 - Player2 roster readiness now tracks only required spawn roster entries, so auto-discovered external NPCs do not stall auto-connect/session health checks.
 - Expanded NPC targeting, social-visit inference, and prompt canon lists now include auto-discovered external NPCs when enabled.
 - Face-to-face encounters now only start for vanilla-driven NPCs, pin them temporarily, and on release immediately rebind them to the current vanilla schedule slot using vanilla `checkSchedule(...)` / `pathfindToNextScheduleLocation()` instead of restoring stale pre-encounter path state.
-- NPC speech bubbles now keep full sentences intact while using vanilla single-line `showTextAboveHead` rendering, and overlong single sentences split into two balanced continuation bubbles with `...` at the end of the first bubble; the default bubble limit remains `90`, the GMCM range remains `40-120`, and longer encounter bubbles remain visible for up to `3000ms`.
+- NPC speech bubbles now keep full sentences intact while using vanilla single-line `showTextAboveHead` rendering, and overlong single sentences split into two balanced continuation bubbles with `...` at the end of the first bubble; the default bubble limit is `50`, the GMCM range remains `40-120`, and longer encounter bubbles remain visible for up to `3000ms`.
 - Ambient and face-to-face NPC conversation prompts now explicitly ask for a single spoken line under `80` characters to reduce overflow.
 - Ambient command policy now blocks `publish_article` in `npc_to_npc_ambient` lane.
 - Added config knobs for ambient chat depth/limit/pair-cooldown/overhear cadence.
