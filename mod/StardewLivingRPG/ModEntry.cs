@@ -5,7 +5,6 @@ using StardewModdingAPI.Events;
 using StardewValley;
 using StardewValley.ItemTypeDefinitions;
 using StardewValley.Menus;
-using StardewValley.Pathfinding;
 using StardewLivingRPG.Config;
 using StardewLivingRPG.CustomNpcFramework.Models;
 using StardewLivingRPG.CustomNpcFramework.Services;
@@ -14067,6 +14066,19 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        if (!IsVanillaDrivenEncounterCandidate(speakerNpc, runtime, block, out var speakerGateReason))
+        {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked because speaker is not vanilla-driven ({speakerGateReason}).", LogLevel.Trace);
+            return false;
+        }
+
+        _autonomyRuntimeByNpcId.TryGetValue(listenerNpc.Name, out var listenerEncounterRuntime);
+        if (!IsVanillaDrivenEncounterCandidate(listenerNpc, listenerEncounterRuntime, currentBlock: null, out var listenerGateReason))
+        {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked because listener is not vanilla-driven ({listenerGateReason}).", LogLevel.Trace);
+            return false;
+        }
+
         // ShouldStartEncounter already validated via ScoreEncounter(). Use the same scoring
         // to create directly — avoids mismatch with ScoreEncounterByNames() which uses
         // Affinity/Familiarity/Tension (all zero for new pairs, producing scores below threshold).
@@ -14093,10 +14105,10 @@ public sealed class ModEntry : Mod
         _npcSocialEncounterService.MarkStaging(encounter.EncounterId);
         runtime.ActiveEncounterId = encounter.EncounterId;
         runtime.EncounterLockedPartnerNpcId = listenerNpc.Name;
-        if (_autonomyRuntimeByNpcId.TryGetValue(listenerNpc.Name, out var listenerRuntime))
+        if (listenerEncounterRuntime is not null)
         {
-            listenerRuntime.ActiveEncounterId = encounter.EncounterId;
-            listenerRuntime.EncounterLockedPartnerNpcId = speakerNpc.Name;
+            listenerEncounterRuntime.ActiveEncounterId = encounter.EncounterId;
+            listenerEncounterRuntime.EncounterLockedPartnerNpcId = speakerNpc.Name;
         }
 
         // Launch Player2-powered conversation if available; otherwise template dialogue takes over in TryAdvanceAutonomyEncounterStates
@@ -14129,6 +14141,58 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        return true;
+    }
+
+    private bool IsVanillaDrivenEncounterCandidate(NPC npc, AutonomyRuntimeState? runtime, AutonomyPlanBlock? currentBlock, out string reason)
+    {
+        reason = string.Empty;
+
+        if (_scheduleOverrideService?.HasOverride(npc.Name) == true)
+        {
+            reason = "schedule_override";
+            return false;
+        }
+
+        if (!TryGetMemberValue(npc, "followSchedule", out var rawFollowSchedule)
+            || rawFollowSchedule is not bool followSchedule
+            || !followSchedule)
+        {
+            reason = "follow_schedule_disabled";
+            return false;
+        }
+
+        if (runtime is null || runtime.OverrideStatus != AutonomyOverrideStatus.Active)
+            return true;
+
+        var activeBlock = currentBlock;
+        if (activeBlock is null && !TryGetActiveAutonomyBlock(runtime, out activeBlock))
+        {
+            reason = "active_block_unknown";
+            return false;
+        }
+
+        if (activeBlock is not null
+            && activeBlock.Type is not (AutonomyPlanBlockType.BaseAnchor or AutonomyPlanBlockType.RequiredDuty))
+        {
+            reason = $"active_block_{activeBlock.Type}";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetActiveAutonomyBlock(AutonomyRuntimeState runtime, out AutonomyPlanBlock? block)
+    {
+        block = null;
+        if (runtime.ActivePlan is null
+            || runtime.ActiveBlockIndex < 0
+            || runtime.ActiveBlockIndex >= runtime.ActivePlan.Blocks.Count)
+        {
+            return false;
+        }
+
+        block = runtime.ActivePlan.Blocks[runtime.ActiveBlockIndex];
         return true;
     }
 
@@ -14845,77 +14909,49 @@ public sealed class ModEntry : Mod
         if (npc is null)
             return;
 
-        npc.Halt();
+        var scheduleOverrideService = _scheduleOverrideService;
+        var restoredSchedule = scheduleOverrideService?.HasOverride(npc.Name) == true;
+        if (restoredSchedule)
+            scheduleOverrideService!.RestoreVanillaSchedule(npc);
+
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
-
-        if (_scheduleOverrideService?.HasOverride(npc.Name) == true)
-            _scheduleOverrideService.RestoreVanillaSchedule(npc);
-
-        var method = TryResumeVanillaScheduleFromCurrentPosition(npc);
         TrySetMemberValue(npc, "followSchedule", true);
+        var resumeMethod = TryRebindVanillaScheduleAtCurrentTime(npc, out var checkScheduleInvoked);
+        var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
         Monitor.Log(
-            $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}, method={method}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-            string.IsNullOrWhiteSpace(method) ? LogLevel.Debug : LogLevel.Trace);
+            $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {encounterId} ({phase}, restored={restoredSchedule}, checkSchedule={checkScheduleInvoked}, fallback={(string.Equals(resumeMethod, "pathfindToNextScheduleLocation()", StringComparison.Ordinal) ? "pathfindToNextScheduleLocation()" : "none")}, resumed={!string.IsNullOrWhiteSpace(resumeMethod)}, controller={npc.controller is not null}, temporary_controller={hasTemporaryController}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            string.IsNullOrWhiteSpace(resumeMethod) ? LogLevel.Debug : LogLevel.Trace);
     }
 
-    private string TryResumeVanillaScheduleFromCurrentPosition(NPC npc)
+    private string TryRebindVanillaScheduleAtCurrentTime(NPC npc, out bool checkScheduleInvoked)
     {
-        if (npc.currentLocation is null || npc.Schedule is null || npc.Schedule.Count == 0)
+        checkScheduleInvoked = false;
+        if (npc.Schedule is null || npc.Schedule.Count == 0)
             return string.Empty;
 
-        var currentTime = Game1.timeOfDay;
-        var bestTime = -1;
-        SchedulePathDescription? bestDesc = null;
-        foreach (var kvp in npc.Schedule)
+        if (TryInvokeVanillaMethod(npc, "checkSchedule", Game1.timeOfDay)
+            || TryInvokeVanillaMethod(npc, "checkSchedule"))
         {
-            if (kvp.Key <= currentTime && kvp.Key > bestTime)
-            {
-                bestTime = kvp.Key;
-                bestDesc = kvp.Value;
-            }
-        }
-
-        if (bestDesc is null)
-            return string.Empty;
-
-        string? targetLocationName = null;
-        var targetTile = Point.Zero;
-        var facingDirection = Game1.down;
-
-        if (TryGetMemberValue(bestDesc, "targetLocationName", out var locationValue) && locationValue is string locationName)
-            targetLocationName = locationName;
-        if (TryGetMemberValue(bestDesc, "targetTile", out var tileValue) && tileValue is Point tile)
-            targetTile = tile;
-        if (TryGetMemberValue(bestDesc, "facingDirection", out var facingValue) && facingValue is int direction)
-            facingDirection = direction;
-
-        if (targetTile == Point.Zero)
-            return string.Empty;
-
-        var isOnTargetMap = string.IsNullOrWhiteSpace(targetLocationName)
-            || string.Equals(npc.currentLocation.Name, targetLocationName, StringComparison.OrdinalIgnoreCase);
-        if (isOnTargetMap)
-        {
-            try
-            {
-                npc.controller = new PathFindController(npc, npc.currentLocation, targetTile, facingDirection);
-                if (npc.controller?.pathToEndPoint is { Count: > 0 })
-                    return $"PathFindController({npc.currentLocation.Name}, {targetTile.X},{targetTile.Y})";
-
-                npc.controller = null;
-            }
-            catch
-            {
-                npc.controller = null;
-            }
+            checkScheduleInvoked = true;
+            if (HasVanillaResumeState(npc))
+                return "checkSchedule()";
         }
 
         if (TryInvokeVanillaMethod(npc, "pathfindToNextScheduleLocation")
-            && npc.controller?.pathToEndPoint is { Count: > 0 })
+            && HasVanillaResumeState(npc))
+        {
             return "pathfindToNextScheduleLocation()";
+        }
 
         return string.Empty;
+    }
+
+    private static bool HasVanillaResumeState(NPC npc)
+    {
+        return npc.controller is not null
+            || npc.isMoving()
+            || (TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null);
     }
 
     private static bool TryInvokeVanillaMethod(object source, string methodName, params object[] arguments)

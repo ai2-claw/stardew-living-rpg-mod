@@ -349,11 +349,72 @@ public sealed class NpcSpeechBubbleService
     private static List<string> SplitLongUnit(string text)
     {
         var chunks = new List<string>();
-        var remaining = text.Trim();
-        if (!string.IsNullOrWhiteSpace(remaining))
-            chunks.Add(remaining);
+        var remaining = Normalize(text).Trim();
+        if (string.IsNullOrWhiteSpace(remaining))
+            return chunks;
+
+        var words = remaining.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length <= 1)
+            return SplitLongToken(remaining);
+
+        var bestIndex = FindBestBalancedSplitIndex(words);
+        if (bestIndex <= 0 || bestIndex >= words.Length)
+            return SplitLongToken(remaining);
+
+        var firstHalf = string.Join(" ", words[..bestIndex]).Trim();
+        var secondHalf = string.Join(" ", words[bestIndex..]).Trim();
+        if (string.IsNullOrWhiteSpace(firstHalf) || string.IsNullOrWhiteSpace(secondHalf))
+            return SplitLongToken(remaining);
+
+        chunks.Add($"{firstHalf}...");
+        chunks.Add(secondHalf);
 
         return chunks;
+    }
+
+    private static int FindBestBalancedSplitIndex(string[] words)
+    {
+        var bestIndex = -1;
+        var bestDelta = int.MaxValue;
+        var bestLongestSide = int.MaxValue;
+
+        for (var i = 1; i < words.Length; i++)
+        {
+            var left = string.Join(" ", words[..i]).Trim();
+            var right = string.Join(" ", words[i..]).Trim();
+            if (left.Length == 0 || right.Length == 0)
+                continue;
+
+            var leftLengthWithContinuation = left.Length + 3;
+            var delta = Math.Abs(leftLengthWithContinuation - right.Length);
+            var longestSide = Math.Max(leftLengthWithContinuation, right.Length);
+            if (delta < bestDelta || (delta == bestDelta && longestSide < bestLongestSide))
+            {
+                bestDelta = delta;
+                bestLongestSide = longestSide;
+                bestIndex = i;
+            }
+        }
+
+        return bestIndex;
+    }
+
+    private static List<string> SplitLongToken(string text)
+    {
+        var midpoint = text.Length / 2;
+        if (midpoint <= 0 || midpoint >= text.Length)
+            return new List<string> { text };
+
+        var firstHalf = text[..midpoint].TrimEnd();
+        var secondHalf = text[midpoint..].TrimStart();
+        if (firstHalf.Length == 0 || secondHalf.Length == 0)
+            return new List<string> { text };
+
+        return new List<string>
+        {
+            $"{firstHalf}...",
+            secondHalf
+        };
     }
 
     private static bool IsTerminalPunctuation(char value)

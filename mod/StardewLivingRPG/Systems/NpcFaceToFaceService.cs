@@ -16,8 +16,17 @@ public sealed class NpcFaceToFaceService
         public string NpcAId { get; init; } = string.Empty;
         public string NpcBId { get; init; } = string.Empty;
         public string LocationName { get; init; } = string.Empty;
+        public PinnedNpcState NpcAState { get; init; } = new();
+        public PinnedNpcState NpcBState { get; init; } = new();
         public SceneState Scene { get; set; } = SceneState.Active;
         public StagingPhase Phase { get; set; } = StagingPhase.Talking;
+    }
+
+    private sealed class PinnedNpcState
+    {
+        public string NpcId { get; init; } = string.Empty;
+        public bool FollowSchedule { get; init; } = true;
+        public int FacingDirection { get; init; } = Game1.down;
     }
 
     private readonly ModConfig _config;
@@ -57,6 +66,8 @@ public sealed class NpcFaceToFaceService
             NpcAId = npcA.Name,
             NpcBId = npcB.Name,
             LocationName = location.Name,
+            NpcAState = CapturePinnedNpcState(npcA),
+            NpcBState = CapturePinnedNpcState(npcB),
             Scene = SceneState.Active,
             Phase = StagingPhase.Talking
         };
@@ -65,8 +76,8 @@ public sealed class NpcFaceToFaceService
         _npcToEncounter[npcA.Name] = encounterId;
         _npcToEncounter[npcB.Name] = encounterId;
 
-        npcA.Halt();
-        npcB.Halt();
+        ApplyEncounterPin(npcA);
+        ApplyEncounterPin(npcB);
         FaceEachOther(npcA, npcB);
         return true;
     }
@@ -96,20 +107,8 @@ public sealed class NpcFaceToFaceService
 
             if (state.Phase == StagingPhase.Talking)
             {
-                if (npcA.controller is not null || HasTemporaryController(npcA))
-                {
-                    npcA.controller = null;
-                    TrySetTemporaryController(npcA, null);
-                }
-
-                if (npcB.controller is not null || HasTemporaryController(npcB))
-                {
-                    npcB.controller = null;
-                    TrySetTemporaryController(npcB, null);
-                }
-
-                npcA.Halt();
-                npcB.Halt();
+                MaintainEncounterPin(npcA);
+                MaintainEncounterPin(npcB);
                 FaceEachOther(npcA, npcB);
                 continue;
             }
@@ -136,6 +135,8 @@ public sealed class NpcFaceToFaceService
         if (!_statesByEncounterId.TryGetValue(encounterId, out var state))
             return false;
 
+        RestorePinnedNpcState(state.NpcAState);
+        RestorePinnedNpcState(state.NpcBState);
         ReleaseScene(state);
         DiscardState(state);
         return true;
@@ -145,6 +146,8 @@ public sealed class NpcFaceToFaceService
     {
         foreach (var state in _statesByEncounterId.Values.ToArray())
         {
+            RestorePinnedNpcState(state.NpcAState);
+            RestorePinnedNpcState(state.NpcBState);
             ReleaseScene(state);
             DiscardState(state);
         }
@@ -210,6 +213,50 @@ public sealed class NpcFaceToFaceService
         var dx = Math.Abs((int)tileA.X - tileB.X);
         var dy = Math.Abs((int)tileA.Y - tileB.Y);
         return dx + dy;
+    }
+
+    private static PinnedNpcState CapturePinnedNpcState(NPC npc)
+    {
+        var followSchedule = true;
+        if (TryGetMemberValue(npc, "followSchedule", out var followScheduleValue) && followScheduleValue is bool savedFollowSchedule)
+            followSchedule = savedFollowSchedule;
+
+        return new PinnedNpcState
+        {
+            NpcId = npc.Name,
+            FollowSchedule = followSchedule,
+            FacingDirection = npc.FacingDirection
+        };
+    }
+
+    private static void ApplyEncounterPin(NPC npc)
+    {
+        TrySetMemberValue(npc, "followSchedule", false);
+        npc.controller = null;
+        TrySetTemporaryController(npc, null);
+        npc.Halt();
+    }
+
+    private static void MaintainEncounterPin(NPC npc)
+    {
+        TrySetMemberValue(npc, "followSchedule", false);
+        if (npc.controller is not null)
+            npc.controller = null;
+        if (HasTemporaryController(npc))
+            TrySetTemporaryController(npc, null);
+        npc.Halt();
+    }
+
+    private static void RestorePinnedNpcState(PinnedNpcState state)
+    {
+        if (string.IsNullOrWhiteSpace(state.NpcId))
+            return;
+
+        if (Game1.getCharacterFromName(state.NpcId) is not NPC npc)
+            return;
+
+        TrySetMemberValue(npc, "followSchedule", state.FollowSchedule);
+        npc.faceDirection(state.FacingDirection);
     }
 
     private static bool HasTemporaryController(NPC npc)
