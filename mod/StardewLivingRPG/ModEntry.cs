@@ -1027,7 +1027,6 @@ public sealed class ModEntry : Mod
         InitializeVanillaCanonLoreFramework(helper);
         InitializePortraitProfileFramework();
         MarketSellPricePatcher.Apply(ModManifest.UniqueID);
-        NpcBubbleDrawPatcher.Apply(ModManifest.UniqueID);
 
         RegisterPlayerConsoleCommands(helper);
         if (_config.ShowDeveloperConsoleCommands)
