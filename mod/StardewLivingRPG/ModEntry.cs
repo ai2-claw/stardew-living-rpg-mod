@@ -67,6 +67,8 @@ public sealed class ModEntry : Mod
     private const int AmbientSentimentDailyCap = 1;
     private const int AmbientSentimentAxisDailyCap = 1;
     private const int EncounterVanillaResumeMaxAttempts = 5;
+    private const int EncounterVanillaResumeFallbackStaleTicks = 180;
+    private const int EncounterVanillaResumeFallbackLegRetryLimit = 1;
     private const int NpcShipmentDebugTopDefault = 5;
     private const int MaxSimulationToastsPerDay = 2;
     private const int SimulationToastCooldownSeconds = 25;
@@ -452,6 +454,13 @@ public sealed class ModEntry : Mod
         public DateTime CompletedUtc { get; init; }
     }
 
+    private enum EncounterFallbackMode
+    {
+        None,
+        SameMapTarget,
+        CrossMapLeg
+    }
+
     private sealed class PendingVanillaEncounterResume
     {
         public string NpcId { get; init; } = string.Empty;
@@ -480,6 +489,15 @@ public sealed class ModEntry : Mod
         public bool UsedTemporaryActiveSlotFallback { get; set; }
         public int? FallbackControllerStartedAtTime { get; set; }
         public object? TemporaryFallbackController { get; set; }
+        public EncounterFallbackMode FallbackMode { get; set; }
+        public string FallbackLegFromLocation { get; set; } = string.Empty;
+        public string FallbackLegToLocation { get; set; } = string.Empty;
+        public Point? FallbackLegDepartureTile { get; set; }
+        public Point? FallbackLegArrivalTile { get; set; }
+        public Point? FallbackLastObservedTile { get; set; }
+        public string FallbackLastObservedLocation { get; set; } = string.Empty;
+        public ulong FallbackLastProgressTick { get; set; }
+        public int FallbackLegRetryCount { get; set; }
     }
 
     private sealed class VanillaEncounterResumeMonitor
@@ -15050,6 +15068,12 @@ public sealed class ModEntry : Mod
                 usingTemporaryActiveSlotFallback = false;
             }
 
+            if (usingTemporaryActiveSlotFallback && pending.FallbackMode == EncounterFallbackMode.CrossMapLeg)
+            {
+                TryAdvanceCrossMapFallbackLeg(npc, pending, currentTick);
+                usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
+            }
+
             if (HasVanillaResumeState(npc) && !usingTemporaryActiveSlotFallback)
             {
                 var hasTempController = TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null;
@@ -15080,6 +15104,15 @@ public sealed class ModEntry : Mod
                 }
 
                 pending.NextAttemptTick = currentTick + 1;
+                continue;
+            }
+
+            if (!pending.NextScheduleTime.HasValue && HasReachedActiveFallbackTarget(npc, pending))
+            {
+                Monitor.Log(
+                    $"Autonomy: returned {npc.Name} to active schedule target after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time=none, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=true, method=ActiveSlotFallback(already_at_target), controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                    LogLevel.Debug);
+                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
                 continue;
             }
 
@@ -15290,17 +15323,13 @@ public sealed class ModEntry : Mod
         checkScheduleInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out checkScheduleMethod);
         nextScheduleTime = TryGetNextScheduleTime(npc, Game1.timeOfDay);
         pending.NextScheduleTime = nextScheduleTime;
-        pending.UsedTemporaryActiveSlotFallback = false;
-        pending.FallbackControllerStartedAtTime = null;
-        pending.TemporaryFallbackController = null;
+        ResetActiveSlotFallbackState(pending);
 
         if (!HasVanillaResumeState(npc)
             && pending.ActiveScheduleTime.HasValue
-            && TryForcePathToActiveScheduleEntry(npc, pending, out var fallbackController))
+            && TryForcePathToActiveScheduleEntry(npc, pending, _lastUpdateTick, false, out var fallbackController))
         {
-            pending.UsedTemporaryActiveSlotFallback = true;
-            pending.FallbackControllerStartedAtTime = Game1.timeOfDay;
-            pending.TemporaryFallbackController = fallbackController;
+            SetTemporaryActiveSlotFallback(pending, fallbackController);
         }
 
         Monitor.Log(
@@ -15463,9 +15492,12 @@ public sealed class ModEntry : Mod
     private bool TryForcePathToActiveScheduleEntry(
         NPC npc,
         PendingVanillaEncounterResume pending,
+        ulong currentTick,
+        bool preserveLegRetryCount,
         out object? fallbackController)
     {
         fallbackController = null;
+        PrepareActiveSlotFallbackState(pending, preserveLegRetryCount);
 
         if (pending.ActiveScheduleTime is null
             || pending.ActiveTargetTile is null
@@ -15478,10 +15510,6 @@ public sealed class ModEntry : Mod
         if (pending.NextScheduleTime.HasValue && Game1.timeOfDay >= pending.NextScheduleTime.Value)
             return false;
 
-        var walkabilityService = _walkabilityService;
-        if (walkabilityService is null)
-            return false;
-
         var targetLocation = Game1.getLocationFromName(pending.ActiveTargetLocation);
         if (targetLocation is null)
         {
@@ -15491,20 +15519,38 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        var sameMap = string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase);
+        return sameMap
+            ? TryStartSameMapActiveSlotFallback(npc, pending, targetLocation, currentTick, out fallbackController)
+            : TryStartCrossMapActiveSlotFallback(npc, pending, currentTick, out fallbackController);
+    }
+
+    private bool TryStartSameMapActiveSlotFallback(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        GameLocation targetLocation,
+        ulong currentTick,
+        out object? fallbackController)
+    {
+        fallbackController = null;
+
+        var walkabilityService = _walkabilityService;
+        if (walkabilityService is null || pending.ActiveTargetTile is null)
+            return false;
+
         var requestedTile = pending.ActiveTargetTile.Value;
         if (!walkabilityService.TryFindNearestWalkableTile(targetLocation, requestedTile, 16, npc, out var safeTile))
         {
             Monitor.Log(
-                $"Autonomy: [REBIND] {npc.Name} unable to resolve walkable active-slot tile for schedule {pending.ActiveScheduleTime.Value} at {DescribeNullablePoint(requestedTile)} in {pending.ActiveTargetLocation}.",
+                $"Autonomy: [REBIND] {npc.Name} unable to resolve walkable active-slot tile for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(requestedTile)} in {pending.ActiveTargetLocation}.",
                 LogLevel.Debug);
             return false;
         }
 
-        var sameMap = string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase);
-        if (sameMap && Vector2.Distance(npc.Tile, new Vector2(safeTile.X, safeTile.Y)) <= 1.25f)
+        if (Vector2.Distance(npc.Tile, new Vector2(safeTile.X, safeTile.Y)) <= 1.25f)
         {
             Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} already at active-slot destination after encounter {pending.EncounterId} (active_schedule_time={pending.ActiveScheduleTime.Value}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, tile={DescribeNullablePoint(safeTile)}, time={Game1.timeOfDay}).",
+                $"Autonomy: [FORCE_PATH] {npc.Name} already at active-slot destination after encounter {pending.EncounterId} (active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, tile={DescribeNullablePoint(safeTile)}, time={Game1.timeOfDay}).",
                 LogLevel.Debug);
             pending.ActiveTargetTile = safeTile;
             return false;
@@ -15515,22 +15561,69 @@ public sealed class ModEntry : Mod
 
         TrySetMemberValue(npc, "controller", fallbackController);
         TrySetMemberValue(npc, "previousEndPoint", safeTile);
+        pending.FallbackMode = EncounterFallbackMode.SameMapTarget;
         pending.ActiveTargetTile = safeTile;
+        pending.FallbackLastObservedLocation = npc.currentLocation?.Name ?? string.Empty;
+        pending.FallbackLastObservedTile = npc.TilePoint;
+        pending.FallbackLastProgressTick = currentTick;
 
         Monitor.Log(
-            $"Autonomy: [FORCE_PATH] {npc.Name} forced {(sameMap ? "same-map" : $"cross-map from {npc.currentLocation.Name}")} active-slot path after encounter {pending.EncounterId} (active_schedule_time={pending.ActiveScheduleTime.Value}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, time={Game1.timeOfDay}).",
+            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, time={Game1.timeOfDay}).",
+            LogLevel.Debug);
+        return true;
+    }
+
+    private bool TryStartCrossMapActiveSlotFallback(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        ulong currentTick,
+        out object? fallbackController)
+    {
+        fallbackController = null;
+
+        if (npc.currentLocation is null)
+            return false;
+
+        if (!TryPlanNextCrossMapFallbackLeg(npc, pending.ActiveTargetLocation, out var segment))
+        {
+            Monitor.Log(
+                $"Autonomy: [CrossMapLeg(start)] {npc.Name} could not plan route from {npc.currentLocation.Name} to {pending.ActiveTargetLocation}.",
+                LogLevel.Debug);
+            return false;
+        }
+
+        if (!TryResolveCrossMapLegDepartureTile(npc, segment.DepartureTile, out var departureTile))
+        {
+            Monitor.Log(
+                $"Autonomy: [CrossMapLeg(start)] {npc.Name} could not resolve departure tile {DescribeNullablePoint(segment.DepartureTile)} on {npc.currentLocation.Name} for leg to {segment.ToLocationId}.",
+                LogLevel.Debug);
+            return false;
+        }
+
+        if (!TryCreatePathFindController(npc, npc.currentLocation, departureTile, out fallbackController))
+            return false;
+
+        TrySetMemberValue(npc, "controller", fallbackController);
+        TrySetMemberValue(npc, "previousEndPoint", departureTile);
+        pending.FallbackMode = EncounterFallbackMode.CrossMapLeg;
+        pending.FallbackLegFromLocation = npc.currentLocation.Name ?? string.Empty;
+        pending.FallbackLegToLocation = segment.ToLocationId;
+        pending.FallbackLegDepartureTile = departureTile;
+        pending.FallbackLegArrivalTile = segment.ArrivalTile;
+        pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
+        pending.FallbackLastObservedTile = npc.TilePoint;
+        pending.FallbackLastProgressTick = currentTick;
+
+        Monitor.Log(
+            $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} departure_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} time={Game1.timeOfDay}.",
             LogLevel.Debug);
         return true;
     }
 
     private void ClearTemporaryActiveSlotFallback(NPC npc, PendingVanillaEncounterResume pending)
     {
-        if (IsUsingTemporaryActiveSlotFallback(npc, pending))
-            TrySetMemberValue(npc, "controller", null);
-
-        pending.UsedTemporaryActiveSlotFallback = false;
-        pending.FallbackControllerStartedAtTime = null;
-        pending.TemporaryFallbackController = null;
+        ClearTemporaryActiveSlotFallbackController(npc, pending);
+        ResetActiveSlotFallbackState(pending);
     }
 
     private static bool IsUsingTemporaryActiveSlotFallback(NPC npc, PendingVanillaEncounterResume pending)
@@ -15546,6 +15639,199 @@ public sealed class ModEntry : Mod
             && npc.currentLocation is not null
             && string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase)
             && Vector2.Distance(npc.Tile, new Vector2(pending.ActiveTargetTile.Value.X, pending.ActiveTargetTile.Value.Y)) <= 1.25f;
+    }
+
+    private void TryAdvanceCrossMapFallbackLeg(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        if (pending.FallbackMode != EncounterFallbackMode.CrossMapLeg || npc.currentLocation is null)
+            return;
+
+        var currentLocationName = npc.currentLocation.Name ?? string.Empty;
+        var currentTile = npc.TilePoint;
+        var locationChanged = !string.Equals(currentLocationName, pending.FallbackLastObservedLocation, StringComparison.OrdinalIgnoreCase);
+        var tileChanged = pending.FallbackLastObservedTile != currentTile;
+        if (locationChanged || tileChanged)
+        {
+            pending.FallbackLastObservedLocation = currentLocationName;
+            pending.FallbackLastObservedTile = currentTile;
+            pending.FallbackLastProgressTick = currentTick;
+            Monitor.Log(
+                $"Autonomy: [CrossMapLeg(progress)] {npc.Name} encounter={pending.EncounterId} map={currentLocationName} tile=({currentTile.X},{currentTile.Y}) target_leg={pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation} departure_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)}.",
+                LogLevel.Debug);
+        }
+
+        if (string.Equals(currentLocationName, pending.FallbackLegToLocation, StringComparison.OrdinalIgnoreCase))
+        {
+            Monitor.Log(
+                $"Autonomy: [CrossMapLeg(warped)] {npc.Name} encounter={pending.EncounterId} reached {currentLocationName} from {pending.FallbackLegFromLocation}.",
+                LogLevel.Debug);
+            ClearTemporaryActiveSlotFallbackController(npc, pending);
+
+            if (string.Equals(currentLocationName, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase))
+            {
+                Monitor.Log(
+                    $"Autonomy: [CrossMapLeg(target_map)] {npc.Name} encounter={pending.EncounterId} reached target map {currentLocationName}; switching to active-slot target fallback.",
+                    LogLevel.Debug);
+            }
+
+            if (TryForcePathToActiveScheduleEntry(npc, pending, currentTick, false, out var nextController))
+                SetTemporaryActiveSlotFallback(pending, nextController);
+
+            return;
+        }
+
+        if (currentTick - pending.FallbackLastProgressTick < EncounterVanillaResumeFallbackStaleTicks)
+            return;
+
+        Monitor.Log(
+            $"Autonomy: [CrossMapLeg(stale)] {npc.Name} encounter={pending.EncounterId} leg={pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation} tile=({currentTile.X},{currentTile.Y}) map={currentLocationName} retry_count={pending.FallbackLegRetryCount}.",
+            LogLevel.Debug);
+
+        if (pending.FallbackLegRetryCount >= EncounterVanillaResumeFallbackLegRetryLimit)
+        {
+            Monitor.Log(
+                $"Autonomy: [CrossMapLeg(stale)] {npc.Name} encounter={pending.EncounterId} exceeded retry limit for leg {pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation}; clearing fallback until next vanilla schedule boundary.",
+                LogLevel.Warn);
+            ClearTemporaryActiveSlotFallback(npc, pending);
+            return;
+        }
+
+        pending.FallbackLegRetryCount += 1;
+        ClearTemporaryActiveSlotFallbackController(npc, pending);
+        if (TryForcePathToActiveScheduleEntry(npc, pending, currentTick, true, out var retryController))
+        {
+            SetTemporaryActiveSlotFallback(pending, retryController);
+            Monitor.Log(
+                $"Autonomy: [CrossMapLeg(retry)] {npc.Name} encounter={pending.EncounterId} restarted leg toward {pending.FallbackLegToLocation} from {npc.currentLocation.Name} using departure_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} retry_count={pending.FallbackLegRetryCount}.",
+                LogLevel.Debug);
+            return;
+        }
+
+        Monitor.Log(
+            $"Autonomy: [CrossMapLeg(retry)] {npc.Name} encounter={pending.EncounterId} failed to restart stale leg; clearing fallback until next vanilla schedule boundary.",
+            LogLevel.Warn);
+        ClearTemporaryActiveSlotFallback(npc, pending);
+    }
+
+    private static void ClearTemporaryActiveSlotFallbackController(NPC npc, PendingVanillaEncounterResume pending)
+    {
+        if (IsUsingTemporaryActiveSlotFallback(npc, pending))
+            TrySetMemberValue(npc, "controller", null);
+
+        pending.UsedTemporaryActiveSlotFallback = false;
+        pending.FallbackControllerStartedAtTime = null;
+        pending.TemporaryFallbackController = null;
+    }
+
+    private static void ResetActiveSlotFallbackState(PendingVanillaEncounterResume pending)
+    {
+        PrepareActiveSlotFallbackState(pending, preserveLegRetryCount: false);
+        pending.UsedTemporaryActiveSlotFallback = false;
+        pending.FallbackControllerStartedAtTime = null;
+        pending.TemporaryFallbackController = null;
+    }
+
+    private static void PrepareActiveSlotFallbackState(PendingVanillaEncounterResume pending, bool preserveLegRetryCount)
+    {
+        pending.FallbackMode = EncounterFallbackMode.None;
+        pending.FallbackLegFromLocation = string.Empty;
+        pending.FallbackLegToLocation = string.Empty;
+        pending.FallbackLegDepartureTile = null;
+        pending.FallbackLegArrivalTile = null;
+        pending.FallbackLastObservedTile = null;
+        pending.FallbackLastObservedLocation = string.Empty;
+        pending.FallbackLastProgressTick = 0;
+        if (!preserveLegRetryCount)
+            pending.FallbackLegRetryCount = 0;
+    }
+
+    private static void SetTemporaryActiveSlotFallback(PendingVanillaEncounterResume pending, object? fallbackController)
+    {
+        pending.UsedTemporaryActiveSlotFallback = fallbackController is not null;
+        pending.FallbackControllerStartedAtTime = fallbackController is not null ? Game1.timeOfDay : null;
+        pending.TemporaryFallbackController = fallbackController;
+    }
+
+    private bool TryPlanNextCrossMapFallbackLeg(NPC npc, string targetLocationName, out RouteSegment segment)
+    {
+        segment = new RouteSegment();
+
+        if (_worldTopologyService is null || npc.currentLocation is null || string.IsNullOrWhiteSpace(targetLocationName))
+            return false;
+
+        var currentLocationName = npc.currentLocation.Name;
+        if (string.IsNullOrWhiteSpace(currentLocationName))
+            return false;
+
+        var graph = _worldTopologyService.BuildGraph(Game1.locations);
+        var routePlannerService = _routePlannerService;
+        if (routePlannerService is not null)
+        {
+            var route = routePlannerService.PlanRoute(graph, npc.Name, currentLocationName, targetLocationName, int.MaxValue / 4);
+            if (route?.Segments.Count > 0)
+            {
+                segment = route.Segments[0];
+                return true;
+            }
+        }
+
+        var edgePath = _worldTopologyService.FindRoute(graph, currentLocationName, targetLocationName);
+        if (edgePath is null || edgePath.Count == 0)
+            return false;
+
+        var edge = edgePath[0];
+        segment = new RouteSegment
+        {
+            FromLocationId = edge.FromLocationId,
+            ToLocationId = edge.ToLocationId,
+            DepartureTile = edge.WarpFromTile,
+            ArrivalTile = edge.WarpToTile,
+            EstimatedMinutes = edge.EstimatedTravelMinutes,
+            IsWarp = edge.IsWarp,
+            IsDoor = edge.IsDoor
+        };
+        return true;
+    }
+
+    private bool TryResolveCrossMapLegDepartureTile(NPC npc, Point requestedTile, out Point departureTile)
+    {
+        departureTile = Point.Zero;
+        var currentLocation = npc.currentLocation;
+        if (currentLocation is null)
+            return false;
+
+        if (IsMapTransitionTile(currentLocation, requestedTile))
+        {
+            departureTile = requestedTile;
+            return true;
+        }
+
+        var walkabilityService = _walkabilityService;
+        return walkabilityService is not null
+            && walkabilityService.TryFindNearestWalkableTile(currentLocation, requestedTile, 4, npc, out departureTile);
+    }
+
+    private static bool IsMapTransitionTile(GameLocation location, Point tile)
+    {
+        if (location.warps is not null)
+        {
+            foreach (var warp in location.warps)
+            {
+                if (warp is not null && warp.X == tile.X && warp.Y == tile.Y)
+                    return true;
+            }
+        }
+
+        if (location.doors?.Pairs is not null)
+        {
+            foreach (var door in location.doors.Pairs)
+            {
+                if (door.Key.X == tile.X && door.Key.Y == tile.Y)
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool TryResolveScheduleEntryTarget(
