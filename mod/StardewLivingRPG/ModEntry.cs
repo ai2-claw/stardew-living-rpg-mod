@@ -14844,8 +14844,15 @@ public sealed class ModEntry : Mod
                     CancelEncounterScene(encounter, "bubble_display_failed");
                     continue;
                 }
+                if (!isLastBubbleFinished)
+                {
+                    Monitor.Log(
+                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting_on_last_bubble_to_finish (applied_turns={appliedTurns}, ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
+                        LogLevel.Trace);
+                    continue;
+                }
 
-                // All Player2 dialogue displayed — complete the encounter
+                // All Player2 dialogue finished displaying — complete the encounter
                 encounter.ConversationPhase = ConversationPhase.Released;
                 encounter.ArcOutcome = _npcConversationSimulationService.ResolveOutcome(encounter);
                 _npcSocialEncounterService.ProcessConsequences(_state, encounter, encounter.ArcOutcome);

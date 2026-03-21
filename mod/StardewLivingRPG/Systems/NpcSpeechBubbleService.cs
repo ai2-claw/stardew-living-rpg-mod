@@ -227,7 +227,7 @@ public sealed class NpcSpeechBubbleService
             _encounterDisplayIndex[encId] = idx + 1;
             _encounterNextDisplayUtc[encId] = DateTime.UtcNow.AddMilliseconds(durationMs + EncounterBubblePauseBetweenMs);
             if (idx + 1 >= list.Count)
-                _encounterLastBubbleEndUtc[encId] = _encounterNextDisplayUtc[encId];
+                _encounterLastBubbleEndUtc[encId] = DateTime.UtcNow.AddMilliseconds(durationMs);
             displayed += 1;
         }
 
