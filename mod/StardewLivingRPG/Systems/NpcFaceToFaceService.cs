@@ -25,6 +25,9 @@ public sealed class NpcFaceToFaceService
     private sealed class PinnedNpcState
     {
         public string NpcId { get; init; } = string.Empty;
+        public NPC? LiveNpc { get; set; }
+        public Point AnchorTile { get; init; }
+        public Vector2 AnchorPosition { get; init; }
         public bool FollowSchedule { get; init; } = true;
         public int FacingDirection { get; init; } = Game1.down;
     }
@@ -76,8 +79,8 @@ public sealed class NpcFaceToFaceService
         _npcToEncounter[npcA.Name] = encounterId;
         _npcToEncounter[npcB.Name] = encounterId;
 
-        ApplyEncounterPin(npcA);
-        ApplyEncounterPin(npcB);
+        ApplyEncounterPin(npcA, state.NpcAState);
+        ApplyEncounterPin(npcB, state.NpcBState);
         FaceEachOther(npcA, npcB);
         return true;
     }
@@ -90,8 +93,8 @@ public sealed class NpcFaceToFaceService
             if (state.Scene != SceneState.Active)
                 continue;
 
-            var npcA = resolveNpc(state.NpcAId);
-            var npcB = resolveNpc(state.NpcBId);
+            var npcA = ResolveLiveNpc(state.NpcAState, resolveNpc);
+            var npcB = ResolveLiveNpc(state.NpcBState, resolveNpc);
             if (npcA is null || npcB is null)
             {
                 ReleaseScene(state);
@@ -107,8 +110,8 @@ public sealed class NpcFaceToFaceService
 
             if (state.Phase == StagingPhase.Talking)
             {
-                MaintainEncounterPin(npcA);
-                MaintainEncounterPin(npcB);
+                MaintainEncounterPin(npcA, state.NpcAState);
+                MaintainEncounterPin(npcB, state.NpcBState);
                 FaceEachOther(npcA, npcB);
                 continue;
             }
@@ -168,6 +171,42 @@ public sealed class NpcFaceToFaceService
         && state.Scene == SceneState.Active
         && state.Phase == StagingPhase.Talking;
 
+    public bool TryValidateTalkingScene(string encounterId, out NPC? npcA, out NPC? npcB, out string reason)
+    {
+        npcA = null;
+        npcB = null;
+        reason = string.Empty;
+
+        if (!_statesByEncounterId.TryGetValue(encounterId, out var state) || state.Scene != SceneState.Active)
+        {
+            reason = "scene_released";
+            return false;
+        }
+
+        npcA = ResolveLiveNpc(state.NpcAState, resolveNpc: null);
+        npcB = ResolveLiveNpc(state.NpcBState, resolveNpc: null);
+        if (npcA is null || npcB is null)
+        {
+            reason = "participant_missing";
+            return false;
+        }
+
+        if (!string.Equals(npcA.currentLocation?.Name, state.LocationName, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(npcB.currentLocation?.Name, state.LocationName, StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "location_mismatch";
+            return false;
+        }
+
+        if (TileDistance(npcA.Tile, new Point((int)npcB.Tile.X, (int)npcB.Tile.Y)) > Math.Max(1, _config.AutonomyFaceToFaceDistanceTiles))
+        {
+            reason = "partner_left_scene";
+            return false;
+        }
+
+        return true;
+    }
+
     private void ReleaseScene(StagingState state)
     {
         if (state.Scene == SceneState.Released)
@@ -224,27 +263,32 @@ public sealed class NpcFaceToFaceService
         return new PinnedNpcState
         {
             NpcId = npc.Name,
+            LiveNpc = npc,
+            AnchorTile = npc.TilePoint,
+            AnchorPosition = npc.Position,
             FollowSchedule = followSchedule,
             FacingDirection = npc.FacingDirection
         };
     }
 
-    private static void ApplyEncounterPin(NPC npc)
+    private static void ApplyEncounterPin(NPC npc, PinnedNpcState state)
     {
         TrySetMemberValue(npc, "followSchedule", false);
         npc.controller = null;
         TrySetTemporaryController(npc, null);
-        npc.Halt();
+        ClearEncounterMotion(npc);
+        SnapNpcToAnchor(npc, state.AnchorTile, state.AnchorPosition);
     }
 
-    private static void MaintainEncounterPin(NPC npc)
+    private static void MaintainEncounterPin(NPC npc, PinnedNpcState state)
     {
         TrySetMemberValue(npc, "followSchedule", false);
         if (npc.controller is not null)
             npc.controller = null;
         if (HasTemporaryController(npc))
             TrySetTemporaryController(npc, null);
-        npc.Halt();
+        ClearEncounterMotion(npc);
+        SnapNpcToAnchor(npc, state.AnchorTile, state.AnchorPosition);
     }
 
     private static void RestorePinnedNpcState(PinnedNpcState state)
@@ -252,11 +296,52 @@ public sealed class NpcFaceToFaceService
         if (string.IsNullOrWhiteSpace(state.NpcId))
             return;
 
-        if (Game1.getCharacterFromName(state.NpcId) is not NPC npc)
+        var npc = ResolveLiveNpc(state, resolveNpc: null);
+        if (npc is null)
             return;
 
         TrySetMemberValue(npc, "followSchedule", state.FollowSchedule);
         npc.faceDirection(state.FacingDirection);
+    }
+
+    private static NPC? ResolveLiveNpc(PinnedNpcState state, Func<string, NPC?>? resolveNpc)
+    {
+        if (state.LiveNpc is not null && IsNpcInCurrentLocation(state.LiveNpc))
+            return state.LiveNpc;
+
+        var resolvedNpc = resolveNpc?.Invoke(state.NpcId) ?? Game1.getCharacterFromName(state.NpcId);
+        if (resolvedNpc is not null && IsNpcInCurrentLocation(resolvedNpc))
+        {
+            state.LiveNpc = resolvedNpc;
+            return resolvedNpc;
+        }
+
+        state.LiveNpc = null;
+        return state.LiveNpc;
+    }
+
+    private static void SnapNpcToAnchor(NPC npc, Point anchorTile, Vector2 anchorPosition)
+    {
+        if (npc.TilePoint == anchorTile && Vector2.DistanceSquared(npc.Position, anchorPosition) <= 0.01f)
+            return;
+
+        npc.Position = anchorPosition;
+    }
+
+    private static void ClearEncounterMotion(NPC npc)
+    {
+        npc.Halt();
+        TrySetMemberValue(npc, "moveUp", false);
+        TrySetMemberValue(npc, "moveDown", false);
+        TrySetMemberValue(npc, "moveLeft", false);
+        TrySetMemberValue(npc, "moveRight", false);
+        TrySetMemberValue(npc, "xVelocity", 0f);
+        TrySetMemberValue(npc, "yVelocity", 0f);
+    }
+
+    private static bool IsNpcInCurrentLocation(NPC npc)
+    {
+        return npc.currentLocation?.characters.Any(candidate => ReferenceEquals(candidate, npc)) == true;
     }
 
     private static bool HasTemporaryController(NPC npc)

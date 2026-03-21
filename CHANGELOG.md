@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 1.0.1 - 2026-03-22
+
+### Changed
+- The regular player-to-NPC chat menu has been rolled back to the earlier version some players preferred, with the older instant send and close behavior restored.
+- Background warning spam during busy NPC simulation has been reduced, which should help cut down the hitching some players noticed when lots of autonomy logs were firing in the background.
+- Manifest version bumped to `1.0.1`.
+
+### Fixed
+- NPCs are less likely to freeze, drift, disappear, or snap to strange locations after face-to-face encounters end.
+- Post-encounter movement now behaves more naturally, with NPCs favoring visible walking instead of abrupt teleports during resume handoff.
+- Morrow's guessing game now works more reliably: IME text entry is supported, the riddle bubbles stay visible while the answer box is open, and those bubbles now fade out after a readable delay instead of lingering forever.
+
 ## 1.0.0 - 2026-03-21
 
 ### Added

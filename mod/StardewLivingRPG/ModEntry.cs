@@ -71,6 +71,9 @@ public sealed class ModEntry : Mod
     private const int EncounterVanillaResumeFallbackStaleTicks = 180;
     private const int EncounterVanillaResumeFallbackLegRetryLimit = 1;
     private const int EncounterVanillaResumeFallbackRepathLimit = 2;
+    private const int EncounterSettleRecoveryStableTicks = 10;
+    private const int EncounterSettleRecoveryRetryDelayTicks = 5;
+    private const int EncounterSettleRecoveryMaxAttempts = 2;
     private const int NpcShipmentDebugTopDefault = 5;
     private const int MaxSimulationToastsPerDay = 2;
     private const int SimulationToastCooldownSeconds = 25;
@@ -500,6 +503,7 @@ public sealed class ModEntry : Mod
         public string EncounterId { get; init; } = string.Empty;
         public string Phase { get; init; } = string.Empty;
         public bool RestoredSchedule { get; init; }
+        public NPC? LiveNpc { get; set; }
         public ulong NextAttemptTick { get; set; }
         public int Attempts { get; set; }
         public bool InjectedCurrentEntry { get; set; }
@@ -570,6 +574,19 @@ public sealed class ModEntry : Mod
         public Point InitialTilePoint { get; init; }
         public int LoggedControllerTickCount { get; set; }
         public ulong NextLogTick { get; set; }
+    }
+
+    private sealed class EncounterSettleRecoveryMonitor
+    {
+        public string NpcId { get; init; } = string.Empty;
+        public string EncounterId { get; init; } = string.Empty;
+        public NPC? LiveNpc { get; set; }
+        public string ExpectedLocation { get; init; } = string.Empty;
+        public Point ExpectedTargetTile { get; init; }
+        public int? ExpectedFacingDirection { get; init; }
+        public int StableTickCount { get; set; }
+        public ulong NextCheckTick { get; set; }
+        public int RecoveryAttempts { get; set; }
     }
 
     private sealed class NpcShipmentProfile
@@ -1024,6 +1041,7 @@ public sealed class ModEntry : Mod
     private readonly Dictionary<string, int> _dailyEncounterPairs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingVanillaEncounterResume> _pendingVanillaEncounterResumeByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VanillaEncounterResumeMonitor> _vanillaEncounterResumeMonitorByNpcId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, EncounterSettleRecoveryMonitor> _encounterSettleRecoveryMonitorByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private int _ambientLastOverhearDay = -9999;
     private readonly Dictionary<string, RecentVanillaDialogueContext> _recentVanillaDialogueByNpcToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecentNpcGiftContext> _recentGiftContextByNpcToken = new(StringComparer.OrdinalIgnoreCase);
@@ -1676,6 +1694,7 @@ public sealed class ModEntry : Mod
         _npcTranscriptArchiveService?.RebuildTransientIndexes(_state);
         _pendingVanillaEncounterResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
+        _encounterSettleRecoveryMonitorByNpcId.Clear();
         _recentVanillaDialogueByNpcToken.Clear();
         _recentGiftContextByNpcToken.Clear();
         _npcConversationTopicUsageTodayByKey.Clear();
@@ -1747,6 +1766,9 @@ public sealed class ModEntry : Mod
 
         SyncCalendarSeasonFromWorld();
         _pendingDayStartStreamRecycleDay = -1;
+        _pendingVanillaEncounterResumeByNpcId.Clear();
+        _vanillaEncounterResumeMonitorByNpcId.Clear();
+        _encounterSettleRecoveryMonitorByNpcId.Clear();
         _recentVanillaDialogueByNpcToken.Clear();
         _recentGiftContextByNpcToken.Clear();
         ClearNpcDialogueHook();
@@ -4457,6 +4479,7 @@ public sealed class ModEntry : Mod
         TryTriggerAmbientIndoorAutonomyChatter(e);
         _faceToFaceService?.Tick(ResolveNpcByName);
         TryProcessPendingVanillaEncounterResumes(_lastUpdateTick);
+        TryProcessEncounterSettleRecoveryMonitors(_lastUpdateTick);
         TryProcessVanillaEncounterResumeMonitors(_lastUpdateTick);
         TryTickNpcSpeechBubbles();
 
@@ -13458,6 +13481,7 @@ public sealed class ModEntry : Mod
         _player2EncounterIds.Clear();
         _pendingVanillaEncounterResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
+        _encounterSettleRecoveryMonitorByNpcId.Clear();
         _dailyEncounterPairs.Clear();
         _npcConversationTopicUsageTodayByKey.Clear();
         _npcSpeechBubbleService?.CancelAll();
@@ -14810,20 +14834,6 @@ public sealed class ModEntry : Mod
                         LogLevel.Trace);
                     continue;
                 }
-                if (!isEncounterReadyForNextBubble)
-                {
-                    Monitor.Log(
-                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting_on_queued_bubbles_to_finish (applied_turns={appliedTurns}, ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
-                        LogLevel.Trace);
-                    continue;
-                }
-                if (!isLastBubbleFinished)
-                {
-                    Monitor.Log(
-                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting_on_queued_bubbles_to_finish (applied_turns={appliedTurns}, ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
-                        LogLevel.Trace);
-                    continue;
-                }
                 if (streamFailed)
                 {
                     CancelEncounterScene(encounter, "player2_failed");
@@ -15637,6 +15647,7 @@ public sealed class ModEntry : Mod
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
         ClearEncounterReleaseHoldState(npc);
+        _encounterSettleRecoveryMonitorByNpcId.Remove(npc.Name);
 
         _pendingVanillaEncounterResumeByNpcId[npc.Name] = new PendingVanillaEncounterResume
         {
@@ -15644,6 +15655,7 @@ public sealed class ModEntry : Mod
             EncounterId = encounterId,
             Phase = phase,
             RestoredSchedule = restoredSchedule,
+            LiveNpc = npc,
             NextAttemptTick = _lastUpdateTick + 1
         };
 
@@ -15663,10 +15675,15 @@ public sealed class ModEntry : Mod
             if (currentTick < pending.NextAttemptTick)
                 continue;
 
-            var npc = ResolveNpcByName(pending.NpcId);
+            var npc = ResolvePendingEncounterResumeNpc(pending);
             if (npc is null)
             {
-                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+                LogRuntimeThrottled(
+                    $"autonomy:resume-live-npc-missing:{pending.NpcId}:{pending.EncounterId}",
+                    TimeSpan.FromSeconds(20),
+                    $"Autonomy: could not resolve live NPC {pending.NpcId} while resuming vanilla schedule after encounter {pending.EncounterId}; retrying next tick.",
+                    LogLevel.Debug);
+                pending.NextAttemptTick = currentTick + 1;
                 continue;
             }
 
@@ -15694,7 +15711,7 @@ public sealed class ModEntry : Mod
                 usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
             }
 
-            if (TryHandleActiveSlotArrivalSettle(npc, pending))
+            if (TryHandleActiveSlotArrivalSettle(npc, pending, currentTick))
                 continue;
 
             var resumeValidation = ResumeValidationOutcome.Unknown;
@@ -15825,6 +15842,135 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private NPC? ResolvePendingEncounterResumeNpc(PendingVanillaEncounterResume pending)
+    {
+        if (pending.LiveNpc is not null)
+            return pending.LiveNpc;
+
+        pending.LiveNpc = ResolveNpcByName(pending.NpcId);
+        return pending.LiveNpc;
+    }
+
+    private NPC? ResolveEncounterSettleRecoveryNpc(EncounterSettleRecoveryMonitor monitor)
+    {
+        if (monitor.LiveNpc is not null)
+            return monitor.LiveNpc;
+
+        monitor.LiveNpc = ResolveNpcByName(monitor.NpcId);
+        return monitor.LiveNpc;
+    }
+
+    private void StartEncounterSettleRecoveryMonitor(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        if (string.IsNullOrWhiteSpace(pending.ActiveTargetLocation) || !pending.ActiveTargetTile.HasValue)
+            return;
+
+        _encounterSettleRecoveryMonitorByNpcId[npc.Name] = new EncounterSettleRecoveryMonitor
+        {
+            NpcId = npc.Name,
+            EncounterId = pending.EncounterId,
+            LiveNpc = npc,
+            ExpectedLocation = pending.ActiveTargetLocation,
+            ExpectedTargetTile = pending.ActiveTargetTile.Value,
+            ExpectedFacingDirection = pending.ActiveFacingDirection,
+            StableTickCount = 0,
+            NextCheckTick = currentTick + 1,
+            RecoveryAttempts = 0
+        };
+    }
+
+    private void TryProcessEncounterSettleRecoveryMonitors(ulong currentTick)
+    {
+        if (_encounterSettleRecoveryMonitorByNpcId.Count == 0)
+            return;
+
+        foreach (var npcId in _encounterSettleRecoveryMonitorByNpcId.Keys.ToArray())
+        {
+            var monitor = _encounterSettleRecoveryMonitorByNpcId[npcId];
+            var npc = ResolveEncounterSettleRecoveryNpc(monitor);
+            if (npc is null)
+            {
+                if (currentTick < monitor.NextCheckTick)
+                    continue;
+
+                if (monitor.RecoveryAttempts >= EncounterSettleRecoveryMaxAttempts)
+                {
+                    LogRuntimeThrottled(
+                        $"autonomy:encounter-settle-monitor-missing:{monitor.NpcId}:{monitor.EncounterId}",
+                        TimeSpan.FromSeconds(20),
+                        $"Autonomy: lost live NPC reference for {monitor.NpcId} shortly after encounter {monitor.EncounterId} settle; stopping recovery monitor.",
+                        LogLevel.Warn);
+                    _encounterSettleRecoveryMonitorByNpcId.Remove(npcId);
+                }
+                else
+                {
+                    monitor.RecoveryAttempts += 1;
+                    monitor.NextCheckTick = currentTick + EncounterSettleRecoveryRetryDelayTicks;
+                }
+
+                continue;
+            }
+
+            if (IsNpcStableAfterEncounterSettle(npc, monitor))
+            {
+                monitor.StableTickCount += 1;
+                if (monitor.StableTickCount >= EncounterSettleRecoveryStableTicks)
+                    _encounterSettleRecoveryMonitorByNpcId.Remove(npcId);
+                continue;
+            }
+
+            monitor.StableTickCount = 0;
+            if (currentTick < monitor.NextCheckTick)
+                continue;
+
+            if (monitor.RecoveryAttempts >= EncounterSettleRecoveryMaxAttempts)
+            {
+                LogRuntimeThrottled(
+                    $"autonomy:encounter-settle-recovery-failed:{monitor.NpcId}:{monitor.EncounterId}",
+                    TimeSpan.FromSeconds(20),
+                    $"Autonomy: {monitor.NpcId} did not stay present after encounter {monitor.EncounterId} settle; giving up recovery after {monitor.RecoveryAttempts} attempts (expected_location={DescribeText(monitor.ExpectedLocation)}, expected_tile={DescribeNullablePoint(monitor.ExpectedTargetTile)}).",
+                    LogLevel.Warn);
+                _encounterSettleRecoveryMonitorByNpcId.Remove(npcId);
+                continue;
+            }
+
+            monitor.RecoveryAttempts += 1;
+            monitor.NextCheckTick = currentTick + EncounterSettleRecoveryRetryDelayTicks;
+            TryRecoverNpcAfterEncounterSettle(npc, monitor);
+        }
+    }
+
+    private bool IsNpcStableAfterEncounterSettle(NPC npc, EncounterSettleRecoveryMonitor monitor)
+    {
+        if (npc.currentLocation is null
+            || !string.Equals(npc.currentLocation.Name, monitor.ExpectedLocation, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var locationCharacters = npc.currentLocation.characters;
+        if (!locationCharacters.Any(candidate => ReferenceEquals(candidate, npc)))
+            return false;
+
+        return Vector2.Distance(npc.Tile, new Vector2(monitor.ExpectedTargetTile.X, monitor.ExpectedTargetTile.Y)) <= 1.25f;
+    }
+
+    private void TryRecoverNpcAfterEncounterSettle(NPC npc, EncounterSettleRecoveryMonitor monitor)
+    {
+        if (_executionService is null)
+            return;
+
+        _executionService.WarpNpcTo(npc, monitor.ExpectedLocation, monitor.ExpectedTargetTile);
+        npc.controller = null;
+        TrySetMemberValue(npc, "temporaryController", null);
+        TrySetMemberValue(npc, "followSchedule", true);
+        TrySetMemberValue(npc, "previousEndPoint", monitor.ExpectedTargetTile);
+        ClearEncounterMovementBlockingState(npc);
+        ClearEncounterMotionState(npc);
+        if (monitor.ExpectedFacingDirection.HasValue)
+            npc.faceDirection(monitor.ExpectedFacingDirection.Value);
+    }
+
     private void TryProcessVanillaEncounterResumeMonitors(ulong currentTick)
     {
         if (_vanillaEncounterResumeMonitorByNpcId.Count == 0)
@@ -15875,6 +16021,12 @@ public sealed class ModEntry : Mod
             $"Autonomy: [REBIND] {npc.Name} starting rebind at TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), controller={DescribeControllerType(npc)}, followSchedule={DescribeMemberValue(npc, "followSchedule")}, temporaryController={DescribeMemberValue(npc, "temporaryController")}, map={npc.currentLocation?.Name ?? "null"}, time={Game1.timeOfDay}.",
             LogLevel.Debug);
 
+        var releaseLocation = npc.currentLocation;
+        var releaseLocationName = releaseLocation?.Name ?? string.Empty;
+        var releaseTilePoint = npc.TilePoint;
+        var releasePosition = npc.Position;
+        var releaseFacingDirection = npc.FacingDirection;
+
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
@@ -15885,6 +16037,13 @@ public sealed class ModEntry : Mod
         Monitor.Log(
             $"Autonomy: [REBIND] {npc.Name} TryLoadSchedule returned={reloadTodayOk}, schedule_count={(npc.Schedule?.Count ?? 0)}, first_keys={DescribeScheduleKeys(npc, 5)}.",
             LogLevel.Debug);
+        RestoreNpcAfterScheduleInspection(
+            npc,
+            releaseLocation,
+            releaseLocationName,
+            releaseTilePoint,
+            releasePosition,
+            releaseFacingDirection);
         if (!reloadTodayOk || npc.Schedule is null || npc.Schedule.Count == 0)
         {
             Monitor.Log($"Autonomy: [REBIND] {npc.Name} aborting rebind because no schedule loaded.", LogLevel.Warn);
@@ -15919,8 +16078,6 @@ public sealed class ModEntry : Mod
         TrySetMemberValue(npc, "previousEndPoint", npc.TilePoint);
         ClearEncounterMovementBlockingState(npc);
         UpdatePendingActiveScheduleState(npc, pending);
-
-        checkScheduleInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out checkScheduleMethod);
         nextScheduleTime = TryGetNextScheduleTime(npc, Game1.timeOfDay);
         pending.NextScheduleTime = nextScheduleTime;
         ResetActiveSlotFallbackState(pending);
@@ -16000,6 +16157,7 @@ public sealed class ModEntry : Mod
         Monitor.Log(
             $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(validation)}, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=true, method={successMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
+        _encounterSettleRecoveryMonitorByNpcId.Remove(npc.Name);
         _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
         return true;
     }
@@ -16169,7 +16327,7 @@ public sealed class ModEntry : Mod
         return true;
     }
 
-    private bool TryHandleActiveSlotArrivalSettle(NPC npc, PendingVanillaEncounterResume pending)
+    private bool TryHandleActiveSlotArrivalSettle(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
     {
         if (!HasReachedActiveFallbackTarget(npc, pending))
             return false;
@@ -16191,6 +16349,7 @@ public sealed class ModEntry : Mod
         Monitor.Log(
             $"Autonomy: settled {npc.Name} at active-slot destination after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null)}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
+        StartEncounterSettleRecoveryMonitor(npc, pending, currentTick);
         _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
         return true;
     }
@@ -16550,7 +16709,7 @@ public sealed class ModEntry : Mod
                 $"autonomy:fallback-repath-exhausted:{npc.Name}:{pending.EncounterId}",
                 TimeSpan.FromSeconds(30),
                 $"Autonomy: [FORCE_PATH] {npc.Name} same-map fallback exhausted repath attempts for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
-                LogLevel.Warn);
+                LogLevel.Trace);
             ClearTemporaryActiveSlotFallback(npc, pending);
             return;
         }
@@ -16580,7 +16739,7 @@ public sealed class ModEntry : Mod
                     $"autonomy:fallback-controller-recreate-failed:{npc.Name}:{pending.EncounterId}",
                     TimeSpan.FromSeconds(30),
                     $"Autonomy: [FORCE_PATH] {npc.Name} failed to recreate same-map active-slot fallback controller for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
-                    LogLevel.Warn);
+                    LogLevel.Trace);
                 return;
             }
 
@@ -16597,7 +16756,7 @@ public sealed class ModEntry : Mod
             $"autonomy:fallback-repath-failed:{npc.Name}:{pending.EncounterId}",
             TimeSpan.FromSeconds(30),
             $"Autonomy: [FORCE_PATH] {npc.Name} failed to repath same-map active-slot fallback for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
-            LogLevel.Warn);
+            LogLevel.Trace);
         ClearTemporaryActiveSlotFallback(npc, pending);
     }
 
@@ -16705,7 +16864,7 @@ public sealed class ModEntry : Mod
                 $"autonomy:cross-map-leg-retry-exhausted:{npc.Name}:{pending.EncounterId}",
                 TimeSpan.FromSeconds(30),
                 $"Autonomy: [CrossMapLeg(stale)] {npc.Name} encounter={pending.EncounterId} exceeded retry limit for leg {pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation}; clearing fallback until next vanilla schedule boundary.",
-                LogLevel.Warn);
+                LogLevel.Trace);
             pending.FallbackWarpIssued = false;
             ClearTemporaryActiveSlotFallback(npc, pending);
             return;
@@ -16727,7 +16886,7 @@ public sealed class ModEntry : Mod
             $"autonomy:cross-map-leg-restart-failed:{npc.Name}:{pending.EncounterId}",
             TimeSpan.FromSeconds(30),
             $"Autonomy: [CrossMapLeg(retry)] {npc.Name} encounter={pending.EncounterId} failed to restart stale leg; clearing fallback until next vanilla schedule boundary.",
-            LogLevel.Warn);
+            LogLevel.Trace);
         ClearTemporaryActiveSlotFallback(npc, pending);
     }
 
@@ -16771,6 +16930,34 @@ public sealed class ModEntry : Mod
         pending.UsedTemporaryActiveSlotFallback = pending.FallbackMode != EncounterFallbackMode.None;
         pending.FallbackControllerStartedAtTime = fallbackController is not null ? Game1.timeOfDay : null;
         pending.TemporaryFallbackController = fallbackController;
+    }
+
+    private static void RestoreNpcAfterScheduleInspection(
+        NPC npc,
+        GameLocation? releaseLocation,
+        string releaseLocationName,
+        Point releaseTilePoint,
+        Vector2 releasePosition,
+        int releaseFacingDirection)
+    {
+        var movedToDifferentMap = releaseLocation is not null
+            && !string.IsNullOrWhiteSpace(releaseLocationName)
+            && !string.Equals(npc.currentLocation?.Name, releaseLocationName, StringComparison.OrdinalIgnoreCase);
+
+        if (movedToDifferentMap)
+        {
+            Game1.warpCharacter(npc, releaseLocationName, new Vector2(releaseTilePoint.X, releaseTilePoint.Y));
+        }
+        else
+        {
+            npc.Position = releasePosition;
+        }
+
+        if (releaseLocation is not null && !releaseLocation.characters.Any(candidate => ReferenceEquals(candidate, npc)))
+            releaseLocation.characters.Add(npc);
+
+        npc.faceDirection(releaseFacingDirection);
+        npc.Halt();
     }
 
     private void UpdateFallbackProgressObservation(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
@@ -17491,12 +17678,34 @@ public sealed class ModEntry : Mod
 
     private bool TryValidateEncounterScene(ActiveEncounter encounter, out string reason)
     {
-        return TryValidateEncounterScene(encounter.EncounterId, encounter.NpcA, encounter.NpcB, out reason);
+        return TryValidateEncounterScene(encounter.EncounterId, encounter.NpcA, encounter.NpcB, out _, out _, out reason);
     }
 
     private bool TryValidateEncounterScene(string encounterId, string npcAId, string npcBId, out string reason)
     {
+        return TryValidateEncounterScene(encounterId, npcAId, npcBId, out _, out _, out reason);
+    }
+
+    private bool TryValidateEncounterScene(
+        string encounterId,
+        string npcAId,
+        string npcBId,
+        out NPC? npcA,
+        out NPC? npcB,
+        out string reason)
+    {
+        npcA = null;
+        npcB = null;
         reason = string.Empty;
+
+        if (_faceToFaceService is not null)
+        {
+            if (_faceToFaceService.TryValidateTalkingScene(encounterId, out npcA, out npcB, out reason))
+                return true;
+
+            if (!string.IsNullOrWhiteSpace(reason))
+                return false;
+        }
 
         if ((_faceToFaceService?.GetPhase(encounterId) ?? StagingPhase.Idle) == StagingPhase.Idle)
         {
@@ -17504,8 +17713,8 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        var npcA = ResolveNpcByName(npcAId);
-        var npcB = ResolveNpcByName(npcBId);
+        npcA = ResolveNpcByName(npcAId);
+        npcB = ResolveNpcByName(npcBId);
         if (npcA is null || npcB is null)
         {
             reason = "participant_missing";
