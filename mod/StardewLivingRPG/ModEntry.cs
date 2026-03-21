@@ -889,6 +889,7 @@ public sealed class ModEntry : Mod
     private TownSquareMagicianInputMenu? _activeTownSquareMagicianMenu;
     private NPC? _pendingTownSquareMagicianMenuNpc;
     private int _townSquareMagicianMenuSessionToken;
+    private DateTime _townSquareMagicianBubbleExpiresUtc;
     private LoveLanguageEngineService? _loveLanguageEngineService;
     private CanonBaselineService? _customNpcCanonBaselineService;
     private NpcRegistry? _customNpcRegistry;
@@ -2147,6 +2148,7 @@ public sealed class ModEntry : Mod
             TrySetMemberValue(liveNpc, "textAboveHeadTimer", desiredDurationMs);
             TrySetMemberValue(liveNpc, "textAboveHeadPreTimer", 0);
             TrySetMemberValue(liveNpc, "textAboveHeadAlpha", 1f);
+            _townSquareMagicianBubbleExpiresUtc = DateTime.UtcNow.AddMilliseconds(desiredDurationMs);
             return;
         }
 
@@ -2155,8 +2157,7 @@ public sealed class ModEntry : Mod
 
     private static int GetTownSquareMagicianBubbleDurationMs(string? text)
     {
-        var cleanText = TownSquareMagicianService.ClampBubbleText(text);
-        return Math.Clamp(2200 + (cleanText.Length * 35), 2200, 5200);
+        return 3000;
     }
 
     private bool IsCurrentTownSquareMagicianSession(int sessionToken)
@@ -2243,6 +2244,7 @@ public sealed class ModEntry : Mod
         _activeTownSquareMagicianMenu = null;
         _townSquareMagicianHudNpc = null;
         _pendingTownSquareMagicianMenuNpc = null;
+        _townSquareMagicianBubbleExpiresUtc = default;
         _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
 
         if (playSound)
@@ -4418,6 +4420,7 @@ public sealed class ModEntry : Mod
         _lastUpdateTick = (ulong)e.Ticks;
         TryOpenPendingTownSquareMagicianMenu();
         TryUpdateTownSquareMagicianHud();
+        TryUpdateTownSquareMagicianBubbleLifetime();
         SyncCalendarSeasonFromWorld();
         SyncPlayer2DeviceAuthModal();
         TrackLateNightPassOutWindow();
@@ -8709,6 +8712,35 @@ public sealed class ModEntry : Mod
         finally
         {
             Game1.activeClickableMenu = activeMenu;
+        }
+    }
+
+    private void TryUpdateTownSquareMagicianBubbleLifetime()
+    {
+        if (_townSquareMagicianBubbleExpiresUtc == default || _townSquareMagicianHudNpc is null)
+            return;
+
+        var liveNpc = ResolveNpcByName(_townSquareMagicianHudNpc.Name)
+            ?? ResolveNpcByName(_townSquareMagicianHudNpc.displayName)
+            ?? _townSquareMagicianHudNpc;
+        if (liveNpc.currentLocation != Game1.currentLocation)
+            return;
+
+        var remainingMs = (int)Math.Ceiling((_townSquareMagicianBubbleExpiresUtc - DateTime.UtcNow).TotalMilliseconds);
+        if (remainingMs <= 0)
+        {
+            TrySetMemberValue(liveNpc, "textAboveHeadTimer", 0);
+            TrySetMemberValue(liveNpc, "textAboveHeadPreTimer", 0);
+            TrySetMemberValue(liveNpc, "textAboveHeadAlpha", 0f);
+            _townSquareMagicianBubbleExpiresUtc = default;
+            return;
+        }
+
+        if (_townSquareMagicianHudActive && Game1.activeClickableMenu is TownSquareMagicianInputMenu)
+        {
+            TrySetMemberValue(liveNpc, "textAboveHeadTimer", remainingMs);
+            TrySetMemberValue(liveNpc, "textAboveHeadPreTimer", 0);
+            TrySetMemberValue(liveNpc, "textAboveHeadAlpha", 1f);
         }
     }
 
