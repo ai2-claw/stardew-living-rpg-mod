@@ -48,7 +48,7 @@ public sealed class NpcIntentResolver
 
     private static readonly HashSet<string> AllowedMemoryCategories = new(StringComparer.OrdinalIgnoreCase)
     {
-        "preference", "promise", "event", "relationship"
+        "preference", "promise", "event", "relationship", "secret"
     };
     private static readonly HashSet<string> AllowedPairEmotionAxes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -480,7 +480,7 @@ public sealed class NpcIntentResolver
 
     private NpcIntentResolveResult ResolveRecordMemoryFact(SaveState state, string npcId, string intentId, JsonElement args)
     {
-        if (HasUnexpectedArgs(args, "category", "text", "weight", "reason", "target", "summary", "message", "note", "context"))
+        if (HasUnexpectedArgs(args, "category", "text", "weight", "reason", "target", "summary", "message", "note", "context", "visibility", "status"))
             return NpcIntentResolveResult.Rejected("record_memory_fact contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
 
         var category = ResolveMemoryCategory(args);
@@ -513,7 +513,19 @@ public sealed class NpcIntentResolver
         if (isDuplicate)
             return NpcIntentResolveResult.Rejected("record_memory_fact duplicate text", "E_MEMORY_DUPLICATE");
 
-        _npcMemoryService.WriteFact(state, npcId, category, text, state.Calendar.Day, weight);
+        var visibility = ResolveMemoryVisibility(args, category);
+        var status = ResolveMemoryStatus(args, category);
+        _npcMemoryService.WriteFact(
+            state,
+            npcId,
+            category,
+            text,
+            state.Calendar.Day,
+            weight,
+            visibility,
+            status,
+            sourceRefKind: "npc_command",
+            sourceRefId: intentId);
         MarkIntentProcessed(state, intentId, npcId, "record_memory_fact");
         state.Facts.Facts[$"memory:fact:{intentId}"] = new FactValue
         {
@@ -547,6 +559,12 @@ public sealed class NpcIntentResolver
         }
 
         var source = BuildMemoryInferenceSource(args);
+        if (ContainsAnyToken(source,
+                "secret", "between us", "don't tell", "dont tell", "private", "confidential", "keep this private"))
+        {
+            return "secret";
+        }
+
         if (ContainsAnyToken(source,
                 "like", "likes", "liked", "love", "loves", "favorite", "favourite", "prefer", "prefers", "enjoy", "enjoys", "dislike", "dislikes", "hate", "hates", "allergic"))
         {
@@ -621,12 +639,46 @@ public sealed class NpcIntentResolver
         {
             "preference" => "preference",
             "promise" => "promise",
+            "secret" => "secret",
             "relationship" => "relationship",
             "event" => "event",
             "pref" => "preference",
             "rel" => "relationship",
             _ => string.Empty
         };
+    }
+
+    private static string ResolveMemoryVisibility(JsonElement args, string category)
+    {
+        if (args.TryGetProperty("visibility", out var visibilityEl) && visibilityEl.ValueKind == JsonValueKind.String)
+        {
+            var visibility = (visibilityEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+            return visibility switch
+            {
+                "private" => "private",
+                "shareable" => "shareable",
+                _ => "npc_only"
+            };
+        }
+
+        return string.Equals(category, "secret", StringComparison.OrdinalIgnoreCase) ? "private" : "npc_only";
+    }
+
+    private static string ResolveMemoryStatus(JsonElement args, string category)
+    {
+        if (args.TryGetProperty("status", out var statusEl) && statusEl.ValueKind == JsonValueKind.String)
+        {
+            var status = (statusEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+            return status switch
+            {
+                "kept" => "kept",
+                "broken" => "broken",
+                "resolved" => "resolved",
+                _ => "active"
+            };
+        }
+
+        return string.Equals(category, "secret", StringComparison.OrdinalIgnoreCase) ? "resolved" : "active";
     }
 
     private static bool TryReadStringArg(JsonElement args, string key, out string value)

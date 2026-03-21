@@ -853,6 +853,7 @@ public sealed class ModEntry : Mod
     private NpcIntentResolver? _intentResolver;
     private AnchorEventService? _anchorEventService;
     private NpcMemoryService? _npcMemoryService;
+    private NpcTranscriptArchiveService? _npcTranscriptArchiveService;
     private TownMemoryService? _townMemoryService;
     private AmbientConsequenceService? _ambientConsequenceService;
     private NpcConversationService? _npcConversationService;
@@ -1105,6 +1106,7 @@ public sealed class ModEntry : Mod
         _newspaperService = new NewspaperService(Monitor, _player2Client);
         _rumorBoardService = new RumorBoardService();
         _npcMemoryService = new NpcMemoryService();
+        _npcTranscriptArchiveService = new NpcTranscriptArchiveService();
         _townMemoryService = new TownMemoryService();
         _ambientConsequenceService = new AmbientConsequenceService();
         _npcConversationService = new NpcConversationService();
@@ -1664,6 +1666,9 @@ public sealed class ModEntry : Mod
     {
         _state = StateStore.LoadOrCreate(Helper, Monitor);
         _state.ApplyConfig(_config);
+        _npcMemoryService?.SyncQuestLifecycleMemories(_state);
+        _npcTranscriptArchiveService?.FinalizePendingExchanges(_state, _state.Calendar.Day);
+        _npcTranscriptArchiveService?.RebuildTransientIndexes(_state);
         _pendingVanillaEncounterResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
         _recentVanillaDialogueByNpcToken.Clear();
@@ -1702,6 +1707,9 @@ public sealed class ModEntry : Mod
 
     private void OnSaving(object? sender, SavingEventArgs e)
     {
+        _npcMemoryService?.SyncQuestLifecycleMemories(_state);
+        _npcTranscriptArchiveService?.RollWarmChunks(_state, _state.Calendar.Day);
+        _npcTranscriptArchiveService?.PruneArchiveIfNeeded(_state);
         // Persist autonomy runtime summaries
         if (_state?.Autonomy is not null && _config.EnableAutonomousRoutines)
         {
@@ -1784,6 +1792,9 @@ public sealed class ModEntry : Mod
 
         _rumorBoardService?.ExpireOverdueQuests(_state);
         _rumorBoardService?.RefreshDailyRumors(_state);
+        _npcMemoryService?.SyncQuestLifecycleMemories(_state);
+        _npcTranscriptArchiveService?.RollWarmChunks(_state, _state.Calendar.Day);
+        _npcTranscriptArchiveService?.PruneArchiveIfNeeded(_state);
 
         string? anchorNote = null;
         if (_anchorEventService is not null)
@@ -4209,10 +4220,18 @@ public sealed class ModEntry : Mod
         if (HasNpcMetPlayer(npcName))
             return false;
 
+        if (_npcTranscriptArchiveService is not null && _npcTranscriptArchiveService.HasTranscriptHistory(_state, npcName))
+            return false;
+
+        if (_npcMemoryService is not null && _npcMemoryService.HasDurableHistory(_state, npcName))
+            return false;
+
         if (!_state.NpcMemory.Profiles.TryGetValue(npcName, out var profile))
             return true;
 
-        return profile.RecentTurns.Count == 0 && profile.Facts.Count == 0;
+        return profile.RecentTurns.Count == 0
+            && profile.Facts.Count == 0
+            && profile.ImportantMemories.Count == 0;
     }
 
     private string BuildNpcFollowUpGreeting(NPC npc, bool suppressFirstInteractionGreeting = false)
@@ -4309,6 +4328,12 @@ public sealed class ModEntry : Mod
         greeting = string.Empty;
         if (string.IsNullOrWhiteSpace(npcName))
             return false;
+
+        if (_npcMemoryService is not null && _npcMemoryService.TryBuildGreetingCue(_state, npcName, _state.Calendar.Day, out greeting))
+            return true;
+
+        if (_npcTranscriptArchiveService is not null && _npcTranscriptArchiveService.TryBuildGreetingCue(_state, npcName, out greeting))
+            return true;
 
         if (!_state.NpcMemory.Profiles.TryGetValue(npcName, out var profile))
             return false;
@@ -11598,6 +11623,8 @@ public sealed class ModEntry : Mod
 
         var npc = args.Length > 0 ? args[0].Trim() : "Robin";
         Monitor.Log(_npcMemoryService.DumpNpcMemory(_state, npc), LogLevel.Info);
+        if (_npcTranscriptArchiveService is not null)
+            Monitor.Log(_npcTranscriptArchiveService.DescribeArchive(_state, npc), LogLevel.Info);
     }
 
     private void OnTownMemoryDumpCommand(string name, string[] args)
@@ -12208,6 +12235,7 @@ public sealed class ModEntry : Mod
             var playerAcceptingQuest = IsPlayerAcceptingQuest(message, hasPendingQuestOffer);
             if (string.IsNullOrWhiteSpace(effectiveContextTag) && playerAskedForQuest)
                 effectiveContextTag = "player_chat_quest_request";
+            var promptLocationContext = BuildPromptLocationContext(who);
 
             TryCapturePlayerOriginRumor(who, message);
 
@@ -12238,6 +12266,8 @@ public sealed class ModEntry : Mod
                         EnqueueNpcUiMessage(npcId, gate.PlayerFacingMessage);
                         if (_npcMemoryService is not null)
                             _npcMemoryService.WriteTurn(_state, who, message, gate.PlayerFacingMessage, _state.Calendar.Day);
+                        BeginPendingPlayerTranscript(who, who, message, effectiveContextTag, promptLocationContext);
+                        CompletePendingPlayerTranscript(who, gate.PlayerFacingMessage, "fallback_completed");
                     }
 
                     return;
@@ -12264,8 +12294,7 @@ public sealed class ModEntry : Mod
 
             if (_npcMemoryService is not null)
                 _npcMemoryService.WriteTurn(_state, who, message, string.Empty, _state.Calendar.Day);
-
-            var promptLocationContext = BuildPromptLocationContext(who);
+            BeginPendingPlayerTranscript(who, who, message, effectiveContextTag, promptLocationContext);
             Monitor.Log(
                 $"Player chat location context: npc={who} exact='{promptLocationContext.ExactPhrase}' exposure={promptLocationContext.Exposure} internal='{promptLocationContext.InternalName}' landmark='{promptLocationContext.NearbyLandmark}' tile=({promptLocationContext.TileX},{promptLocationContext.TileY}) micro='{promptLocationContext.MicroArea}' precision={promptLocationContext.Precision}.",
                 LogLevel.Trace);
@@ -12368,6 +12397,45 @@ public sealed class ModEntry : Mod
             EnqueuePlayerChatNoResponseFallback(npcId);
             Monitor.Log($"Player2 chat failed: {ex.Message}", LogLevel.Error);
         }
+    }
+
+    private void BeginPendingPlayerTranscript(
+        string npcName,
+        string npcDisplayName,
+        string playerText,
+        string? contextTag,
+        PromptLocationContext locationContext)
+    {
+        if (_npcTranscriptArchiveService is null || string.IsNullOrWhiteSpace(npcName))
+            return;
+
+        _npcTranscriptArchiveService.BeginPendingExchange(
+            _state,
+            npcName,
+            npcDisplayName,
+            playerText,
+            _state.Calendar.Day,
+            Game1.timeOfDay,
+            _state.Calendar.Season,
+            _state.Calendar.Year,
+            locationContext.ExactPhrase,
+            contextTag ?? "player_chat");
+    }
+
+    private void CompletePendingPlayerTranscript(string npcName, string npcText, string completionState)
+    {
+        if (_npcTranscriptArchiveService is null || string.IsNullOrWhiteSpace(npcName))
+            return;
+
+        var exchange = _npcTranscriptArchiveService.CompletePendingExchange(
+            _state,
+            npcName,
+            npcText,
+            _state.Calendar.Day,
+            completionState);
+
+        if (exchange is not null && _npcMemoryService is not null)
+            _npcMemoryService.PromoteImportantConversation(_state, npcName, exchange, _state.Calendar.Day);
     }
 
     private void OnUiAskMayorForWork(string? preferredRequester = null)
@@ -17720,6 +17788,8 @@ public sealed class ModEntry : Mod
             {
                 _npcMemoryService.WriteTurn(_state, npcName, string.Empty, playerFacingMsg, _state.Calendar.Day);
             }
+            if (routeToPlayerChat)
+                CompletePendingPlayerTranscript(npcName, playerFacingMsg, "complete");
 
             return routeToPlayerChat;
         }
@@ -18152,6 +18222,10 @@ public sealed class ModEntry : Mod
     private bool TryBuildNpcMemoryGroundedReply(string? npcName, out string reply)
     {
         reply = string.Empty;
+        if (!string.IsNullOrWhiteSpace(npcName) && _npcMemoryService is not null && _npcMemoryService.TryBuildGroundedReply(_state, npcName, _state.Calendar.Day, out reply))
+            return true;
+        if (!string.IsNullOrWhiteSpace(npcName) && _npcTranscriptArchiveService is not null && _npcTranscriptArchiveService.TryBuildGroundedReply(_state, npcName, out reply))
+            return true;
         if (string.IsNullOrWhiteSpace(npcName)
             || !_state.NpcMemory.Profiles.TryGetValue(npcName, out var profile))
         {
@@ -18524,6 +18598,10 @@ public sealed class ModEntry : Mod
             ? "none"
             : recommendation.Key;
 
+        _npcMemoryService?.SyncQuestLifecycleMemories(_state);
+
+        var importantNpcMemory = string.Empty;
+        var transcriptRecall = string.Empty;
         var npcMemory = string.Empty;
         var townMemory = string.Empty;
         var knownRumors = string.Empty;
@@ -18565,10 +18643,10 @@ public sealed class ModEntry : Mod
             : string.Empty;
         var lowInfoOpenerRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
             && IsLowInformationChatOpener(playerText)
-                ? "LOW_INFO_OPENER_RULE: If the player's opener is only low-information small talk, do not reply with generic helper questions like 'What's on your mind?' or 'Need something?' when PASS_OUT_CONTEXT, VANILLA_DIALOGUE_CONTEXT, NEWS_CONTEXT, RECENT_EVENTS, TOWN_MEMORY, or NPC_MEMORY provides usable grounding. Open with the strongest available context directly."
+                ? "LOW_INFO_OPENER_RULE: If the player's opener is only low-information small talk, do not reply with generic helper questions like 'What's on your mind?' or 'Need something?' when PASS_OUT_CONTEXT, VANILLA_DIALOGUE_CONTEXT, NEWS_CONTEXT, RECENT_EVENTS, NPC_IMPORTANT_MEMORY, NPC_TRANSCRIPT_RECALL, TOWN_MEMORY, or NPC_MEMORY provides usable grounding. Open with the strongest available context directly."
                 : string.Empty;
         var playerChatGroundingRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
-            ? "PLAYER_CHAT_GROUNDING_RULE: Treat low-information small-talk openers as a trigger only, not the true topic. Ground the first reply in this priority order: PASS_OUT_CONTEXT first, then VANILLA_DIALOGUE_CONTEXT, then NEWS_CONTEXT and RECENT_EVENTS, then TOWN_MEMORY, then NPC_MEMORY. Use generic small talk only if none of those provide useful grounding."
+            ? "PLAYER_CHAT_GROUNDING_RULE: Treat low-information small-talk openers as a trigger only, not the true topic. Ground the first reply in this priority order: PASS_OUT_CONTEXT first, then VANILLA_DIALOGUE_CONTEXT, then NPC_IMPORTANT_MEMORY, then NPC_TRANSCRIPT_RECALL, then NEWS_CONTEXT and RECENT_EVENTS, then TOWN_MEMORY, then NPC_MEMORY. Use generic small talk only if none of those provide useful grounding."
             : string.Empty;
         var playerAmbientIsolationRule = effectiveContextTag.StartsWith("player_chat", StringComparison.OrdinalIgnoreCase)
             ? "PLAYER_CHAT_ISOLATION_RULE: Treat this as direct player conversation. Do not repeat or continue offscreen NPC-to-NPC ambient lines verbatim."
@@ -18629,6 +18707,10 @@ public sealed class ModEntry : Mod
         var vanillaTownBlendRule = string.Empty;
         if (!string.IsNullOrWhiteSpace(npcName))
         {
+            if (_npcMemoryService is not null)
+                importantNpcMemory = _npcMemoryService.BuildImportantMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
+            if (_npcTranscriptArchiveService is not null)
+                transcriptRecall = _npcTranscriptArchiveService.BuildTranscriptRecallBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
             if (_npcMemoryService is not null)
                 npcMemory = _npcMemoryService.BuildMemoryBlock(_state, npcName, playerText ?? string.Empty, _state.Calendar.Day);
             if (_townMemoryService is not null)
@@ -18790,6 +18872,8 @@ public sealed class ModEntry : Mod
             referencedAutonomyContext,
             $"STATE: AvailableTownRequests {_state.Quests.Available.Count} by_template=[{availableQuestTemplateCounts}].",
             $"STATE: ActiveTownRequests {_state.Quests.Active.Count} by_template=[{activeQuestTemplateCounts}].",
+            importantNpcMemory,
+            transcriptRecall,
             npcMemory,
             townMemory,
             romanceContext,
@@ -23235,6 +23319,11 @@ public sealed class ModEntry : Mod
             return;
 
         EnqueueNpcUiMessage(npcId, EnsurePlayerFacingEmotionTag(fallback));
+        var npcName = GetNpcShortNameById(npcId);
+        if (_npcMemoryService is not null && !string.IsNullOrWhiteSpace(npcName))
+            _npcMemoryService.WriteTurn(_state, npcName, string.Empty, fallback, _state.Calendar.Day);
+        if (!string.IsNullOrWhiteSpace(npcName))
+            CompletePendingPlayerTranscript(npcName, fallback, "fallback_completed");
     }
 
     private static string? TryBuildImmediateNpcResponseLine(string? payload, string npcId)

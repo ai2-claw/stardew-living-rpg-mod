@@ -4,7 +4,7 @@ namespace StardewLivingRPG.State;
 
 public sealed class SaveState
 {
-    public string Version { get; set; } = "0.4.0";
+    public string Version { get; set; } = "0.5.0";
     public SaveConfig Config { get; set; } = new();
     public CalendarState Calendar { get; set; } = new();
     public EconomyState Economy { get; set; } = new();
@@ -14,6 +14,7 @@ public sealed class SaveState
     public NewspaperState Newspaper { get; set; } = new();
     public TelemetryState Telemetry { get; set; } = new();
     public NpcMemoryState NpcMemory { get; set; } = new();
+    public TranscriptArchiveState TranscriptArchive { get; set; } = new();
     public TownMemoryState TownMemory { get; set; } = new();
     public RomanceState Romance { get; set; } = new();
     public PlayerFamilyState PlayerFamily { get; set; } = new();

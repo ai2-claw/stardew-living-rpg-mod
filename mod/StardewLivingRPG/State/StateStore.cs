@@ -6,7 +6,7 @@ public static class StateStore
 {
     private const string DataKey = "mx146323.StardewLivingRPG.SaveState";
     private const string LegacyDataKey = "mx146323.StardewLivingRPG/SaveState";
-    private const string CurrentStateVersion = "0.4.0";
+    private const string CurrentStateVersion = "0.5.0";
     private static readonly HashSet<string> ValidSeasons = new(StringComparer.OrdinalIgnoreCase)
     {
         "spring", "summer", "fall", "winter"
@@ -327,10 +327,135 @@ public static class StateStore
                 profile.RecentTurns = new List<NpcMemoryTurn>();
                 changed = true;
             }
+            if (profile.ImportantMemories is null)
+            {
+                profile.ImportantMemories = new List<ImportantMemoryEntry>();
+                changed = true;
+            }
             if (profile.TopicCounters is null)
             {
                 profile.TopicCounters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 changed = true;
+            }
+
+            foreach (var memory in profile.ImportantMemories)
+            {
+                if (memory is null)
+                    continue;
+                if (memory.Keywords is null)
+                {
+                    memory.Keywords = Array.Empty<string>();
+                    changed = true;
+                }
+                if (string.IsNullOrWhiteSpace(memory.Visibility))
+                {
+                    memory.Visibility = "npc_only";
+                    changed = true;
+                }
+                if (string.IsNullOrWhiteSpace(memory.Status))
+                {
+                    memory.Status = "active";
+                    changed = true;
+                }
+                if (string.IsNullOrWhiteSpace(memory.SourceRefKind))
+                {
+                    memory.SourceRefKind = "chat_rule";
+                    changed = true;
+                }
+            }
+        }
+
+        if (state.TranscriptArchive is null)
+        {
+            state.TranscriptArchive = new TranscriptArchiveState();
+            changed = true;
+        }
+        if (state.TranscriptArchive.Archives is null)
+        {
+            state.TranscriptArchive.Archives = new Dictionary<string, NpcTranscriptArchive>(StringComparer.OrdinalIgnoreCase);
+            changed = true;
+        }
+        foreach (var archive in state.TranscriptArchive.Archives.Values)
+        {
+            if (archive is null)
+                continue;
+            if (archive.RawExchanges is null)
+            {
+                archive.RawExchanges = new List<TranscriptExchange>();
+                changed = true;
+            }
+            if (archive.Chunks is null)
+            {
+                archive.Chunks = new List<TranscriptChunkHeader>();
+                changed = true;
+            }
+            if (archive.PendingExchanges is null)
+            {
+                archive.PendingExchanges = new List<PendingTranscriptExchange>();
+                changed = true;
+            }
+
+            foreach (var exchange in archive.RawExchanges)
+            {
+                if (exchange is null)
+                    continue;
+                if (exchange.Keywords is null)
+                {
+                    exchange.Keywords = Array.Empty<string>();
+                    changed = true;
+                }
+                if (exchange.LinkedImportantMemoryIds is null)
+                {
+                    exchange.LinkedImportantMemoryIds = new List<string>();
+                    changed = true;
+                }
+                if (string.IsNullOrWhiteSpace(exchange.Visibility))
+                {
+                    exchange.Visibility = "npc_only";
+                    changed = true;
+                }
+                if (string.IsNullOrWhiteSpace(exchange.CompletionState))
+                {
+                    exchange.CompletionState = "complete";
+                    changed = true;
+                }
+                if (string.IsNullOrWhiteSpace(exchange.SourceRefKind))
+                {
+                    exchange.SourceRefKind = "chat";
+                    changed = true;
+                }
+            }
+
+            foreach (var chunk in archive.Chunks)
+            {
+                if (chunk is null)
+                    continue;
+                if (chunk.TopKeywords is null)
+                {
+                    chunk.TopKeywords = Array.Empty<string>();
+                    changed = true;
+                }
+                if (string.IsNullOrWhiteSpace(chunk.CompressionCodec))
+                {
+                    chunk.CompressionCodec = "gzip";
+                    changed = true;
+                }
+            }
+
+            foreach (var pending in archive.PendingExchanges)
+            {
+                if (pending is null)
+                    continue;
+                if (string.IsNullOrWhiteSpace(pending.Visibility))
+                {
+                    pending.Visibility = "npc_only";
+                    changed = true;
+                }
+                if (string.IsNullOrWhiteSpace(pending.SourceRefKind))
+                {
+                    pending.SourceRefKind = "chat";
+                    changed = true;
+                }
             }
         }
 
