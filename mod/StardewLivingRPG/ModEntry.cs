@@ -1873,13 +1873,6 @@ public sealed class ModEntry : Mod
         if (TryHandleTownSquareMagicianHudInput(e))
             return;
 
-        if (Game1.activeClickableMenu is NpcChatInputMenu)
-        {
-            if (e.Button.TryGetKeyboard(out _) || e.Button.TryGetController(out _))
-                Helper.Input.Suppress(e.Button);
-            return;
-        }
-
         if (Game1.activeClickableMenu is TownSquareMagicianInputMenu)
         {
             return;
