@@ -441,6 +441,29 @@ public sealed class ModEntry : Mod
         public List<AmbientConversationLine> Transcript { get; init; } = new();
     }
 
+    private sealed class EncounterConversationTurn
+    {
+        public string EncounterId { get; init; } = string.Empty;
+        public int Turn { get; init; }
+        public int TurnTarget { get; init; }
+        public string SpeakerShortName { get; init; } = string.Empty;
+        public string ListenerShortName { get; init; } = string.Empty;
+        public string SpeakerNpcId { get; init; } = string.Empty;
+        public string ListenerNpcId { get; init; } = string.Empty;
+        public string Message { get; init; } = string.Empty;
+    }
+
+    private sealed class EncounterConversationStreamState
+    {
+        public int HighestAppliedTurn { get; set; }
+        public bool CompletionArrived { get; set; }
+        public bool Completed { get; set; }
+        public string AbortReason { get; set; } = string.Empty;
+        public int TurnTarget { get; set; }
+        public int TurnCompleted { get; set; }
+        public double DurationMs { get; set; }
+    }
+
     private sealed class AutonomySpatialPlanCompletion
     {
         public string RequestKey { get; init; } = string.Empty;
@@ -987,8 +1010,11 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, int> _ambientBeatUsageTodayByBeatId = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcConversationTopicUsageTodayByKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<AmbientConversationCompletion> _pendingAmbientConversationCompletions = new();
+    private readonly ConcurrentQueue<EncounterConversationTurn> _pendingEncounterConversationTurns = new();
     private readonly ConcurrentQueue<EncounterConversationCompletion> _pendingEncounterConversationCompletions = new();
+    private readonly Dictionary<string, List<EncounterConversationTurn>> _deferredEncounterConversationTurns = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EncounterConversationCompletion> _deferredEncounterConversationCompletions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, EncounterConversationStreamState> _encounterConversationStreamStateById = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _player2EncounterIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _dailyEncounterPairs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingVanillaEncounterResume> _pendingVanillaEncounterResumeByNpcId = new(StringComparer.OrdinalIgnoreCase);
@@ -4380,6 +4406,7 @@ public sealed class ModEntry : Mod
         TrySchedulePlayer2HealthPing();
         TryTriggerAmbientNpcConversation();
         TryApplyPendingAmbientConversationCompletions();
+        TryApplyPendingEncounterConversationTurns();
         TryApplyPendingEncounterConversationCompletions();
         TryApplyCompletedAutonomySpatialPlanResults();
         TryAdvanceAutonomousRoutines(e);
@@ -13246,7 +13273,17 @@ public sealed class ModEntry : Mod
         ClearAutonomySpatialPlanningState();
 
         _autonomyRuntimeByNpcId.Clear();
+        while (_pendingEncounterConversationTurns.TryDequeue(out _))
+        {
+        }
+
+        while (_pendingEncounterConversationCompletions.TryDequeue(out _))
+        {
+        }
+
+        _deferredEncounterConversationTurns.Clear();
         _deferredEncounterConversationCompletions.Clear();
+        _encounterConversationStreamStateById.Clear();
         _player2EncounterIds.Clear();
         _pendingVanillaEncounterResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
@@ -14544,9 +14581,10 @@ public sealed class ModEntry : Mod
                 _npcSocialEncounterService.MarkTalking(encounter.EncounterId);
 
                 // Player2 encounters: transcript arrives via _pendingEncounterConversationCompletions queue,
-                // then gets queued as encounter bubbles — just wait for bubbles to arrive
+                // and completed turns are applied incrementally on the main thread
                 if (isPlayer2Encounter)
                 {
+                    TryFlushDeferredEncounterConversationTurns(encounter);
                     TryFlushDeferredEncounterConversationCompletion(encounter);
                     if (_npcSpeechBubbleService.HasEncounterBubblesRemaining(encounter.EncounterId))
                         continue;
@@ -14570,39 +14608,56 @@ public sealed class ModEntry : Mod
             // Player2 encounters: wait for all bubbles to be displayed, then complete
             if (isPlayer2Encounter)
             {
+                TryFlushDeferredEncounterConversationTurns(encounter);
                 TryFlushDeferredEncounterConversationCompletion(encounter);
+                var streamState = TryGetEncounterConversationStreamState(encounter.EncounterId);
                 var wereEncounterBubblesEverQueued = _npcSpeechBubbleService.WereEncounterBubblesEverQueued(encounter.EncounterId);
                 var hasEncounterBubblesRemaining = _npcSpeechBubbleService.HasEncounterBubblesRemaining(encounter.EncounterId);
                 var isEncounterReadyForNextBubble = _npcSpeechBubbleService.IsEncounterReadyForNextBubble(encounter.EncounterId);
                 var isLastBubbleFinished = _npcSpeechBubbleService.IsLastBubbleFinished(encounter.EncounterId);
                 var wereEncounterBubblesDisplayed = _npcSpeechBubbleService.WereEncounterBubblesDisplayed(encounter.EncounterId);
+                var appliedTurns = streamState?.HighestAppliedTurn ?? 0;
+                var streamCompletionArrived = streamState?.CompletionArrived == true;
+                var streamFailed = streamState?.CompletionArrived == true && streamState.Completed == false;
 
-                if (!wereEncounterBubblesEverQueued)
+                if (appliedTurns == 0 && !streamCompletionArrived)
                 {
                     Monitor.Log(
-                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting on Player2 bubbles (ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
+                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting_on_first_player2_turn (ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
                         LogLevel.Trace);
-                    continue; // Player2 conversation still in flight — wait for transcript
+                    continue;
+                }
+                if (!streamCompletionArrived)
+                {
+                    Monitor.Log(
+                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting_on_more_player2_turns (applied_turns={appliedTurns}, ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
+                        LogLevel.Trace);
+                    continue;
                 }
                 if (hasEncounterBubblesRemaining)
                 {
                     Monitor.Log(
-                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting on Player2 bubbles (ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
+                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting_on_queued_bubbles_to_finish (applied_turns={appliedTurns}, ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
                         LogLevel.Trace);
                     continue;
                 }
                 if (!isEncounterReadyForNextBubble)
                 {
                     Monitor.Log(
-                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting on Player2 bubbles (ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
+                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting_on_queued_bubbles_to_finish (applied_turns={appliedTurns}, ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
                         LogLevel.Trace);
                     continue;
                 }
                 if (!isLastBubbleFinished)
                 {
                     Monitor.Log(
-                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting on Player2 bubbles (ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
+                        $"Autonomy: encounter {encounter.EncounterId} {encounter.NpcA}->{encounter.NpcB} waiting_on_queued_bubbles_to_finish (applied_turns={appliedTurns}, ever_queued={wereEncounterBubblesEverQueued}, remaining={hasEncounterBubblesRemaining}, ready_next={isEncounterReadyForNextBubble}, last_finished={isLastBubbleFinished}, displayed={wereEncounterBubblesDisplayed}).",
                         LogLevel.Trace);
+                    continue;
+                }
+                if (streamFailed)
+                {
+                    CancelEncounterScene(encounter, "player2_failed");
                     continue;
                 }
                 if (!wereEncounterBubblesDisplayed)
@@ -14807,9 +14862,17 @@ public sealed class ModEntry : Mod
                 ListenerNpcId = currentListenerNpcId,
                 Message = encounterLine
             });
-
-            if (_npcSocialEncounterService?.GetEncounter(encounterId) is { } activeEncounter)
-                UpdateEncounterProgress(activeEncounter, turn, turnDepth, currentSpeakerNpcId, encounterLine, scenario);
+            _pendingEncounterConversationTurns.Enqueue(new EncounterConversationTurn
+            {
+                EncounterId = encounterId,
+                Turn = turn,
+                TurnTarget = turnDepth,
+                SpeakerShortName = currentSpeakerShortName,
+                ListenerShortName = currentListenerShortName,
+                SpeakerNpcId = currentSpeakerNpcId,
+                ListenerNpcId = currentListenerNpcId,
+                Message = encounterLine
+            });
 
             // Swap speaker and listener
             var nextSpeakerShortName = currentListenerShortName;
@@ -14967,6 +15030,28 @@ public sealed class ModEntry : Mod
             || NpcSpeechBubbleService.LooksLikeEncounterPromptLeak(text);
     }
 
+    private void TryApplyPendingEncounterConversationTurns()
+    {
+        while (_pendingEncounterConversationTurns.TryDequeue(out var turn))
+        {
+            var activeEncounter = _npcSocialEncounterService?.GetEncounter(turn.EncounterId);
+            if (activeEncounter is null || activeEncounter.Phase == EncounterPhase.Cancelled)
+            {
+                _deferredEncounterConversationTurns.Remove(turn.EncounterId);
+                continue;
+            }
+
+            if (activeEncounter.Phase == EncounterPhase.Staging)
+            {
+                DeferEncounterConversationTurn(turn);
+                continue;
+            }
+
+            TryApplyEncounterConversationTurn(activeEncounter, turn);
+            TryFlushDeferredEncounterConversationTurns(activeEncounter);
+        }
+    }
+
     private void TryApplyPendingEncounterConversationCompletions()
     {
         while (_pendingEncounterConversationCompletions.TryDequeue(out var completion))
@@ -14988,6 +15073,76 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private void TryApplyEncounterConversationTurn(ActiveEncounter activeEncounter, EncounterConversationTurn turn)
+    {
+        var streamState = GetOrCreateEncounterConversationStreamState(turn.EncounterId);
+        var expectedTurn = streamState.HighestAppliedTurn + 1;
+        if (turn.Turn <= streamState.HighestAppliedTurn)
+        {
+            Monitor.Log(
+                $"Encounter turn dropped as duplicate: enc={turn.EncounterId} turn={turn.Turn} applied={streamState.HighestAppliedTurn}.",
+                LogLevel.Trace);
+            return;
+        }
+
+        if (turn.Turn != expectedTurn)
+        {
+            Monitor.Log(
+                $"Encounter turn out of order, deferring: enc={turn.EncounterId} turn={turn.Turn} expected={expectedTurn}.",
+                LogLevel.Trace);
+            DeferEncounterConversationTurn(turn);
+            return;
+        }
+
+        if (activeEncounter.Phase == EncounterPhase.Talking
+            && !TryValidateEncounterScene(activeEncounter, out var invalidReason))
+        {
+            CancelEncounterScene(activeEncounter, invalidReason);
+            return;
+        }
+
+        var transcriptLine = new AmbientConversationLine
+        {
+            Turn = turn.Turn,
+            SpeakerShortName = turn.SpeakerShortName,
+            SpeakerNpcId = turn.SpeakerNpcId,
+            ListenerShortName = turn.ListenerShortName,
+            ListenerNpcId = turn.ListenerNpcId,
+            Message = turn.Message
+        };
+
+        Monitor.Log(
+            $"Encounter turn applied T{turn.Turn} {turn.SpeakerShortName}->{turn.ListenerShortName}: {turn.Message}",
+            LogLevel.Trace);
+
+        if (!IsEncounterTranscriptLineValid(activeEncounter, transcriptLine))
+        {
+            CancelEncounterScene(activeEncounter, "line_drift");
+            return;
+        }
+
+        if (LooksLikeEncounterCommandOutput(transcriptLine.Message))
+        {
+            CancelEncounterScene(activeEncounter, "line_command_output");
+            return;
+        }
+
+        var bubbleText = NpcSpeechBubbleService.SanitizeEncounterBubbleText(transcriptLine.Message);
+        if (!string.IsNullOrWhiteSpace(bubbleText))
+        {
+            _npcSpeechBubbleService?.QueueEncounterBubble(
+                turn.EncounterId,
+                transcriptLine.SpeakerShortName,
+                bubbleText,
+                turn.Turn);
+        }
+
+        var scenario = activeEncounter.Scenario ?? new ConversationScenario();
+        UpdateEncounterProgress(activeEncounter, turn.Turn, turn.TurnTarget, transcriptLine.SpeakerNpcId, transcriptLine.Message, scenario);
+        streamState.HighestAppliedTurn = turn.Turn;
+        streamState.TurnTarget = Math.Max(streamState.TurnTarget, turn.TurnTarget);
+    }
+
     private void TryApplyEncounterConversationCompletion(ActiveEncounter activeEncounter, EncounterConversationCompletion completion)
     {
         var status = completion.Completed
@@ -15006,53 +15161,18 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        if (!completion.Completed || completion.Transcript.Count == 0)
-        {
-            Monitor.Log($"Encounter {completion.EncounterId}: Player2 failed ({completion.AbortReason}), cancelling encounter.", LogLevel.Debug);
-            CancelEncounterScene(activeEncounter, "player2_failed");
-            return;
-        }
+        var streamState = GetOrCreateEncounterConversationStreamState(completion.EncounterId);
+        streamState.CompletionArrived = true;
+        streamState.Completed = completion.Completed;
+        streamState.AbortReason = completion.AbortReason;
+        streamState.TurnTarget = Math.Max(streamState.TurnTarget, completion.TurnTarget);
+        streamState.TurnCompleted = completion.TurnCompleted;
+        streamState.DurationMs = completion.DurationMs;
 
-        var sequenceIndex = 0;
-        var queuedEncounterLines = 0;
-        foreach (var transcriptLine in completion.Transcript)
-        {
-            sequenceIndex++;
-            Monitor.Log(
-                $"Encounter transcript T{transcriptLine.Turn} {transcriptLine.SpeakerShortName}->{transcriptLine.ListenerShortName}: {transcriptLine.Message}",
-                LogLevel.Trace);
-
-            if (!IsEncounterTranscriptLineValid(activeEncounter, transcriptLine))
-            {
-                CancelEncounterScene(activeEncounter, "line_drift");
-                return;
-            }
-
-            if (LooksLikeEncounterCommandOutput(transcriptLine.Message))
-            {
-                CancelEncounterScene(activeEncounter, "line_command_output");
-                return;
-            }
-
-            var bubbleText = NpcSpeechBubbleService.SanitizeEncounterBubbleText(transcriptLine.Message);
-            if (string.IsNullOrWhiteSpace(bubbleText))
-                continue;
-
-            _npcSpeechBubbleService?.QueueEncounterBubble(
-                completion.EncounterId,
-                transcriptLine.SpeakerShortName,
-                bubbleText,
-                sequenceIndex);
-            queuedEncounterLines += 1;
-        }
-
-        if (queuedEncounterLines == 0)
-        {
-            CancelEncounterScene(activeEncounter, "bubble_sanitized_empty");
-            return;
-        }
-
-        if (_npcMemoryService is not null && _state is not null)
+        if (completion.Completed
+            && completion.Transcript.Count > 0
+            && _npcMemoryService is not null
+            && _state is not null)
         {
             var lastLine = completion.Transcript.LastOrDefault();
             var summaryText = lastLine is not null
@@ -15069,7 +15189,42 @@ public sealed class ModEntry : Mod
                 _state.Calendar.Day, weight: 3);
         }
 
-        TryShareRumorsBetweenNpcs(completion.SpeakerShortName, completion.ListenerShortName);
+        if (completion.Completed && completion.Transcript.Count > 0)
+            TryShareRumorsBetweenNpcs(completion.SpeakerShortName, completion.ListenerShortName);
+    }
+
+    private void DeferEncounterConversationTurn(EncounterConversationTurn turn)
+    {
+        if (!_deferredEncounterConversationTurns.TryGetValue(turn.EncounterId, out var turns))
+        {
+            turns = new List<EncounterConversationTurn>();
+            _deferredEncounterConversationTurns[turn.EncounterId] = turns;
+        }
+
+        turns.Add(turn);
+        turns.Sort((a, b) => a.Turn.CompareTo(b.Turn));
+    }
+
+    private void TryFlushDeferredEncounterConversationTurns(ActiveEncounter encounter)
+    {
+        if (!_deferredEncounterConversationTurns.TryGetValue(encounter.EncounterId, out var turns) || turns.Count == 0)
+            return;
+
+        var streamState = GetOrCreateEncounterConversationStreamState(encounter.EncounterId);
+        var nextExpectedTurn = streamState.HighestAppliedTurn + 1;
+        for (var i = 0; i < turns.Count;)
+        {
+            var turn = turns[i];
+            if (turn.Turn > nextExpectedTurn)
+                break;
+
+            turns.RemoveAt(i);
+            TryApplyEncounterConversationTurn(encounter, turn);
+            nextExpectedTurn = GetOrCreateEncounterConversationStreamState(encounter.EncounterId).HighestAppliedTurn + 1;
+        }
+
+        if (turns.Count == 0)
+            _deferredEncounterConversationTurns.Remove(encounter.EncounterId);
     }
 
     private void TryFlushDeferredEncounterConversationCompletion(ActiveEncounter encounter)
@@ -15080,7 +15235,9 @@ public sealed class ModEntry : Mod
 
     private void ClearEncounterRuntimeLinks(string encounterId)
     {
+        _deferredEncounterConversationTurns.Remove(encounterId);
         _deferredEncounterConversationCompletions.Remove(encounterId);
+        _encounterConversationStreamStateById.Remove(encounterId);
         _player2EncounterIds.Remove(encounterId);
         foreach (var activeRuntime in _autonomyRuntimeByNpcId.Values)
         {
@@ -15090,6 +15247,23 @@ public sealed class ModEntry : Mod
                 activeRuntime.EncounterLockedPartnerNpcId = null;
             }
         }
+    }
+
+    private EncounterConversationStreamState GetOrCreateEncounterConversationStreamState(string encounterId)
+    {
+        if (!_encounterConversationStreamStateById.TryGetValue(encounterId, out var state))
+        {
+            state = new EncounterConversationStreamState();
+            _encounterConversationStreamStateById[encounterId] = state;
+        }
+
+        return state;
+    }
+
+    private EncounterConversationStreamState? TryGetEncounterConversationStreamState(string encounterId)
+    {
+        _encounterConversationStreamStateById.TryGetValue(encounterId, out var state);
+        return state;
     }
 
     private void PopulateLastEncounterFields(ActiveEncounter encounter)
