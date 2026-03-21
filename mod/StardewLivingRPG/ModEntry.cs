@@ -898,6 +898,7 @@ public sealed class ModEntry : Mod
     private CommandPolicyService? _commandPolicyService;
     private TownSquareMagicianService? _townSquareMagicianService;
     private TownSquareMagicianFlavorService? _townSquareMagicianFlavorService;
+    private ChickenRaceService? _chickenRaceService;
     private NPC? _townSquareMagicianHudNpc;
     private Rectangle _townSquareMagicianHudInputBounds;
     private Rectangle _townSquareMagicianHudSubmitButtonBounds;
@@ -1173,6 +1174,7 @@ public sealed class ModEntry : Mod
         _commandPolicyService = new CommandPolicyService();
         _townSquareMagicianService = new TownSquareMagicianService(helper, Monitor);
         _townSquareMagicianFlavorService = new TownSquareMagicianFlavorService(Monitor);
+        _chickenRaceService = new ChickenRaceService(Monitor, _config);
         _player2Client = new Player2Client();
         InitializeCustomNpcFramework(helper);
         InitializeVanillaCanonLoreFramework(helper);
@@ -1550,6 +1552,7 @@ public sealed class ModEntry : Mod
         helper.ConsoleCommands.Add("slrpg_open_board", "Open Market Board menu.", OnOpenBoardCommand);
         helper.ConsoleCommands.Add("slrpg_open_news", "Open latest newspaper issue.", OnOpenNewsCommand);
         helper.ConsoleCommands.Add("slrpg_open_rumors", "Open rumor board menu.", OnOpenRumorsCommand);
+        helper.ConsoleCommands.Add("slrpg_open_chicken_race", "Open the chicken race mini-game.", OnOpenChickenRaceCommand);
         helper.ConsoleCommands.Add("slrpg_magician_open", "Open the town square magician guessing menu.", OnMagicianOpenCommand);
         helper.ConsoleCommands.Add("slrpg_magician_state", "Dump today's town square magician round state.", OnMagicianStateCommand);
         helper.ConsoleCommands.Add("slrpg_magician_reset", "Reset today's town square magician progress.", OnMagicianResetCommand);
@@ -9776,6 +9779,23 @@ public sealed class ModEntry : Mod
             return;
 
         OpenRumorBoard();
+    }
+
+    private void OnOpenChickenRaceCommand(string name, string[] args)
+    {
+        if (!Context.IsWorldReady || _chickenRaceService is null || _state is null)
+            return;
+
+        OpenChickenRaceMenu();
+    }
+
+    private void OpenChickenRaceMenu()
+    {
+        if (_chickenRaceService is null || _state is null)
+            return;
+
+        _chickenRaceService.SyncForToday(_state);
+        Game1.activeClickableMenu = new ChickenRaceMenu(_state, _chickenRaceService, Monitor);
     }
 
     private void OnMagicianOpenCommand(string name, string[] args)

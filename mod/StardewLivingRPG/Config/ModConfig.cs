@@ -79,6 +79,11 @@ public sealed class ModConfig
     public bool ShowDeveloperConsoleCommands { get; set; } = true;
     public bool EnableTownSquareMagicianMinigame { get; set; } = true;
 
+    // Chicken Race mini-game
+    public int MaxChickenRacesPerDay { get; set; } = 5;
+    public int MinBetAmount { get; set; } = 100;
+    public int MaxBetAmount { get; set; } = 5000;
+
     // In-world work request anti-spam
     public int WorkRequestCooldownSeconds { get; set; } = 5;
     public int MaxUiGeneratedRequestsPerDay { get; set; } = 2;

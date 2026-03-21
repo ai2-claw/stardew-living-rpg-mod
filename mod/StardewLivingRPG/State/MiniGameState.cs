@@ -3,6 +3,7 @@ namespace StardewLivingRPG.State;
 public sealed class MiniGameState
 {
     public TownSquareMagicianState TownSquareMagician { get; set; } = new();
+    public ChickenRaceState ChickenRace { get; set; } = new();
 }
 
 public sealed class TownSquareMagicianState
