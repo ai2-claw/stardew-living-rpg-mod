@@ -2,7 +2,17 @@
 
 ## 1.0.0 - 2026-03-21
 
+### Added
+- Villagers can now fall into more natural social encounters around town, with short face-to-face chats that feel more like Pelican Town life unfolding on its own.
+
+### Changed
+- NPC memory and town memory have been strengthened so conversations can better reflect things people actually saw, heard, promised, or talked about before.
+- Follow-up dialogue now does a better job carrying forward recent moments instead of feeling like every conversation starts from scratch.
 - Manifest version bumped to `1.0.0`.
+
+### Fixed
+- Japanese, Chinese, Korean, and other IME text input now works more reliably in the player chat input and in Morrow's guessing game.
+- Morrow's guessing game now keeps its speech bubbles visible while the answer box is open, and those bubbles now fade out on a normal readable timer instead of lingering indefinitely.
 
 ## 0.9.6 - 2026-03-15
 
