@@ -952,6 +952,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerChatRequestUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _npcLastPlayerPromptById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _npcLastContextTagById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _runtimeLogThrottleUntilUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _npcLastPlayerQuestAskUtcById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, PendingFallbackQuestOffer> _npcPendingFallbackQuestOfferById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
@@ -3897,7 +3898,11 @@ public sealed class ModEntry : Mod
 
                 if (!string.IsNullOrWhiteSpace(_activeNpcId))
                 {
-                    Monitor.Log($"Player2 on-demand spawn unavailable for '{npcName}'; falling back to active NPC session.", LogLevel.Warn);
+                    LogRuntimeThrottled(
+                        $"player2:on-demand-session-fallback:{npcName}",
+                        TimeSpan.FromSeconds(30),
+                        $"Player2 on-demand spawn unavailable for '{npcName}'; falling back to active NPC session.",
+                        LogLevel.Debug);
                     SendPlayer2ChatInternal(text, _activeNpcId, npcName, contextTag: defaultContextTag);
                     return;
                 }
@@ -3992,7 +3997,12 @@ public sealed class ModEntry : Mod
         }
         catch (Exception ex)
         {
-            Monitor.Log($"Player2 on-demand NPC spawn failed ({spawnName}): {ex.Message}", LogLevel.Warn);
+            var hasFallbackSession = !string.IsNullOrWhiteSpace(_activeNpcId);
+            LogRuntimeThrottled(
+                $"player2:on-demand-spawn-failed:{spawnName}",
+                TimeSpan.FromSeconds(30),
+                $"Player2 on-demand NPC spawn failed ({spawnName}): {ex.Message}",
+                hasFallbackSession ? LogLevel.Debug : LogLevel.Warn);
             return false;
         }
     }
@@ -7640,6 +7650,36 @@ public sealed class ModEntry : Mod
         }
 
         return false;
+    }
+
+    private bool ShouldEmitRuntimeLog(string key, TimeSpan cooldown)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+            return true;
+
+        var now = DateTime.UtcNow;
+        while (true)
+        {
+            if (_runtimeLogThrottleUntilUtc.TryGetValue(key, out var untilUtc))
+            {
+                if (now < untilUtc)
+                    return false;
+
+                if (_runtimeLogThrottleUntilUtc.TryUpdate(key, now + cooldown, untilUtc))
+                    return true;
+
+                continue;
+            }
+
+            if (_runtimeLogThrottleUntilUtc.TryAdd(key, now + cooldown))
+                return true;
+        }
+    }
+
+    private void LogRuntimeThrottled(string key, TimeSpan cooldown, string message, LogLevel level)
+    {
+        if (ShouldEmitRuntimeLog(key, cooldown))
+            Monitor.Log(message, level);
     }
 
     private static object? ConvertMemberValue(object? value, Type targetType)
@@ -13595,8 +13635,6 @@ public sealed class ModEntry : Mod
                 continue;
             if (!IsWithinAutonomyTalkRange(npc, targetNpc))
             {
-                if (e.IsMultipleOf(300))
-                    Monitor.Log($"Autonomy: {npc.Name} found target {targetNpc.Name} but out of talk range (dist={Math.Abs(npc.Tile.X - targetNpc.Tile.X) + Math.Abs(npc.Tile.Y - targetNpc.Tile.Y):F1}).", LogLevel.Trace);
                 continue;
             }
 
@@ -15994,15 +16032,19 @@ public sealed class ModEntry : Mod
             pending.LastRejectedResumeReason = mismatchReason;
             pending.RejectedResumeCountForCurrentSlot += 1;
 
-            Monitor.Log(
+            LogRuntimeThrottled(
+                $"autonomy:invalid-resume:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
                 $"Autonomy: rejected invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                LogLevel.Warn);
+                LogLevel.Debug);
         }
         else
         {
-            Monitor.Log(
+            LogRuntimeThrottled(
+                $"autonomy:invalid-resume-repeat:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
                 $"Autonomy: reapplied ownership over repeat invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                LogLevel.Debug);
+                LogLevel.Trace);
         }
 
         pending.NextAttemptTick = currentTick + 1;
@@ -16252,7 +16294,9 @@ public sealed class ModEntry : Mod
         var root = ex is TargetInvocationException tie && tie.InnerException is not null
             ? tie.InnerException
             : ex;
-        Monitor.Log(
+        LogRuntimeThrottled(
+            $"autonomy:check-schedule-failed:{npc.Name}:{methodLabel}:{root.GetType().Name}",
+            TimeSpan.FromSeconds(30),
             $"Autonomy: [REBIND] {npc.Name} {methodLabel} failed: {root.GetType().Name}: {root.Message}",
             LogLevel.Warn);
     }
@@ -16502,7 +16546,9 @@ public sealed class ModEntry : Mod
 
         if (pending.FallbackRepathCount >= EncounterVanillaResumeFallbackRepathLimit)
         {
-            Monitor.Log(
+            LogRuntimeThrottled(
+                $"autonomy:fallback-repath-exhausted:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(30),
                 $"Autonomy: [FORCE_PATH] {npc.Name} same-map fallback exhausted repath attempts for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
                 LogLevel.Warn);
             ClearTemporaryActiveSlotFallback(npc, pending);
@@ -16530,7 +16576,9 @@ public sealed class ModEntry : Mod
             if (!TryCreatePathFindController(npc, npc.currentLocation, resolvedTargetTile, out var fallbackController))
             {
                 ClearTemporaryActiveSlotFallback(npc, pending);
-                Monitor.Log(
+                LogRuntimeThrottled(
+                    $"autonomy:fallback-controller-recreate-failed:{npc.Name}:{pending.EncounterId}",
+                    TimeSpan.FromSeconds(30),
                     $"Autonomy: [FORCE_PATH] {npc.Name} failed to recreate same-map active-slot fallback controller for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
                     LogLevel.Warn);
                 return;
@@ -16545,7 +16593,9 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        Monitor.Log(
+        LogRuntimeThrottled(
+            $"autonomy:fallback-repath-failed:{npc.Name}:{pending.EncounterId}",
+            TimeSpan.FromSeconds(30),
             $"Autonomy: [FORCE_PATH] {npc.Name} failed to repath same-map active-slot fallback for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
             LogLevel.Warn);
         ClearTemporaryActiveSlotFallback(npc, pending);
@@ -16620,7 +16670,9 @@ public sealed class ModEntry : Mod
         {
             if (_executionService is null || pending.FallbackLegArrivalTile is null)
             {
-                Monitor.Log(
+                LogRuntimeThrottled(
+                    $"autonomy:cross-map-warp-unavailable:{npc.Name}:{pending.EncounterId}",
+                    TimeSpan.FromSeconds(30),
                     $"Autonomy: [CrossMapLeg(warping)] {npc.Name} encounter={pending.EncounterId} could not warp from {pending.FallbackLegFromLocation} to {pending.FallbackLegToLocation} because the execution service or arrival tile was unavailable.",
                     LogLevel.Warn);
                 ClearTemporaryActiveSlotFallback(npc, pending);
@@ -16649,7 +16701,9 @@ public sealed class ModEntry : Mod
 
         if (pending.FallbackLegRetryCount >= EncounterVanillaResumeFallbackLegRetryLimit)
         {
-            Monitor.Log(
+            LogRuntimeThrottled(
+                $"autonomy:cross-map-leg-retry-exhausted:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(30),
                 $"Autonomy: [CrossMapLeg(stale)] {npc.Name} encounter={pending.EncounterId} exceeded retry limit for leg {pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation}; clearing fallback until next vanilla schedule boundary.",
                 LogLevel.Warn);
             pending.FallbackWarpIssued = false;
@@ -16669,7 +16723,9 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        Monitor.Log(
+        LogRuntimeThrottled(
+            $"autonomy:cross-map-leg-restart-failed:{npc.Name}:{pending.EncounterId}",
+            TimeSpan.FromSeconds(30),
             $"Autonomy: [CrossMapLeg(retry)] {npc.Name} encounter={pending.EncounterId} failed to restart stale leg; clearing fallback until next vanilla schedule boundary.",
             LogLevel.Warn);
         ClearTemporaryActiveSlotFallback(npc, pending);
