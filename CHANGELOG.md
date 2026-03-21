@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 1.0.0 - 2026-03-21
+
+- Manifest version bumped to `1.0.0`.
+
 ## 0.9.6 - 2026-03-15
 
 ### Changed

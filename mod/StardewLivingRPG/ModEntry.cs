@@ -89,14 +89,6 @@ public sealed class ModEntry : Mod
     private static readonly TimeSpan RecentGiftContextMaxAge = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan Player2HealthPingInterval = TimeSpan.FromSeconds(60);
     private const int VanillaDialogueContextSequenceMaxLines = 6;
-    private const int TownSquareMagicianHudInputWidth = 360;
-    private const int TownSquareMagicianHudInputHeight = 64;
-    private const int TownSquareMagicianHudSubmitWidth = 120;
-    private const int TownSquareMagicianHudGap = 12;
-    private const int TownSquareMagicianHudMargin = 24;
-    private const int TownSquareMagicianHudBottomOffset = 140;
-    private const int TownSquareMagicianHudTextPaddingX = 16;
-    private const int TownSquareMagicianHudTextPaddingY = 14;
     private const string CalendarLastWorldAbsoluteDayFactKey = "calendar:last_world_absolute_day";
     private const string PlayerFamilyMarriedMilestoneFactKey = "player_family:milestone:married";
     private const string PlayerFamilyFirstChildMilestoneFactKey = "player_family:milestone:first_child";
@@ -881,12 +873,6 @@ public sealed class ModEntry : Mod
     private CommandPolicyService? _commandPolicyService;
     private TownSquareMagicianService? _townSquareMagicianService;
     private TownSquareMagicianFlavorService? _townSquareMagicianFlavorService;
-    private NPC? _townSquareMagicianHudNpc;
-    private TextBox? _townSquareMagicianHudInput;
-    private Rectangle _townSquareMagicianHudInputBounds;
-    private Rectangle _townSquareMagicianHudSubmitButtonBounds;
-    private bool _townSquareMagicianHudActive;
-    private bool _townSquareMagicianHudSessionEnded;
     private LoveLanguageEngineService? _loveLanguageEngineService;
     private CanonBaselineService? _customNpcCanonBaselineService;
     private NpcRegistry? _customNpcRegistry;
@@ -1866,8 +1852,12 @@ public sealed class ModEntry : Mod
         if (!Context.IsWorldReady)
             return;
 
-        if (TryHandleTownSquareMagicianHudInput(e))
+        if (Game1.activeClickableMenu is NpcChatInputMenu or TownSquareMagicianInputMenu)
+        {
+            if (e.Button.TryGetKeyboard(out _) || e.Button.TryGetController(out _))
+                Helper.Input.Suppress(e.Button);
             return;
+        }
 
         if (TryHandleMenuHotkeyToggle(e.Button))
             return;
@@ -2120,20 +2110,18 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        EnsureTownSquareMagicianHud();
-        _townSquareMagicianHudNpc = npc;
-        _townSquareMagicianHudActive = true;
-        _townSquareMagicianHudSessionEnded = false;
-        _townSquareMagicianHudInput!.Text = string.Empty;
-        RebuildTownSquareMagicianHudLayout();
-        SetTownSquareMagicianHudFocus(true);
+        TownSquareMagicianInputMenu? menu = null;
+        menu = new TownSquareMagicianInputMenu(
+            onSubmit: submittedText => SubmitTownSquareMagicianGuess(menu!, npc, submittedText),
+            onClose: playSound => CloseTownSquareMagicianMenu(playSound));
+        Game1.activeClickableMenu = menu;
 
         var openingIntroText = BuildTownSquareMagicianOpeningIntroText(round);
         var questionText = string.IsNullOrWhiteSpace(round.Prompt) ? round.OpeningLine : round.Prompt;
         DelayedAction.functionAfterDelay(
             () =>
             {
-                if (!_townSquareMagicianHudActive)
+                if (!ReferenceEquals(Game1.activeClickableMenu, menu))
                     return;
 
                 if (string.IsNullOrWhiteSpace(openingIntroText))
@@ -2146,7 +2134,7 @@ public sealed class ModEntry : Mod
                 DelayedAction.functionAfterDelay(
                     () =>
                     {
-                        if (_townSquareMagicianHudActive)
+                        if (ReferenceEquals(Game1.activeClickableMenu, menu))
                             ShowTownSquareMagicianBubble(npc, questionText);
                     },
                     GetTownSquareMagicianBubbleDurationMs(openingIntroText) + 150);
@@ -2180,169 +2168,45 @@ public sealed class ModEntry : Mod
         return Math.Clamp(2200 + (cleanText.Length * 35), 2200, 5200);
     }
 
-    private void EnsureTownSquareMagicianHud()
+    private void CloseTownSquareMagicianMenu(bool playSound)
     {
-        if (_townSquareMagicianHudInput is not null)
-            return;
-
-        _townSquareMagicianHudInput = new TextBox(
-            Game1.content.Load<Texture2D>("LooseSprites\\textBox"),
-            null,
-            Game1.smallFont,
-            Color.Black)
-        {
-            Selected = false
-        };
-        _townSquareMagicianHudInput.limitWidth = false;
-    }
-
-    private void RebuildTownSquareMagicianHudLayout()
-    {
-        if (_townSquareMagicianHudInput is null)
-            return;
-
-        var totalWidth = TownSquareMagicianHudInputWidth + TownSquareMagicianHudGap + TownSquareMagicianHudSubmitWidth;
-        var x = Math.Max(TownSquareMagicianHudMargin, (Game1.uiViewport.Width - totalWidth) / 2);
-        var bottomAnchor = Game1.uiViewport.Height - TownSquareMagicianHudBottomOffset;
-        var y = Math.Max(TownSquareMagicianHudMargin, bottomAnchor - TownSquareMagicianHudInputHeight);
-
-        _townSquareMagicianHudInputBounds = new Rectangle(x, y, TownSquareMagicianHudInputWidth, TownSquareMagicianHudInputHeight);
-        _townSquareMagicianHudSubmitButtonBounds = new Rectangle(
-            _townSquareMagicianHudInputBounds.Right + TownSquareMagicianHudGap,
-            y,
-            TownSquareMagicianHudSubmitWidth,
-            TownSquareMagicianHudInputHeight);
-
-        _townSquareMagicianHudInput.X = _townSquareMagicianHudInputBounds.X + TownSquareMagicianHudTextPaddingX;
-        _townSquareMagicianHudInput.Y = _townSquareMagicianHudInputBounds.Y + TownSquareMagicianHudTextPaddingY;
-        _townSquareMagicianHudInput.Width = Math.Max(32, _townSquareMagicianHudInputBounds.Width - (TownSquareMagicianHudTextPaddingX * 2));
-        _townSquareMagicianHudInput.Height = Math.Max(24, _townSquareMagicianHudInputBounds.Height - (TownSquareMagicianHudTextPaddingY * 2));
-    }
-
-    private void SetTownSquareMagicianHudFocus(bool focused)
-    {
-        if (_townSquareMagicianHudInput is null)
-            return;
-
-        _townSquareMagicianHudInput.Selected = focused;
-        if (focused)
-            Game1.keyboardDispatcher.Subscriber = _townSquareMagicianHudInput;
-        else if (Game1.keyboardDispatcher.Subscriber == _townSquareMagicianHudInput)
-            Game1.keyboardDispatcher.Subscriber = null;
-    }
-
-    private void CloseTownSquareMagicianHud(bool playSound)
-    {
-        if (_townSquareMagicianHudInput is not null && Game1.keyboardDispatcher.Subscriber == _townSquareMagicianHudInput)
-            Game1.keyboardDispatcher.Subscriber = null;
-
-        if (_townSquareMagicianHudInput is not null)
-        {
-            _townSquareMagicianHudInput.Selected = false;
-            _townSquareMagicianHudInput.Text = string.Empty;
-        }
-
-        _townSquareMagicianHudActive = false;
-        _townSquareMagicianHudSessionEnded = false;
-        _townSquareMagicianHudNpc = null;
         _manualNpcFollowUpSuppressUntilUtc = DateTime.UtcNow.Add(NpcManualFollowUpSuppressDuration);
 
         if (playSound)
             Game1.playSound("bigDeSelect");
     }
 
-    private bool TryHandleTownSquareMagicianHudInput(ButtonPressedEventArgs e)
+    private bool SubmitTownSquareMagicianGuess(TownSquareMagicianInputMenu menu, NPC npc, string submittedText)
     {
-        if (!_townSquareMagicianHudActive || _townSquareMagicianHudInput is null)
+        if (_townSquareMagicianService is null)
             return false;
 
-        if (e.Button == SButton.Escape)
-        {
-            Helper.Input.Suppress(e.Button);
-            CloseTownSquareMagicianHud(playSound: true);
-            return true;
-        }
-
-        if (e.Button == SButton.Enter)
-        {
-            Helper.Input.Suppress(e.Button);
-            SubmitTownSquareMagicianHudGuess();
-            return true;
-        }
-
-        if (e.Button == SButton.MouseLeft)
-        {
-            Helper.Input.Suppress(e.Button);
-
-            var point = new Point(Game1.getMouseX(), Game1.getMouseY());
-            if (_townSquareMagicianHudSubmitButtonBounds.Contains(point))
-            {
-                SubmitTownSquareMagicianHudGuess();
-                return true;
-            }
-
-            if (_townSquareMagicianHudInputBounds.Contains(point))
-                SetTownSquareMagicianHudFocus(!_townSquareMagicianHudSessionEnded);
-
-            return true;
-        }
-
-        Helper.Input.Suppress(e.Button);
-        return true;
-    }
-
-    private void SubmitTownSquareMagicianHudGuess()
-    {
-        if (_townSquareMagicianHudInput is null || _townSquareMagicianService is null)
-            return;
-
-        if (_townSquareMagicianHudSessionEnded)
-        {
-            Game1.playSound("bigDeSelect");
-            return;
-        }
-
-        var submittedText = _townSquareMagicianHudInput.Text;
         var result = _townSquareMagicianService.SubmitGuess(_state, submittedText);
         if (result.RewardGranted)
             GrantTownSquareMagicianReward(result.RewardGrant);
 
         var feedbackFlavorText = BuildTownSquareMagicianFeedbackFlavorText(result, submittedText);
         var feedbackText = BuildTownSquareMagicianFeedbackBubbleText(result);
-        var bubbleNpc = _townSquareMagicianHudNpc;
-        if (bubbleNpc is not null)
+        if (string.IsNullOrWhiteSpace(feedbackFlavorText))
         {
-            if (string.IsNullOrWhiteSpace(feedbackFlavorText))
-            {
-                ShowTownSquareMagicianBubble(bubbleNpc, feedbackText);
-            }
-            else
-            {
-                ShowTownSquareMagicianBubble(bubbleNpc, feedbackFlavorText);
-                DelayedAction.functionAfterDelay(
-                    () =>
-                    {
-                        if (_townSquareMagicianHudActive || result.SessionEnded)
-                            ShowTownSquareMagicianBubble(bubbleNpc, feedbackText);
-                    },
-                    GetTownSquareMagicianBubbleDurationMs(feedbackFlavorText) + 150);
-            }
+            ShowTownSquareMagicianBubble(npc, feedbackText);
         }
         else
         {
-            Game1.drawObjectDialogue(feedbackText);
+            ShowTownSquareMagicianBubble(npc, feedbackFlavorText);
+            DelayedAction.functionAfterDelay(
+                () =>
+                {
+                    if (ReferenceEquals(Game1.activeClickableMenu, menu) || result.SessionEnded)
+                        ShowTownSquareMagicianBubble(npc, feedbackText);
+                },
+                GetTownSquareMagicianBubbleDurationMs(feedbackFlavorText) + 150);
         }
 
         QueueTownSquareMagicianFollowUpPrefetch(result, submittedText);
 
-        _townSquareMagicianHudInput.Text = string.Empty;
-        _townSquareMagicianHudSessionEnded = result.SessionEnded;
-        SetTownSquareMagicianHudFocus(!result.SessionEnded);
-
         Game1.playSound(result.Solved ? "reward" : result.Accepted ? "smallSelect" : "cancel");
-
-        if (result.SessionEnded)
-            CloseTownSquareMagicianHud(playSound: false);
+        return result.SessionEnded;
     }
 
     private string BuildTownSquareMagicianOpeningIntroText(TownSquareMagicianRoundView round)
@@ -4404,7 +4268,6 @@ public sealed class ModEntry : Mod
             return;
 
         _lastUpdateTick = (ulong)e.Ticks;
-        TryUpdateTownSquareMagicianHud();
         SyncCalendarSeasonFromWorld();
         SyncPlayer2DeviceAuthModal();
         TrackLateNightPassOutWindow();
@@ -8589,7 +8452,6 @@ public sealed class ModEntry : Mod
             || Game1.activeClickableMenu is not null)
             return;
 
-        TryDrawTownSquareMagicianHud(e);
         TryDrawPendingNpcGiftSelectionHud(e);
 
         if (!_config.ShowPlayer2ConnectionHud)
@@ -8642,115 +8504,6 @@ public sealed class ModEntry : Mod
         e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Bottom - 4, rect.Width, 4), border);
         e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.X, rect.Y, 4, rect.Height), border);
         e.SpriteBatch.Draw(Game1.staminaRect, new Rectangle(rect.Right - 4, rect.Y, 4, rect.Height), border);
-    }
-
-    private void TryUpdateTownSquareMagicianHud()
-    {
-        if (_townSquareMagicianHudInput is null)
-            return;
-
-        if (!_townSquareMagicianHudActive)
-        {
-            if (Game1.keyboardDispatcher.Subscriber == _townSquareMagicianHudInput)
-                Game1.keyboardDispatcher.Subscriber = null;
-            return;
-        }
-
-        RebuildTownSquareMagicianHudLayout();
-        _townSquareMagicianHudInput.Update();
-        if (_townSquareMagicianHudInput.Selected && Game1.keyboardDispatcher.Subscriber != _townSquareMagicianHudInput)
-            Game1.keyboardDispatcher.Subscriber = _townSquareMagicianHudInput;
-    }
-
-    private void TryDrawTownSquareMagicianHud(RenderedHudEventArgs e)
-    {
-        if (!_townSquareMagicianHudActive || _townSquareMagicianHudInput is null)
-            return;
-
-        var mousePoint = new Point(Game1.getMouseX(), Game1.getMouseY());
-        DrawTownSquareMagicianHudInput(
-            e.SpriteBatch,
-            _townSquareMagicianHudInputBounds,
-            _townSquareMagicianHudInput.Text,
-            _townSquareMagicianHudInput.Selected && !_townSquareMagicianHudSessionEnded,
-            !_townSquareMagicianHudSessionEnded);
-        DrawTownSquareMagicianHudButton(
-            e.SpriteBatch,
-            _townSquareMagicianHudSubmitButtonBounds,
-            I18n.Get("magician.menu.button.submit", "Submit"),
-            _townSquareMagicianHudSubmitButtonBounds.Contains(mousePoint) && !_townSquareMagicianHudSessionEnded,
-            !_townSquareMagicianHudSessionEnded);
-    }
-
-    private static void DrawTownSquareMagicianHudInput(SpriteBatch spriteBatch, Rectangle bounds, string? text, bool selected, bool enabled)
-    {
-        var tint = enabled ? Color.White : Color.Gray * 0.9f;
-        IClickableMenu.drawTextureBox(
-            spriteBatch,
-            Game1.menuTexture,
-            new Rectangle(0, 256, 60, 60),
-            bounds.X,
-            bounds.Y,
-            bounds.Width,
-            bounds.Height,
-            tint,
-            1f,
-            false);
-
-        var color = enabled ? Game1.textColor : new Color(92, 92, 92);
-        var availableWidth = Math.Max(32, bounds.Width - (TownSquareMagicianHudTextPaddingX * 2));
-        var showCaret = selected && (DateTime.UtcNow.Millisecond < 500);
-        var displayText = BuildTownSquareMagicianHudDisplayText(text, availableWidth, showCaret);
-        var pos = new Vector2(
-            bounds.X + TownSquareMagicianHudTextPaddingX,
-            bounds.Y + TownSquareMagicianHudTextPaddingY);
-        spriteBatch.DrawString(Game1.smallFont, displayText, pos, color);
-    }
-
-    private static void DrawTownSquareMagicianHudButton(SpriteBatch spriteBatch, Rectangle bounds, string label, bool hovered, bool enabled)
-    {
-        var tint = enabled
-            ? (hovered ? new Color(255, 255, 255) : Color.White)
-            : Color.Gray * 0.9f;
-        IClickableMenu.drawTextureBox(
-            spriteBatch,
-            Game1.mouseCursors,
-            new Rectangle(432, 439, 9, 9),
-            bounds.X,
-            bounds.Y,
-            bounds.Width,
-            bounds.Height,
-            tint,
-            4f,
-            false);
-
-        var color = enabled ? Game1.textColor : new Color(92, 92, 92);
-        var size = Game1.smallFont.MeasureString(label);
-        var pos = new Vector2(
-            bounds.X + (bounds.Width - size.X) / 2f,
-            bounds.Y + (bounds.Height - size.Y) / 2f);
-        spriteBatch.DrawString(Game1.smallFont, label, pos, color);
-    }
-
-    private static string BuildTownSquareMagicianHudDisplayText(string? rawText, float availableWidth, bool showCaret)
-    {
-        var baseText = rawText ?? string.Empty;
-        var caret = showCaret ? "|" : string.Empty;
-        var candidate = baseText + caret;
-        if (Game1.smallFont.MeasureString(candidate).X <= availableWidth)
-            return candidate;
-
-        var trimmed = baseText;
-        while (trimmed.Length > 0)
-        {
-            var compact = "..." + trimmed + caret;
-            if (Game1.smallFont.MeasureString(compact).X <= availableWidth)
-                return compact;
-
-            trimmed = trimmed[1..];
-        }
-
-        return caret;
     }
 
     private Rectangle GetPlayer2HudRect()

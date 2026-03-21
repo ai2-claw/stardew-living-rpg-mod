@@ -120,8 +120,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
     private int _thinkFrame;
 
-    private readonly TextBox _input;
     private bool _inputHasFocus = true;
+    private readonly DeferredTextBoxActionGate _textActionGate = new();
+    private readonly TextBox _input;
 
     private Rectangle _sendButtonBounds;
     private bool _sendButtonHovered;
@@ -321,9 +322,9 @@ public sealed class NpcChatInputMenu : IClickableMenu
 		_input.Width = _inputRegion.Width;
 		_input.Height = _inputRegion.Height;
 
-		// Close button (top-right, slightly outside like vanilla)
-		_closeButton.bounds = new Rectangle(
-			xPositionOnScreen + width - 48,
+        // Close button (top-right, slightly outside like vanilla)
+        _closeButton.bounds = new Rectangle(
+            xPositionOnScreen + width - 48,
 			yPositionOnScreen + 64, 
 			48,
 			48
@@ -434,16 +435,16 @@ public sealed class NpcChatInputMenu : IClickableMenu
     {
         if (key == Keys.Enter)
         {
-            Submit();
+            _textActionGate.ArmSubmit(_input.Text);
             return;
         }
 
         if (key == Keys.Escape)
         {
-            CloseMenu();
-            Game1.playSound("bigDeSelect");
+            _textActionGate.ArmClose(_input.Text);
             return;
         }
+
     }
 
     public override void update(GameTime time)
@@ -459,6 +460,17 @@ public sealed class NpcChatInputMenu : IClickableMenu
         {
             if (Game1.keyboardDispatcher.Subscriber != _input)
                 Game1.keyboardDispatcher.Subscriber = _input;
+        }
+
+        switch (_textActionGate.Update(_input.Text))
+        {
+            case DeferredTextAction.Submit:
+                Submit();
+                break;
+            case DeferredTextAction.Close:
+                CloseMenu();
+                Game1.playSound("bigDeSelect");
+                break;
         }
 
         _thinkFrame++;
@@ -1217,39 +1229,26 @@ public sealed class NpcChatInputMenu : IClickableMenu
             drawShadow: false
         );
 
-        string text = _input.Text ?? "";
+        var availableWidth = Math.Max(0, _inputRegion.Width - 32);
+        var layout = InputBoxTextRenderHelper.CreateLayout(_input.Text, availableWidth);
+        var textX = _inputRegion.X + 16f;
+        var textY = _inputRegion.Y + 14f;
 
-        float textWidth = _inputRegion.Width - 32;
-        var lines = TextWrapHelper.WrapText(Game1.smallFont, text, textWidth);
+        b.DrawString(layout.Font, layout.VisibleText, new Vector2(textX, textY), Color.Black);
 
-        int maxLines = 1;
-        int startLine = Math.Max(0, lines.Length - maxLines);
-
-        float textX = _inputRegion.X + 16;
-        float textY = _inputRegion.Y + 14;
-
-        for (int i = startLine; i < lines.Length; i++)
-        {
-            b.DrawString(Game1.smallFont, lines[i], new Vector2(textX, textY), Color.Black);
-            textY += Game1.smallFont.LineSpacing;
-        }
-
-        // Caret / Cursor
         if (_inputHasFocus && (_thinkFrame / 30) % 2 == 0)
         {
-            string lastLine = lines.Length > 0 ? lines[^1] : "";
-            float cursorX = textX + Game1.smallFont.MeasureString(lastLine).X + 2;
-
-            float cursorY = textY - Game1.smallFont.LineSpacing + 2;
-            if (lines.Length == 0)
-                cursorY = _inputRegion.Y + 12;
-
-            b.Draw(Game1.staminaRect, new Rectangle((int)cursorX, (int)cursorY, 2, Game1.smallFont.LineSpacing - 2), Color.Black);
+            var cursorX = textX + layout.Font.MeasureString(layout.VisibleText).X + 2f;
+            var cursorY = textY + 2f;
+            var cursorHeight = Math.Max(8, layout.Font.LineSpacing - 2);
+            b.Draw(Game1.staminaRect, new Rectangle((int)cursorX, (int)cursorY, 2, cursorHeight), Color.Black);
         }
     }
 
     private void Submit()
     {
+        _textActionGate.Clear();
+
         var text = _input.Text?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -1269,6 +1268,7 @@ public sealed class NpcChatInputMenu : IClickableMenu
 
     private void CloseMenu()
     {
+        _textActionGate.Clear();
         if (Game1.keyboardDispatcher.Subscriber == _input)
             Game1.keyboardDispatcher.Subscriber = null;
 
@@ -1289,5 +1289,12 @@ public sealed class NpcChatInputMenu : IClickableMenu
         {
             Game1.keyboardDispatcher.Subscriber = null;
         }
+    }
+
+    protected override void cleanupBeforeExit()
+    {
+        if (Game1.keyboardDispatcher.Subscriber == _input)
+            Game1.keyboardDispatcher.Subscriber = null;
+        base.cleanupBeforeExit();
     }
 }
