@@ -115,7 +115,8 @@ public sealed class ModEntry : Mod
     private const float GmcmDailyDeltaCapMin = 0.01f;
     private const float GmcmDailyDeltaCapMax = 1.00f;
     private static readonly string[] AllowedModeValues = { "cozy_canon", "story_depth", "living_chaos" };
-    private static readonly string[] AllowedEncounterChanceValues = { "0", "25", "50", "75", "100" };
+    private const int DefaultEncounterChancePercent = 20;
+    private static readonly string[] AllowedEncounterChanceValues = { "0", "5", "20", "50", "70", "100" };
     private static readonly Regex EncounterCommandRetryRegex = new(
         @"(?:^\s*(?:adjust[_\s]+reputation|shift[_\s]+interest[_\s]+influence|apply[_\s]+market[_\s]+modifier|spread[_\s]+rumor|publish[_\s]+rumor|publish[_\s]+article|propose[_\s]+quest|record[_\s]+town[_\s]+event|record[_\s]+memory[_\s]+fact|adjust[_\s]+town[_\s]+sentiment|update[_\s]+romance[_\s]+profile|propose[_\s]+micro[_\s]+date)\b|""(?:command|arguments|npc_id|intent_id)""\s*:)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
@@ -589,6 +590,17 @@ public sealed class ModEntry : Mod
         public int RecoveryAttempts { get; set; }
     }
 
+    private sealed class EncounterGateRejectedScene
+    {
+        public string PairKey { get; init; } = string.Empty;
+        public string FirstNpcId { get; init; } = string.Empty;
+        public string SecondNpcId { get; init; } = string.Empty;
+        public string LocationName { get; init; } = string.Empty;
+        public Point FirstNpcTile { get; init; }
+        public Point SecondNpcTile { get; init; }
+        public DateTime RejectedUtc { get; init; }
+    }
+
     private sealed class NpcShipmentProfile
     {
         public string NpcId { get; init; } = string.Empty;
@@ -1040,6 +1052,7 @@ public sealed class ModEntry : Mod
     private readonly Dictionary<string, EncounterConversationStreamState> _encounterConversationStreamStateById = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _player2EncounterIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _dailyEncounterPairs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, EncounterGateRejectedScene> _encounterGateRejectedSceneByPairKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingVanillaEncounterResume> _pendingVanillaEncounterResumeByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VanillaEncounterResumeMonitor> _vanillaEncounterResumeMonitorByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EncounterSettleRecoveryMonitor> _encounterSettleRecoveryMonitorByNpcId = new(StringComparer.OrdinalIgnoreCase);
@@ -1525,18 +1538,21 @@ public sealed class ModEntry : Mod
     private static int NormalizeEncounterChancePercent(string? rawValue)
     {
         if (!int.TryParse(rawValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
-            return 50;
+            return DefaultEncounterChancePercent;
 
         return NormalizeEncounterChancePercent(parsed);
     }
 
     private static int NormalizeEncounterChancePercent(int rawValue)
     {
+        if (rawValue == DefaultEncounterChancePercent)
+            return DefaultEncounterChancePercent;
+
         return AllowedEncounterChanceValues
             .Select(value => int.Parse(value, CultureInfo.InvariantCulture))
             .OrderBy(value => Math.Abs(value - rawValue))
             .ThenBy(value => value)
-            .FirstOrDefault(50);
+            .FirstOrDefault(DefaultEncounterChancePercent);
     }
 
     private static int NormalizeFaceToFaceDistance(int rawValue)
@@ -1698,6 +1714,7 @@ public sealed class ModEntry : Mod
         _pendingVanillaEncounterResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
         _encounterSettleRecoveryMonitorByNpcId.Clear();
+        _encounterGateRejectedSceneByPairKey.Clear();
         _recentVanillaDialogueByNpcToken.Clear();
         _recentGiftContextByNpcToken.Clear();
         _npcConversationTopicUsageTodayByKey.Clear();
@@ -1772,6 +1789,7 @@ public sealed class ModEntry : Mod
         _pendingVanillaEncounterResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
         _encounterSettleRecoveryMonitorByNpcId.Clear();
+        _encounterGateRejectedSceneByPairKey.Clear();
         _recentVanillaDialogueByNpcToken.Clear();
         _recentGiftContextByNpcToken.Clear();
         ClearNpcDialogueHook();
@@ -13503,6 +13521,7 @@ public sealed class ModEntry : Mod
         _vanillaEncounterResumeMonitorByNpcId.Clear();
         _encounterSettleRecoveryMonitorByNpcId.Clear();
         _dailyEncounterPairs.Clear();
+        _encounterGateRejectedSceneByPairKey.Clear();
         _npcConversationTopicUsageTodayByKey.Clear();
         _npcSpeechBubbleService?.CancelAll();
         _pairEmotionService?.Decay(_state);
@@ -13688,7 +13707,7 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            if (!PassesEncounterApprovalChance(npc.Name, targetNpc.Name, block.Type, npc.currentLocation))
+            if (!PassesEncounterApprovalChance(npc, targetNpc, block.Type))
                 continue;
 
             Monitor.Log($"Autonomy: {npc.Name}->{targetNpc.Name} encounter approved! block={block.Type} location={npc.currentLocation?.Name}.", LogLevel.Debug);
@@ -13792,7 +13811,7 @@ public sealed class ModEntry : Mod
             if (!_npcSocialEncounterService.ShouldStartEncounter(_state, speakerNpc, listenerNpc, block))
                 continue;
 
-            if (!PassesEncounterApprovalChance(speakerNpc.Name, listenerNpc.Name, block.Type, location))
+            if (!PassesEncounterApprovalChance(speakerNpc, listenerNpc, block.Type))
                 continue;
 
             if (!TryStartAutonomyEncounter(speakerRuntime, speakerNpc, listenerNpc, block))
@@ -14472,16 +14491,104 @@ public sealed class ModEntry : Mod
         return Math.Clamp(configuredMinutes * 6, 8, 45);
     }
 
-    private bool PassesEncounterApprovalChance(string speakerNpcId, string listenerNpcId, AutonomyPlanBlockType blockType, GameLocation? location)
+    private bool PassesEncounterApprovalChance(NPC speakerNpc, NPC listenerNpc, AutonomyPlanBlockType blockType)
     {
+        if (IsEncounterGateRejectedAtSameSpot(speakerNpc, listenerNpc))
+            return false;
+
         var approvalChance = Math.Clamp(_config.AutonomyFaceToFaceEncounterChancePct, 0, 100) / 100d;
         if (_ambientNpcRandom.NextDouble() < approvalChance)
+        {
+            ClearEncounterGateRejectedScene(speakerNpc.Name, listenerNpc.Name);
             return true;
+        }
+
+        RememberEncounterGateRejectedScene(speakerNpc, listenerNpc);
 
         Monitor.Log(
-            $"Autonomy: {speakerNpcId}->{listenerNpcId} skipped by {(int)Math.Round(approvalChance * 100d)}% encounter gate (block={blockType}).",
+            $"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} skipped by {(int)Math.Round(approvalChance * 100d)}% encounter gate (block={blockType}).",
             LogLevel.Trace);
         return false;
+    }
+
+    private bool IsEncounterGateRejectedAtSameSpot(NPC firstNpc, NPC secondNpc)
+    {
+        if (string.IsNullOrWhiteSpace(firstNpc.Name) || string.IsNullOrWhiteSpace(secondNpc.Name))
+            return false;
+
+        var pairKey = MakeEncounterPairKey(firstNpc.Name, secondNpc.Name);
+        if (!_encounterGateRejectedSceneByPairKey.TryGetValue(pairKey, out var rejectedScene))
+            return false;
+
+        if (!TryBuildEncounterGateRejectedScene(firstNpc, secondNpc, out var currentScene)
+            || !IsSameEncounterGateScene(rejectedScene, currentScene))
+        {
+            _encounterGateRejectedSceneByPairKey.Remove(pairKey);
+            return false;
+        }
+
+        return true;
+    }
+
+    private void RememberEncounterGateRejectedScene(NPC firstNpc, NPC secondNpc)
+    {
+        if (!TryBuildEncounterGateRejectedScene(firstNpc, secondNpc, out var scene))
+        {
+            ClearEncounterGateRejectedScene(firstNpc.Name, secondNpc.Name);
+            return;
+        }
+
+        _encounterGateRejectedSceneByPairKey[scene.PairKey] = scene;
+    }
+
+    private void ClearEncounterGateRejectedScene(string firstNpcId, string secondNpcId)
+    {
+        if (string.IsNullOrWhiteSpace(firstNpcId) || string.IsNullOrWhiteSpace(secondNpcId))
+            return;
+
+        _encounterGateRejectedSceneByPairKey.Remove(MakeEncounterPairKey(firstNpcId, secondNpcId));
+    }
+
+    private static bool TryBuildEncounterGateRejectedScene(NPC firstNpc, NPC secondNpc, out EncounterGateRejectedScene scene)
+    {
+        scene = null!;
+
+        if (string.IsNullOrWhiteSpace(firstNpc.Name)
+            || string.IsNullOrWhiteSpace(secondNpc.Name)
+            || firstNpc.currentLocation is null
+            || secondNpc.currentLocation is null
+            || !string.Equals(firstNpc.currentLocation.Name, secondNpc.currentLocation.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var orderedFirst = firstNpc;
+        var orderedSecond = secondNpc;
+        if (string.Compare(firstNpc.Name, secondNpc.Name, StringComparison.OrdinalIgnoreCase) > 0)
+        {
+            orderedFirst = secondNpc;
+            orderedSecond = firstNpc;
+        }
+
+        scene = new EncounterGateRejectedScene
+        {
+            PairKey = MakeEncounterPairKey(orderedFirst.Name, orderedSecond.Name),
+            FirstNpcId = orderedFirst.Name,
+            SecondNpcId = orderedSecond.Name,
+            LocationName = orderedFirst.currentLocation.Name ?? string.Empty,
+            FirstNpcTile = new Point((int)orderedFirst.Tile.X, (int)orderedFirst.Tile.Y),
+            SecondNpcTile = new Point((int)orderedSecond.Tile.X, (int)orderedSecond.Tile.Y),
+            RejectedUtc = DateTime.UtcNow
+        };
+        return !string.IsNullOrWhiteSpace(scene.LocationName);
+    }
+
+    private static bool IsSameEncounterGateScene(EncounterGateRejectedScene left, EncounterGateRejectedScene right)
+    {
+        return string.Equals(left.PairKey, right.PairKey, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(left.LocationName, right.LocationName, StringComparison.OrdinalIgnoreCase)
+            && left.FirstNpcTile == right.FirstNpcTile
+            && left.SecondNpcTile == right.SecondNpcTile;
     }
 
     private static void SyncExpectedStateToLoadedNpc(NPC npc, AutonomyRuntimeState runtime)

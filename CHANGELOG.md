@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 1.0.2 - 2026-03-22
+
+### Changed
+- Face-to-face encounter pacing has been tightened so villagers are less likely to keep trying the same chat again and again when they are just standing around in the same place.
+- Manifest version bumped to `1.0.2`.
+
+### Fixed
+- Villagers now wait for the last encounter speech bubble to finish before walking away, giving players more time to read the ending line.
+- Several encounter follow-up issues were cleaned up so villagers are less likely to get stuck, drift around mid-conversation, disappear after a chat, or resume in unnatural ways.
+- Post-encounter movement is more natural again, with villagers walking to exits before changing maps instead of feeling like they are re-triggering or snapping awkwardly.
+
 ## 1.0.1 - 2026-03-22
 
 ### Changed
