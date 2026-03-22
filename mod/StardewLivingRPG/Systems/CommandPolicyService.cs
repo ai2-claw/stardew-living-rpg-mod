@@ -18,8 +18,7 @@ public sealed class CommandPolicyService
         "propose_micro_date",
         "adjust_npc_pair_emotion",
         "record_social_incident",
-        "set_npc_pair_flag",
-        "suggest_autonomy_goal"
+        "set_npc_pair_flag"
     };
     private static readonly string[] AmbientPrimaryAllowedCommands =
     {
@@ -54,8 +53,7 @@ public sealed class CommandPolicyService
             "record_town_event",
             "adjust_npc_pair_emotion",
             "record_social_incident",
-            "set_npc_pair_flag",
-            "suggest_autonomy_goal"
+            "set_npc_pair_flag"
         }, defaultAllow: false);
         ConfigureRule("npc_to_npc_ambient_dialogue", knownCommands: KnownCommands, explicitlyAllowed: Array.Empty<string>(), defaultAllow: false);
         SetAmbientConditionalCommandsEnabled(Array.Empty<string>());

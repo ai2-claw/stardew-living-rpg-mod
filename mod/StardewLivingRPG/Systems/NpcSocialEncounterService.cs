@@ -174,18 +174,39 @@ public sealed class NpcSocialEncounterService
             "apology_softened" => new[] { ("trust", 2), ("awkwardness", -1) },
             "awkward_but_polite" => new[] { ("awkwardness", 1), ("trust", 1) },
             "practical_exchange" => new[] { ("trust", 2) },
+            "friction_left_hanging" => new[] { ("anger", 3), ("awkwardness", 1), ("avoidance_adjust", 2), ("tension_adjust", 3) },
+            "mystery_hook" => new[] { ("jealousy", 1), ("trust", -1), ("tension_adjust", 1) },
+            "rumor_shared" => new[] { ("friendship", 1), ("trust", 1) },
+            "story_hook" => new[] { ("friendship", 1), ("trust", 1) },
             "unresolved_tension" => new[] { ("anger", 2), ("tension_adjust", 2), ("awkwardness", 1) },
             "friendly" => new[] { ("friendship", 2), ("trust", 1) },
             "tense" => new[] { ("anger", 2), ("tension_adjust", 2) },
-            "hostile" => new[] { ("anger", 4), ("tension_adjust", 3) },
+            "hostile" => new[] { ("anger", 4), ("avoidance_adjust", 3), ("tension_adjust", 3) },
             _ => new[] { ("trust", 1) }
         };
+
+        var pair = _pairEmotionService.GetOrCreate(state, encounter.NpcA, encounter.NpcB);
 
         foreach (var (axis, delta) in adjustments)
         {
             if (axis == "tension_adjust")
+            {
+                pair.Tension = Math.Clamp(pair.Tension + delta, 0, 100);
+                if (delta != 0)
+                    IncrementCounter(state.Telemetry.Daily.PairEmotionUpdatesByAxis, "tension");
                 continue;
-            _pairEmotionService.TryAdjustAxis(state, encounter.NpcA, encounter.NpcB, axis, delta, out _);
+            }
+
+            if (axis == "avoidance_adjust")
+            {
+                pair.Avoidance = Math.Clamp(pair.Avoidance + delta, 0, 100);
+                if (delta != 0)
+                    IncrementCounter(state.Telemetry.Daily.PairEmotionUpdatesByAxis, "avoidance");
+                continue;
+            }
+
+            if (_pairEmotionService.TryAdjustAxis(state, encounter.NpcA, encounter.NpcB, axis, delta, out _))
+                IncrementCounter(state.Telemetry.Daily.PairEmotionUpdatesByAxis, axis);
         }
 
         encounter.Phase = EncounterPhase.Complete;
@@ -250,5 +271,12 @@ public sealed class NpcSocialEncounterService
     private static int TryGetAxis(NpcPairEmotionEntry pair, string axis)
     {
         return pair.EmotionAxes.TryGetValue(axis, out var value) ? value : 0;
+    }
+
+    private static void IncrementCounter(Dictionary<string, int> counters, string key)
+    {
+        var normalizedKey = string.IsNullOrWhiteSpace(key) ? "(unknown)" : key.Trim().ToLowerInvariant();
+        counters.TryGetValue(normalizedKey, out var count);
+        counters[normalizedKey] = count + 1;
     }
 }

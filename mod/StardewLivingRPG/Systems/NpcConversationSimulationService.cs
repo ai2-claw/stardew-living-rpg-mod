@@ -40,9 +40,11 @@ public sealed class NpcConversationSimulationService
         var anger = GetAxis(pair, "anger");
         var awkwardness = GetAxis(pair, "awkwardness");
         var jealousy = GetAxis(pair, "jealousy");
-        var toneAtStart = ResolveTone(friendship, trust, anger, awkwardness, jealousy);
-        var purpose = ResolvePurpose(block, friendship, pair.Tension);
-        var softCap = ResolveSoftTurnBudget(friendship, trust, awkwardness, block.Type, speaker.Name, listener.Name);
+        var avoidance = pair.Avoidance;
+        var hasGrudge = pair.ActiveFlags.Contains("grudge", StringComparer.OrdinalIgnoreCase);
+        var toneAtStart = ResolveTone(friendship, trust, anger, awkwardness, jealousy, avoidance, hasGrudge);
+        var purpose = ResolvePurpose(block, friendship, pair.Tension, avoidance, hasGrudge);
+        var softCap = ResolveSoftTurnBudget(friendship, trust, awkwardness, avoidance, block.Type, speaker.Name, listener.Name);
 
         return new ConversationScenario
         {
@@ -99,13 +101,15 @@ public sealed class NpcConversationSimulationService
         return encounter.ArcOutcome;
     }
 
-    private int ResolveSoftTurnBudget(int friendship, int trust, int awkwardness, AutonomyPlanBlockType blockType, string speakerNpcId, string listenerNpcId)
+    private int ResolveSoftTurnBudget(int friendship, int trust, int awkwardness, int avoidance, AutonomyPlanBlockType blockType, string speakerNpcId, string listenerNpcId)
     {
         var turns = _config.AutonomyMinimumConversationTurns;
 
         if (friendship + trust >= 80)
             turns += 2;
         if (awkwardness >= 30)
+            turns -= 1;
+        if (avoidance >= 35)
             turns -= 1;
         if (blockType == AutonomyPlanBlockType.VisitNpc)
             turns += 1;
@@ -115,10 +119,12 @@ public sealed class NpcConversationSimulationService
         return Math.Clamp(turns, Math.Max(4, _config.AutonomyMinimumConversationTurns), _config.AutonomyMaximumConversationTurns);
     }
 
-    private static string ResolvePurpose(AutonomyPlanBlock block, int friendship, int tension)
+    private static string ResolvePurpose(AutonomyPlanBlock block, int friendship, int tension, int avoidance, bool hasGrudge)
     {
         return block.Type switch
         {
+            AutonomyPlanBlockType.VisitNpc when hasGrudge => "grievance",
+            AutonomyPlanBlockType.VisitNpc when avoidance >= 45 => "guarded_check_in",
             AutonomyPlanBlockType.VisitNpc when tension >= 45 => "grievance",
             AutonomyPlanBlockType.VisitNpc when tension >= 35 => "conflict",
             AutonomyPlanBlockType.VisitNpc when friendship >= 45 => "gossip_visit",
@@ -135,8 +141,10 @@ public sealed class NpcConversationSimulationService
         };
     }
 
-    private static string ResolveTone(int friendship, int trust, int anger, int awkwardness, int jealousy)
+    private static string ResolveTone(int friendship, int trust, int anger, int awkwardness, int jealousy, int avoidance, bool hasGrudge)
     {
+        if (hasGrudge || avoidance >= 55)
+            return "frustrated";
         if (anger >= 45)
             return "frustrated";
         if (jealousy >= 40)
@@ -173,6 +181,10 @@ public sealed class NpcConversationSimulationService
     {
         if (block.Type == AutonomyPlanBlockType.Work || IsDutyFirstNpc(speakerNpcId) || IsDutyFirstNpc(listenerNpcId))
             return toneAtStart == "warm" ? "practical_to_friendly" : "friendly_to_urgent";
+        if (pair.ActiveFlags.Contains("grudge", StringComparer.OrdinalIgnoreCase))
+            return pair.FriendshipLikeValue() >= 35 ? "repair_or_escalate" : "escalating";
+        if (pair.Avoidance >= 40)
+            return "guarded";
         if (toneAtStart == "frustrated")
             return pair.FriendshipLikeValue() >= 25 ? "repair_or_escalate" : "escalating";
         if (toneAtStart == "suspicious")
@@ -190,6 +202,8 @@ public sealed class NpcConversationSimulationService
     {
         if (block.Type is AutonomyPlanBlockType.Work or AutonomyPlanBlockType.Errand || IsDutyFirstNpc(speakerNpcId) || IsDutyFirstNpc(listenerNpcId))
             return "duty";
+        if (toneAtStart == "frustrated")
+            return "distance";
         if (toneAtStart == "awkward")
             return "awkwardness";
         if (toneAtStart == "tense")
@@ -205,7 +219,7 @@ public sealed class NpcConversationSimulationService
             return "story_hook";
         if (toneAtStart == "suspicious" || purpose == "rumor_check")
             return "mystery_hook";
-        if (toneAtStart == "frustrated" || purpose == "grievance" || purpose == "work_strain")
+        if (toneAtStart == "frustrated" || purpose is "grievance" or "guarded_check_in" or "work_strain")
             return "friction_left_hanging";
         if (purpose == "gossip" || purpose == "gossip_visit")
             return "rumor_shared";

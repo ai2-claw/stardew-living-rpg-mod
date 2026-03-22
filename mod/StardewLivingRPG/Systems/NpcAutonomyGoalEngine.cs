@@ -58,11 +58,14 @@ public sealed class NpcAutonomyGoalEngine
     {
         var goals = new List<ScoredAutonomyGoal>();
         var modeMultiplier = ResolveModeMultiplier(state.Config.Mode);
+        var locations = worldLocations.ToList();
+        var currentDay = state.Calendar.Day;
+        var currentNpcId = npc.Name ?? string.Empty;
 
         goals.Add(new ScoredAutonomyGoal
         {
             GoalType = "wander",
-            TargetLocation = _destinationRegistryService.ResolveFallbackLocation(snapshot.CurrentLocation, worldLocations).LocationId,
+            TargetLocation = _destinationRegistryService.ResolveFallbackLocation(snapshot.CurrentLocation, locations).LocationId,
             Reason = "stretch legs and take in the town",
             Score = 0.20f * modeMultiplier
         });
@@ -77,22 +80,8 @@ public sealed class NpcAutonomyGoalEngine
 
         foreach (var nearbyNpcId in snapshot.NearbyNpcIds)
         {
-            var pair = _pairEmotionService.GetOrCreate(state, npc.Name, nearbyNpcId);
-            var friendship = GetAxis(pair, "friendship");
-            var trust = GetAxis(pair, "trust");
-            var tension = pair.Tension;
-            var score = 0.18f + ((friendship + trust) / 300f) - (tension / 400f);
-            if (score <= 0f)
-                continue;
-
-            goals.Add(new ScoredAutonomyGoal
-            {
-                GoalType = "visit_npc",
-                TargetNpcId = nearbyNpcId,
-                TargetLocation = ResolveNpcLocation(nearbyNpcId, worldLocations, snapshot.CurrentLocation),
-                Reason = friendship >= tension ? "check in on someone familiar" : "resolve lingering tension nearby",
-                Score = score * modeMultiplier
-            });
+            if (TryBuildVisitGoal(state, currentNpcId, nearbyNpcId, snapshot, locations, isNearby: true, modeMultiplier, currentDay, out var goal))
+                goals.Add(goal);
         }
 
         // Cross-map visit_npc goals (G15): score ALL world NPCs with travel distance penalty
@@ -100,38 +89,13 @@ public sealed class NpcAutonomyGoalEngine
         foreach (var worldNpcId in snapshot.AllWorldNpcIds)
         {
             if (nearbySet.Contains(worldNpcId))
-                continue; // Already scored above with higher proximity bonus
-
-            var pair = _pairEmotionService.GetOrCreate(state, npc.Name, worldNpcId);
-            var friendship = GetAxis(pair, "friendship");
-            var trust = GetAxis(pair, "trust");
-            var tension = pair.Tension;
-
-            var motivation = 0.15f + ((friendship + trust) / 250f) - (tension / 400f);
-
-            // Travel distance penalty: estimate using DefaultMap resolution
-            var targetLocation = ResolveNpcLocation(worldNpcId, worldLocations, snapshot.CurrentLocation);
-            if (string.IsNullOrWhiteSpace(targetLocation))
                 continue;
 
-            // Cross-map penalty: -0.30 base for distant NPCs (refined by route planner later)
-            motivation -= 0.10f;
-
-            // Same-map adjacency bonus already handled in nearby loop
-            if (motivation <= 0.05f)
-                continue;
-
-            goals.Add(new ScoredAutonomyGoal
-            {
-                GoalType = "visit_npc",
-                TargetNpcId = worldNpcId,
-                TargetLocation = targetLocation,
-                Reason = friendship >= tension ? "feel drawn to visit a friend across town" : "need to address something with a distant acquaintance",
-                Score = Math.Clamp(motivation * modeMultiplier, 0f, 1f)
-            });
+            if (TryBuildVisitGoal(state, currentNpcId, worldNpcId, snapshot, locations, isNearby: false, modeMultiplier, currentDay, out var goal))
+                goals.Add(goal);
         }
 
-        foreach (var location in _destinationRegistryService.BuildLocations(worldLocations))
+        foreach (var location in _destinationRegistryService.BuildLocations(locations))
         {
             if (location.LocationId.Equals(snapshot.CurrentLocation, StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -153,61 +117,9 @@ public sealed class NpcAutonomyGoalEngine
         return goals
             .OrderByDescending(goal => goal.Score)
             .ThenBy(goal => goal.GoalType, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(goal => goal.TargetNpcId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(goal => goal.TargetLocation, StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
-
-    public bool TryValidateSuggestion(
-        SaveState state,
-        string npcId,
-        AutonomyGoalSuggestion suggestion,
-        IEnumerable<GameLocation> worldLocations,
-        out ScoredAutonomyGoal goal,
-        out string reasonCode)
-    {
-        goal = new ScoredAutonomyGoal();
-        reasonCode = "ok";
-
-        if (string.IsNullOrWhiteSpace(suggestion.GoalType))
-        {
-            reasonCode = "goal_missing";
-            return false;
-        }
-
-        if (suggestion.Urgency < 0f || suggestion.Urgency > 1f)
-        {
-            reasonCode = "urgency_out_of_range";
-            return false;
-        }
-
-        var cappedUrgency = Math.Min(suggestion.Urgency, _config.Player2GoalMaxUrgencyInfluence);
-        var targetLocation = suggestion.TargetLocation;
-
-        if (suggestion.GoalType.Equals("visit_npc", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!_destinationRegistryService.TryResolveVisitLocation(
-                    state,
-                    npcId,
-                    suggestion.TargetNpcId,
-                    Game1.timeOfDay,
-                    worldLocations,
-                    out var visitLocation,
-                    out reasonCode))
-            {
-                return false;
-            }
-
-            targetLocation = visitLocation.LocationId;
-        }
-
-        goal = new ScoredAutonomyGoal
-        {
-            GoalType = suggestion.GoalType.Trim().ToLowerInvariant(),
-            TargetNpcId = suggestion.TargetNpcId,
-            TargetLocation = targetLocation,
-            Reason = string.IsNullOrWhiteSpace(suggestion.Reason) ? "follow a sudden impulse" : suggestion.Reason.Trim(),
-            Score = Math.Clamp(0.10f + cappedUrgency, 0.10f, 0.90f)
-        };
-        return true;
     }
 
     private float ResolveModeMultiplier(string? mode)
@@ -224,6 +136,168 @@ public sealed class NpcAutonomyGoalEngine
     private static int GetAxis(NpcPairEmotionEntry pair, string axis)
     {
         return pair.EmotionAxes.TryGetValue(axis, out var value) ? value : 0;
+    }
+
+    private bool TryBuildVisitGoal(
+        SaveState state,
+        string npcId,
+        string targetNpcId,
+        NpcContextSnapshot snapshot,
+        List<GameLocation> worldLocations,
+        bool isNearby,
+        float modeMultiplier,
+        int currentDay,
+        out ScoredAutonomyGoal goal)
+    {
+        goal = new ScoredAutonomyGoal();
+        if (string.IsNullOrWhiteSpace(npcId) || string.IsNullOrWhiteSpace(targetNpcId))
+            return false;
+
+        var pair = _pairEmotionService.GetOrCreate(state, npcId, targetNpcId);
+        var friendship = GetAxis(pair, "friendship");
+        var trust = GetAxis(pair, "trust");
+        var anger = GetAxis(pair, "anger");
+        var jealousy = GetAxis(pair, "jealousy");
+        var familiarity = pair.Familiarity;
+        var avoidance = pair.Avoidance;
+        var tension = pair.Tension;
+        var hasGrudge = pair.ActiveFlags.Contains("grudge", StringComparer.OrdinalIgnoreCase);
+        var frequentVisitors = pair.ActiveFlags.Contains("frequent_visitors", StringComparer.OrdinalIgnoreCase);
+        var daysSinceLastInteraction = pair.LastInteractionDay <= 0
+            ? 99
+            : Math.Max(0, currentDay - pair.LastInteractionDay);
+        var locationId = ResolveNpcLocation(targetNpcId, worldLocations, snapshot.CurrentLocation);
+
+        if (string.IsNullOrWhiteSpace(locationId))
+            return false;
+
+        var pairKey = PairEmotionService.BuildPairKey(npcId, targetNpcId);
+        var pairCooldownPenalty = ResolvePairCooldownPenalty(state, pairKey, currentDay);
+        var locationCooldownPenalty = ResolveLocationCooldownPenalty(state, npcId, locationId, currentDay);
+        var score = 0.08f;
+        score += friendship / 240f;
+        score += trust / 320f;
+        score += Math.Min(familiarity, 50) / 500f;
+        score += frequentVisitors ? 0.05f : 0f;
+        score += isNearby ? 0.08f : -0.02f;
+        score += daysSinceLastInteraction switch
+        {
+            <= 1 => 0.06f,
+            <= 3 => 0.03f,
+            >= 10 when friendship + trust >= 50 => 0.04f,
+            _ => 0f
+        };
+        score -= tension / 360f;
+        score -= anger / 320f;
+        score -= jealousy / 420f;
+        score -= avoidance / 220f;
+        score -= hasGrudge ? 0.14f : 0f;
+        score -= pairCooldownPenalty;
+        score -= locationCooldownPenalty;
+
+        var isStrongNegativePair = hasGrudge || avoidance >= 45 || tension >= 55 || anger >= 45;
+        var publicFallback = _destinationRegistryService.ResolveFallbackLocation(locationId, worldLocations);
+        if (_destinationRegistryService.TryResolveVisitLocation(
+                state,
+                npcId,
+                targetNpcId,
+                snapshot.TimeOfDay,
+                worldLocations,
+                out var visitLocation,
+                out var reasonCode))
+        {
+            state.Telemetry.Daily.HomeVisitsAllowed += 1;
+            locationId = visitLocation.LocationId;
+        }
+        else
+        {
+            state.Telemetry.Daily.HomeVisitsDenied += 1;
+            IncrementCounter(state.Telemetry.Daily.VisitDenialByReason, reasonCode);
+            if (!_config.AutonomyPrivateVisitFallbackToPublic || isStrongNegativePair || string.IsNullOrWhiteSpace(publicFallback.LocationId))
+            {
+                IncrementCounter(state.Telemetry.Daily.AutonomyRejectByReason, reasonCode);
+                return false;
+            }
+
+            locationId = publicFallback.LocationId;
+            score -= 0.08f;
+            goal = new ScoredAutonomyGoal
+            {
+                GoalType = "visit_npc",
+                TargetNpcId = targetNpcId,
+                TargetLocation = locationId,
+                Reason = hasGrudge ? "circle a neutral place before deciding whether to engage" : "look for them somewhere public first",
+                RejectReasonCode = reasonCode,
+                RequiresPublicFallback = true,
+                Score = Math.Clamp(score * modeMultiplier, 0f, 1f)
+            };
+            return goal.Score >= _config.AutonomyEncounterScoreThreshold;
+        }
+
+        if (score < _config.AutonomyEncounterScoreThreshold)
+            return false;
+
+        goal = new ScoredAutonomyGoal
+        {
+            GoalType = "visit_npc",
+            TargetNpcId = targetNpcId,
+            TargetLocation = locationId,
+            Reason = ResolveVisitReason(friendship, trust, tension, avoidance, hasGrudge, isNearby),
+            Score = Math.Clamp(score * modeMultiplier, 0f, 1f)
+        };
+        return true;
+    }
+
+    private static float ResolvePairCooldownPenalty(SaveState state, string pairKey, int currentDay)
+    {
+        if (string.IsNullOrWhiteSpace(pairKey) || !state.Autonomy.VisitCooldownByPairKey.TryGetValue(pairKey, out var lastDay))
+            return 0f;
+
+        var daysElapsed = Math.Max(0, currentDay - lastDay);
+        return daysElapsed switch
+        {
+            0 => 0.30f,
+            1 => 0.12f,
+            _ => 0f
+        };
+    }
+
+    private static float ResolveLocationCooldownPenalty(SaveState state, string npcId, string locationId, int currentDay)
+    {
+        if (string.IsNullOrWhiteSpace(npcId) || string.IsNullOrWhiteSpace(locationId))
+            return 0f;
+
+        var key = $"{npcId}|{locationId}".ToLowerInvariant();
+        if (!state.Autonomy.LocationCooldownByNpcKey.TryGetValue(key, out var lastDay))
+            return 0f;
+
+        var daysElapsed = Math.Max(0, currentDay - lastDay);
+        return daysElapsed switch
+        {
+            0 => 0.18f,
+            1 => 0.06f,
+            _ => 0f
+        };
+    }
+
+    private static string ResolveVisitReason(int friendship, int trust, int tension, int avoidance, bool hasGrudge, bool isNearby)
+    {
+        if (hasGrudge || tension >= 45)
+            return isNearby ? "press on a tense thread before it hardens" : "go settle unfinished tension in person";
+        if (avoidance >= 35)
+            return "test whether a careful check-in is still possible";
+        if (friendship + trust >= 85)
+            return isNearby ? "make time for someone they genuinely enjoy" : "cross town to spend time with someone important";
+        if (friendship + trust >= 45)
+            return "check in on someone familiar";
+        return "see if a small social visit leads anywhere";
+    }
+
+    private static void IncrementCounter(Dictionary<string, int> counters, string key)
+    {
+        var normalizedKey = string.IsNullOrWhiteSpace(key) ? "(unknown)" : key.Trim().ToLowerInvariant();
+        counters.TryGetValue(normalizedKey, out var count);
+        counters[normalizedKey] = count + 1;
     }
 
     private string ResolveNpcLocation(string npcId, IEnumerable<GameLocation> worldLocations, string fallbackLocation)

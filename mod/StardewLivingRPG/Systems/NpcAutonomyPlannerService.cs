@@ -12,7 +12,6 @@ public sealed class NpcAutonomyPlannerService
 {
     private readonly DestinationRegistryService _destinationRegistryService;
     private readonly NpcDutyRosterService _dutyRosterService;
-    private readonly Random _random = new();
 
     private static readonly string[] ScheduleLocationMemberCandidates = { "targetLocationName", "TargetLocationName", "locationName", "LocationName", "location", "Location", "locationId", "LocationId" };
     private static readonly string[] ScheduleTileMemberCandidates = { "route", "Route", "endPoint", "EndPoint", "targetTile", "TargetTile", "tile", "Tile", "point", "Point" };
@@ -245,19 +244,28 @@ public sealed class NpcAutonomyPlannerService
         if (availableMinutes < 90 || remainingGoals.Count == 0 || blockCount >= config.AutonomyMaxBlocksPerDay)
             return;
 
-        // Randomly skip ~50% of eligible windows to keep detours sparse
-        if (_random.NextDouble() < 0.5)
+        var rankedGoals = remainingGoals
+            .Select(goal => new
+            {
+                Goal = goal,
+                Score = goal.Score + ResolveWindowFitBonus(goal, snapshot, windowStart, availableMinutes)
+            })
+            .OrderByDescending(entry => entry.Score)
+            .ThenBy(entry => entry.Goal.GoalType, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.Goal.TargetNpcId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.Goal.TargetLocation, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var selection = rankedGoals.FirstOrDefault(entry => entry.Score >= config.AutonomyEncounterScoreThreshold);
+        if (selection is null)
             return;
 
-        var goal = remainingGoals[0];
-        if (goal.Score < config.AutonomyEncounterScoreThreshold)
-            return;
-
+        var goal = selection.Goal;
         var duration = ResolveDetourDuration(goal, availableMinutes);
         if (duration <= 0)
             return;
 
-        remainingGoals.RemoveAt(0);
+        remainingGoals.Remove(goal);
         var startTime = windowStart;
         var endTime = AddMinutes(startTime, duration);
         var targetLocation = ResolveTargetLocation(goal, snapshot);
@@ -304,6 +312,21 @@ public sealed class NpcAutonomyPlannerService
         var target = goal.GoalType.Equals("visit_npc", StringComparison.OrdinalIgnoreCase) ? 30 : 20;
         var maxAllowed = Math.Max(0, availableMinutes - 20);
         return Math.Min(target, maxAllowed);
+    }
+
+    private static float ResolveWindowFitBonus(ScoredAutonomyGoal goal, NpcContextSnapshot snapshot, int windowStart, int availableMinutes)
+    {
+        var hour = windowStart / 100;
+        var bonus = 0f;
+        if (goal.GoalType.Equals("rest", StringComparison.OrdinalIgnoreCase) && (hour < 10 || hour >= 19))
+            bonus += 0.05f;
+        if (goal.GoalType.Equals("socialize", StringComparison.OrdinalIgnoreCase) && hour >= 12 && hour <= 18)
+            bonus += 0.04f;
+        if (goal.GoalType.Equals("visit_npc", StringComparison.OrdinalIgnoreCase) && availableMinutes >= 120)
+            bonus += 0.03f;
+        if (goal.RequiresPublicFallback && snapshot.IsRaining)
+            bonus -= 0.04f;
+        return bonus;
     }
 
     private static AutonomyPlanBlockType ResolveBlockType(string goalType)

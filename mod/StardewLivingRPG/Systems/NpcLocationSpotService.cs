@@ -4,11 +4,10 @@ using StardewValley;
 
 namespace StardewLivingRPG.Systems;
 
-public sealed class Player2SpatialPlanSuggestion
+public sealed class ProceduralSpatialTarget
 {
     public string TargetZoneId { get; set; } = string.Empty;
     public string TargetSpotRole { get; set; } = string.Empty;
-    public bool LeaveMapIfCrowded { get; set; }
     public string Reason { get; set; } = string.Empty;
     public int? TargetTileX { get; set; }
     public int? TargetTileY { get; set; }
@@ -332,7 +331,7 @@ public sealed class NpcLocationSpotService
         return true;
     }
 
-    public Player2SpatialPlanSuggestion BuildLocalFallbackSuggestion(
+    public ProceduralSpatialTarget BuildProceduralTarget(
         NPC npc,
         AutonomyPlanBlock block,
         bool isResident,
@@ -340,7 +339,7 @@ public sealed class NpcLocationSpotService
     {
         if (block.Type == AutonomyPlanBlockType.RequiredDuty || isWorker)
         {
-            return new Player2SpatialPlanSuggestion
+            return new ProceduralSpatialTarget
             {
                 TargetZoneId = "counter",
                 TargetSpotRole = "worker_post",
@@ -350,7 +349,7 @@ public sealed class NpcLocationSpotService
 
         if (block.Type is AutonomyPlanBlockType.ReturnHome or AutonomyPlanBlockType.Rest)
         {
-            return new Player2SpatialPlanSuggestion
+            return new ProceduralSpatialTarget
             {
                 TargetZoneId = isResident ? "family_side" : "waiting",
                 TargetSpotRole = isResident ? "home_idle" : "visitor_idle",
@@ -360,7 +359,7 @@ public sealed class NpcLocationSpotService
 
         if (block.Type == AutonomyPlanBlockType.VisitNpc)
         {
-            return new Player2SpatialPlanSuggestion
+            return new ProceduralSpatialTarget
             {
                 TargetZoneId = isResident ? "family_side" : "shop_floor",
                 TargetSpotRole = "chat_node",
@@ -368,7 +367,7 @@ public sealed class NpcLocationSpotService
             };
         }
 
-        return new Player2SpatialPlanSuggestion
+        return new ProceduralSpatialTarget
         {
             TargetZoneId = isResident ? "family_side" : "shop_floor",
             TargetSpotRole = isResident ? "home_idle" : "visitor_idle",
@@ -380,7 +379,7 @@ public sealed class NpcLocationSpotService
         GameLocation location,
         NPC npc,
         AutonomyPlanBlock block,
-        Player2SpatialPlanSuggestion suggestion,
+        ProceduralSpatialTarget suggestion,
         NpcTileReservationService reservations,
         NpcWalkabilityService walkabilityService,
         out NpcLocationSpot spot,
@@ -414,7 +413,7 @@ public sealed class NpcLocationSpotService
             var exactSpot = ResolveSpotForExactTile(compatibleSpots, exactTile, preferredZone, preferredRole)
                 ?? new NpcLocationSpot
                 {
-                    SpotId = $"p2_exact:{location.Name}:{preferredZone}:{preferredRole}:{exactTile.X}:{exactTile.Y}",
+                    SpotId = $"local_exact:{location.Name}:{preferredZone}:{preferredRole}:{exactTile.X}:{exactTile.Y}",
                     LocationId = location.Name,
                     ZoneId = preferredZone,
                     SpotRole = preferredRole,
@@ -453,27 +452,6 @@ public sealed class NpcLocationSpotService
         }
 
         return false;
-    }
-
-    public string BuildPromptBlock(string locationId)
-    {
-        if (!TryGetLayoutBrief(locationId, out var brief))
-            return string.Empty;
-
-        var spots = _spotsByLocationId.TryGetValue(locationId, out var entries)
-            ? string.Join("; ", entries.Select(spot => $"{spot.SpotId}:{spot.ZoneId}:{spot.SpotRole}@({spot.PreferredTile.X},{spot.PreferredTile.Y})"))
-            : string.Empty;
-        var keepClear = string.Join("; ", brief.KeepClearAreas.Select(area => $"{area.X},{area.Y},{area.Width},{area.Height}"));
-        var zones = string.Join("; ", brief.ZoneAreas.Select(zone => $"{zone.Key}={string.Join("|", zone.Value.Select(area => $"{area.X},{area.Y},{area.Width},{area.Height}"))}"));
-
-        return string.Join(" ",
-            $"MAP_LAYOUT: {brief.Summary}",
-            $"MAP_BLOCKERS: {(brief.Blockers.Length == 0 ? "none" : string.Join(", ", brief.Blockers))}.",
-            $"MAP_KEEP_CLEAR: {(brief.KeepClearZones.Length == 0 ? "none" : string.Join(", ", brief.KeepClearZones))}.",
-            $"MAP_KEEP_CLEAR_RECTS: {(string.IsNullOrWhiteSpace(keepClear) ? "none" : keepClear)}.",
-            $"MAP_ZONES: {(string.IsNullOrWhiteSpace(zones) ? "none" : zones)}.",
-            $"MAP_SOCIAL_NORMS: {(brief.SocialNorms.Length == 0 ? "none" : string.Join(" ", brief.SocialNorms))}.",
-            $"MAP_SPOTS: {(string.IsNullOrWhiteSpace(spots) ? "none" : spots)}.");
     }
 
     private static NpcLocationSpot? ResolveSpotForExactTile(

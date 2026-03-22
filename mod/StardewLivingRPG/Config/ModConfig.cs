@@ -55,8 +55,6 @@ public sealed class ModConfig
     public int AutonomyMinimumConversationTurns { get; set; } = 4;
     public int AutonomyMaximumConversationTurns { get; set; } = 6;
     public bool AutonomyRequireConversationClosing { get; set; } = true;
-    public bool EnablePlayer2AutonomySuggestions { get; set; } = true;
-    public float Player2GoalMaxUrgencyInfluence { get; set; } = 0.6f;
     public float AutonomyIntensityCozy { get; set; } = 0.6f;
     public float AutonomyIntensityStory { get; set; } = 1.0f;
     public float AutonomyIntensityChaos { get; set; } = 1.4f;

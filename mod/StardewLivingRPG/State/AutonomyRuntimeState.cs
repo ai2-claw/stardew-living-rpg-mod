@@ -59,7 +59,6 @@ public sealed class AutonomyPlanBlock
     public AutonomyPlanBlockStatus Status { get; set; } = AutonomyPlanBlockStatus.Pending;
     public CompiledRoute? Route { get; set; }
     public Point TargetTile { get; set; }
-    public bool Player2Planned { get; set; }
     public bool RequiresExactTile { get; set; }
     public int EstimatedArrivalTime { get; set; }
     public int MaxWaitMinutes { get; set; } = 30;
@@ -127,16 +126,9 @@ public sealed class ScoredAutonomyGoal
     public string TargetNpcId { get; init; } = string.Empty;
     public string TargetLocation { get; init; } = string.Empty;
     public string Reason { get; init; } = string.Empty;
+    public string RejectReasonCode { get; init; } = string.Empty;
+    public bool RequiresPublicFallback { get; init; }
     public float Score { get; init; }
-}
-
-public sealed class AutonomyGoalSuggestion
-{
-    public string GoalType { get; init; } = string.Empty;
-    public string TargetNpcId { get; init; } = string.Empty;
-    public string TargetLocation { get; init; } = string.Empty;
-    public string Reason { get; init; } = string.Empty;
-    public float Urgency { get; init; }
 }
 
 public enum RouteSegmentStatus { Pending, InProgress, Completed, Failed }

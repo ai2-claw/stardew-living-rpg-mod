@@ -24,11 +24,7 @@ public sealed class NpcIntentResolver
         "propose_micro_date",
         "adjust_npc_pair_emotion",
         "record_social_incident",
-        "set_npc_pair_flag",
-        "suggest_autonomy_goal",
-        "orchestrate_visit",
-        "orchestrate_encounter",
-        "change_npc_goal"
+        "set_npc_pair_flag"
     };
 
     private static readonly HashSet<string> AllowedTemplates = new(StringComparer.OrdinalIgnoreCase)
@@ -154,10 +150,6 @@ public sealed class NpcIntentResolver
             "adjust_npc_pair_emotion" => ResolveAdjustNpcPairEmotion(state, npcId, intentId, args),
             "record_social_incident" => ResolveRecordSocialIncident(state, npcId, intentId, args),
             "set_npc_pair_flag" => ResolveSetNpcPairFlag(state, npcId, intentId, args),
-            "suggest_autonomy_goal" => ResolveSuggestAutonomyGoal(state, npcId, intentId, args),
-            "orchestrate_visit" => ResolveOrchestrateVisit(state, npcId, intentId, args),
-            "orchestrate_encounter" => ResolveOrchestrateEncounter(state, npcId, intentId, args),
-            "change_npc_goal" => ResolveChangeNpcGoal(state, npcId, intentId, args),
             _ => NpcIntentResolveResult.Rejected($"unhandled command '{command}'")
         };
     }
@@ -1238,145 +1230,6 @@ public sealed class NpcIntentResolver
         MarkIntentProcessed(state, intentId, npcId, "set_npc_pair_flag");
         state.Telemetry.Daily.WorldMutations += 1;
         return NpcIntentResolveResult.Applied(intentId, "set_npc_pair_flag", pairKey, fallbackUsed: false, proposal: null);
-    }
-
-    private static NpcIntentResolveResult ResolveSuggestAutonomyGoal(SaveState state, string npcId, string intentId, JsonElement args)
-    {
-        if (!args.TryGetProperty("goal_type", out var goalEl) || goalEl.ValueKind != JsonValueKind.String)
-            return NpcIntentResolveResult.Rejected("suggest_autonomy_goal missing goal_type", "E_AUTONOMY_GOAL_INVALID");
-        if (HasUnexpectedArgs(args, "goal_type", "target_npc", "target_location", "reason", "urgency"))
-            return NpcIntentResolveResult.Rejected("suggest_autonomy_goal contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
-
-        var goalType = (goalEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
-        if (goalType is not ("visit_npc" or "socialize" or "wander" or "rest" or "observe_event" or "errand"))
-            return NpcIntentResolveResult.Rejected($"suggest_autonomy_goal invalid goal_type '{goalType}'", "E_AUTONOMY_GOAL_INVALID");
-
-        var urgency = 0.5f;
-        if (args.TryGetProperty("urgency", out var urgencyEl))
-        {
-            if (urgencyEl.ValueKind != JsonValueKind.Number || !urgencyEl.TryGetSingle(out urgency) || urgency < 0f || urgency > 1f)
-                return NpcIntentResolveResult.Rejected("suggest_autonomy_goal urgency out of range (0..1)", "E_AUTONOMY_URGENCY_INVALID");
-        }
-
-        var targetNpc = args.TryGetProperty("target_npc", out var targetNpcEl) && targetNpcEl.ValueKind == JsonValueKind.String
-            ? (targetNpcEl.GetString() ?? string.Empty).Trim()
-            : string.Empty;
-        var targetLocation = args.TryGetProperty("target_location", out var targetLocationEl) && targetLocationEl.ValueKind == JsonValueKind.String
-            ? (targetLocationEl.GetString() ?? string.Empty).Trim()
-            : string.Empty;
-
-        MarkIntentProcessed(state, intentId, npcId, "suggest_autonomy_goal");
-        state.Facts.Facts[$"autonomy_suggestion:{state.Calendar.Day}:{npcId}:{goalType}:{intentId}"] = new FactValue
-        {
-            Value = true,
-            SetDay = state.Calendar.Day,
-            Source = "npc_command"
-        };
-        return NpcIntentResolveResult.Applied(intentId, "suggest_autonomy_goal", string.IsNullOrWhiteSpace(targetNpc) ? goalType : targetNpc, fallbackUsed: false, proposal: null);
-    }
-
-    /// <summary>
-    /// Player2 building block: orchestrate a visit between two NPCs.
-    /// The system handles route planning, tile resolution, and movement.
-    /// Args: source_npc, target_npc, reason (optional)
-    /// </summary>
-    private static NpcIntentResolveResult ResolveOrchestrateVisit(SaveState state, string npcId, string intentId, JsonElement args)
-    {
-        if (!args.TryGetProperty("source_npc", out var srcEl) || srcEl.ValueKind != JsonValueKind.String)
-            return NpcIntentResolveResult.Rejected("orchestrate_visit missing source_npc", "E_VISIT_SOURCE_MISSING");
-        if (!args.TryGetProperty("target_npc", out var tgtEl) || tgtEl.ValueKind != JsonValueKind.String)
-            return NpcIntentResolveResult.Rejected("orchestrate_visit missing target_npc", "E_VISIT_TARGET_MISSING");
-        if (HasUnexpectedArgs(args, "source_npc", "target_npc", "reason"))
-            return NpcIntentResolveResult.Rejected("orchestrate_visit contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
-
-        var sourceNpc = (srcEl.GetString() ?? string.Empty).Trim();
-        var targetNpc = (tgtEl.GetString() ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(sourceNpc) || string.IsNullOrWhiteSpace(targetNpc))
-            return NpcIntentResolveResult.Rejected("orchestrate_visit source or target is empty", "E_VISIT_NPC_EMPTY");
-
-        var reason = args.TryGetProperty("reason", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.String
-            ? (reasonEl.GetString() ?? string.Empty).Trim()
-            : "orchestrated by player2";
-
-        MarkIntentProcessed(state, intentId, npcId, "orchestrate_visit");
-        state.Facts.Facts[$"orchestrate_visit:{state.Calendar.Day}:{sourceNpc}:{targetNpc}:{intentId}"] = new FactValue
-        {
-            Value = true,
-            SetDay = state.Calendar.Day,
-            Source = "npc_command"
-        };
-        return NpcIntentResolveResult.Applied(intentId, "orchestrate_visit", $"{sourceNpc}->{targetNpc}", fallbackUsed: false, proposal: null);
-    }
-
-    /// <summary>
-    /// Player2 building block: trigger a face-to-face encounter between two NPCs.
-    /// Args: npc_a, npc_b, topic (optional), tone (optional)
-    /// </summary>
-    private static NpcIntentResolveResult ResolveOrchestrateEncounter(SaveState state, string npcId, string intentId, JsonElement args)
-    {
-        if (!args.TryGetProperty("npc_a", out var aEl) || aEl.ValueKind != JsonValueKind.String)
-            return NpcIntentResolveResult.Rejected("orchestrate_encounter missing npc_a", "E_ENCOUNTER_A_MISSING");
-        if (!args.TryGetProperty("npc_b", out var bEl) || bEl.ValueKind != JsonValueKind.String)
-            return NpcIntentResolveResult.Rejected("orchestrate_encounter missing npc_b", "E_ENCOUNTER_B_MISSING");
-        if (HasUnexpectedArgs(args, "npc_a", "npc_b", "topic", "tone"))
-            return NpcIntentResolveResult.Rejected("orchestrate_encounter contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
-
-        var npcA = (aEl.GetString() ?? string.Empty).Trim();
-        var npcB = (bEl.GetString() ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(npcA) || string.IsNullOrWhiteSpace(npcB))
-            return NpcIntentResolveResult.Rejected("orchestrate_encounter npc_a or npc_b is empty", "E_ENCOUNTER_NPC_EMPTY");
-
-        var topic = args.TryGetProperty("topic", out var topicEl) && topicEl.ValueKind == JsonValueKind.String
-            ? (topicEl.GetString() ?? string.Empty).Trim()
-            : string.Empty;
-        var tone = args.TryGetProperty("tone", out var toneEl) && toneEl.ValueKind == JsonValueKind.String
-            ? (toneEl.GetString() ?? string.Empty).Trim()
-            : "friendly";
-
-        MarkIntentProcessed(state, intentId, npcId, "orchestrate_encounter");
-        state.Facts.Facts[$"orchestrate_encounter:{state.Calendar.Day}:{npcA}:{npcB}:{intentId}"] = new FactValue
-        {
-            Value = true,
-            SetDay = state.Calendar.Day,
-            Source = "npc_command"
-        };
-        // Store topic/tone as additional facts so the encounter system can pick them up
-        if (!string.IsNullOrWhiteSpace(topic))
-            state.Facts.Facts[$"encounter_topic:{state.Calendar.Day}:{npcA}:{npcB}:{topic}"] = new FactValue { Value = true, SetDay = state.Calendar.Day, Source = "npc_command" };
-        if (!string.IsNullOrWhiteSpace(tone))
-            state.Facts.Facts[$"encounter_tone:{state.Calendar.Day}:{npcA}:{npcB}:{tone}"] = new FactValue { Value = true, SetDay = state.Calendar.Day, Source = "npc_command" };
-
-        return NpcIntentResolveResult.Applied(intentId, "orchestrate_encounter", $"{npcA}<->{npcB}", fallbackUsed: false, proposal: null);
-    }
-
-    /// <summary>
-    /// Player2 building block: change an NPC's current autonomy goal.
-    /// Triggers a replan with the specified goal type as the priority.
-    /// Args: goal_type, reason (optional)
-    /// </summary>
-    private static NpcIntentResolveResult ResolveChangeNpcGoal(SaveState state, string npcId, string intentId, JsonElement args)
-    {
-        if (!args.TryGetProperty("goal_type", out var goalEl) || goalEl.ValueKind != JsonValueKind.String)
-            return NpcIntentResolveResult.Rejected("change_npc_goal missing goal_type", "E_GOAL_TYPE_MISSING");
-        if (HasUnexpectedArgs(args, "goal_type", "target_npc", "target_location", "reason"))
-            return NpcIntentResolveResult.Rejected("change_npc_goal contains unexpected argument fields", "E_ARGUMENTS_UNEXPECTED");
-
-        var goalType = (goalEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
-        if (goalType is not ("visit_npc" or "socialize" or "wander" or "rest" or "observe_event" or "errand" or "return_home"))
-            return NpcIntentResolveResult.Rejected($"change_npc_goal invalid goal_type '{goalType}'", "E_GOAL_TYPE_INVALID");
-
-        var reason = args.TryGetProperty("reason", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.String
-            ? (reasonEl.GetString() ?? string.Empty).Trim()
-            : "goal changed by player2";
-
-        MarkIntentProcessed(state, intentId, npcId, "change_npc_goal");
-        state.Facts.Facts[$"change_npc_goal:{state.Calendar.Day}:{npcId}:{goalType}:{intentId}"] = new FactValue
-        {
-            Value = true,
-            SetDay = state.Calendar.Day,
-            Source = "npc_command"
-        };
-        return NpcIntentResolveResult.Applied(intentId, "change_npc_goal", goalType, fallbackUsed: false, proposal: null);
     }
 
     private static void IncrementCounter(Dictionary<string, int> counters, string key)

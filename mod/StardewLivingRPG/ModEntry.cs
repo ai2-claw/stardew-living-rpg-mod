@@ -43,11 +43,6 @@ public sealed class ModEntry : Mod
     private const int AmbientNpcHistoryFallbackDelayMs = 300;
     private const int AmbientNpcStreamFallbackAttempts = 10;
     private const int AmbientNpcStreamFallbackDelayMs = 250;
-    private const int AutonomySpatialPlanTimeoutSeconds = 10;
-    private const int AutonomySpatialReplanTimeoutSeconds = 14;
-    private const int AutonomySpatialPlannerSpawnTimeoutSeconds = 20;
-    private const int AutonomySpatialFailureRetrySeconds = 12;
-    private const int AutonomySpatialPlannerMaxInFlightRequests = 4;
     private const float AmbientPublishRumorMinConfidence = 0.62f;
     private const int AmbientConversationBeatRepeatCooldownDays = 1;
     private const int AmbientConversationBeatUsagePenalty = 3;
@@ -466,21 +461,6 @@ public sealed class ModEntry : Mod
         public int TurnTarget { get; set; }
         public int TurnCompleted { get; set; }
         public double DurationMs { get; set; }
-    }
-
-    private sealed class AutonomySpatialPlanCompletion
-    {
-        public string RequestKey { get; init; } = string.Empty;
-        public bool Success { get; init; }
-        public string FailureCode { get; init; } = string.Empty;
-        public Player2SpatialPlanSuggestion Suggestion { get; init; } = new();
-        public DateTime CompletedUtc { get; init; }
-    }
-
-    private sealed class CachedAutonomySpatialPlan
-    {
-        public Player2SpatialPlanSuggestion Suggestion { get; init; } = new();
-        public DateTime CompletedUtc { get; init; }
     }
 
     private enum EncounterFallbackMode
@@ -988,11 +968,7 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentDictionary<string, int> _npcUiPendingById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _npcChatHistoryFallbackInFlightById = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<string> _ambientLaneDebugSnapshots = new();
-    private readonly ConcurrentQueue<AutonomySpatialPlanCompletion> _completedAutonomySpatialPlans = new();
-    private readonly ConcurrentDictionary<string, byte> _pendingAutonomySpatialPlanKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, AutonomyRuntimeState> _autonomyRuntimeByNpcId = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, CachedAutonomySpatialPlan> _cachedAutonomySpatialPlansByKey = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, DateTime> _autonomySpatialPlanRetryAfterByKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _externalAutoDiscoveredNpcNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ExternalNpcLoreProfile> _externalAutoLoreByToken = new(StringComparer.OrdinalIgnoreCase);
     private int _player2PendingResponseCount;
@@ -1008,8 +984,6 @@ public sealed class ModEntry : Mod
     private string? _lastStreamChatRequesterShortName;
     private string? _lastStreamChatSenderNameOverride;
     private string? _lastStreamChatContextTag;
-    private string? _player2SpatialPlannerNpcId;
-    private readonly object _player2SpatialPlannerSync = new();
     private string? _pendingStreamReplayMessage;
     private string? _pendingStreamReplayTargetNpcId;
     private string? _pendingStreamReplayRequesterShortName;
@@ -1025,7 +999,6 @@ public sealed class ModEntry : Mod
     private readonly ConcurrentQueue<NewspaperIssue> _completedNewspaperIssues = new();
     private readonly ConcurrentQueue<NpcPublishHeadlineUpdate> _completedNpcPublishHeadlineUpdates = new();
     private readonly List<NpcPublishHeadlineUpdate> _pendingNpcPublishHeadlineUpdates = new();
-    private int _autonomySpatialPlanRequestsInFlight;
     private int _lastNpcPublishAppliedDay = -1;
     private int _lastNpcPublishAppliedTimeOfDay = -1;
     private int _pendingLateNightPassOutDay = -1;
@@ -1894,7 +1867,7 @@ public sealed class ModEntry : Mod
                     if (npc is null || runtime.ActivePlan is null || runtime.ActiveBlockIndex < 0 || runtime.ActiveBlockIndex >= runtime.ActivePlan.Blocks.Count)
                         continue;
 
-                    TryRefreshSpatialTarget(npc, runtime, runtime.ActivePlan.Blocks[runtime.ActiveBlockIndex], forcePlayer2Replan: false);
+                    TryRefreshSpatialTarget(npc, runtime, runtime.ActivePlan.Blocks[runtime.ActiveBlockIndex], forceSpatialRetarget: false);
                 }
 
                 _materializationService.ReconcileMap(
@@ -4495,7 +4468,6 @@ public sealed class ModEntry : Mod
         TryApplyPendingAmbientConversationCompletions();
         TryApplyPendingEncounterConversationTurns();
         TryApplyPendingEncounterConversationCompletions();
-        TryApplyCompletedAutonomySpatialPlanResults();
         TryAdvanceAutonomousRoutines(e);
         TryTriggerAmbientIndoorAutonomyChatter(e);
         _faceToFaceService?.Tick(ResolveNpcByName);
@@ -13502,7 +13474,6 @@ public sealed class ModEntry : Mod
         _worldTopologyService?.InvalidateCache();
         _destinationRegistryService?.InvalidateCache();
         _npcTileReservationService?.Clear();
-        ClearAutonomySpatialPlanningState();
 
         _autonomyRuntimeByNpcId.Clear();
         while (_pendingEncounterConversationTurns.TryDequeue(out _))
@@ -13525,38 +13496,6 @@ public sealed class ModEntry : Mod
         _npcConversationTopicUsageTodayByKey.Clear();
         _npcSpeechBubbleService?.CancelAll();
         _pairEmotionService?.Decay(_state);
-    }
-
-    private void ClearAutonomySpatialPlanningState()
-    {
-        while (_completedAutonomySpatialPlans.TryDequeue(out _))
-        {
-        }
-
-        _pendingAutonomySpatialPlanKeys.Clear();
-        _cachedAutonomySpatialPlansByKey.Clear();
-        _autonomySpatialPlanRetryAfterByKey.Clear();
-        Interlocked.Exchange(ref _autonomySpatialPlanRequestsInFlight, 0);
-    }
-
-    private void TryApplyCompletedAutonomySpatialPlanResults()
-    {
-        while (_completedAutonomySpatialPlans.TryDequeue(out var completion))
-        {
-            if (completion.Success)
-            {
-                _cachedAutonomySpatialPlansByKey[completion.RequestKey] = new CachedAutonomySpatialPlan
-                {
-                    Suggestion = completion.Suggestion,
-                    CompletedUtc = completion.CompletedUtc
-                };
-                _autonomySpatialPlanRetryAfterByKey.Remove(completion.RequestKey);
-                continue;
-            }
-
-            _cachedAutonomySpatialPlansByKey.Remove(completion.RequestKey);
-            _autonomySpatialPlanRetryAfterByKey[completion.RequestKey] = completion.CompletedUtc.AddSeconds(AutonomySpatialFailureRetrySeconds);
-        }
     }
 
     private void BuildDailyAutonomyPlans()
@@ -13654,7 +13593,7 @@ public sealed class ModEntry : Mod
             }
             else if (block.Status == AutonomyPlanBlockStatus.Active)
             {
-                TryRefreshSpatialTarget(npc, runtime, block, forcePlayer2Replan: false, reserveTarget: false);
+                TryRefreshSpatialTarget(npc, runtime, block, forceSpatialRetarget: false, reserveTarget: false);
                 UpdateAmbientDetourProjection(npc, runtime, block);
             }
 
@@ -13662,6 +13601,7 @@ public sealed class ModEntry : Mod
             {
                 if (!isAnchor)
                 {
+                    RecordAutonomyCooldowns(runtime, block);
                     runtime.MovementPhase = "idle";
                     runtime.StationaryTicks = 0;
                     runtime.OscillationTicks = 0;
@@ -13903,9 +13843,8 @@ public sealed class ModEntry : Mod
             if (_npcLocationSpotService is not null && _npcLocationSpotService.SupportsLocation(block.TargetLocation))
             {
                 block.RequiresExactTile = true;
-                if (!TryPlanSpatialIntent(npc, snapshot, block, forcePlayer2Replan: false, out var suggestion, out var plannedByPlayer2))
+                if (!TryPlanSpatialIntent(npc, snapshot, block, out var suggestion))
                 {
-                    // Don't block on Player2 — try procedural fallback
                     TryResolveProceduralFallbackTile(npc, block);
                     continue;
                 }
@@ -13914,18 +13853,16 @@ public sealed class ModEntry : Mod
                 block.TargetSpotRole = suggestion.TargetSpotRole;
                 if (suggestion.TargetTileX.HasValue && suggestion.TargetTileY.HasValue)
                     block.TargetTile = new Point(suggestion.TargetTileX.Value, suggestion.TargetTileY.Value);
-                block.Player2Planned = plannedByPlayer2;
             }
             else
             {
-                // Unsupported location — resolve a procedural tile immediately
                 block.RequiresExactTile = false;
                 TryResolveProceduralFallbackTile(npc, block);
             }
         }
     }
 
-    private bool TryRefreshSpatialTarget(NPC npc, AutonomyRuntimeState runtime, AutonomyPlanBlock block, bool forcePlayer2Replan, bool reserveTarget = true)
+    private bool TryRefreshSpatialTarget(NPC npc, AutonomyRuntimeState runtime, AutonomyPlanBlock block, bool forceSpatialRetarget, bool reserveTarget = true)
     {
         if (_npcLocationSpotService is null
             || _npcTileReservationService is null
@@ -13963,18 +13900,7 @@ public sealed class ModEntry : Mod
             TimeOfDay = Game1.timeOfDay
         };
 
-        TryApplyCompletedAutonomySpatialPlanResults();
-        var requestKey = BuildAutonomySpatialPlanRequestKey(npc.Name ?? string.Empty, block);
-        var hasCachedPlayer2Plan = TryGetCachedAutonomySpatialPlan(requestKey, out _);
-        var hasPendingPlayer2Plan = _pendingAutonomySpatialPlanKeys.ContainsKey(requestKey);
-        var shouldCheckPlayer2Plan = block.RequiresExactTile
-            && !block.Player2Planned
-            && (hasCachedPlayer2Plan
-                || block.TargetTile == Point.Zero
-                || (!hasPendingPlayer2Plan && CanRetryAutonomySpatialPlan(requestKey)));
-
-        var needsSemanticPlan = forcePlayer2Replan
-            || shouldCheckPlayer2Plan
+        var needsSemanticPlan = forceSpatialRetarget
             || (string.IsNullOrWhiteSpace(block.TargetSpotRole)
                 && !(block.Type is AutonomyPlanBlockType.BaseAnchor or AutonomyPlanBlockType.RequiredDuty && block.TargetTile != Point.Zero))
             || block.TargetTile == Point.Zero
@@ -13982,8 +13908,8 @@ public sealed class ModEntry : Mod
             || string.Equals(runtime.StuckReason, "doorway_cluster", StringComparison.OrdinalIgnoreCase)
             || string.Equals(runtime.StuckReason, "micro_oscillation", StringComparison.OrdinalIgnoreCase)
             || string.Equals(runtime.StuckReason, "crowded_spot", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(runtime.StuckReason, "furniture_blocked", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(runtime.StuckReason, "path_blocked", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(runtime.StuckReason, "furniture_blocked", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(runtime.StuckReason, "path_blocked", StringComparison.OrdinalIgnoreCase);
 
         if (!needsSemanticPlan)
         {
@@ -13997,11 +13923,9 @@ public sealed class ModEntry : Mod
                 || _npcTileReservationService.TryReserve(npc.Name ?? string.Empty, block.TargetLocation, block.TargetTile, block.TargetSpotId);
         }
 
-        if (!TryPlanSpatialIntent(npc, snapshot, block, forcePlayer2Replan, out var suggestion, out var plannedByPlayer2))
+        if (!TryPlanSpatialIntent(npc, snapshot, block, out var suggestion))
         {
-            runtime.MovementPhase = "waiting_player2";
-            runtime.StuckReason = "player2_required";
-            return false;
+            return TryResolveProceduralFallbackTile(npc, block);
         }
 
         _npcTileReservationService.Release(npc.Name ?? string.Empty);
@@ -14022,7 +13946,6 @@ public sealed class ModEntry : Mod
         block.TargetSpotRole = spot.SpotRole;
         block.TargetSpotId = spot.SpotId;
         block.TargetTile = tile;
-        block.Player2Planned = plannedByPlayer2;
         runtime.StuckReason = string.Empty;
         runtime.NeedsLocalRepath = true;
         if (!reserveTarget)
@@ -14077,12 +14000,9 @@ public sealed class ModEntry : Mod
         NPC npc,
         NpcContextSnapshot snapshot,
         AutonomyPlanBlock block,
-        bool forcePlayer2Replan,
-        out Player2SpatialPlanSuggestion suggestion,
-        out bool plannedByPlayer2)
+        out ProceduralSpatialTarget target)
     {
-        suggestion = new Player2SpatialPlanSuggestion();
-        plannedByPlayer2 = false;
+        target = new ProceduralSpatialTarget();
         if (_npcLocationSpotService is null)
             return false;
 
@@ -14090,359 +14010,8 @@ public sealed class ModEntry : Mod
         var isResident = !string.IsNullOrWhiteSpace(homeLocation)
             && string.Equals(homeLocation, block.TargetLocation, StringComparison.OrdinalIgnoreCase);
         var isWorker = block.Type == AutonomyPlanBlockType.RequiredDuty;
-        suggestion = _npcLocationSpotService.BuildLocalFallbackSuggestion(npc, block, isResident, isWorker);
-
-        if (!_npcLocationSpotService.TryGetLayoutBrief(block.TargetLocation, out var layoutBrief))
-            return true;
-
-        if (_config.EnablePlayer2
-            && _config.EnablePlayer2AutonomySuggestions
-            && _player2Client is not null
-            && !string.IsNullOrWhiteSpace(_player2Key))
-        {
-            var requestKey = BuildAutonomySpatialPlanRequestKey(npc.Name ?? string.Empty, block);
-            if (forcePlayer2Replan)
-            {
-                _cachedAutonomySpatialPlansByKey.Remove(requestKey);
-                _autonomySpatialPlanRetryAfterByKey.Remove(requestKey);
-            }
-
-            if (TryGetCachedAutonomySpatialPlan(requestKey, out var cached))
-            {
-                suggestion = cached;
-                plannedByPlayer2 = true;
-                return true;
-            }
-
-            if (CanRetryAutonomySpatialPlan(requestKey))
-                QueueAutonomySpatialPlanRequest(requestKey, npc, snapshot, block, layoutBrief, forcePlayer2Replan);
-        }
-
+        target = _npcLocationSpotService.BuildProceduralTarget(npc, block, isResident, isWorker);
         return true;
-    }
-
-    private string BuildAutonomySpatialPlanRequestKey(string npcId, AutonomyPlanBlock block)
-    {
-        return $"{_state.Calendar.Day}:{npcId}:{block.BlockId}:{block.TargetLocation}";
-    }
-
-    private bool TryGetCachedAutonomySpatialPlan(string requestKey, out Player2SpatialPlanSuggestion suggestion)
-    {
-        suggestion = new Player2SpatialPlanSuggestion();
-        if (!_cachedAutonomySpatialPlansByKey.TryGetValue(requestKey, out var cached))
-            return false;
-
-        suggestion = cached.Suggestion;
-        return !string.IsNullOrWhiteSpace(suggestion.TargetSpotRole)
-            && suggestion.TargetTileX.HasValue
-            && suggestion.TargetTileY.HasValue;
-    }
-
-    private bool CanRetryAutonomySpatialPlan(string requestKey)
-    {
-        return !_autonomySpatialPlanRetryAfterByKey.TryGetValue(requestKey, out var retryAfterUtc)
-            || DateTime.UtcNow >= retryAfterUtc;
-    }
-
-    private void QueueAutonomySpatialPlanRequest(
-        string requestKey,
-        NPC npc,
-        NpcContextSnapshot snapshot,
-        AutonomyPlanBlock block,
-        NpcMapLayoutBrief layoutBrief,
-        bool forcePlayer2Replan)
-    {
-        if (_player2Client is null
-            || string.IsNullOrWhiteSpace(_player2Key)
-            || _pendingAutonomySpatialPlanKeys.ContainsKey(requestKey)
-            || Interlocked.CompareExchange(ref _autonomySpatialPlanRequestsInFlight, 0, 0) >= AutonomySpatialPlannerMaxInFlightRequests)
-        {
-            return;
-        }
-
-        var prompt = BuildSpatialPlannerPrompt(npc, snapshot, block, layoutBrief, forcePlayer2Replan);
-        var request = new NpcChatRequest
-        {
-            SenderName = "AutonomyPlanner",
-            SenderMessage = prompt,
-            GameStateInfo = string.Join(" ",
-                BuildCompactGameStateInfo(npc.Name, prompt, "npc_autonomy"),
-                _npcLocationSpotService?.BuildPromptBlock(block.TargetLocation) ?? string.Empty,
-                $"RESERVED_SPOTS: {(_npcTileReservationService?.GetSummary(block.TargetLocation) ?? "(none)")}.")
-        };
-
-        if (!_pendingAutonomySpatialPlanKeys.TryAdd(requestKey, 0))
-            return;
-
-        Interlocked.Increment(ref _autonomySpatialPlanRequestsInFlight);
-        var npcName = npc.Name ?? string.Empty;
-        var targetLocation = block.TargetLocation;
-        Task.Run(() =>
-        {
-            try
-            {
-                var success = TryPlanSpatialIntentWithPlayer2Background(request, forcePlayer2Replan, npcName, targetLocation, out var planned);
-                _completedAutonomySpatialPlans.Enqueue(new AutonomySpatialPlanCompletion
-                {
-                    RequestKey = requestKey,
-                    Success = success,
-                    FailureCode = success ? string.Empty : "request_failed",
-                    Suggestion = planned,
-                    CompletedUtc = DateTime.UtcNow
-                });
-            }
-            catch (Exception ex)
-            {
-                Monitor.Log($"Autonomy spatial planning task failed for {npcName} at {targetLocation}: {ex.Message}", LogLevel.Trace);
-                _completedAutonomySpatialPlans.Enqueue(new AutonomySpatialPlanCompletion
-                {
-                    RequestKey = requestKey,
-                    Success = false,
-                    FailureCode = "exception",
-                    CompletedUtc = DateTime.UtcNow
-                });
-            }
-            finally
-            {
-                _pendingAutonomySpatialPlanKeys.TryRemove(requestKey, out _);
-                Interlocked.Decrement(ref _autonomySpatialPlanRequestsInFlight);
-            }
-        });
-    }
-
-    private bool TryPlanSpatialIntentWithPlayer2Background(
-        NpcChatRequest request,
-        bool forcePlayer2Replan,
-        string npcName,
-        string targetLocation,
-        out Player2SpatialPlanSuggestion suggestion)
-    {
-        suggestion = new Player2SpatialPlanSuggestion();
-        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
-            return false;
-
-        if (!TryEnsurePlayer2SpatialPlannerNpcIdBackground(out var plannerNpcId))
-            return false;
-
-        try
-        {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(forcePlayer2Replan ? AutonomySpatialReplanTimeoutSeconds : AutonomySpatialPlanTimeoutSeconds));
-            var payload = _player2Client.SendNpcChatAsync(_config.Player2ApiBaseUrl, _player2Key!, plannerNpcId, request, cts.Token)
-                .GetAwaiter()
-                .GetResult();
-
-            return TryParseSpatialPlanSuggestion(payload, out suggestion);
-        }
-        catch (Exception ex)
-        {
-            Monitor.Log($"Player2 spatial planning failed for {npcName} at {targetLocation}: {ex.Message}", LogLevel.Trace);
-            lock (_player2SpatialPlannerSync)
-            {
-                _player2SpatialPlannerNpcId = null;
-            }
-            return false;
-        }
-    }
-
-    private bool TryEnsurePlayer2SpatialPlannerNpcIdBackground(out string npcId)
-    {
-        npcId = string.Empty;
-        if (_player2Client is null || string.IsNullOrWhiteSpace(_player2Key))
-            return false;
-
-        if (!string.IsNullOrWhiteSpace(_player2SpatialPlannerNpcId))
-        {
-            npcId = _player2SpatialPlannerNpcId!;
-            return true;
-        }
-
-        lock (_player2SpatialPlannerSync)
-        {
-            if (!string.IsNullOrWhiteSpace(_player2SpatialPlannerNpcId))
-            {
-                npcId = _player2SpatialPlannerNpcId!;
-                return true;
-            }
-
-            try
-            {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(AutonomySpatialPlannerSpawnTimeoutSeconds));
-                var req = new SpawnNpcRequest
-                {
-                    ShortName = "Planner",
-                    Name = "Town Planner",
-                    CharacterDescription = "A strict spatial planner for NPC movement and map-aware standing spots.",
-                    SystemPrompt = "You are a Stardew Valley spatial planner for NPC autonomy. You are not an in-world speaker. Return only compact JSON and never prose. Output exactly one object with keys target_zone, target_spot_role, target_tile_x, target_tile_y, leave_map_if_crowded, reason. Never include markdown fences.",
-                    KeepGameState = false,
-                    Commands = new List<SpawnNpcCommand>()
-                };
-                _player2SpatialPlannerNpcId = _player2Client.SpawnNpcAsync(_config.Player2ApiBaseUrl, _player2Key!, req, cts.Token)
-                    .GetAwaiter()
-                    .GetResult();
-                npcId = _player2SpatialPlannerNpcId ?? string.Empty;
-                return !string.IsNullOrWhiteSpace(npcId);
-            }
-            catch (Exception ex)
-            {
-                Monitor.Log($"Player2 spatial planner spawn failed: {ex.Message}", LogLevel.Trace);
-                _player2SpatialPlannerNpcId = null;
-                return false;
-            }
-        }
-    }
-
-    private string BuildSpatialPlannerPrompt(
-        NPC npc,
-        NpcContextSnapshot snapshot,
-        AutonomyPlanBlock block,
-        NpcMapLayoutBrief layoutBrief,
-        bool forcePlayer2Replan)
-    {
-        var occupants = Game1.getLocationFromName(block.TargetLocation)?.characters?
-            .Where(character => character is not null)
-            .Select(character => $"{character.Name}@({(int)character.Tile.X},{(int)character.Tile.Y})")
-            .ToArray() ?? Array.Empty<string>();
-
-        return string.Join(" ",
-            "Return ONLY minified JSON with keys target_zone, target_spot_role, target_tile_x, target_tile_y, leave_map_if_crowded, reason.",
-            "No prose. No markdown. No extra keys.",
-            $"NPC={npc.Name}.",
-            $"BLOCK_TYPE={block.Type}.",
-            $"TARGET_LOCATION={block.TargetLocation}.",
-            $"CURRENT_LOCATION={snapshot.CurrentLocation}.",
-            $"HOME_LOCATION={snapshot.HomeLocation}.",
-            $"TARGET_NPC={(string.IsNullOrWhiteSpace(block.TargetNpcId) ? "none" : block.TargetNpcId)}.",
-            $"TIME={Game1.timeOfDay}.",
-            $"FORCE_REPLAN={(forcePlayer2Replan ? "true" : "false")}.",
-            $"CURRENT_OCCUPANTS={(occupants.Length == 0 ? "none" : string.Join(", ", occupants))}.",
-            $"LAYOUT_SUMMARY={layoutBrief.Summary}",
-            $"BLOCKERS={(layoutBrief.Blockers.Length == 0 ? "none" : string.Join(", ", layoutBrief.Blockers))}.",
-            $"KEEP_CLEAR={(layoutBrief.KeepClearZones.Length == 0 ? "none" : string.Join(", ", layoutBrief.KeepClearZones))}.",
-            $"CURRENT_TARGET_TILE={(block.TargetTile == Point.Zero ? "none" : $"{block.TargetTile.X},{block.TargetTile.Y}")}.",
-            "Choose where this NPC should stand or idle on that map.",
-            "Never choose entrance_buffer, warp_clear, or counter_clear.",
-            "Always choose one exact standing tile that is not blocked by walls, furniture, counters, or occupied space.",
-            "Residents on shared home/work maps belong deeper in the family side unless actively visiting or working.",
-            "Workers stay at worker_post only when on duty.");
-    }
-
-    private bool TryParseSpatialPlanSuggestion(string? payload, out Player2SpatialPlanSuggestion suggestion)
-    {
-        suggestion = new Player2SpatialPlanSuggestion();
-        if (string.IsNullOrWhiteSpace(payload))
-            return false;
-
-        if (TryParseSpatialPlanObject(payload, out suggestion))
-            return true;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(payload);
-            var root = doc.RootElement;
-            if (root.ValueKind == JsonValueKind.Object)
-            {
-                if (TryGetJsonStringProperty(root, "message", out var message) && TryParseSpatialPlanObject(message, out suggestion))
-                    return true;
-                if (TryGetJsonStringProperty(root, "content", out var content) && TryParseSpatialPlanObject(content, out suggestion))
-                    return true;
-            }
-        }
-        catch
-        {
-        }
-
-        return TryExtractJsonObjectText(payload, out var json) && TryParseSpatialPlanObject(json, out suggestion);
-    }
-
-    private static bool TryParseSpatialPlanObject(string text, out Player2SpatialPlanSuggestion suggestion)
-    {
-        suggestion = new Player2SpatialPlanSuggestion();
-        if (!TryExtractJsonObjectText(text, out var json))
-            json = text;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-                return false;
-
-            suggestion.TargetZoneId = TryGetJsonStringProperty(root, "target_zone", out var targetZone) ? targetZone : string.Empty;
-            suggestion.TargetSpotRole = TryGetJsonStringProperty(root, "target_spot_role", out var targetSpotRole) ? targetSpotRole : string.Empty;
-            suggestion.Reason = TryGetJsonStringProperty(root, "reason", out var reason) ? reason : string.Empty;
-            suggestion.TargetTileX = TryGetJsonIntProperty(root, "target_tile_x", out var targetTileX) ? targetTileX : null;
-            suggestion.TargetTileY = TryGetJsonIntProperty(root, "target_tile_y", out var targetTileY) ? targetTileY : null;
-            suggestion.LeaveMapIfCrowded = root.TryGetProperty("leave_map_if_crowded", out var leaveEl)
-                && leaveEl.ValueKind is JsonValueKind.True or JsonValueKind.False
-                && leaveEl.GetBoolean();
-
-            return !string.IsNullOrWhiteSpace(suggestion.TargetSpotRole)
-                && suggestion.TargetTileX.HasValue
-                && suggestion.TargetTileY.HasValue;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool TryExtractJsonObjectText(string text, out string json)
-    {
-        json = string.Empty;
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-
-        var start = text.IndexOf('{');
-        var end = text.LastIndexOf('}');
-        if (start < 0 || end <= start)
-            return false;
-
-        json = text[start..(end + 1)];
-        return true;
-    }
-
-    private static bool TryGetJsonStringProperty(JsonElement element, string propertyName, out string value)
-    {
-        value = string.Empty;
-        if (element.ValueKind != JsonValueKind.Object)
-            return false;
-
-        foreach (var property in element.EnumerateObject())
-        {
-            if (!property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase)
-                || property.Value.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            value = property.Value.GetString() ?? string.Empty;
-            return !string.IsNullOrWhiteSpace(value);
-        }
-
-        return false;
-    }
-
-    private static bool TryGetJsonIntProperty(JsonElement element, string propertyName, out int value)
-    {
-        value = 0;
-        if (element.ValueKind != JsonValueKind.Object)
-            return false;
-
-        foreach (var property in element.EnumerateObject())
-        {
-            if (!property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt32(out value))
-                return true;
-            if (property.Value.ValueKind == JsonValueKind.String
-                && int.TryParse(property.Value.GetString(), out value))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private NPC? ResolveAutonomyTargetNpc(NPC sourceNpc, AutonomyPlanBlock block)
@@ -14983,7 +14552,9 @@ public sealed class ModEntry : Mod
                 encounter.ConversationPhase = ConversationPhase.Released;
                 encounter.ArcOutcome = _npcConversationSimulationService.ResolveOutcome(encounter);
                 _npcSocialEncounterService.ProcessConsequences(_state, encounter, encounter.ArcOutcome);
+                RecordEncounterCooldowns(encounter);
                 TryResumeEncounterParticipants(encounter, "complete");
+                TryReplanFutureAutonomyBlocksAfterEncounter(encounter);
 
                 _player2EncounterIds.Remove(encounter.EncounterId);
                 _state.Telemetry.Daily.EncountersCompleted += 1;
@@ -15026,6 +14597,7 @@ public sealed class ModEntry : Mod
             npcName: listenerShortName,
             contextTag: "npc_encounter_dialogue",
             referencedNpcName: speakerShortName);
+        var pairEmotionContext = BuildEncounterPairEmotionBlock(speakerShortName, listenerShortName);
 
         _ = Task.Run(async () =>
         {
@@ -15044,6 +14616,7 @@ public sealed class ModEntry : Mod
                     turnDepth,
                     speakerDialogueContext,
                     listenerDialogueContext,
+                    pairEmotionContext,
                     continuationContext,
                     alreadyTalkedToday,
                     timeContext);
@@ -15069,6 +14642,119 @@ public sealed class ModEntry : Mod
         });
     }
 
+    private void RecordAutonomyCooldowns(AutonomyRuntimeState runtime, AutonomyPlanBlock block)
+    {
+        if (block is null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(block.TargetLocation))
+        {
+            var locationKey = $"{runtime.NpcId}|{block.TargetLocation}".ToLowerInvariant();
+            _state.Autonomy.LocationCooldownByNpcKey[locationKey] = _state.Calendar.Day;
+        }
+
+        if (block.Type == AutonomyPlanBlockType.VisitNpc && !string.IsNullOrWhiteSpace(block.TargetNpcId))
+        {
+            var pairKey = PairEmotionService.BuildPairKey(runtime.NpcId, block.TargetNpcId);
+            if (!string.IsNullOrWhiteSpace(pairKey))
+                _state.Autonomy.VisitCooldownByPairKey[pairKey] = _state.Calendar.Day;
+        }
+    }
+
+    private void RecordEncounterCooldowns(ActiveEncounter encounter)
+    {
+        var pairKey = PairEmotionService.BuildPairKey(encounter.NpcA, encounter.NpcB);
+        if (!string.IsNullOrWhiteSpace(pairKey))
+            _state.Autonomy.VisitCooldownByPairKey[pairKey] = _state.Calendar.Day;
+
+        if (!string.IsNullOrWhiteSpace(encounter.LocationId))
+        {
+            _state.Autonomy.LocationCooldownByNpcKey[$"{encounter.NpcA}|{encounter.LocationId}".ToLowerInvariant()] = _state.Calendar.Day;
+            _state.Autonomy.LocationCooldownByNpcKey[$"{encounter.NpcB}|{encounter.LocationId}".ToLowerInvariant()] = _state.Calendar.Day;
+        }
+    }
+
+    private void TryReplanFutureAutonomyBlocksAfterEncounter(ActiveEncounter encounter)
+    {
+        if (!ShouldTriggerSameDayAutonomyReplan(encounter.ArcOutcome)
+            || Game1.timeOfDay >= 2000)
+        {
+            return;
+        }
+
+        TryRebuildFutureAutonomyPlan(encounter.NpcA);
+        TryRebuildFutureAutonomyPlan(encounter.NpcB);
+    }
+
+    private bool ShouldTriggerSameDayAutonomyReplan(string? outcome)
+    {
+        return !string.IsNullOrWhiteSpace(outcome)
+            && outcome.Trim().ToLowerInvariant() is
+                "warm_long_talk"
+                or "friendly"
+                or "apology_softened"
+                or "hostile"
+                or "unresolved_tension"
+                or "friction_left_hanging"
+                or "mystery_hook";
+    }
+
+    private void TryRebuildFutureAutonomyPlan(string npcId)
+    {
+        if (string.IsNullOrWhiteSpace(npcId)
+            || _npcAutonomyGoalEngine is null
+            || _npcAutonomyPlannerService is null
+            || !_autonomyRuntimeByNpcId.TryGetValue(npcId, out var runtime))
+        {
+            return;
+        }
+
+        var npc = ResolveNpcByName(npcId);
+        if (npc is null)
+            return;
+
+        var nearby = npc.currentLocation?.characters?.Where(character => character is not null).Cast<NPC>() ?? Enumerable.Empty<NPC>();
+        var snapshot = _npcAutonomyGoalEngine.BuildSnapshot(_state, npc, nearby);
+        var goals = _npcAutonomyGoalEngine.ScoreCandidateGoals(_state, npc, snapshot, Game1.locations);
+        var rebuiltPlan = _npcAutonomyPlannerService.SynthesizeDailyPlan(_state, npcId, snapshot, goals, _config);
+        if (rebuiltPlan is null)
+            return;
+
+        ApplySpatialTargetsToPlan(npc, snapshot, rebuiltPlan);
+        if (_config.EnableCrossMapAutonomy && _routePlannerService is not null && _worldTopologyService is not null)
+        {
+            var graph = _worldTopologyService.BuildGraph(Game1.locations);
+            _routePlannerService.CompileRoutesForPlan(graph, npcId, rebuiltPlan, npc.currentLocation?.Name ?? "Town", _config.AutonomyMaxTravelMinutesPerBlock);
+        }
+
+        if (runtime.ActivePlan is null)
+        {
+            runtime.ActivePlan = rebuiltPlan;
+            return;
+        }
+
+        var retainedBlocks = runtime.ActivePlan.Blocks
+            .Where((_, index) => index <= runtime.ActiveBlockIndex)
+            .ToList();
+        var replacementBlocks = rebuiltPlan.Blocks
+            .Where(block => block.StartTime > Game1.timeOfDay)
+            .ToList();
+        if (replacementBlocks.Count == 0)
+            return;
+
+        runtime.ActivePlan = new NpcDailyPlan
+        {
+            NpcId = npcId,
+            Day = _state.Calendar.Day,
+            Blocks = retainedBlocks
+                .Concat(replacementBlocks)
+                .OrderBy(block => block.StartTime)
+                .ThenBy(block => block.BlockId, StringComparer.OrdinalIgnoreCase)
+                .ToList()
+        };
+        _state.Telemetry.Daily.AutonomyReplans += 1;
+    }
+
     private async Task<EncounterConversationCompletion> RunEncounterConversationAsync(
         Player2Client client,
         string apiBaseUrl,
@@ -15082,6 +14768,7 @@ public sealed class ModEntry : Mod
         int turnDepth,
         string speakerDialogueContext,
         string listenerDialogueContext,
+        string pairEmotionContext,
         string? continuationContext = null,
         bool alreadyTalkedToday = false,
         string? timeContext = null)
@@ -15108,6 +14795,7 @@ public sealed class ModEntry : Mod
             continuationContext: continuationContext,
             alreadyTalkedToday: alreadyTalkedToday,
             timeContext: timeContext,
+            pairEmotionContext: pairEmotionContext,
             scheduleContext: encounterScheduleContext,
             scheduleClosingHint: BuildEncounterClosingHint(currentSpeakerShortName, currentListenerShortName));
 
@@ -15116,6 +14804,8 @@ public sealed class ModEntry : Mod
             var context = currentSpeakerNpcId.Equals(speakerNpcId, StringComparison.OrdinalIgnoreCase)
                 ? speakerDialogueContext
                 : listenerDialogueContext;
+            if (!string.IsNullOrWhiteSpace(pairEmotionContext))
+                context = context + Environment.NewLine + pairEmotionContext;
             if (!string.IsNullOrWhiteSpace(encounterScheduleContext))
                 context = context + Environment.NewLine + encounterScheduleContext;
 
@@ -15204,6 +14894,7 @@ public sealed class ModEntry : Mod
                 currentListenerShortName,
                 encounterLine,
                 timeContext: timeContext,
+                pairEmotionContext: pairEmotionContext,
                 scheduleContext: encounterScheduleContext,
                 scheduleClosingHint: BuildEncounterClosingHint(currentSpeakerShortName, currentListenerShortName));
         }
@@ -15248,12 +14939,14 @@ public sealed class ModEntry : Mod
         string? continuationContext = null,
         bool alreadyTalkedToday = false,
         string? timeContext = null,
+        string? pairEmotionContext = null,
         string? scheduleContext = null,
         string? scheduleClosingHint = null)
     {
         var isContinuation = !string.IsNullOrWhiteSpace(continuationContext);
         var priorLineWasClosing = IsLikelyConversationClosing(priorLine);
         var timeHint = !string.IsNullOrWhiteSpace(timeContext) ? $"It is {timeContext}. " : "";
+        var emotionHint = !string.IsNullOrWhiteSpace(pairEmotionContext) ? pairEmotionContext + " " : "";
         var scheduleHint = !string.IsNullOrWhiteSpace(scheduleContext) ? scheduleContext + " " : "";
         var closingHint = !string.IsNullOrWhiteSpace(scheduleClosingHint) ? scheduleClosingHint + " " : "";
         const string lineRule = "Answer with one short in-character sentence (under 80 characters) that sounds like something said aloud in town. ";
@@ -15265,6 +14958,7 @@ public sealed class ModEntry : Mod
                 return
                     $"You are {speakerShortName}, resuming a face-to-face conversation with {listenerShortName}. " +
                     timeHint +
+                    emotionHint +
                     scheduleHint +
                     $"Pick up from this thread: {continuationContext}. " +
                     $"Scene pull: {topicSeed}. " +
@@ -15283,6 +14977,7 @@ public sealed class ModEntry : Mod
             return
                 $"You are {speakerShortName}, speaking face-to-face with {listenerShortName}. " +
                 timeHint +
+                emotionHint +
                 scheduleHint +
                 $"Start from this scene pull: {topicSeed}. " +
                 $"Use a {scenario.OpenerStyle} opener and keep the exchange around {scenario.Purpose} with a {scenario.ToneTrend} tone trend. " +
@@ -15297,6 +14992,7 @@ public sealed class ModEntry : Mod
             return
                 $"You are {speakerShortName}, still speaking only to {listenerShortName}. " +
                 timeHint +
+                emotionHint +
                 scheduleHint +
                 $"Continue from: \"{priorLine}\". " +
                 $"Arc target: {scenario.ArcOutcome}. " +
@@ -15320,11 +15016,33 @@ public sealed class ModEntry : Mod
 
         return
             $"You are {speakerShortName}, still speaking only to {listenerShortName}. " +
+            emotionHint +
             scheduleHint +
             $"Continue naturally from: \"{priorLine}\". " +
             $"Keep the exchange around {scenario.Purpose} with {scenario.ToneAtStart} tone and a {scenario.ToneTrend} drift. " +
             "Keep it grounded and specific. Avoid generic pleasantries. Let the exchange carry gossip, mystery, frustration, defensiveness, or warmth when it fits. " +
             lineRule;
+    }
+
+    private string BuildEncounterPairEmotionBlock(string speakerNpcId, string listenerNpcId)
+    {
+        if (_pairEmotionService is null || string.IsNullOrWhiteSpace(speakerNpcId) || string.IsNullOrWhiteSpace(listenerNpcId))
+            return string.Empty;
+
+        var pair = _pairEmotionService.GetOrCreate(_state, speakerNpcId, listenerNpcId);
+        var friendship = pair.EmotionAxes.TryGetValue("friendship", out var friendshipValue) ? friendshipValue : 0;
+        var trust = pair.EmotionAxes.TryGetValue("trust", out var trustValue) ? trustValue : 0;
+        var anger = pair.EmotionAxes.TryGetValue("anger", out var angerValue) ? angerValue : 0;
+        var jealousy = pair.EmotionAxes.TryGetValue("jealousy", out var jealousyValue) ? jealousyValue : 0;
+        var awkwardness = pair.EmotionAxes.TryGetValue("awkwardness", out var awkwardnessValue) ? awkwardnessValue : 0;
+        var flags = pair.ActiveFlags.Count == 0 ? "none" : string.Join(", ", pair.ActiveFlags);
+        var recency = pair.LastInteractionDay <= 0 ? "unknown" : $"{Math.Max(0, _state.Calendar.Day - pair.LastInteractionDay)} days ago";
+
+        return string.Join(" ",
+            $"PAIR_EMOTION_CONTEXT: friendship={friendship}, trust={trust}, anger={anger}, jealousy={jealousy}, awkwardness={awkwardness}, tension={pair.Tension}, avoidance={pair.Avoidance}, familiarity={pair.Familiarity}, flags={flags}, last_interaction={recency}.",
+            "If anger, avoidance, or grudge are high, keep replies clipped, guarded, or resentful instead of instantly warm.",
+            "If jealousy is high, let suspicion or probing curiosity show.",
+            "If friendship and trust are high, warmth and repair come more easily.");
     }
 
     private static string BuildEncounterCommandRepairPrompt(string currentMessage)
