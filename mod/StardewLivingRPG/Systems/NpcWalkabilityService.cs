@@ -37,7 +37,7 @@ public sealed class NpcWalkabilityService
             return false;
 
         var buildingsLayer = location.Map.GetLayer("Buildings");
-        if (buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
+        if (location.IsOutdoors && buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
             return false;
 
         var tileVector = new Vector2(tile.X, tile.Y);
@@ -143,7 +143,7 @@ public sealed class NpcWalkabilityService
             return false;
 
         var buildingsLayer = location.Map.GetLayer("Buildings");
-        if (buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
+        if (location.IsOutdoors && buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
             return false;
 
         var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);

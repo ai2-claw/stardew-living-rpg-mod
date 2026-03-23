@@ -17269,7 +17269,54 @@ public sealed class ModEntry : Mod
         if (currentLocation is null)
             return false;
 
-        return TryResolveEncounterResumeMovementTarget(currentLocation, npc, requestedTile, 4, out departureTile);
+        if (!IsMapTransitionTile(currentLocation, requestedTile))
+            return TryResolveEncounterResumeMovementTarget(currentLocation, npc, requestedTile, 4, out departureTile);
+
+        var walkabilityService = _walkabilityService;
+        if (walkabilityService is null)
+            return false;
+
+        const int maxRadius = 4;
+        for (var radius = 1; radius <= maxRadius; radius++)
+        {
+            Point? bestCandidate = null;
+            var bestDistance = int.MaxValue;
+
+            for (var dx = -radius; dx <= radius; dx++)
+            {
+                for (var dy = -radius; dy <= radius; dy++)
+                {
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != radius)
+                        continue;
+
+                    var candidate = new Point(requestedTile.X + dx, requestedTile.Y + dy);
+                    if (!walkabilityService.IsTileStructurallyWalkable(currentLocation, candidate, npc))
+                        continue;
+
+                    var distance = Math.Abs(dx) + Math.Abs(dy);
+                    if (!bestCandidate.HasValue
+                        || distance < bestDistance
+                        || (distance == bestDistance && candidate.Y < bestCandidate.Value.Y)
+                        || (distance == bestDistance && candidate.Y == bestCandidate.Value.Y && candidate.X < bestCandidate.Value.X))
+                    {
+                        bestCandidate = candidate;
+                        bestDistance = distance;
+                    }
+                }
+            }
+
+            if (bestCandidate.HasValue)
+            {
+                departureTile = bestCandidate.Value;
+                return true;
+            }
+        }
+
+        if (!walkabilityService.IsTileStructurallyWalkable(currentLocation, requestedTile, npc))
+            return false;
+
+        departureTile = requestedTile;
+        return true;
     }
 
     private bool TryResolveCrossMapLegArrivalTile(
