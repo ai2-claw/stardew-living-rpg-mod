@@ -289,9 +289,9 @@ public sealed class NpcWalkabilityService
         if (location.IsOutdoors || location.Map is null)
             return false;
 
-        if (TryGetBlockingIndoorOverlayTile(location.Map.GetLayer("Buildings"), tile, "Buildings", blockByDefault: true, out blockerDescription))
+        if (TryGetBlockingIndoorBuildingsTile(location.Map.GetLayer("Buildings"), tile, out blockerDescription))
             return true;
-        if (TryGetBlockingIndoorOverlayTile(location.Map.GetLayer("Front"), tile, "Front", blockByDefault: false, out blockerDescription))
+        if (TryGetBlockingIndoorFrontTile(location.Map.GetLayer("Front"), tile, out blockerDescription))
             return true;
         if (TryGetBlockingIndoorOverlayTile(location.Map.GetLayer("AlwaysFront"), tile, "AlwaysFront", blockByDefault: true, out blockerDescription))
             return true;
@@ -299,14 +299,36 @@ public sealed class NpcWalkabilityService
         return false;
     }
 
+    private static bool TryGetBlockingIndoorBuildingsTile(Layer? layer, Point tile, out string? blockerDescription)
+    {
+        blockerDescription = null;
+        if (!TryGetOverlayTile(layer, tile, out var overlayTile))
+            return false;
+
+        if (!IsIndoorBuildingsBlockerTileSheet(overlayTile.TileSheet))
+            return false;
+
+        blockerDescription = BuildOverlayBlockerDescription("Buildings", overlayTile);
+        return true;
+    }
+
+    private static bool TryGetBlockingIndoorFrontTile(Layer? layer, Point tile, out string? blockerDescription)
+    {
+        blockerDescription = null;
+        if (!TryGetOverlayTile(layer, tile, out var overlayTile))
+            return false;
+
+        if (!IsFurnitureLikeTileSheet(overlayTile.TileSheet))
+            return false;
+
+        blockerDescription = BuildOverlayBlockerDescription("Front", overlayTile);
+        return true;
+    }
+
     private static bool TryGetBlockingIndoorOverlayTile(Layer? layer, Point tile, string layerName, bool blockByDefault, out string? blockerDescription)
     {
         blockerDescription = null;
-        if (layer is null || tile.X < 0 || tile.Y < 0 || tile.X >= layer.LayerWidth || tile.Y >= layer.LayerHeight)
-            return false;
-
-        var overlayTile = layer.Tiles[tile.X, tile.Y];
-        if (overlayTile is null)
+        if (!TryGetOverlayTile(layer, tile, out var overlayTile))
             return false;
 
         var tileSheet = overlayTile.TileSheet;
@@ -322,6 +344,16 @@ public sealed class NpcWalkabilityService
 
         blockerDescription = BuildOverlayBlockerDescription(layerName, overlayTile);
         return true;
+    }
+
+    private static bool TryGetOverlayTile(Layer? layer, Point tile, out Tile overlayTile)
+    {
+        overlayTile = null!;
+        if (layer is null || tile.X < 0 || tile.Y < 0 || tile.X >= layer.LayerWidth || tile.Y >= layer.LayerHeight)
+            return false;
+
+        overlayTile = layer.Tiles[tile.X, tile.Y];
+        return overlayTile is not null;
     }
 
     private static bool IsFurnitureLikeTileSheet(TileSheet? tileSheet)
@@ -340,6 +372,24 @@ public sealed class NpcWalkabilityService
         return sheetName.Contains("Furniture", StringComparison.OrdinalIgnoreCase)
             || sheetName.Contains("Craftables", StringComparison.OrdinalIgnoreCase)
             || sheetName.Contains("Couch", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsIndoorBuildingsBlockerTileSheet(TileSheet? tileSheet)
+    {
+        if (tileSheet is null)
+            return false;
+
+        return IsFurnitureLikeTileSheet(tileSheet)
+            || IsIndoorExtrasSheetName(tileSheet.Id)
+            || IsIndoorExtrasSheetName(tileSheet.ImageSource);
+    }
+
+    private static bool IsIndoorExtrasSheetName(string? sheetName)
+    {
+        if (string.IsNullOrWhiteSpace(sheetName))
+            return false;
+
+        return sheetName.Contains("spring_z_extras", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsIndoorPassThroughTileSheet(TileSheet? tileSheet)
