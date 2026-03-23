@@ -12,6 +12,16 @@ public sealed class NpcWalkabilityService
 
     public bool IsTileWalkable(GameLocation? location, Point tile, Character? actor = null)
     {
+        return IsTileWalkableCore(location, tile, actor, ignoreTransientOccupants: false);
+    }
+
+    public bool IsTileStructurallyWalkable(GameLocation? location, Point tile, Character? actor = null)
+    {
+        return IsTileWalkableCore(location, tile, actor, ignoreTransientOccupants: true);
+    }
+
+    private static bool IsTileWalkableCore(GameLocation? location, Point tile, Character? actor, bool ignoreTransientOccupants)
+    {
         if (location is null || location.Map is null)
             return false;
         if (tile.X < 0 || tile.Y < 0)
@@ -39,7 +49,7 @@ public sealed class NpcWalkabilityService
             return false;
 
         var collisionRect = BuildCollisionRect(tile);
-        if (location.isCollidingPosition(collisionRect, Game1.viewport, actor))
+        if (!ignoreTransientOccupants && location.isCollidingPosition(collisionRect, Game1.viewport, actor))
             return false;
 
         if (location.Objects.TryGetValue(tileVector, out var obj)
@@ -77,7 +87,8 @@ public sealed class NpcWalkabilityService
             }
         }
 
-        if (location.characters.Any(character =>
+        if (!ignoreTransientOccupants
+            && location.characters.Any(character =>
                 character is not null
                 && !ReferenceEquals(character, actor)
                 && (int)character.Tile.X == tile.X
@@ -86,7 +97,8 @@ public sealed class NpcWalkabilityService
             return false;
         }
 
-        if (Game1.player is not null
+        if (!ignoreTransientOccupants
+            && Game1.player is not null
             && !ReferenceEquals(Game1.player, actor)
             && (int)Game1.player.Tile.X == tile.X
             && (int)Game1.player.Tile.Y == tile.Y)
@@ -203,11 +215,21 @@ public sealed class NpcWalkabilityService
 
     public bool TryFindNearestWalkableTile(GameLocation? location, Point preferredTile, int maxRadius, Character? actor, out Point safeTile)
     {
+        return TryFindNearestTile(location, preferredTile, maxRadius, actor, useStructuralWalkability: false, out safeTile);
+    }
+
+    public bool TryFindNearestStructurallyWalkableTile(GameLocation? location, Point preferredTile, int maxRadius, Character? actor, out Point safeTile)
+    {
+        return TryFindNearestTile(location, preferredTile, maxRadius, actor, useStructuralWalkability: true, out safeTile);
+    }
+
+    private bool TryFindNearestTile(GameLocation? location, Point preferredTile, int maxRadius, Character? actor, bool useStructuralWalkability, out Point safeTile)
+    {
         safeTile = Point.Zero;
         if (location is null)
             return false;
 
-        if (IsTileWalkable(location, preferredTile, actor))
+        if (IsTileWalkableForSearch(location, preferredTile, actor, useStructuralWalkability))
         {
             safeTile = preferredTile;
             return true;
@@ -223,7 +245,7 @@ public sealed class NpcWalkabilityService
                         continue;
 
                     var candidate = new Point(preferredTile.X + dx, preferredTile.Y + dy);
-                    if (!IsTileWalkable(location, candidate, actor))
+                    if (!IsTileWalkableForSearch(location, candidate, actor, useStructuralWalkability))
                         continue;
 
                     safeTile = candidate;
@@ -233,6 +255,13 @@ public sealed class NpcWalkabilityService
         }
 
         return false;
+    }
+
+    private bool IsTileWalkableForSearch(GameLocation location, Point tile, Character? actor, bool useStructuralWalkability)
+    {
+        return useStructuralWalkability
+            ? IsTileStructurallyWalkable(location, tile, actor)
+            : IsTileWalkable(location, tile, actor);
     }
 
     private static Rectangle BuildCollisionRect(Point tile)
