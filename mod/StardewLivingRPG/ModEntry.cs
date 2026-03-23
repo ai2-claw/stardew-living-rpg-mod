@@ -2,6 +2,7 @@
 using StardewModdingAPI;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI.Events;
+using StardewModdingAPI.Framework.Logging;
 using StardewValley;
 using StardewValley.ItemTypeDefinitions;
 using StardewValley.Menus;
@@ -28,6 +29,52 @@ namespace StardewLivingRPG;
 
 public sealed class ModEntry : Mod
 {
+    private sealed class DeveloperModeMonitor : IMonitor
+    {
+        private readonly IMonitor _inner;
+        private readonly Func<bool> _isDeveloperModeEnabled;
+
+        public DeveloperModeMonitor(IMonitor inner, Func<bool> isDeveloperModeEnabled)
+        {
+            _inner = inner;
+            _isDeveloperModeEnabled = isDeveloperModeEnabled;
+        }
+
+        public bool IsVerbose => _inner.IsVerbose;
+
+        public void Log(string message, LogLevel level = LogLevel.Debug)
+        {
+            if (!_isDeveloperModeEnabled())
+                return;
+
+            _inner.Log(message, level);
+        }
+
+        public void LogOnce(string message, LogLevel level = LogLevel.Debug)
+        {
+            if (!_isDeveloperModeEnabled())
+                return;
+
+            _inner.LogOnce(message, level);
+        }
+
+        public void VerboseLog(string message)
+        {
+            if (!_isDeveloperModeEnabled())
+                return;
+
+            _inner.VerboseLog(message);
+        }
+
+        public void VerboseLog(ref VerboseLogStringHandler logStringHandler)
+        {
+            if (!_isDeveloperModeEnabled())
+                return;
+
+            _inner.VerboseLog(ref logStringHandler);
+        }
+    }
+
     internal static ModEntry? Current { get; private set; }
 
     private const int NpcPublishAfternoonStartTime = 1300;
@@ -531,6 +578,9 @@ public sealed class ModEntry : Mod
         public int? LastRejectedResumeTimeOfDay { get; set; }
         public string LastRejectedResumeReason { get; set; } = string.Empty;
         public int RejectedResumeCountForCurrentSlot { get; set; }
+        public Point? LastReachedSameMapWaypoint { get; set; }
+        public Point? PreviousReachedSameMapWaypoint { get; set; }
+        public int SameMapWaypointHopCount { get; set; }
     }
 
     private sealed class ConversationTopicCandidate
@@ -857,6 +907,8 @@ public sealed class ModEntry : Mod
     };
 
     private ModConfig _config = new();
+    private IMonitor? _modMonitor;
+    private new IMonitor Monitor => _modMonitor ?? base.Monitor;
     private string _legacyPlayer2GameClientId = string.Empty;
     private SaveState _state = SaveState.CreateDefault();
     private DailyTickService? _dailyTickService;
@@ -1109,11 +1161,13 @@ public sealed class ModEntry : Mod
     {
         Current = this;
         _config = helper.ReadConfig<ModConfig>();
+        _modMonitor = new DeveloperModeMonitor(base.Monitor, () => _config.ShowDeveloperConsoleCommands);
         if (NormalizeGmcmConfigValues())
             helper.WriteConfig(_config);
         I18n.Initialize(helper.Translation);
         QuestTextHelper.Initialize(helper, Monitor);
         TryMigrateLegacyPlayer2Config(helper);
+        TryMigrateLegacyDeveloperConsoleMode(helper);
         EnsureRequiredPlayer2Enabled(helper);
         _dailyTickService = new DailyTickService(Monitor, _config);
         _economyService = new EconomyService();
@@ -1651,6 +1705,37 @@ public sealed class ModEntry : Mod
         if (!HasBuiltInPlayer2GameClientId() && !string.IsNullOrWhiteSpace(_legacyPlayer2GameClientId))
         {
             Monitor.Log("Using legacy Player2GameClientId fallback from previous config for this build.", LogLevel.Warn);
+        }
+    }
+
+    private void TryMigrateLegacyDeveloperConsoleMode(IModHelper helper)
+    {
+        var configPath = Path.Combine(helper.DirectoryPath, "config.json");
+        if (!File.Exists(configPath))
+            return;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(configPath));
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || doc.RootElement.TryGetProperty(nameof(ModConfig.ShowDeveloperConsoleCommands), out _))
+            {
+                return;
+            }
+        }
+        catch
+        {
+            return;
+        }
+
+        _config.ShowDeveloperConsoleCommands = false;
+        try
+        {
+            helper.WriteConfig(_config);
+        }
+        catch
+        {
+            // Keep runtime config value disabled even if persistence fails.
         }
     }
 
@@ -16445,8 +16530,10 @@ public sealed class ModEntry : Mod
         if (!TryResolveReachableSameMapEncounterResumeTarget(
                 targetLocation,
                 npc,
+                pending,
                 targetTile,
                 4,
+                excludedTile: null,
                 out var movementTarget))
         {
             Monitor.Log(
@@ -16584,6 +16671,61 @@ public sealed class ModEntry : Mod
             return;
 
         UpdateFallbackProgressObservation(npc, pending, currentTick);
+
+        if (pending.ActiveTargetTile.HasValue
+            && HasReachedSameMapFallbackWaypoint(npc, pending))
+        {
+            var previousWaypoint = pending.FallbackSameMapApproachTile;
+            if (!previousWaypoint.HasValue)
+                return;
+
+            pending.PreviousReachedSameMapWaypoint = pending.LastReachedSameMapWaypoint;
+            pending.LastReachedSameMapWaypoint = previousWaypoint;
+            pending.SameMapWaypointHopCount += 1;
+            ClearTemporaryActiveSlotFallbackController(npc, pending);
+            ClearEncounterMotionState(npc);
+            if (TryResolveReachableSameMapEncounterResumeTarget(
+                    npc.currentLocation,
+                    npc,
+                    pending,
+                    pending.ActiveTargetTile.Value,
+                    4,
+                    previousWaypoint,
+                    out var nextMovementTarget)
+                && TryActivateEncounterResumePath(
+                    npc,
+                    pending,
+                    npc.currentLocation,
+                    nextMovementTarget,
+                    currentTick,
+                    out _,
+                    out var nextPathLength))
+            {
+                pending.FallbackSameMapApproachTile = nextMovementTarget;
+                pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
+                pending.FallbackLastObservedTile = npc.TilePoint;
+                pending.FallbackLastProgressTick = currentTick;
+                var nextPathMode = nextMovementTarget == pending.ActiveTargetTile.Value
+                    ? "vanilla_exact_target"
+                    : "vanilla_approach_target";
+                Monitor.Log(
+                    $"Autonomy: [FORCE_PATH] {npc.Name} advanced same-map active-slot fallback after reaching waypoint {DescribeNullablePoint(previousWaypoint)} (path_mode={nextPathMode}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, movement_target={DescribeNullablePoint(nextMovementTarget)}, path_length={nextPathLength}).",
+                    LogLevel.Debug);
+                return;
+            }
+
+            pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
+            pending.FallbackLastObservedTile = npc.TilePoint;
+            pending.FallbackLastProgressTick = currentTick;
+            LogRuntimeThrottled(
+                $"autonomy:same-map-waypoint-cycle:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: [FORCE_PATH] {npc.Name} exhausted non-cycling same-map waypoint candidates for target {DescribeNullablePoint(pending.ActiveTargetTile)} after waypoint {DescribeNullablePoint(previousWaypoint)}; clearing fallback until next schedule retry.",
+                LogLevel.Trace);
+            ClearTemporaryActiveSlotFallback(npc, pending);
+            return;
+        }
+
         if (pending.TemporaryFallbackController is not null
             && ReferenceEquals(npc.controller, pending.TemporaryFallbackController)
             && currentTick - pending.FallbackLastProgressTick < EncounterVanillaResumeFallbackStaleTicks)
@@ -16611,8 +16753,10 @@ public sealed class ModEntry : Mod
             && TryResolveReachableSameMapEncounterResumeTarget(
                 npc.currentLocation,
                 npc,
+                pending,
                 movementTarget.Value,
                 4,
+                excludedTile: null,
                 out var reachableMovementTarget)
             && TryActivateEncounterResumePath(
                 npc,
@@ -16671,8 +16815,17 @@ public sealed class ModEntry : Mod
         if (Vector2.Distance(npc.Tile, new Vector2(pending.ActiveTargetTile.Value.X, pending.ActiveTargetTile.Value.Y)) <= 1.25f)
             return true;
 
-        return pending.FallbackSameMapApproachTile.HasValue
-            && Vector2.Distance(npc.Tile, new Vector2(pending.FallbackSameMapApproachTile.Value.X, pending.FallbackSameMapApproachTile.Value.Y)) <= 1.25f;
+        return false;
+    }
+
+    private static bool HasReachedSameMapFallbackWaypoint(NPC npc, PendingVanillaEncounterResume pending)
+    {
+        return pending.ActiveTargetTile.HasValue
+            && pending.FallbackSameMapApproachTile.HasValue
+            && pending.FallbackSameMapApproachTile.Value != pending.ActiveTargetTile.Value
+            && npc.currentLocation is not null
+            && string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase)
+            && npc.TilePoint == pending.FallbackSameMapApproachTile.Value;
     }
 
     private void TryAdvanceCrossMapFallbackLeg(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
@@ -16818,6 +16971,9 @@ public sealed class ModEntry : Mod
         pending.FallbackNextRouteTileIndex = 0;
         pending.FallbackCurrentLegRouteEndIndex = -1;
         pending.FallbackCurrentLegTarget = null;
+        pending.LastReachedSameMapWaypoint = null;
+        pending.PreviousReachedSameMapWaypoint = null;
+        pending.SameMapWaypointHopCount = 0;
         if (!preserveLegRetryCount)
             pending.FallbackLegRetryCount = 0;
     }
@@ -16902,14 +17058,25 @@ public sealed class ModEntry : Mod
     private bool TryResolveReachableSameMapEncounterResumeTarget(
         GameLocation location,
         NPC npc,
+        PendingVanillaEncounterResume pending,
         Point requestedTile,
         int maxRadius,
+        Point? excludedTile,
         out Point movementTarget)
     {
         movementTarget = Point.Zero;
 
         foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(requestedTile, maxRadius))
         {
+            if (excludedTile.HasValue && candidate == excludedTile.Value)
+                continue;
+
+            if (candidate != requestedTile && candidate == npc.TilePoint)
+                continue;
+
+            if (candidate == pending.LastReachedSameMapWaypoint || candidate == pending.PreviousReachedSameMapWaypoint)
+                continue;
+
             if (!TryCanUseVanillaEncounterResumeTarget(location, npc, candidate))
                 continue;
 

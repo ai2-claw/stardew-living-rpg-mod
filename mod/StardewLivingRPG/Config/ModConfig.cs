@@ -74,7 +74,7 @@ public sealed class ModConfig
     public bool AutoConnectPlayer2OnLoad { get; set; } = true;
     public bool EnablePlayerChatMenu { get; set; } = true;
     public bool ShowPlayer2ConnectionHud { get; set; } = true;
-    public bool ShowDeveloperConsoleCommands { get; set; } = true;
+    public bool ShowDeveloperConsoleCommands { get; set; } = false;
     public bool EnableTownSquareMagicianMinigame { get; set; } = true;
 
     // Chicken Race mini-game
