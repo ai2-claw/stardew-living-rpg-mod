@@ -881,6 +881,7 @@ public sealed class ModEntry : Mod
     private NpcSpeechBubbleService? _npcSpeechBubbleService;
     private NpcConversationSimulationService? _npcConversationSimulationService;
     private NpcWalkabilityService? _walkabilityService;
+    private EncounterBadTileMaskService? _encounterBadTileMaskService;
     private NpcDutyRosterService? _npcDutyRosterService;
     private WorldTopologyService? _worldTopologyService;
     private NpcRoutePlannerService? _routePlannerService;
@@ -1129,6 +1130,7 @@ public sealed class ModEntry : Mod
         _npcResidenceService = new NpcResidenceService(_destinationRegistryService);
         _pairEmotionService = new PairEmotionService(_config.PairEmotionMaxDeltaPerCommand, _config.PairEmotionMaxDeltaPerDayPerAxis);
         _walkabilityService = new NpcWalkabilityService();
+        _encounterBadTileMaskService = new EncounterBadTileMaskService(helper);
         _npcDutyRosterService = new NpcDutyRosterService();
         _npcAutonomyGoalEngine = new NpcAutonomyGoalEngine(_destinationRegistryService, _npcResidenceService, _pairEmotionService, _config);
         _npcAutonomyPlannerService = new NpcAutonomyPlannerService(_destinationRegistryService, _npcDutyRosterService);
@@ -1140,7 +1142,7 @@ public sealed class ModEntry : Mod
         _scheduleOverrideService = new ScheduleOverrideService(_walkabilityService);
         _executionService = new NpcAutonomyExecutionService(_config, _walkabilityService);
         _materializationService = new NpcMaterializationService(_config, _walkabilityService);
-        _faceToFaceService = new NpcFaceToFaceService(_walkabilityService, _config);
+        _faceToFaceService = new NpcFaceToFaceService(_walkabilityService, _encounterBadTileMaskService, _config);
         _npcLocationSpotService = new NpcLocationSpotService();
         _npcTileReservationService = new NpcTileReservationService();
         _npcAmbientIndoorChatterService = new NpcAmbientIndoorChatterService(_config, _npcResidenceService);
@@ -14253,7 +14255,7 @@ public sealed class ModEntry : Mod
         var bestScore = float.MaxValue;
         foreach (var candidate in candidates.Distinct())
         {
-            if (_walkabilityService.IsNearWarpTile(location, candidate, 1))
+            if (_walkabilityService.IsNearEntranceTile(location, candidate, 1))
                 continue;
             if (!_walkabilityService.IsTileWalkable(location, candidate, speakerNpc))
                 continue;
@@ -14276,7 +14278,7 @@ public sealed class ModEntry : Mod
 
         if (_walkabilityService.TryFindNearestWalkableTile(location, listenerTile, 2, speakerNpc, out var fallback)
             && fallback != listenerTile
-            && !_walkabilityService.IsNearWarpTile(location, fallback, 1))
+            && !_walkabilityService.IsNearEntranceTile(location, fallback, 1))
         {
             tile = fallback;
             return true;
@@ -14315,6 +14317,13 @@ public sealed class ModEntry : Mod
             || !walkabilityService.IsTileStageable(speakerLocation, listenerNpc.TilePoint))
         {
             Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked by invalid_staging_tile.", LogLevel.Trace);
+            return false;
+        }
+
+        if (walkabilityService.IsNearEntranceTile(speakerLocation, speakerNpc.TilePoint, 1)
+            || walkabilityService.IsNearEntranceTile(speakerLocation, listenerNpc.TilePoint, 1))
+        {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked by entrance_buffer.", LogLevel.Trace);
             return false;
         }
 
@@ -16438,9 +16447,7 @@ public sealed class ModEntry : Mod
                 npc,
                 targetTile,
                 4,
-                preferWaypointFallback: false,
-                out var movementTarget,
-                out var preferWaypointFallback))
+                out var movementTarget))
         {
             Monitor.Log(
                 $"Autonomy: [REBIND] {npc.Name} could not resolve a reachable movement target for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(targetTile)} in {pending.ActiveTargetLocation}.",
@@ -16471,19 +16478,18 @@ public sealed class ModEntry : Mod
                 movementTarget,
                 currentTick,
                 out fallbackController,
-                out var pathMode,
-                out var pathLength,
-                preferWaypointFallback: preferWaypointFallback))
+                out var pathLength))
         {
             ClearTemporaryActiveSlotFallback(npc, pending);
             Monitor.Log(
-                $"Autonomy: [REBIND] {npc.Name} unable to create exact-target resume path for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(targetTile)} in {pending.ActiveTargetLocation} using movement_target={DescribeNullablePoint(movementTarget)}.",
+                $"Autonomy: [REBIND] {npc.Name} unable to create vanilla resume controller for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(targetTile)} in {pending.ActiveTargetLocation} using movement_target={DescribeNullablePoint(movementTarget)}.",
                 LogLevel.Debug);
             return false;
         }
 
+        var pathMode = movementTarget == targetTile ? "vanilla_exact_target" : "vanilla_approach_target";
         Monitor.Log(
-            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (path_mode={pathMode}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, target_tile={DescribeNullablePoint(targetTile)}, movement_target={DescribeNullablePoint(movementTarget)}, path_length={pathLength}, waypoint_target={DescribeNullablePoint(pending.FallbackCurrentLegTarget)}, time={Game1.timeOfDay}).",
+            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (path_mode={pathMode}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, target_tile={DescribeNullablePoint(targetTile)}, movement_target={DescribeNullablePoint(movementTarget)}, path_length={pathLength}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         return true;
     }
@@ -16547,12 +16553,15 @@ public sealed class ModEntry : Mod
                     departureTile,
                     currentTick,
                     out fallbackController,
-                    out pathMode,
                     out pathLength))
             {
                 ClearTemporaryActiveSlotFallback(npc, pending);
                 return false;
             }
+
+            pathMode = departureTile == segment.DepartureTile
+                ? "vanilla_exact_target"
+                : "vanilla_approach_target";
         }
         else
         {
@@ -16564,7 +16573,7 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log(
-            $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} arrival_resolved={pending.FallbackLegArrivalTileResolved} path_mode={pathMode} path_length={pathLength} waypoint_target={DescribeNullablePoint(pending.FallbackCurrentLegTarget)} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} time={Game1.timeOfDay}.",
+            $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} arrival_resolved={pending.FallbackLegArrivalTileResolved} path_mode={pathMode} path_length={pathLength} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} time={Game1.timeOfDay}.",
             LogLevel.Debug);
         return true;
     }
@@ -16575,9 +16584,6 @@ public sealed class ModEntry : Mod
             return;
 
         UpdateFallbackProgressObservation(npc, pending, currentTick);
-        var legAdvance = TryAdvanceFallbackRouteLeg(npc, pending, npc.currentLocation, currentTick);
-        if (legAdvance is FallbackRouteAdvanceResult.StartedNextLeg or FallbackRouteAdvanceResult.Failed)
-            return;
         if (pending.TemporaryFallbackController is not null
             && ReferenceEquals(npc.controller, pending.TemporaryFallbackController)
             && currentTick - pending.FallbackLastProgressTick < EncounterVanillaResumeFallbackStaleTicks)
@@ -16607,9 +16613,7 @@ public sealed class ModEntry : Mod
                 npc,
                 movementTarget.Value,
                 4,
-                preferWaypointFallback: true,
-                out var reachableMovementTarget,
-                out var preferWaypointFallback)
+                out var reachableMovementTarget)
             && TryActivateEncounterResumePath(
                 npc,
                 pending,
@@ -16617,16 +16621,17 @@ public sealed class ModEntry : Mod
                 reachableMovementTarget,
                 currentTick,
                 out _,
-                out var pathMode,
-                out var pathLength,
-                preferWaypointFallback: preferWaypointFallback))
+                out var pathLength))
         {
             pending.FallbackSameMapApproachTile = reachableMovementTarget;
             pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
             pending.FallbackLastObservedTile = npc.TilePoint;
             pending.FallbackLastProgressTick = currentTick;
+            var pathMode = reachableMovementTarget == movementTarget.Value
+                ? "vanilla_exact_target"
+                : "vanilla_approach_target";
             Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (path_mode={pathMode}, repath_count={pending.FallbackRepathCount}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, movement_target={DescribeNullablePoint(reachableMovementTarget)}, path_length={pathLength}, waypoint_target={DescribeNullablePoint(pending.FallbackCurrentLegTarget)}).",
+                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (path_mode={pathMode}, repath_count={pending.FallbackRepathCount}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, movement_target={DescribeNullablePoint(reachableMovementTarget)}, path_length={pathLength}).",
                 LogLevel.Debug);
             return;
         }
@@ -16686,10 +16691,6 @@ public sealed class ModEntry : Mod
                 $"Autonomy: [CrossMapLeg(progress)] {npc.Name} encounter={pending.EncounterId} map={currentLocationName} tile=({currentTile.X},{currentTile.Y}) target_leg={pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)}.",
                 LogLevel.Debug);
         }
-
-        var legAdvance = TryAdvanceFallbackRouteLeg(npc, pending, npc.currentLocation, currentTick);
-        if (legAdvance is FallbackRouteAdvanceResult.StartedNextLeg or FallbackRouteAdvanceResult.Failed)
-            return;
 
         if (pending.FallbackWarpIssued && string.Equals(currentLocationName, pending.FallbackLegToLocation, StringComparison.OrdinalIgnoreCase))
         {
@@ -16871,40 +16872,6 @@ public sealed class ModEntry : Mod
         pending.FallbackLastProgressTick = currentTick;
     }
 
-    private enum FallbackRouteAdvanceResult
-    {
-        None,
-        StartedNextLeg,
-        CompletedRoute,
-        Failed
-    }
-
-    private bool TryInitializeFallbackRoute(
-        NPC npc,
-        PendingVanillaEncounterResume pending,
-        GameLocation location,
-        List<Point> routeTiles,
-        ulong currentTick,
-        out object? fallbackController)
-    {
-        fallbackController = null;
-        pending.FallbackRouteTiles.Clear();
-        pending.FallbackRouteTiles.AddRange(routeTiles);
-        pending.FallbackNextRouteTileIndex = 0;
-        pending.FallbackCurrentLegRouteEndIndex = -1;
-        pending.FallbackCurrentLegTarget = null;
-        pending.FallbackLastObservedLocation = location.Name ?? string.Empty;
-        pending.FallbackLastObservedTile = npc.TilePoint;
-        pending.FallbackLastProgressTick = currentTick;
-        if (routeTiles.Count == 0)
-        {
-            SetTemporaryActiveSlotFallback(pending, null);
-            return true;
-        }
-
-        return TryStartNextFallbackRouteLeg(npc, pending, location, currentTick, out fallbackController);
-    }
-
     private bool TryActivateEncounterResumePath(
         NPC npc,
         PendingVanillaEncounterResume pending,
@@ -16912,112 +16879,24 @@ public sealed class ModEntry : Mod
         Point targetTile,
         ulong currentTick,
         out object? fallbackController,
-        out string pathMode,
-        out int pathLength,
-        bool preferWaypointFallback = false)
+        out int pathLength)
     {
         fallbackController = null;
-        pathMode = "none";
         pathLength = 0;
         pending.FallbackRouteTiles.Clear();
         pending.FallbackNextRouteTileIndex = 0;
         pending.FallbackCurrentLegRouteEndIndex = -1;
         pending.FallbackCurrentLegTarget = null;
 
-        if (!preferWaypointFallback
-            && TryCreatePathFindController(npc, location, targetTile, out var vanillaController, logFailure: false)
-            && TryReadControllerPath(vanillaController, out var controllerPath)
-            && controllerPath.Count > 0)
-        {
-            pathLength = controllerPath.Count;
-            if (TryValidateEncounterResumeControllerPath(location, npc, controllerPath, out var blockedTile, out var blockedTileReason))
-            {
-                fallbackController = vanillaController;
-                TrySetMemberValue(npc, "controller", fallbackController);
-                TrySetMemberValue(npc, "previousEndPoint", targetTile);
-                SetTemporaryActiveSlotFallback(pending, fallbackController);
-                pathMode = "vanilla_structural_validated";
-                return true;
-            }
-
-            Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} rejected vanilla encounter-resume path to {DescribeNullablePoint(targetTile)} on {location.Name} because it crosses structurally blocked tile {DescribeNullablePoint(blockedTile)}{(string.IsNullOrWhiteSpace(blockedTileReason) ? string.Empty : $" ({blockedTileReason})")}; activating exact-target waypoint fallback.",
-                LogLevel.Debug);
-        }
-
-        if (!TryBuildEncounterAStarRoute(location, npc, npc.TilePoint, targetTile, out var waypointPath))
+        if (!TryCreateVanillaEncounterResumeController(location, npc, targetTile, out fallbackController, out pathLength))
             return false;
-
-        if (!TryInitializeFallbackRoute(
-                npc,
-                pending,
-                location,
-                waypointPath,
-                currentTick,
-                out fallbackController))
-        {
-            return false;
-        }
-
-        pathLength = waypointPath.Count;
-        pathMode = "exact_target_waypoint_fallback";
+        TrySetMemberValue(npc, "controller", fallbackController);
+        TrySetMemberValue(npc, "previousEndPoint", targetTile);
+        pending.FallbackLastObservedLocation = location.Name ?? string.Empty;
+        pending.FallbackLastObservedTile = npc.TilePoint;
+        pending.FallbackLastProgressTick = currentTick;
+        SetTemporaryActiveSlotFallback(pending, fallbackController);
         return true;
-    }
-
-    private bool TryResolveEncounterResumeMovementTarget(
-        GameLocation location,
-        NPC npc,
-        Point requestedTile,
-        int maxRadius,
-        out Point movementTarget)
-    {
-        movementTarget = Point.Zero;
-        var walkabilityService = _walkabilityService;
-        if (walkabilityService is null)
-            return false;
-
-        if (walkabilityService.IsTileStructurallyWalkable(location, requestedTile, npc))
-        {
-            movementTarget = requestedTile;
-            return true;
-        }
-
-        for (var radius = 1; radius <= maxRadius; radius++)
-        {
-            Point? bestCandidate = null;
-            var bestDistance = int.MaxValue;
-
-            for (var dx = -radius; dx <= radius; dx++)
-            {
-                for (var dy = -radius; dy <= radius; dy++)
-                {
-                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != radius)
-                        continue;
-
-                    var candidate = new Point(requestedTile.X + dx, requestedTile.Y + dy);
-                    if (!walkabilityService.IsTileStructurallyWalkable(location, candidate, npc))
-                        continue;
-
-                    var distance = Math.Abs(dx) + Math.Abs(dy);
-                    if (!bestCandidate.HasValue
-                        || distance < bestDistance
-                        || (distance == bestDistance && candidate.Y < bestCandidate.Value.Y)
-                        || (distance == bestDistance && candidate.Y == bestCandidate.Value.Y && candidate.X < bestCandidate.Value.X))
-                    {
-                        bestCandidate = candidate;
-                        bestDistance = distance;
-                    }
-                }
-            }
-
-            if (bestCandidate.HasValue)
-            {
-                movementTarget = bestCandidate.Value;
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private bool TryResolveReachableSameMapEncounterResumeTarget(
@@ -17025,40 +16904,27 @@ public sealed class ModEntry : Mod
         NPC npc,
         Point requestedTile,
         int maxRadius,
-        bool preferWaypointFallback,
-        out Point movementTarget,
-        out bool useWaypointFallback)
+        out Point movementTarget)
     {
         movementTarget = Point.Zero;
-        useWaypointFallback = preferWaypointFallback;
 
-        foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(location, npc, requestedTile, maxRadius))
+        foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(requestedTile, maxRadius))
         {
-            if (!TryProbeEncounterResumePathMode(location, npc, candidate, preferWaypointFallback, out var candidateUsesWaypointFallback))
+            if (!TryCanUseVanillaEncounterResumeTarget(location, npc, candidate))
                 continue;
 
             movementTarget = candidate;
-            useWaypointFallback = candidateUsesWaypointFallback;
             return true;
         }
 
         return false;
     }
 
-    private IEnumerable<Point> EnumerateEncounterResumeMovementTargetCandidates(
-        GameLocation location,
-        NPC npc,
-        Point requestedTile,
-        int maxRadius)
+    private static IEnumerable<Point> EnumerateEncounterResumeMovementTargetCandidates(Point requestedTile, int maxRadius)
     {
-        var walkabilityService = _walkabilityService;
-        if (walkabilityService is null)
-            yield break;
+        yield return requestedTile;
 
-        var yielded = new HashSet<Point>();
-        if (walkabilityService.IsTileStructurallyWalkable(location, requestedTile, npc) && yielded.Add(requestedTile))
-            yield return requestedTile;
-
+        var yielded = new HashSet<Point> { requestedTile };
         for (var radius = 1; radius <= maxRadius; radius++)
         {
             var candidates = new List<(Point Tile, int Distance)>();
@@ -17070,7 +16936,7 @@ public sealed class ModEntry : Mod
                         continue;
 
                     var candidate = new Point(requestedTile.X + dx, requestedTile.Y + dy);
-                    if (!yielded.Add(candidate) || !walkabilityService.IsTileStructurallyWalkable(location, candidate, npc))
+                    if (!yielded.Add(candidate))
                         continue;
 
                     candidates.Add((candidate, Math.Abs(dx) + Math.Abs(dy)));
@@ -17087,44 +16953,53 @@ public sealed class ModEntry : Mod
         }
     }
 
-    private bool TryProbeEncounterResumePathMode(
+    private bool TryCanUseVanillaEncounterResumeTarget(GameLocation location, NPC npc, Point targetTile)
+    {
+        if (_encounterBadTileMaskService?.IsMaskedBadTile(location, targetTile) == true)
+            return false;
+
+        return TryCreateVanillaEncounterResumeController(location, npc, targetTile, out _, out _);
+    }
+
+    private bool TryCreateVanillaEncounterResumeController(
         GameLocation location,
         NPC npc,
         Point targetTile,
-        bool preferWaypointFallback,
-        out bool useWaypointFallback)
+        out object? controller,
+        out int pathLength)
     {
-        useWaypointFallback = preferWaypointFallback;
-        if (!preferWaypointFallback
-            && TryCreatePathFindController(npc, location, targetTile, out var vanillaController, logFailure: false)
-            && TryReadControllerPath(vanillaController, out var controllerPath)
-            && controllerPath.Count > 0
-            && TryValidateEncounterResumeControllerPath(location, npc, controllerPath, out _, out _))
+        controller = null;
+        pathLength = 0;
+        if (!TryCreatePathFindController(npc, location, targetTile, out controller, logFailure: false))
+            return false;
+
+        if (!TryReadControllerPath(controller, out var controllerPath) || controllerPath.Count == 0)
         {
-            useWaypointFallback = false;
-            return true;
+            controller = null;
+            return false;
         }
 
-        if (TryBuildEncounterAStarRoute(location, npc, npc.TilePoint, targetTile, out _))
+        if (TryFindEncounterResumeBadMaskTile(location, npc, controllerPath, out _))
         {
-            useWaypointFallback = true;
-            return true;
+            controller = null;
+            pathLength = 0;
+            return false;
         }
 
-        return false;
+        pathLength = controllerPath.Count;
+        return true;
     }
 
-    private bool TryValidateEncounterResumeControllerPath(
+    private bool TryFindEncounterResumeBadMaskTile(
         GameLocation location,
         NPC npc,
         IEnumerable<Point> pathTiles,
-        out Point? blockedTile,
-        out string? blockedTileReason)
+        out Point badTile)
     {
-        blockedTile = null;
-        blockedTileReason = null;
-        if (_walkabilityService is null)
-            return true;
+        badTile = Point.Zero;
+        var maskService = _encounterBadTileMaskService;
+        if (maskService is null || !maskService.HasActiveMask(location))
+            return false;
 
         var allowedOriginTile = npc.TilePoint;
         var originTileSkipped = false;
@@ -17136,218 +17011,14 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            if (_walkabilityService.IsTileStructurallyWalkable(location, pathTile, npc, out var blockerDescription))
+            if (!maskService.IsMaskedBadTile(location, pathTile))
                 continue;
 
-            blockedTile = pathTile;
-            blockedTileReason = blockerDescription;
-            return false;
-        }
-
-        return true;
-    }
-
-    private FallbackRouteAdvanceResult TryAdvanceFallbackRouteLeg(
-        NPC npc,
-        PendingVanillaEncounterResume pending,
-        GameLocation location,
-        ulong currentTick)
-    {
-        if (!pending.FallbackCurrentLegTarget.HasValue)
-            return FallbackRouteAdvanceResult.None;
-
-        if (npc.TilePoint != pending.FallbackCurrentLegTarget.Value)
-            return FallbackRouteAdvanceResult.None;
-
-        pending.FallbackNextRouteTileIndex = Math.Max(pending.FallbackNextRouteTileIndex, pending.FallbackCurrentLegRouteEndIndex + 1);
-        pending.FallbackCurrentLegRouteEndIndex = -1;
-        pending.FallbackCurrentLegTarget = null;
-        ClearTemporaryActiveSlotFallbackController(npc, pending);
-
-        if (pending.FallbackNextRouteTileIndex >= pending.FallbackRouteTiles.Count)
-        {
-            pending.FallbackLastObservedLocation = location.Name ?? string.Empty;
-            pending.FallbackLastObservedTile = npc.TilePoint;
-            pending.FallbackLastProgressTick = currentTick;
-            SetTemporaryActiveSlotFallback(pending, null);
-            return FallbackRouteAdvanceResult.CompletedRoute;
-        }
-
-        ClearEncounterMotionState(npc);
-        if (TryStartNextFallbackRouteLeg(npc, pending, location, currentTick, out _))
-            return FallbackRouteAdvanceResult.StartedNextLeg;
-
-        LogRuntimeThrottled(
-            $"autonomy:fallback-leg-start-failed:{npc.Name}:{pending.EncounterId}",
-            TimeSpan.FromSeconds(30),
-            $"Autonomy: [FORCE_PATH] {npc.Name} failed to continue exact-target waypoint fallback for encounter {pending.EncounterId}; clearing fallback until next schedule retry.",
-            LogLevel.Trace);
-        ClearTemporaryActiveSlotFallback(npc, pending);
-        return FallbackRouteAdvanceResult.Failed;
-    }
-
-    private bool TryStartNextFallbackRouteLeg(
-        NPC npc,
-        PendingVanillaEncounterResume pending,
-        GameLocation location,
-        ulong currentTick,
-        out object? fallbackController)
-    {
-        fallbackController = null;
-
-        foreach (var candidateEndIndex in EnumerateFallbackLegCandidateEndIndices(npc, pending))
-        {
-            var candidateTarget = pending.FallbackRouteTiles[candidateEndIndex];
-            if (!TryCreateValidatedPathFindController(npc, location, candidateTarget, out fallbackController))
-                continue;
-
-            pending.FallbackCurrentLegRouteEndIndex = candidateEndIndex;
-            pending.FallbackCurrentLegTarget = candidateTarget;
-            pending.FallbackLastObservedLocation = location.Name ?? string.Empty;
-            pending.FallbackLastObservedTile = npc.TilePoint;
-            pending.FallbackLastProgressTick = currentTick;
-            TrySetMemberValue(npc, "controller", fallbackController);
-            TrySetMemberValue(npc, "previousEndPoint", candidateTarget);
-            SetTemporaryActiveSlotFallback(pending, fallbackController);
+            badTile = pathTile;
             return true;
         }
 
         return false;
-    }
-
-    private IEnumerable<int> EnumerateFallbackLegCandidateEndIndices(NPC npc, PendingVanillaEncounterResume pending)
-    {
-        if (pending.FallbackNextRouteTileIndex < 0 || pending.FallbackNextRouteTileIndex >= pending.FallbackRouteTiles.Count)
-            yield break;
-
-        var legStartIndex = pending.FallbackNextRouteTileIndex;
-        var previousTile = legStartIndex > 0 ? pending.FallbackRouteTiles[legStartIndex - 1] : npc.TilePoint;
-        var firstStep = pending.FallbackRouteTiles[legStartIndex];
-        var expectedDx = Math.Sign(firstStep.X - previousTile.X);
-        var expectedDy = Math.Sign(firstStep.Y - previousTile.Y);
-        var maxEndIndex = legStartIndex;
-        var steps = 0;
-
-        for (var i = legStartIndex; i < pending.FallbackRouteTiles.Count && steps < EncounterVanillaResumeFallbackMaxLegTiles; i++)
-        {
-            var fromTile = i == legStartIndex ? previousTile : pending.FallbackRouteTiles[i - 1];
-            var toTile = pending.FallbackRouteTiles[i];
-            var dx = Math.Sign(toTile.X - fromTile.X);
-            var dy = Math.Sign(toTile.Y - fromTile.Y);
-            if (i != legStartIndex && (dx != expectedDx || dy != expectedDy))
-                break;
-
-            maxEndIndex = i;
-            steps += 1;
-        }
-
-        for (var i = maxEndIndex; i >= legStartIndex; i--)
-            yield return i;
-    }
-
-    private bool TryBuildEncounterAStarRoute(
-        GameLocation location,
-        NPC npc,
-        Point startTile,
-        Point targetTile,
-        out List<Point> waypointPath)
-    {
-        waypointPath = new List<Point>();
-        var walkabilityService = _walkabilityService;
-        if (walkabilityService is null || location.Map is null)
-            return false;
-
-        if (startTile == targetTile)
-            return true;
-
-        if (!walkabilityService.IsTileStructurallyWalkable(location, targetTile, npc))
-            return false;
-
-        var frontier = new PriorityQueue<Point, int>();
-        var cameFrom = new Dictionary<Point, Point>();
-        var gScore = new Dictionary<Point, int> { [startTile] = 0 };
-        var visited = new HashSet<Point>();
-        frontier.Enqueue(startTile, 0);
-
-        while (frontier.Count > 0)
-        {
-            var current = frontier.Dequeue();
-            if (!visited.Add(current))
-                continue;
-
-            if (current == targetTile)
-            {
-                waypointPath = ReconstructEncounterPath(cameFrom, startTile, targetTile);
-                return true;
-            }
-
-            foreach (var neighbor in EnumerateEncounterNeighborTiles(location, current))
-            {
-                if (!walkabilityService.IsTileStructurallyWalkable(location, neighbor, npc))
-                    continue;
-
-                var tentativeScore = gScore[current] + 1;
-                if (gScore.TryGetValue(neighbor, out var existingScore) && tentativeScore >= existingScore)
-                    continue;
-
-                cameFrom[neighbor] = current;
-                gScore[neighbor] = tentativeScore;
-                frontier.Enqueue(neighbor, tentativeScore + ComputeEncounterPathHeuristic(neighbor, targetTile));
-            }
-        }
-
-        return false;
-    }
-
-    private static IEnumerable<Point> EnumerateEncounterNeighborTiles(GameLocation location, Point tile)
-    {
-        var map = location.Map;
-        var backLayer = map?.GetLayer("Back");
-        var width = backLayer?.LayerWidth ?? 0;
-        var height = backLayer?.LayerHeight ?? 0;
-        if (width <= 0 || height <= 0)
-            yield break;
-
-        var offsets = new[]
-        {
-            new Point(0, -1),
-            new Point(1, 0),
-            new Point(0, 1),
-            new Point(-1, 0)
-        };
-
-        foreach (var offset in offsets)
-        {
-            var neighbor = new Point(tile.X + offset.X, tile.Y + offset.Y);
-            if (neighbor.X < 0 || neighbor.Y < 0 || neighbor.X >= width || neighbor.Y >= height)
-                continue;
-
-            yield return neighbor;
-        }
-    }
-
-    private static int ComputeEncounterPathHeuristic(Point fromTile, Point toTile)
-    {
-        return Math.Abs(fromTile.X - toTile.X) + Math.Abs(fromTile.Y - toTile.Y);
-    }
-
-    private static List<Point> ReconstructEncounterPath(Dictionary<Point, Point> cameFrom, Point startTile, Point targetTile)
-    {
-        var path = new List<Point>();
-        var cursor = targetTile;
-        path.Add(cursor);
-        while (cameFrom.TryGetValue(cursor, out var previous))
-        {
-            cursor = previous;
-            path.Add(cursor);
-            if (cursor == startTile)
-                break;
-        }
-
-        path.Reverse();
-        if (path.Count > 0 && path[0] == startTile)
-            path.RemoveAt(0);
-        return path;
     }
 
     private bool TryPlanNextCrossMapFallbackLeg(NPC npc, string targetLocationName, out RouteSegment segment)
@@ -17398,54 +17069,16 @@ public sealed class ModEntry : Mod
         if (currentLocation is null)
             return false;
 
-        if (!IsMapTransitionTile(currentLocation, requestedTile))
-            return TryResolveEncounterResumeMovementTarget(currentLocation, npc, requestedTile, 4, out departureTile);
-
-        var walkabilityService = _walkabilityService;
-        if (walkabilityService is null)
-            return false;
-
-        const int maxRadius = 4;
-        for (var radius = 1; radius <= maxRadius; radius++)
+        foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(requestedTile, 4))
         {
-            Point? bestCandidate = null;
-            var bestDistance = int.MaxValue;
+            if (!TryCanUseVanillaEncounterResumeTarget(currentLocation, npc, candidate))
+                continue;
 
-            for (var dx = -radius; dx <= radius; dx++)
-            {
-                for (var dy = -radius; dy <= radius; dy++)
-                {
-                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != radius)
-                        continue;
-
-                    var candidate = new Point(requestedTile.X + dx, requestedTile.Y + dy);
-                    if (!walkabilityService.IsTileStructurallyWalkable(currentLocation, candidate, npc))
-                        continue;
-
-                    var distance = Math.Abs(dx) + Math.Abs(dy);
-                    if (!bestCandidate.HasValue
-                        || distance < bestDistance
-                        || (distance == bestDistance && candidate.Y < bestCandidate.Value.Y)
-                        || (distance == bestDistance && candidate.Y == bestCandidate.Value.Y && candidate.X < bestCandidate.Value.X))
-                    {
-                        bestCandidate = candidate;
-                        bestDistance = distance;
-                    }
-                }
-            }
-
-            if (bestCandidate.HasValue)
-            {
-                departureTile = bestCandidate.Value;
-                return true;
-            }
+            departureTile = candidate;
+            return true;
         }
 
-        if (!walkabilityService.IsTileStructurallyWalkable(currentLocation, requestedTile, npc))
-            return false;
-
-        departureTile = requestedTile;
-        return true;
+        return false;
     }
 
     private bool TryResolveCrossMapLegArrivalTile(
@@ -17520,7 +17153,18 @@ public sealed class ModEntry : Mod
             return false;
 
         var seedTile = ResolveFallbackArrivalSeed(targetLocation);
-        return walkabilityService.TryFindNearestStructurallyWalkableTile(targetLocation, seedTile, 16, npc, out arrivalTile);
+        foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(seedTile, 16))
+        {
+            if (_encounterBadTileMaskService?.IsMaskedBadTile(targetLocation, candidate) == true)
+                continue;
+            if (!walkabilityService.IsTileStructurallyWalkable(targetLocation, candidate, npc))
+                continue;
+
+            arrivalTile = candidate;
+            return true;
+        }
+
+        return false;
     }
 
     private static Point ResolveFallbackArrivalSeed(GameLocation location)
@@ -17553,29 +17197,6 @@ public sealed class ModEntry : Mod
             && npc.currentLocation is not null
             && string.Equals(npc.currentLocation.Name, pending.FallbackLegFromLocation, StringComparison.OrdinalIgnoreCase)
             && Vector2.Distance(npc.Tile, new Vector2(pending.FallbackLegApproachTile.Value.X, pending.FallbackLegApproachTile.Value.Y)) <= 1.25f;
-    }
-
-    private static bool IsMapTransitionTile(GameLocation location, Point tile)
-    {
-        if (location.warps is not null)
-        {
-            foreach (var warp in location.warps)
-            {
-                if (warp is not null && warp.X == tile.X && warp.Y == tile.Y)
-                    return true;
-            }
-        }
-
-        if (location.doors?.Pairs is not null)
-        {
-            foreach (var door in location.doors.Pairs)
-            {
-                if (door.Key.X == tile.X && door.Key.Y == tile.Y)
-                    return true;
-            }
-        }
-
-        return false;
     }
 
     private static bool TryResolveScheduleEntryTarget(
@@ -17752,18 +17373,6 @@ public sealed class ModEntry : Mod
                 LogLevel.Warn);
         }
         return false;
-    }
-
-    private bool TryCreateValidatedPathFindController(NPC npc, GameLocation location, Point targetTile, out object? controller)
-    {
-        controller = null;
-        if (!TryCreatePathFindController(npc, location, targetTile, out controller, logFailure: false))
-            return false;
-
-        if (!TryReadControllerPath(controller, out var controllerPath) || controllerPath.Count == 0)
-            return false;
-
-        return TryValidateEncounterResumeControllerPath(location, npc, controllerPath, out _, out _);
     }
 
     private static bool TryReadControllerPath(object? controller, out List<Point> pathTiles)

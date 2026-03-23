@@ -383,6 +383,26 @@ public sealed class NpcWalkabilityService
             && location.warps.Any(warp => Math.Abs(warp.X - tile.X) <= radius && Math.Abs(warp.Y - tile.Y) <= radius);
     }
 
+    public bool IsNearEntranceTile(GameLocation? location, Point tile, int radius = 0)
+    {
+        if (location is null)
+            return false;
+
+        if (location.warps.Any(warp => Math.Abs(warp.X - tile.X) <= radius && Math.Abs(warp.Y - tile.Y) <= radius))
+            return true;
+
+        if (location.doors?.Pairs is null)
+            return false;
+
+        foreach (var door in location.doors.Pairs)
+        {
+            if (Math.Abs(door.Key.X - tile.X) <= radius && Math.Abs(door.Key.Y - tile.Y) <= radius)
+                return true;
+        }
+
+        return false;
+    }
+
     public bool TryFindNearestWalkableTile(GameLocation? location, Point preferredTile, int maxRadius, Character? actor, out Point safeTile)
     {
         return TryFindNearestTile(location, preferredTile, maxRadius, actor, useStructuralWalkability: false, out safeTile);
