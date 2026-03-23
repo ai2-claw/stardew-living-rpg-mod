@@ -16913,7 +16913,7 @@ public sealed class ModEntry : Mod
             && controllerPath.Count > 0)
         {
             pathLength = controllerPath.Count;
-            if (TryValidateEncounterResumeControllerPath(location, npc, controllerPath, out var blockedTile))
+            if (TryValidateEncounterResumeControllerPath(location, npc, controllerPath, out var blockedTile, out var blockedTileReason))
             {
                 fallbackController = vanillaController;
                 TrySetMemberValue(npc, "controller", fallbackController);
@@ -16924,7 +16924,7 @@ public sealed class ModEntry : Mod
             }
 
             Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} rejected vanilla encounter-resume path to {DescribeNullablePoint(targetTile)} on {location.Name} because it crosses structurally blocked tile {DescribeNullablePoint(blockedTile)}; activating exact-target waypoint fallback.",
+                $"Autonomy: [FORCE_PATH] {npc.Name} rejected vanilla encounter-resume path to {DescribeNullablePoint(targetTile)} on {location.Name} because it crosses structurally blocked tile {DescribeNullablePoint(blockedTile)}{(string.IsNullOrWhiteSpace(blockedTileReason) ? string.Empty : $" ({blockedTileReason})")}; activating exact-target waypoint fallback.",
                 LogLevel.Debug);
         }
 
@@ -17007,18 +17007,21 @@ public sealed class ModEntry : Mod
         GameLocation location,
         NPC npc,
         IEnumerable<Point> pathTiles,
-        out Point? blockedTile)
+        out Point? blockedTile,
+        out string? blockedTileReason)
     {
         blockedTile = null;
+        blockedTileReason = null;
         if (_walkabilityService is null)
             return true;
 
         foreach (var pathTile in pathTiles)
         {
-            if (_walkabilityService.IsTileStructurallyWalkable(location, pathTile, npc))
+            if (_walkabilityService.IsTileStructurallyWalkable(location, pathTile, npc, out var blockerDescription))
                 continue;
 
             blockedTile = pathTile;
+            blockedTileReason = blockerDescription;
             return false;
         }
 
@@ -17641,7 +17644,7 @@ public sealed class ModEntry : Mod
         if (!TryReadControllerPath(controller, out var controllerPath) || controllerPath.Count == 0)
             return false;
 
-        return TryValidateEncounterResumeControllerPath(location, npc, controllerPath, out _);
+        return TryValidateEncounterResumeControllerPath(location, npc, controllerPath, out _, out _);
     }
 
     private static bool TryReadControllerPath(object? controller, out List<Point> pathTiles)

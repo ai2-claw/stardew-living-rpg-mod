@@ -14,16 +14,22 @@ public sealed class NpcWalkabilityService
 
     public bool IsTileWalkable(GameLocation? location, Point tile, Character? actor = null)
     {
-        return IsTileWalkableCore(location, tile, actor, ignoreTransientOccupants: false);
+        return IsTileWalkableCore(location, tile, actor, ignoreTransientOccupants: false, out _);
     }
 
     public bool IsTileStructurallyWalkable(GameLocation? location, Point tile, Character? actor = null)
     {
-        return IsTileWalkableCore(location, tile, actor, ignoreTransientOccupants: true);
+        return IsTileWalkableCore(location, tile, actor, ignoreTransientOccupants: true, out _);
     }
 
-    private static bool IsTileWalkableCore(GameLocation? location, Point tile, Character? actor, bool ignoreTransientOccupants)
+    public bool IsTileStructurallyWalkable(GameLocation? location, Point tile, Character? actor, out string? blockerDescription)
     {
+        return IsTileWalkableCore(location, tile, actor, ignoreTransientOccupants: true, out blockerDescription);
+    }
+
+    private static bool IsTileWalkableCore(GameLocation? location, Point tile, Character? actor, bool ignoreTransientOccupants, out string? blockerDescription)
+    {
+        blockerDescription = null;
         if (location is null || location.Map is null)
             return false;
         if (tile.X < 0 || tile.Y < 0)
@@ -40,8 +46,12 @@ public sealed class NpcWalkabilityService
 
         var buildingsLayer = location.Map.GetLayer("Buildings");
         if (location.IsOutdoors && buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
+        {
+            blockerDescription = "outdoor_buildings_layer";
             return false;
-        if (HasIndoorOverlayFurnitureBlocker(location, tile))
+        }
+
+        if (TryGetIndoorOverlayBlocker(location, tile, out blockerDescription))
             return false;
 
         var tileVector = new Vector2(tile.X, tile.Y);
@@ -149,7 +159,7 @@ public sealed class NpcWalkabilityService
         var buildingsLayer = location.Map.GetLayer("Buildings");
         if (location.IsOutdoors && buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
             return false;
-        if (HasIndoorOverlayFurnitureBlocker(location, tile))
+        if (TryGetIndoorOverlayBlocker(location, tile, out _))
             return false;
 
         var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
@@ -273,18 +283,25 @@ public sealed class NpcWalkabilityService
             : IsTileWalkable(location, tile, actor);
     }
 
-    private static bool HasIndoorOverlayFurnitureBlocker(GameLocation location, Point tile)
+    private static bool TryGetIndoorOverlayBlocker(GameLocation location, Point tile, out string? blockerDescription)
     {
+        blockerDescription = null;
         if (location.IsOutdoors || location.Map is null)
             return false;
 
-        return IsIndoorFurnitureLikeOverlayTile(location.Map.GetLayer("Buildings"), tile)
-            || IsIndoorFurnitureLikeOverlayTile(location.Map.GetLayer("Front"), tile)
-            || IsIndoorFurnitureLikeOverlayTile(location.Map.GetLayer("AlwaysFront"), tile);
+        if (TryGetBlockingIndoorOverlayTile(location.Map.GetLayer("Buildings"), tile, "Buildings", blockByDefault: true, out blockerDescription))
+            return true;
+        if (TryGetBlockingIndoorOverlayTile(location.Map.GetLayer("Front"), tile, "Front", blockByDefault: false, out blockerDescription))
+            return true;
+        if (TryGetBlockingIndoorOverlayTile(location.Map.GetLayer("AlwaysFront"), tile, "AlwaysFront", blockByDefault: true, out blockerDescription))
+            return true;
+
+        return false;
     }
 
-    private static bool IsIndoorFurnitureLikeOverlayTile(Layer? layer, Point tile)
+    private static bool TryGetBlockingIndoorOverlayTile(Layer? layer, Point tile, string layerName, bool blockByDefault, out string? blockerDescription)
     {
+        blockerDescription = null;
         if (layer is null || tile.X < 0 || tile.Y < 0 || tile.X >= layer.LayerWidth || tile.Y >= layer.LayerHeight)
             return false;
 
@@ -292,7 +309,19 @@ public sealed class NpcWalkabilityService
         if (overlayTile is null)
             return false;
 
-        return IsFurnitureLikeTileSheet(overlayTile.TileSheet);
+        var tileSheet = overlayTile.TileSheet;
+        if (blockByDefault)
+        {
+            if (IsIndoorPassThroughTileSheet(tileSheet))
+                return false;
+        }
+        else if (!IsFurnitureLikeTileSheet(tileSheet))
+        {
+            return false;
+        }
+
+        blockerDescription = BuildOverlayBlockerDescription(layerName, overlayTile);
+        return true;
     }
 
     private static bool IsFurnitureLikeTileSheet(TileSheet? tileSheet)
@@ -311,6 +340,32 @@ public sealed class NpcWalkabilityService
         return sheetName.Contains("Furniture", StringComparison.OrdinalIgnoreCase)
             || sheetName.Contains("Craftables", StringComparison.OrdinalIgnoreCase)
             || sheetName.Contains("Couch", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsIndoorPassThroughTileSheet(TileSheet? tileSheet)
+    {
+        if (tileSheet is null)
+            return false;
+
+        return IsIndoorPassThroughSheetName(tileSheet.Id) || IsIndoorPassThroughSheetName(tileSheet.ImageSource);
+    }
+
+    private static bool IsIndoorPassThroughSheetName(string? sheetName)
+    {
+        if (string.IsNullOrWhiteSpace(sheetName))
+            return false;
+
+        return sheetName.Contains("WallsAndFloors", StringComparison.OrdinalIgnoreCase)
+            || sheetName.Contains("paths", StringComparison.OrdinalIgnoreCase)
+            || sheetName.Contains("shadow", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildOverlayBlockerDescription(string layerName, Tile overlayTile)
+    {
+        var tileSheet = overlayTile.TileSheet;
+        var sheetId = string.IsNullOrWhiteSpace(tileSheet?.Id) ? "none" : tileSheet.Id;
+        var imageSource = string.IsNullOrWhiteSpace(tileSheet?.ImageSource) ? "none" : tileSheet.ImageSource;
+        return $"indoor_overlay(layer={layerName}, sheet={sheetId}, image={imageSource}, index={overlayTile.TileIndex})";
     }
 
     private static Rectangle BuildCollisionRect(Point tile)
