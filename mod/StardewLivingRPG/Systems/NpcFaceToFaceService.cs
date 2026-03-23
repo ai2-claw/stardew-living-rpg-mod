@@ -55,6 +55,11 @@ public sealed class NpcFaceToFaceService
             return false;
         if (TileDistance(npcA.Tile, new Point((int)npcB.Tile.X, (int)npcB.Tile.Y)) > Math.Max(1, _config.AutonomyFaceToFaceDistanceTiles))
             return false;
+        if (!_walkabilityService.IsTileStageable(location, npcA.TilePoint)
+            || !_walkabilityService.IsTileStageable(location, npcB.TilePoint))
+        {
+            return false;
+        }
         if (!_walkabilityService.HasLineOfSight(
                 location,
                 new Point((int)npcA.Tile.X, (int)npcA.Tile.Y),

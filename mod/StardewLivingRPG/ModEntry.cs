@@ -14311,6 +14311,13 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        if (!walkabilityService.IsTileStageable(speakerLocation, speakerNpc.TilePoint)
+            || !walkabilityService.IsTileStageable(speakerLocation, listenerNpc.TilePoint))
+        {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked by invalid_staging_tile.", LogLevel.Trace);
+            return false;
+        }
+
         if (IsSamePairEncounterCoolingDown(speakerNpc.Name, listenerNpc.Name))
         {
             Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked by same-pair cooldown.", LogLevel.Trace);

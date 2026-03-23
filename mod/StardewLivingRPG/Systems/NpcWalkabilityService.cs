@@ -3,6 +3,8 @@ using StardewValley;
 using StardewValley.Objects;
 using StardewValley.TerrainFeatures;
 using SObject = StardewValley.Object;
+using xTile.Layers;
+using xTile.Tiles;
 
 namespace StardewLivingRPG.Systems;
 
@@ -39,6 +41,8 @@ public sealed class NpcWalkabilityService
         var buildingsLayer = location.Map.GetLayer("Buildings");
         if (location.IsOutdoors && buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
             return false;
+        if (HasIndoorOverlayFurnitureBlocker(location, tile))
+            return false;
 
         var tileVector = new Vector2(tile.X, tile.Y);
         var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
@@ -49,7 +53,7 @@ public sealed class NpcWalkabilityService
             return false;
 
         var collisionRect = BuildCollisionRect(tile);
-        if (!ignoreTransientOccupants && location.isCollidingPosition(collisionRect, Game1.viewport, actor))
+        if (IsBlockedByCollision(location, collisionRect, actor, ignoreTransientOccupants))
             return false;
 
         if (location.Objects.TryGetValue(tileVector, out var obj)
@@ -124,8 +128,8 @@ public sealed class NpcWalkabilityService
 
     /// <summary>
     /// Lenient walkability check for staging tiles.
-    /// Skips character/player occupancy and isCollidingPosition so that tiles
-    /// where NPCs are already standing are valid staging candidates.
+    /// Ignores transient character/player occupancy while still honoring
+    /// structural collision so crowded but open tiles remain stageable.
     /// </summary>
     public bool IsTileStageable(GameLocation? location, Point tile)
     {
@@ -145,6 +149,8 @@ public sealed class NpcWalkabilityService
         var buildingsLayer = location.Map.GetLayer("Buildings");
         if (location.IsOutdoors && buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
             return false;
+        if (HasIndoorOverlayFurnitureBlocker(location, tile))
+            return false;
 
         var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
         var tileViewport = new xTile.Dimensions.Rectangle(0, 0, TileSize, TileSize);
@@ -153,8 +159,11 @@ public sealed class NpcWalkabilityService
         if (HasNoPathProperty(location, tile))
             return false;
 
-        var tileVector = new Vector2(tile.X, tile.Y);
         var collisionRect = BuildCollisionRect(tile);
+        if (IsBlockedByCollision(location, collisionRect, actor: null, ignoreTransientOccupants: true))
+            return false;
+
+        var tileVector = new Vector2(tile.X, tile.Y);
 
         if (location.Objects.TryGetValue(tileVector, out var obj)
             && obj is SObject placedObject
@@ -264,9 +273,74 @@ public sealed class NpcWalkabilityService
             : IsTileWalkable(location, tile, actor);
     }
 
+    private static bool HasIndoorOverlayFurnitureBlocker(GameLocation location, Point tile)
+    {
+        if (location.IsOutdoors || location.Map is null)
+            return false;
+
+        return IsIndoorFurnitureLikeOverlayTile(location.Map.GetLayer("Buildings"), tile)
+            || IsIndoorFurnitureLikeOverlayTile(location.Map.GetLayer("Front"), tile)
+            || IsIndoorFurnitureLikeOverlayTile(location.Map.GetLayer("AlwaysFront"), tile);
+    }
+
+    private static bool IsIndoorFurnitureLikeOverlayTile(Layer? layer, Point tile)
+    {
+        if (layer is null || tile.X < 0 || tile.Y < 0 || tile.X >= layer.LayerWidth || tile.Y >= layer.LayerHeight)
+            return false;
+
+        var overlayTile = layer.Tiles[tile.X, tile.Y];
+        if (overlayTile is null)
+            return false;
+
+        return IsFurnitureLikeTileSheet(overlayTile.TileSheet);
+    }
+
+    private static bool IsFurnitureLikeTileSheet(TileSheet? tileSheet)
+    {
+        if (tileSheet is null)
+            return false;
+
+        return IsFurnitureLikeSheetName(tileSheet.Id) || IsFurnitureLikeSheetName(tileSheet.ImageSource);
+    }
+
+    private static bool IsFurnitureLikeSheetName(string? sheetName)
+    {
+        if (string.IsNullOrWhiteSpace(sheetName))
+            return false;
+
+        return sheetName.Contains("Furniture", StringComparison.OrdinalIgnoreCase)
+            || sheetName.Contains("Craftables", StringComparison.OrdinalIgnoreCase)
+            || sheetName.Contains("Couch", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static Rectangle BuildCollisionRect(Point tile)
     {
         return new Rectangle((tile.X * TileSize) + 8, (tile.Y * TileSize) + 16, TileSize - 16, TileSize - 24);
+    }
+
+    private static bool IsBlockedByCollision(GameLocation location, Rectangle collisionRect, Character? actor, bool ignoreTransientOccupants)
+    {
+        if (!location.isCollidingPosition(collisionRect, Game1.viewport, actor))
+            return false;
+        if (!ignoreTransientOccupants)
+            return true;
+
+        return !IsCollisionOnlyTransientOccupant(location, collisionRect, actor);
+    }
+
+    private static bool IsCollisionOnlyTransientOccupant(GameLocation location, Rectangle collisionRect, Character? actor)
+    {
+        if (location.characters.Any(character =>
+                character is not null
+                && !ReferenceEquals(character, actor)
+                && character.GetBoundingBox().Intersects(collisionRect)))
+        {
+            return true;
+        }
+
+        return Game1.player is not null
+            && !ReferenceEquals(Game1.player, actor)
+            && Game1.player.GetBoundingBox().Intersects(collisionRect);
     }
 
     private static bool HasNoPathProperty(GameLocation location, Point tile)
