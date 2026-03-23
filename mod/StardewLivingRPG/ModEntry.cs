@@ -16433,10 +16433,17 @@ public sealed class ModEntry : Mod
             return false;
 
         var targetTile = pending.ActiveTargetTile.Value;
-        if (!TryResolveEncounterResumeMovementTarget(targetLocation, npc, targetTile, 4, out var movementTarget))
+        if (!TryResolveReachableSameMapEncounterResumeTarget(
+                targetLocation,
+                npc,
+                targetTile,
+                4,
+                preferWaypointFallback: false,
+                out var movementTarget,
+                out var preferWaypointFallback))
         {
             Monitor.Log(
-                $"Autonomy: [REBIND] {npc.Name} could not resolve a walkable movement target for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(targetTile)} in {pending.ActiveTargetLocation}.",
+                $"Autonomy: [REBIND] {npc.Name} could not resolve a reachable movement target for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(targetTile)} in {pending.ActiveTargetLocation}.",
                 LogLevel.Debug);
             return false;
         }
@@ -16465,7 +16472,8 @@ public sealed class ModEntry : Mod
                 currentTick,
                 out fallbackController,
                 out var pathMode,
-                out var pathLength))
+                out var pathLength,
+                preferWaypointFallback: preferWaypointFallback))
         {
             ClearTemporaryActiveSlotFallback(npc, pending);
             Monitor.Log(
@@ -16592,24 +16600,33 @@ public sealed class ModEntry : Mod
         pending.FallbackRepathCount += 1;
         ClearTemporaryActiveSlotFallbackController(npc, pending);
         ClearEncounterMotionState(npc);
-        var movementTarget = pending.FallbackSameMapApproachTile ?? pending.ActiveTargetTile;
+        var movementTarget = pending.ActiveTargetTile;
         if (movementTarget.HasValue
+            && TryResolveReachableSameMapEncounterResumeTarget(
+                npc.currentLocation,
+                npc,
+                movementTarget.Value,
+                4,
+                preferWaypointFallback: true,
+                out var reachableMovementTarget,
+                out var preferWaypointFallback)
             && TryActivateEncounterResumePath(
                 npc,
                 pending,
                 npc.currentLocation,
-                movementTarget.Value,
+                reachableMovementTarget,
                 currentTick,
                 out _,
                 out var pathMode,
                 out var pathLength,
-                preferWaypointFallback: true))
+                preferWaypointFallback: preferWaypointFallback))
         {
+            pending.FallbackSameMapApproachTile = reachableMovementTarget;
             pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
             pending.FallbackLastObservedTile = npc.TilePoint;
             pending.FallbackLastProgressTick = currentTick;
             Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (path_mode={pathMode}, repath_count={pending.FallbackRepathCount}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, movement_target={DescribeNullablePoint(movementTarget)}, path_length={pathLength}, waypoint_target={DescribeNullablePoint(pending.FallbackCurrentLegTarget)}).",
+                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (path_mode={pathMode}, repath_count={pending.FallbackRepathCount}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, movement_target={DescribeNullablePoint(reachableMovementTarget)}, path_length={pathLength}, waypoint_target={DescribeNullablePoint(pending.FallbackCurrentLegTarget)}).",
                 LogLevel.Debug);
             return;
         }
@@ -17003,6 +17020,100 @@ public sealed class ModEntry : Mod
         return false;
     }
 
+    private bool TryResolveReachableSameMapEncounterResumeTarget(
+        GameLocation location,
+        NPC npc,
+        Point requestedTile,
+        int maxRadius,
+        bool preferWaypointFallback,
+        out Point movementTarget,
+        out bool useWaypointFallback)
+    {
+        movementTarget = Point.Zero;
+        useWaypointFallback = preferWaypointFallback;
+
+        foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(location, npc, requestedTile, maxRadius))
+        {
+            if (!TryProbeEncounterResumePathMode(location, npc, candidate, preferWaypointFallback, out var candidateUsesWaypointFallback))
+                continue;
+
+            movementTarget = candidate;
+            useWaypointFallback = candidateUsesWaypointFallback;
+            return true;
+        }
+
+        return false;
+    }
+
+    private IEnumerable<Point> EnumerateEncounterResumeMovementTargetCandidates(
+        GameLocation location,
+        NPC npc,
+        Point requestedTile,
+        int maxRadius)
+    {
+        var walkabilityService = _walkabilityService;
+        if (walkabilityService is null)
+            yield break;
+
+        var yielded = new HashSet<Point>();
+        if (walkabilityService.IsTileStructurallyWalkable(location, requestedTile, npc) && yielded.Add(requestedTile))
+            yield return requestedTile;
+
+        for (var radius = 1; radius <= maxRadius; radius++)
+        {
+            var candidates = new List<(Point Tile, int Distance)>();
+            for (var dx = -radius; dx <= radius; dx++)
+            {
+                for (var dy = -radius; dy <= radius; dy++)
+                {
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != radius)
+                        continue;
+
+                    var candidate = new Point(requestedTile.X + dx, requestedTile.Y + dy);
+                    if (!yielded.Add(candidate) || !walkabilityService.IsTileStructurallyWalkable(location, candidate, npc))
+                        continue;
+
+                    candidates.Add((candidate, Math.Abs(dx) + Math.Abs(dy)));
+                }
+            }
+
+            foreach (var candidate in candidates
+                         .OrderBy(entry => entry.Distance)
+                         .ThenBy(entry => entry.Tile.Y)
+                         .ThenBy(entry => entry.Tile.X))
+            {
+                yield return candidate.Tile;
+            }
+        }
+    }
+
+    private bool TryProbeEncounterResumePathMode(
+        GameLocation location,
+        NPC npc,
+        Point targetTile,
+        bool preferWaypointFallback,
+        out bool useWaypointFallback)
+    {
+        useWaypointFallback = preferWaypointFallback;
+        if (!preferWaypointFallback
+            && TryCreatePathFindController(npc, location, targetTile, out var vanillaController, logFailure: false)
+            && TryReadControllerPath(vanillaController, out var controllerPath)
+            && controllerPath.Count > 0
+            && TryValidateEncounterResumeControllerPath(location, npc, controllerPath, out _, out _))
+        {
+            useWaypointFallback = false;
+            return true;
+        }
+
+        if (TryBuildEncounterAStarRoute(location, npc, npc.TilePoint, targetTile, out _))
+        {
+            useWaypointFallback = true;
+            return true;
+        }
+
+        return false;
+    }
+
     private bool TryValidateEncounterResumeControllerPath(
         GameLocation location,
         NPC npc,
@@ -17015,8 +17126,16 @@ public sealed class ModEntry : Mod
         if (_walkabilityService is null)
             return true;
 
+        var allowedOriginTile = npc.TilePoint;
+        var originTileSkipped = false;
         foreach (var pathTile in pathTiles)
         {
+            if (!originTileSkipped && pathTile == allowedOriginTile)
+            {
+                originTileSkipped = true;
+                continue;
+            }
+
             if (_walkabilityService.IsTileStructurallyWalkable(location, pathTile, npc, out var blockerDescription))
                 continue;
 
