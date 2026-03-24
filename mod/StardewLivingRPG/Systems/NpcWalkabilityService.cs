@@ -403,6 +403,28 @@ public sealed class NpcWalkabilityService
         return false;
     }
 
+    public bool IsNpcOverlappingAnyNpc(NPC? npc, GameLocation? location = null)
+    {
+        if (npc is null)
+            return false;
+
+        var currentLocation = location ?? npc.currentLocation;
+        if (currentLocation is null)
+            return false;
+
+        var npcBounds = npc.GetBoundingBox();
+        foreach (var otherNpc in currentLocation.characters)
+        {
+            if (otherNpc is null || ReferenceEquals(otherNpc, npc))
+                continue;
+
+            if (otherNpc.GetBoundingBox().Intersects(npcBounds))
+                return true;
+        }
+
+        return false;
+    }
+
     public bool TryFindNearestWalkableTile(GameLocation? location, Point preferredTile, int maxRadius, Character? actor, out Point safeTile)
     {
         return TryFindNearestTile(location, preferredTile, maxRadius, actor, useStructuralWalkability: false, out safeTile);

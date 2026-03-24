@@ -72,6 +72,11 @@ public sealed class NpcFaceToFaceService
         {
             return false;
         }
+        if (_walkabilityService.IsNpcOverlappingAnyNpc(npcA, location)
+            || _walkabilityService.IsNpcOverlappingAnyNpc(npcB, location))
+        {
+            return false;
+        }
         if (!_walkabilityService.HasLineOfSight(
                 location,
                 new Point((int)npcA.Tile.X, (int)npcA.Tile.Y),

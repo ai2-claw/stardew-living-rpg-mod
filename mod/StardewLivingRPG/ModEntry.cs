@@ -14412,6 +14412,13 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        if (walkabilityService.IsNpcOverlappingAnyNpc(speakerNpc, speakerLocation)
+            || walkabilityService.IsNpcOverlappingAnyNpc(listenerNpc, speakerLocation))
+        {
+            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked by npc_overlap.", LogLevel.Trace);
+            return false;
+        }
+
         if (IsSamePairEncounterCoolingDown(speakerNpc.Name, listenerNpc.Name))
         {
             Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked by same-pair cooldown.", LogLevel.Trace);

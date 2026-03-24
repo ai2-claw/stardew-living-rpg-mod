@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 1.0.3 - 2026-03-24
+
+### Changed
+- Manifest version bumped to `1.0.3`.
+
+### Fixed
+- Villagers are better at finding the longer walk around known blocked spots on modded maps instead of giving up early and waiting in place.
+- Face-to-face chats are less likely to start in messy crowding situations, so villagers should stop trying to stage conversations while clipped into each other or while jamming up tight traffic spots.
+- Normal players should see much less Living Valley console spam during play unless the mod's developer logging option is turned on.
+
 ## 1.0.2 - 2026-03-22
 
 ### Changed
