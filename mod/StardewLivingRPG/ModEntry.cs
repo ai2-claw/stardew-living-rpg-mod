@@ -17066,6 +17066,9 @@ public sealed class ModEntry : Mod
     {
         movementTarget = Point.Zero;
 
+        if (_encounterBadTileMaskService?.HasActiveMask(location) == true)
+            return TryResolveMaskedSameMapEncounterResumeTarget(location, npc, pending, requestedTile, excludedTile, out movementTarget);
+
         foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(requestedTile, maxRadius))
         {
             if (excludedTile.HasValue && candidate == excludedTile.Value)
@@ -17085,6 +17088,142 @@ public sealed class ModEntry : Mod
         }
 
         return false;
+    }
+
+    private bool TryResolveMaskedSameMapEncounterResumeTarget(
+        GameLocation location,
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        Point requestedTile,
+        Point? excludedTile,
+        out Point movementTarget)
+    {
+        movementTarget = Point.Zero;
+
+        if (!TryBuildMaskedSameMapDetourRoute(location, npc.TilePoint, requestedTile, out var routeTiles))
+            return false;
+
+        for (var index = routeTiles.Count - 1; index >= 0; index--)
+        {
+            var candidate = routeTiles[index];
+            if (excludedTile.HasValue && candidate == excludedTile.Value)
+                continue;
+
+            if (candidate != requestedTile && candidate == npc.TilePoint)
+                continue;
+
+            if (candidate == pending.LastReachedSameMapWaypoint || candidate == pending.PreviousReachedSameMapWaypoint)
+                continue;
+
+            if (!TryCanUseVanillaEncounterResumeTarget(location, npc, candidate))
+                continue;
+
+            movementTarget = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryBuildMaskedSameMapDetourRoute(
+        GameLocation location,
+        Point startTile,
+        Point targetTile,
+        out List<Point> routeTiles)
+    {
+        routeTiles = new List<Point>();
+
+        var map = location.Map;
+        var backLayer = map?.GetLayer("Back");
+        if (map is null || backLayer is null)
+            return false;
+
+        if (!IsWithinLayerBounds(backLayer, startTile) || !IsWithinLayerBounds(backLayer, targetTile))
+            return false;
+
+        var frontier = new Queue<Point>();
+        var visited = new HashSet<Point>();
+        var previousByTile = new Dictionary<Point, Point>();
+
+        frontier.Enqueue(startTile);
+        visited.Add(startTile);
+
+        while (frontier.Count > 0)
+        {
+            var current = frontier.Dequeue();
+            if (current == targetTile)
+                break;
+
+            foreach (var neighbor in EnumerateMaskedSameMapNeighborTiles(current))
+            {
+                if (!visited.Add(neighbor))
+                    continue;
+
+                if (!CanTraverseMaskedSameMapRouteTile(location, backLayer, neighbor, startTile, targetTile))
+                    continue;
+
+                previousByTile[neighbor] = current;
+                frontier.Enqueue(neighbor);
+            }
+        }
+
+        if (!visited.Contains(targetTile))
+            return false;
+
+        var cursor = targetTile;
+        routeTiles.Add(cursor);
+        while (cursor != startTile)
+        {
+            if (!previousByTile.TryGetValue(cursor, out var previous))
+                return false;
+
+            cursor = previous;
+            routeTiles.Add(cursor);
+        }
+
+        routeTiles.Reverse();
+        return routeTiles.Count > 0;
+    }
+
+    private bool CanTraverseMaskedSameMapRouteTile(
+        GameLocation location,
+        xTile.Layers.Layer backLayer,
+        Point tile,
+        Point startTile,
+        Point targetTile)
+    {
+        if (!IsWithinLayerBounds(backLayer, tile))
+            return false;
+
+        if (backLayer.Tiles[tile.X, tile.Y] is null)
+            return false;
+
+        if (tile == startTile || tile == targetTile)
+            return true;
+
+        if (_encounterBadTileMaskService?.IsMaskedBadTile(location, tile) == true)
+            return false;
+
+        const int tileSize = 64;
+        var tileLocation = new xTile.Dimensions.Location(tile.X * tileSize, tile.Y * tileSize);
+        var tileViewport = new xTile.Dimensions.Rectangle(0, 0, tileSize, tileSize);
+        return location.isTilePassable(tileLocation, tileViewport);
+    }
+
+    private static IEnumerable<Point> EnumerateMaskedSameMapNeighborTiles(Point tile)
+    {
+        yield return new Point(tile.X, tile.Y - 1);
+        yield return new Point(tile.X + 1, tile.Y);
+        yield return new Point(tile.X, tile.Y + 1);
+        yield return new Point(tile.X - 1, tile.Y);
+    }
+
+    private static bool IsWithinLayerBounds(xTile.Layers.Layer layer, Point tile)
+    {
+        return tile.X >= 0
+            && tile.Y >= 0
+            && tile.X < layer.LayerWidth
+            && tile.Y < layer.LayerHeight;
     }
 
     private static IEnumerable<Point> EnumerateEncounterResumeMovementTargetCandidates(Point requestedTile, int maxRadius)
