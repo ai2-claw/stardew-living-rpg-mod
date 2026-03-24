@@ -590,6 +590,7 @@ public sealed class ModEntry : Mod
         public string Phase { get; init; } = string.Empty;
         public NPC? LiveNpc { get; set; }
         public ulong NextEligibleTick { get; set; }
+        public bool WasDirectPlayerInteractionTarget { get; init; }
     }
 
     private sealed class ConversationTopicCandidate
@@ -15590,7 +15591,7 @@ public sealed class ModEntry : Mod
     {
         var npcA = ResolveNpcByName(encounter.NpcA);
         var npcB = ResolveNpcByName(encounter.NpcB);
-        var deferUiInterruptResume = ShouldDeferEncounterResumeForUiInterrupt(encounter, phase);
+        var deferUiInterruptResume = TryResolveEncounterUiInterruptTargetNpcId(encounter, phase, out var directInteractionTargetNpcId);
         ClearEncounterParticipantRuntime(encounter.NpcA);
         ClearEncounterParticipantRuntime(encounter.NpcB);
         _npcTileReservationService?.Release(encounter.NpcA);
@@ -15605,8 +15606,18 @@ public sealed class ModEntry : Mod
 
         if (deferUiInterruptResume)
         {
-            QueueDeferredEncounterUiInterruptResume(encounter.NpcA, npcA, encounter.EncounterId, phase);
-            QueueDeferredEncounterUiInterruptResume(encounter.NpcB, npcB, encounter.EncounterId, phase);
+            QueueDeferredEncounterUiInterruptResume(
+                encounter.NpcA,
+                npcA,
+                encounter.EncounterId,
+                phase,
+                string.Equals(encounter.NpcA, directInteractionTargetNpcId, StringComparison.OrdinalIgnoreCase));
+            QueueDeferredEncounterUiInterruptResume(
+                encounter.NpcB,
+                npcB,
+                encounter.EncounterId,
+                phase,
+                string.Equals(encounter.NpcB, directInteractionTargetNpcId, StringComparison.OrdinalIgnoreCase));
             return;
         }
 
@@ -15614,8 +15625,10 @@ public sealed class ModEntry : Mod
         HandoffNpcToVanillaAfterEncounter(npcB, encounter.EncounterId, phase);
     }
 
-    private bool ShouldDeferEncounterResumeForUiInterrupt(ActiveEncounter encounter, string phase)
+    private bool TryResolveEncounterUiInterruptTargetNpcId(ActiveEncounter encounter, string phase, out string targetNpcId)
     {
+        targetNpcId = string.Empty;
+
         if (!string.Equals(phase, "ui_interrupt", StringComparison.OrdinalIgnoreCase))
             return false;
 
@@ -15624,10 +15637,22 @@ public sealed class ModEntry : Mod
 
         var uiNpc = TryResolveEncounterUiInterruptNpc();
         if (uiNpc is not null)
-            return IsEncounterParticipant(encounter, uiNpc.Name);
+        {
+            if (!IsEncounterParticipant(encounter, uiNpc.Name))
+                return false;
+
+            targetNpcId = uiNpc.Name;
+            return true;
+        }
 
         if (!string.IsNullOrWhiteSpace(_pendingNpcDialogueHookName))
-            return IsEncounterParticipant(encounter, _pendingNpcDialogueHookName);
+        {
+            if (!IsEncounterParticipant(encounter, _pendingNpcDialogueHookName))
+                return false;
+
+            targetNpcId = _pendingNpcDialogueHookName;
+            return true;
+        }
 
         return false;
     }
@@ -15655,7 +15680,7 @@ public sealed class ModEntry : Mod
         return Game1.dialogueUp || Game1.activeClickableMenu is not null;
     }
 
-    private void QueueDeferredEncounterUiInterruptResume(string npcId, NPC? liveNpc, string encounterId, string phase)
+    private void QueueDeferredEncounterUiInterruptResume(string npcId, NPC? liveNpc, string encounterId, string phase, bool wasDirectPlayerInteractionTarget)
     {
         if (string.IsNullOrWhiteSpace(npcId))
             return;
@@ -15666,7 +15691,8 @@ public sealed class ModEntry : Mod
             EncounterId = encounterId,
             Phase = phase,
             LiveNpc = liveNpc,
-            NextEligibleTick = _lastUpdateTick + 1
+            NextEligibleTick = _lastUpdateTick + 1,
+            WasDirectPlayerInteractionTarget = wasDirectPlayerInteractionTarget
         };
     }
 
@@ -15727,9 +15753,26 @@ public sealed class ModEntry : Mod
             }
 
             deferred.LiveNpc = npc;
+            if (deferred.WasDirectPlayerInteractionTarget && IsPlayerBlockingDeferredEncounterResume(npc))
+            {
+                deferred.NextEligibleTick = currentTick + 1;
+                continue;
+            }
+
             HandoffNpcToVanillaAfterEncounter(npc, deferred.EncounterId, deferred.Phase);
             _deferredEncounterUiInterruptResumeByNpcId.Remove(npcId);
         }
+    }
+
+    private static bool IsPlayerBlockingDeferredEncounterResume(NPC npc)
+    {
+        if (npc.currentLocation is null || Game1.player.currentLocation is null)
+            return false;
+
+        if (!string.Equals(npc.currentLocation.Name, Game1.player.currentLocation.Name, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return IsWithinTileStepRange(Game1.player.Tile, npc.Tile, NpcManualFollowUpActivationRadiusTiles);
     }
 
     private void TryProcessPendingVanillaEncounterResumes(ulong currentTick)
