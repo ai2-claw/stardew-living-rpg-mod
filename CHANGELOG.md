@@ -4,6 +4,7 @@
 
 ### Changed
 - Manifest version bumped to `1.0.3`.
+- Custom NPC schedule routing no longer depends on Player2 for spatial planning, which should make their movement and schedule behavior more predictable.
 
 ### Fixed
 - Villagers are better at finding the longer walk around known blocked spots on modded maps instead of giving up early and waiting in place.
