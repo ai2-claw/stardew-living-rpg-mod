@@ -16301,6 +16301,13 @@ public sealed class ModEntry : Mod
         if (pending.NextScheduleTime.HasValue && Game1.timeOfDay >= pending.NextScheduleTime.Value)
             return false;
 
+        if (npc.currentLocation is null
+            || !pending.ActiveTargetTile.HasValue
+            || !IsEncounterResumeTileAvailable(npc.currentLocation, npc, pending.ActiveTargetTile.Value))
+        {
+            return false;
+        }
+
         ClearTemporaryActiveSlotFallback(npc, pending);
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
@@ -16798,6 +16805,7 @@ public sealed class ModEntry : Mod
     private void ClearTemporaryActiveSlotFallback(NPC npc, PendingVanillaEncounterResume pending)
     {
         ClearTemporaryActiveSlotFallbackController(npc, pending);
+        ReleaseEncounterResumeTileReservation(npc.Name);
         ResetActiveSlotFallbackState(pending);
     }
 
@@ -17053,6 +17061,12 @@ public sealed class ModEntry : Mod
 
         if (!TryCreateVanillaEncounterResumeController(location, npc, targetTile, out fallbackController, out pathLength))
             return false;
+        if (!TryReserveEncounterResumeTile(npc, location, targetTile, pending))
+        {
+            fallbackController = null;
+            pathLength = 0;
+            return false;
+        }
         TrySetMemberValue(npc, "controller", fallbackController);
         TrySetMemberValue(npc, "previousEndPoint", targetTile);
         pending.FallbackLastObservedLocation = location.Name ?? string.Empty;
@@ -17268,10 +17282,50 @@ public sealed class ModEntry : Mod
 
     private bool TryCanUseVanillaEncounterResumeTarget(GameLocation location, NPC npc, Point targetTile)
     {
+        if (!IsEncounterResumeTileAvailable(location, npc, targetTile))
+            return false;
+
         if (_encounterBadTileMaskService?.IsMaskedBadTile(location, targetTile) == true)
             return false;
 
         return TryCreateVanillaEncounterResumeController(location, npc, targetTile, out _, out _);
+    }
+
+    private bool IsEncounterResumeTileAvailable(GameLocation location, NPC npc, Point tile)
+    {
+        if (IsNpcStandingOnExactTile(location, tile, npc.Name))
+            return false;
+
+        return _npcTileReservationService?.IsReservedByOther(location.Name ?? string.Empty, tile, npc.Name, ReservationKind.Transit, spacing: 0) != true;
+    }
+
+    private static bool IsNpcStandingOnExactTile(GameLocation location, Point tile, string npcId)
+    {
+        return location.characters.Any(character =>
+            character is NPC otherNpc
+            && !string.Equals(otherNpc.Name, npcId, StringComparison.OrdinalIgnoreCase)
+            && otherNpc.TilePoint == tile);
+    }
+
+    private bool TryReserveEncounterResumeTile(NPC npc, GameLocation location, Point tile, PendingVanillaEncounterResume pending)
+    {
+        var reservationService = _npcTileReservationService;
+        if (reservationService is null)
+            return true;
+
+        reservationService.Release(npc.Name);
+        return reservationService.TryReserve(
+            npc.Name,
+            location.Name ?? string.Empty,
+            tile,
+            $"encounter_resume:{pending.EncounterId}",
+            ReservationKind.Transit,
+            spacing: 0);
+    }
+
+    private void ReleaseEncounterResumeTileReservation(string npcId)
+    {
+        _npcTileReservationService?.Release(npcId);
     }
 
     private bool TryCreateVanillaEncounterResumeController(
