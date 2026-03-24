@@ -583,6 +583,15 @@ public sealed class ModEntry : Mod
         public int SameMapWaypointHopCount { get; set; }
     }
 
+    private sealed class DeferredEncounterUiInterruptResume
+    {
+        public string NpcId { get; init; } = string.Empty;
+        public string EncounterId { get; init; } = string.Empty;
+        public string Phase { get; init; } = string.Empty;
+        public NPC? LiveNpc { get; set; }
+        public ulong NextEligibleTick { get; set; }
+    }
+
     private sealed class ConversationTopicCandidate
     {
         public string SourceType { get; init; } = "fallback";
@@ -1086,6 +1095,7 @@ public sealed class ModEntry : Mod
     private readonly Dictionary<string, int> _dailyEncounterPairs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EncounterGateRejectedScene> _encounterGateRejectedSceneByPairKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PendingVanillaEncounterResume> _pendingVanillaEncounterResumeByNpcId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DeferredEncounterUiInterruptResume> _deferredEncounterUiInterruptResumeByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VanillaEncounterResumeMonitor> _vanillaEncounterResumeMonitorByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EncounterSettleRecoveryMonitor> _encounterSettleRecoveryMonitorByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private int _ambientLastOverhearDay = -9999;
@@ -1778,6 +1788,7 @@ public sealed class ModEntry : Mod
         _npcTranscriptArchiveService?.FinalizePendingExchanges(_state, _state.Calendar.Day);
         _npcTranscriptArchiveService?.RebuildTransientIndexes(_state);
         _pendingVanillaEncounterResumeByNpcId.Clear();
+        _deferredEncounterUiInterruptResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
         _encounterSettleRecoveryMonitorByNpcId.Clear();
         _encounterGateRejectedSceneByPairKey.Clear();
@@ -1853,6 +1864,7 @@ public sealed class ModEntry : Mod
         SyncCalendarSeasonFromWorld();
         _pendingDayStartStreamRecycleDay = -1;
         _pendingVanillaEncounterResumeByNpcId.Clear();
+        _deferredEncounterUiInterruptResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
         _encounterSettleRecoveryMonitorByNpcId.Clear();
         _encounterGateRejectedSceneByPairKey.Clear();
@@ -4564,6 +4576,7 @@ public sealed class ModEntry : Mod
         TryAdvanceAutonomousRoutines(e);
         TryTriggerAmbientIndoorAutonomyChatter(e);
         _faceToFaceService?.Tick(ResolveNpcByName);
+        TryProcessDeferredEncounterUiInterruptResumes(_lastUpdateTick);
         TryProcessPendingVanillaEncounterResumes(_lastUpdateTick);
         TryProcessEncounterSettleRecoveryMonitors(_lastUpdateTick);
         TryProcessVanillaEncounterResumeMonitors(_lastUpdateTick);
@@ -13582,6 +13595,7 @@ public sealed class ModEntry : Mod
         _encounterConversationStreamStateById.Clear();
         _player2EncounterIds.Clear();
         _pendingVanillaEncounterResumeByNpcId.Clear();
+        _deferredEncounterUiInterruptResumeByNpcId.Clear();
         _vanillaEncounterResumeMonitorByNpcId.Clear();
         _encounterSettleRecoveryMonitorByNpcId.Clear();
         _dailyEncounterPairs.Clear();
@@ -15576,6 +15590,7 @@ public sealed class ModEntry : Mod
     {
         var npcA = ResolveNpcByName(encounter.NpcA);
         var npcB = ResolveNpcByName(encounter.NpcB);
+        var deferUiInterruptResume = ShouldDeferEncounterResumeForUiInterrupt(encounter, phase);
         ClearEncounterParticipantRuntime(encounter.NpcA);
         ClearEncounterParticipantRuntime(encounter.NpcB);
         _npcTileReservationService?.Release(encounter.NpcA);
@@ -15588,8 +15603,71 @@ public sealed class ModEntry : Mod
                 LogLevel.Trace);
         }
 
+        if (deferUiInterruptResume)
+        {
+            QueueDeferredEncounterUiInterruptResume(encounter.NpcA, npcA, encounter.EncounterId, phase);
+            QueueDeferredEncounterUiInterruptResume(encounter.NpcB, npcB, encounter.EncounterId, phase);
+            return;
+        }
+
         HandoffNpcToVanillaAfterEncounter(npcA, encounter.EncounterId, phase);
         HandoffNpcToVanillaAfterEncounter(npcB, encounter.EncounterId, phase);
+    }
+
+    private bool ShouldDeferEncounterResumeForUiInterrupt(ActiveEncounter encounter, string phase)
+    {
+        if (!string.Equals(phase, "ui_interrupt", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsEncounterResumeUiBlocked())
+            return false;
+
+        var uiNpc = TryResolveEncounterUiInterruptNpc();
+        if (uiNpc is not null)
+            return IsEncounterParticipant(encounter, uiNpc.Name);
+
+        if (!string.IsNullOrWhiteSpace(_pendingNpcDialogueHookName))
+            return IsEncounterParticipant(encounter, _pendingNpcDialogueHookName);
+
+        return false;
+    }
+
+    private NPC? TryResolveEncounterUiInterruptNpc()
+    {
+        if (Game1.activeClickableMenu is not null)
+        {
+            var menuNpc = TryResolveNpcFromOpenedMenu(Game1.activeClickableMenu);
+            if (menuNpc is not null)
+                return menuNpc;
+        }
+
+        if (Game1.currentSpeaker is not null && !string.IsNullOrWhiteSpace(Game1.currentSpeaker.Name))
+            return Game1.currentSpeaker;
+
+        if (!string.IsNullOrWhiteSpace(_pendingNpcDialogueHookName))
+            return ResolvePendingNpcDialogueHookNpc(_pendingNpcDialogueHookName, Game1.currentLocation);
+
+        return null;
+    }
+
+    private static bool IsEncounterResumeUiBlocked()
+    {
+        return Game1.dialogueUp || Game1.activeClickableMenu is not null;
+    }
+
+    private void QueueDeferredEncounterUiInterruptResume(string npcId, NPC? liveNpc, string encounterId, string phase)
+    {
+        if (string.IsNullOrWhiteSpace(npcId))
+            return;
+
+        _deferredEncounterUiInterruptResumeByNpcId[npcId] = new DeferredEncounterUiInterruptResume
+        {
+            NpcId = npcId,
+            EncounterId = encounterId,
+            Phase = phase,
+            LiveNpc = liveNpc,
+            NextEligibleTick = _lastUpdateTick + 1
+        };
     }
 
     private void HandoffNpcToVanillaAfterEncounter(NPC? npc, string encounterId, string phase)
@@ -15628,6 +15706,30 @@ public sealed class ModEntry : Mod
         Monitor.Log(
             $"Autonomy: queued {npc.Name} for vanilla schedule resume after encounter {encounterId} ({phase}, restored={restoredSchedule}, next_tick={(_lastUpdateTick + 1).ToString(CultureInfo.InvariantCulture)}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Trace);
+    }
+
+    private void TryProcessDeferredEncounterUiInterruptResumes(ulong currentTick)
+    {
+        if (_deferredEncounterUiInterruptResumeByNpcId.Count == 0 || IsEncounterResumeUiBlocked())
+            return;
+
+        foreach (var npcId in _deferredEncounterUiInterruptResumeByNpcId.Keys.ToArray())
+        {
+            var deferred = _deferredEncounterUiInterruptResumeByNpcId[npcId];
+            if (currentTick < deferred.NextEligibleTick)
+                continue;
+
+            var npc = deferred.LiveNpc ?? ResolveNpcByName(deferred.NpcId);
+            if (npc is null)
+            {
+                deferred.NextEligibleTick = currentTick + 1;
+                continue;
+            }
+
+            deferred.LiveNpc = npc;
+            HandoffNpcToVanillaAfterEncounter(npc, deferred.EncounterId, deferred.Phase);
+            _deferredEncounterUiInterruptResumeByNpcId.Remove(npcId);
+        }
     }
 
     private void TryProcessPendingVanillaEncounterResumes(ulong currentTick)
