@@ -572,6 +572,7 @@ public sealed class ModEntry : Mod
         public Point? FallbackLastObservedTile { get; set; }
         public string FallbackLastObservedLocation { get; set; } = string.Empty;
         public ulong FallbackLastProgressTick { get; set; }
+        public ulong NextProgressLogTick { get; set; }
         public int FallbackLegRetryCount { get; set; }
         public bool FallbackWarpIssued { get; set; }
         public int FallbackRepathCount { get; set; }
@@ -919,6 +920,11 @@ public sealed class ModEntry : Mod
     private ModConfig _config = new();
     private IMonitor? _modMonitor;
     private new IMonitor Monitor => _modMonitor ?? base.Monitor;
+
+    private bool IsDeveloperLoggingEnabled()
+    {
+        return _config.ShowDeveloperConsoleCommands;
+    }
     private string _legacyPlayer2GameClientId = string.Empty;
     private SaveState _state = SaveState.CreateDefault();
     private DailyTickService? _dailyTickService;
@@ -16084,6 +16090,12 @@ public sealed class ModEntry : Mod
 
     private void TryProcessVanillaEncounterResumeMonitors(ulong currentTick)
     {
+        if (!IsDeveloperLoggingEnabled())
+        {
+            _vanillaEncounterResumeMonitorByNpcId.Clear();
+            return;
+        }
+
         if (_vanillaEncounterResumeMonitorByNpcId.Count == 0)
             return;
 
@@ -16257,14 +16269,18 @@ public sealed class ModEntry : Mod
             return false;
 
         var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
-        _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
+        if (IsDeveloperLoggingEnabled())
         {
-            NpcId = npc.Name,
-            EncounterId = pending.EncounterId,
-            InitialTilePoint = pending.InitialTilePoint,
-            LoggedControllerTickCount = 0,
-            NextLogTick = currentTick + 10
-        };
+            _vanillaEncounterResumeMonitorByNpcId[npc.Name] = new VanillaEncounterResumeMonitor
+            {
+                NpcId = npc.Name,
+                EncounterId = pending.EncounterId,
+                InitialTilePoint = pending.InitialTilePoint,
+                LoggedControllerTickCount = 0,
+                NextLogTick = currentTick + 10
+            };
+        }
+
         Monitor.Log(
             $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(validation)}, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=true, method={successMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
@@ -17000,9 +17016,14 @@ public sealed class ModEntry : Mod
         if (locationChanged || tileChanged)
         {
             UpdateFallbackProgressObservation(npc, pending, currentTick);
-            Monitor.Log(
-                $"Autonomy: [CrossMapLeg(progress)] {npc.Name} encounter={pending.EncounterId} map={currentLocationName} tile=({currentTile.X},{currentTile.Y}) target_leg={pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)}.",
-                LogLevel.Debug);
+            if (IsDeveloperLoggingEnabled()
+                && (locationChanged || currentTick >= pending.NextProgressLogTick))
+            {
+                Monitor.Log(
+                    $"Autonomy: [CrossMapLeg(progress)] {npc.Name} encounter={pending.EncounterId} map={currentLocationName} tile=({currentTile.X},{currentTile.Y}) target_leg={pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)}.",
+                    LogLevel.Debug);
+                pending.NextProgressLogTick = currentTick + 10;
+            }
         }
 
         if (pending.FallbackWarpIssued && string.Equals(currentLocationName, pending.FallbackLegToLocation, StringComparison.OrdinalIgnoreCase))
@@ -17125,6 +17146,7 @@ public sealed class ModEntry : Mod
         pending.FallbackLastObservedTile = null;
         pending.FallbackLastObservedLocation = string.Empty;
         pending.FallbackLastProgressTick = 0;
+        pending.NextProgressLogTick = 0;
         pending.FallbackWarpIssued = false;
         pending.FallbackRepathCount = 0;
         pending.FallbackRouteTiles.Clear();
