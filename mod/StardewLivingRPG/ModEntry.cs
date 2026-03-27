@@ -955,7 +955,6 @@ public sealed class ModEntry : Mod
     private NpcRoutePlannerService? _routePlannerService;
     private ScheduleOverrideService? _scheduleOverrideService;
     private NpcAutonomyExecutionService? _executionService;
-    private NpcMaterializationService? _materializationService;
     private NpcFaceToFaceService? _faceToFaceService;
     private NpcLocationSpotService? _npcLocationSpotService;
     private NpcTileReservationService? _npcTileReservationService;
@@ -1212,7 +1211,6 @@ public sealed class ModEntry : Mod
         _routePlannerService = new NpcRoutePlannerService(_worldTopologyService, _destinationRegistryService);
         _scheduleOverrideService = new ScheduleOverrideService(_walkabilityService);
         _executionService = new NpcAutonomyExecutionService(_config, _walkabilityService);
-        _materializationService = new NpcMaterializationService(_config, _walkabilityService);
         _faceToFaceService = new NpcFaceToFaceService(_walkabilityService, _encounterBadTileMaskService, _config);
         _npcLocationSpotService = new NpcLocationSpotService();
         _npcTileReservationService = new NpcTileReservationService();
@@ -1263,7 +1261,6 @@ public sealed class ModEntry : Mod
         helper.Events.Display.RenderedHud += OnRenderedHud;
         helper.Events.Display.MenuChanged += OnMenuChanged;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
-        helper.Events.Player.Warped += OnPlayerWarped;
 
         Monitor.Log("The Living Valley loaded.", LogLevel.Info);
     }
@@ -1959,39 +1956,6 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log($"Daily tick complete for day {_state.Calendar.Day} ({_state.Calendar.Season} Y{_state.Calendar.Year}).", LogLevel.Debug);
-    }
-
-    private void OnPlayerWarped(object? sender, StardewModdingAPI.Events.WarpedEventArgs e)
-    {
-        if (!Context.IsWorldReady || _state is null || e.NewLocation is null)
-            return;
-
-        if (_config.EnableCrossMapAutonomy && _materializationService is not null)
-        {
-            try
-            {
-                foreach (var runtime in _autonomyRuntimeByNpcId.Values)
-                {
-                    if (!string.Equals(runtime.ExpectedLocationId, e.NewLocation.Name, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var npc = ResolveNpcByName(runtime.NpcId);
-                    if (npc is null || runtime.ActivePlan is null || runtime.ActiveBlockIndex < 0 || runtime.ActiveBlockIndex >= runtime.ActivePlan.Blocks.Count)
-                        continue;
-
-                    TryRefreshSpatialTarget(npc, runtime, runtime.ActivePlan.Blocks[runtime.ActiveBlockIndex], forceSpatialRetarget: false);
-                }
-
-                _materializationService.ReconcileMap(
-                    e.NewLocation,
-                    _autonomyRuntimeByNpcId.Values,
-                    _executionService!);
-            }
-            catch (Exception ex)
-            {
-                Monitor.Log($"Materialization reconcile failed for {e.NewLocation.Name}: {ex.Message}", LogLevel.Warn);
-            }
-        }
     }
 
     private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
