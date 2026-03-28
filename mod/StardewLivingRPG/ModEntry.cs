@@ -114,6 +114,8 @@ public sealed class ModEntry : Mod
     private const int EncounterVanillaResumeFallbackLegRetryLimit = 1;
     private const int EncounterVanillaResumeFallbackRepathLimit = 2;
     private const int EncounterVanillaResumeFallbackMaxLegTiles = 4;
+    private const int EncounterArrivalActionStableTicks = 2;
+    private const int EncounterArrivalActionMaxRebindAttempts = 3;
     private const int EncounterSettleRecoveryStableTicks = 10;
     private const int EncounterSettleRecoveryRetryDelayTicks = 5;
     private const int EncounterSettleRecoveryMaxAttempts = 2;
@@ -562,6 +564,8 @@ public sealed class ModEntry : Mod
         public Point? FallbackSameMapApproachTile { get; set; }
         public int? ActiveFacingDirection { get; set; }
         public string ActiveBehavior { get; set; } = string.Empty;
+        public string ActiveBehaviorSource { get; set; } = "none";
+        public SchedulePathDescription? ActiveScheduleEntry { get; set; }
         public bool UsedTemporaryActiveSlotFallback { get; set; }
         public int? FallbackControllerStartedAtTime { get; set; }
         public object? TemporaryFallbackController { get; set; }
@@ -593,6 +597,18 @@ public sealed class ModEntry : Mod
         public string ArrivalRebindMethod { get; set; } = "none";
         public bool ArrivalRebindDegraded { get; set; }
         public int? LastArrivalRebindAttemptTimeOfDay { get; set; }
+        public ulong? ArrivalRebindInvokeTick { get; set; }
+        public int? ArrivalBaselineSpriteFrame { get; set; }
+        public string ArrivalBaselineActionStateSignature { get; set; } = string.Empty;
+        public int ActionRebindAttemptCount { get; set; }
+        public int ActionVisibilityStableTicks { get; set; }
+        public string ActionVisibilityMethod { get; set; } = "unconfirmed";
+        public string LastObservedActionStateSignature { get; set; } = string.Empty;
+        public ulong? LastActionVisibilityTick { get; set; }
+        public ulong? LastActionVisibilityEvaluationTick { get; set; }
+        public bool LastActionVisibilityDetected { get; set; }
+        public bool ActionRestoreFailedLogged { get; set; }
+        public bool DegradedActionSettle { get; set; }
     }
 
     private sealed class DeferredEncounterUiInterruptResume
@@ -643,6 +659,10 @@ public sealed class ModEntry : Mod
         public string ExpectedLocation { get; init; } = string.Empty;
         public Point ExpectedTargetTile { get; init; }
         public int? ExpectedFacingDirection { get; init; }
+        public string ExpectedBehavior { get; init; } = string.Empty;
+        public int? ExpectedBaselineSpriteFrame { get; init; }
+        public string ExpectedBaselineActionStateSignature { get; init; } = string.Empty;
+        public bool DegradedSettle { get; init; }
         public int StableTickCount { get; set; }
         public ulong NextCheckTick { get; set; }
         public int RecoveryAttempts { get; set; }
@@ -15967,6 +15987,10 @@ public sealed class ModEntry : Mod
             ExpectedLocation = pending.ActiveTargetLocation,
             ExpectedTargetTile = pending.ActiveTargetTile.Value,
             ExpectedFacingDirection = pending.ActiveFacingDirection,
+            ExpectedBehavior = pending.ActiveBehavior,
+            ExpectedBaselineSpriteFrame = pending.ArrivalBaselineSpriteFrame,
+            ExpectedBaselineActionStateSignature = pending.ArrivalBaselineActionStateSignature,
+            DegradedSettle = pending.DegradedActionSettle,
             StableTickCount = 0,
             NextCheckTick = currentTick + 1,
             RecoveryAttempts = 0
@@ -16046,7 +16070,17 @@ public sealed class ModEntry : Mod
         if (!locationCharacters.Any(candidate => ReferenceEquals(candidate, npc)))
             return false;
 
-        return Vector2.Distance(npc.Tile, new Vector2(monitor.ExpectedTargetTile.X, monitor.ExpectedTargetTile.Y)) <= 1.25f;
+        if (npc.TilePoint != monitor.ExpectedTargetTile)
+            return false;
+
+        if (!monitor.DegradedSettle
+            && !string.IsNullOrWhiteSpace(monitor.ExpectedBehavior)
+            && !TryDetectVisibleScheduleActionState(npc, monitor.ExpectedBaselineActionStateSignature, out _, out _))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private void TryRecoverNpcAfterEncounterSettle(NPC npc, EncounterSettleRecoveryMonitor monitor)
@@ -16063,6 +16097,12 @@ public sealed class ModEntry : Mod
         ClearEncounterMotionState(npc);
         if (monitor.ExpectedFacingDirection.HasValue)
             npc.faceDirection(monitor.ExpectedFacingDirection.Value);
+
+        if (!string.IsNullOrWhiteSpace(monitor.ExpectedBehavior))
+        {
+            TrySetMemberValue(npc, "lastAttemptedSchedule", -1);
+            TryCallCheckSchedule(npc, Game1.timeOfDay, out _);
+        }
     }
 
     private void TryProcessVanillaEncounterResumeMonitors(ulong currentTick)
@@ -16190,7 +16230,7 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log(
-            $"Autonomy: [REBIND] {npc.Name} reset complete: lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, check_schedule_invoked={checkScheduleInvoked}, check_schedule_method={checkScheduleMethod}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(nextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}.",
+            $"Autonomy: [REBIND] {npc.Name} reset complete: lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, check_schedule_invoked={checkScheduleInvoked}, check_schedule_method={checkScheduleMethod}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(nextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, active_behavior_source={pending.ActiveBehaviorSource}, fallback_used={pending.UsedTemporaryActiveSlotFallback}.",
             LogLevel.Debug);
     }
 
@@ -16205,6 +16245,8 @@ public sealed class ModEntry : Mod
         pending.ActiveTargetTile = null;
         pending.ActiveFacingDirection = null;
         pending.ActiveBehavior = string.Empty;
+        pending.ActiveBehaviorSource = "none";
+        pending.ActiveScheduleEntry = null;
         if (pending.ActiveScheduleTime != previousActiveScheduleTime)
         {
             pending.LastRejectedResumeTimeOfDay = null;
@@ -16216,12 +16258,26 @@ public sealed class ModEntry : Mod
         pending.ArrivalRebindMethod = "none";
         pending.ArrivalRebindDegraded = false;
         pending.LastArrivalRebindAttemptTimeOfDay = null;
+        pending.ArrivalRebindInvokeTick = null;
+        pending.ArrivalBaselineSpriteFrame = null;
+        pending.ArrivalBaselineActionStateSignature = string.Empty;
+        pending.ActionRebindAttemptCount = 0;
+        pending.ActionVisibilityStableTicks = 0;
+        pending.ActionVisibilityMethod = "unconfirmed";
+        pending.LastObservedActionStateSignature = string.Empty;
+        pending.LastActionVisibilityTick = null;
+        pending.LastActionVisibilityEvaluationTick = null;
+        pending.LastActionVisibilityDetected = false;
+        pending.ActionRestoreFailedLogged = false;
+        pending.DegradedActionSettle = false;
 
         if (!pending.ActiveScheduleTime.HasValue
             || !TryGetScheduleEntry(npc, pending.ActiveScheduleTime.Value, out var scheduleEntry))
         {
             return;
         }
+
+        pending.ActiveScheduleEntry = scheduleEntry;
 
         if (TryResolveScheduleEntryTarget(scheduleEntry, out var activeTargetLocation, out var activeTargetTile))
         {
@@ -16232,13 +16288,16 @@ public sealed class ModEntry : Mod
         if (TryReadScheduleEntryFacing(scheduleEntry, out var activeFacingDirection))
             pending.ActiveFacingDirection = activeFacingDirection;
 
-        if (TryReadScheduleEntryBehavior(scheduleEntry, out var activeBehavior))
+        if (TryReadScheduleEntryBehavior(scheduleEntry, out var activeBehavior, out var activeBehaviorSource))
+        {
             pending.ActiveBehavior = activeBehavior;
+            pending.ActiveBehaviorSource = activeBehaviorSource;
+        }
 
         if (pending.ActiveScheduleTime != previousActiveScheduleTime && previousActiveScheduleTime.HasValue)
         {
             Monitor.Log(
-                $"Autonomy: [REBIND] {npc.Name} active-slot rolled over at time={Game1.timeOfDay} from schedule {previousActiveScheduleTime.Value.ToString(CultureInfo.InvariantCulture)} ({DescribeText(previousActiveTargetLocation)} {DescribeNullablePoint(previousActiveTargetTile)} behavior={DescribeText(previousActiveBehavior)}) to {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} ({DescribeText(pending.ActiveTargetLocation)} {DescribeNullablePoint(pending.ActiveTargetTile)} behavior={DescribeText(pending.ActiveBehavior)}).",
+                $"Autonomy: [REBIND] {npc.Name} active-slot rolled over at time={Game1.timeOfDay} from schedule {previousActiveScheduleTime.Value.ToString(CultureInfo.InvariantCulture)} ({DescribeText(previousActiveTargetLocation)} {DescribeNullablePoint(previousActiveTargetTile)} behavior={DescribeText(previousActiveBehavior)}) to {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} ({DescribeText(pending.ActiveTargetLocation)} {DescribeNullablePoint(pending.ActiveTargetTile)} behavior={DescribeText(pending.ActiveBehavior)} source={pending.ActiveBehaviorSource}).",
                 LogLevel.Debug);
         }
     }
@@ -16369,7 +16428,7 @@ public sealed class ModEntry : Mod
         {
             if (HasReachedActiveFallbackTarget(npc, pending))
             {
-                if (IsArrivalRebindSatisfied(npc, pending))
+                if (IsArrivalRebindSatisfied(npc, pending, _lastUpdateTick))
                     return ResumeValidationOutcome.Valid;
 
                 mismatchReason = pending.ArrivalRebindInvoked
@@ -16454,6 +16513,21 @@ public sealed class ModEntry : Mod
         return true;
     }
 
+    private ActiveSlotArrivalSettleResult CompleteArrivalSettle(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        ulong currentTick,
+        string settleMode)
+    {
+        var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var settleTempController) && settleTempController is not null;
+        Monitor.Log(
+            $"Autonomy: settled {npc.Name} at active-slot destination after encounter {pending.EncounterId} ({pending.Phase}, settle_mode={settleMode}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, action_source={pending.ActiveBehaviorSource}, action_confirmed={pending.ActionVisibilityStableTicks >= EncounterArrivalActionStableTicks}, action_confirm_method={pending.ActionVisibilityMethod}, action_stable_ticks={pending.ActionVisibilityStableTicks}, degraded_action_settle={pending.DegradedActionSettle}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            LogLevel.Debug);
+        StartEncounterSettleRecoveryMonitor(npc, pending, currentTick);
+        _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
+        return ActiveSlotArrivalSettleResult.Completed;
+    }
+
     private ActiveSlotArrivalSettleResult TryHandleActiveSlotArrivalSettle(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
     {
         if (!HasReachedActiveFallbackTarget(npc, pending))
@@ -16472,16 +16546,8 @@ public sealed class ModEntry : Mod
             return ActiveSlotArrivalSettleResult.NotReady;
         }
 
-        if (IsArrivalRebindSatisfied(npc, pending))
-        {
-            var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var settleTempController) && settleTempController is not null;
-            Monitor.Log(
-                $"Autonomy: settled {npc.Name} at active-slot destination after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                LogLevel.Debug);
-            StartEncounterSettleRecoveryMonitor(npc, pending, currentTick);
-            _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
-            return ActiveSlotArrivalSettleResult.Completed;
-        }
+        if (IsArrivalRebindSatisfied(npc, pending, currentTick))
+            return CompleteArrivalSettle(npc, pending, currentTick, "arrival_state_valid");
 
         if (pending.LastArrivalRebindAttemptTimeOfDay == Game1.timeOfDay)
         {
@@ -16500,6 +16566,12 @@ public sealed class ModEntry : Mod
         ClearEncounterMotionState(npc);
         if (pending.ActiveFacingDirection.HasValue)
             npc.faceDirection(pending.ActiveFacingDirection.Value);
+        pending.ArrivalBaselineSpriteFrame = TryReadCurrentSpriteFrame(npc, out var baselineSpriteFrame)
+            ? baselineSpriteFrame
+            : null;
+        pending.ArrivalBaselineActionStateSignature = TryCaptureActionStateSignature(npc, out var baselineActionStateSignature, out _)
+            ? baselineActionStateSignature
+            : string.Empty;
 
         if (TryRebindActiveSlotArrivalAction(npc, pending, out var arrivalRebindMethod, out var arrivalRebindDegraded))
         {
@@ -16507,6 +16579,14 @@ public sealed class ModEntry : Mod
             pending.ArrivalRebindMethod = arrivalRebindMethod;
             pending.ArrivalRebindDegraded = arrivalRebindDegraded;
             pending.LastArrivalRebindAttemptTimeOfDay = Game1.timeOfDay;
+            pending.ArrivalRebindInvokeTick = currentTick;
+            pending.ActionRebindAttemptCount += 1;
+            pending.ActionVisibilityStableTicks = 0;
+            pending.ActionVisibilityMethod = "unconfirmed";
+            pending.LastObservedActionStateSignature = string.Empty;
+            pending.LastActionVisibilityTick = null;
+            pending.LastActionVisibilityEvaluationTick = null;
+            pending.LastActionVisibilityDetected = false;
         }
         else
         {
@@ -16514,32 +16594,58 @@ public sealed class ModEntry : Mod
             pending.ArrivalRebindMethod = arrivalRebindMethod;
             pending.ArrivalRebindDegraded = arrivalRebindDegraded;
             pending.LastArrivalRebindAttemptTimeOfDay = Game1.timeOfDay;
+            pending.ArrivalRebindInvokeTick = null;
         }
 
-        if (IsArrivalRebindSatisfied(npc, pending))
-        {
-            var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var rebindTempController) && rebindTempController is not null;
-            Monitor.Log(
-                $"Autonomy: settled {npc.Name} at active-slot destination after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                LogLevel.Debug);
-            StartEncounterSettleRecoveryMonitor(npc, pending, currentTick);
-            _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
-            return ActiveSlotArrivalSettleResult.Completed;
-        }
+        if (IsArrivalRebindSatisfied(npc, pending, currentTick))
+            return CompleteArrivalSettle(npc, pending, currentTick, "arrival_rebind_confirmed");
 
-        if (TryClearUnsafeArrivalResumeState(npc, pending) && IsArrivalRebindSatisfied(npc, pending))
+        if (TryClearUnsafeArrivalResumeState(npc, pending) && IsArrivalRebindSatisfied(npc, pending, currentTick))
+            return CompleteArrivalSettle(npc, pending, currentTick, "arrival_controller_cleared");
+
+        if (!string.IsNullOrWhiteSpace(pending.ActiveBehavior)
+            && pending.ActionRebindAttemptCount >= EncounterArrivalActionMaxRebindAttempts
+            && !pending.ActionRestoreFailedLogged)
         {
-            var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var clearedTempController) && clearedTempController is not null;
-            Monitor.Log(
-                $"Autonomy: settled {npc.Name} at active-slot destination after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                LogLevel.Debug);
-            StartEncounterSettleRecoveryMonitor(npc, pending, currentTick);
+            if (TryApplyDirectEndOfRouteBehavior(npc, pending, out var directBehaviorMethod)
+                && TryDetectVisibleScheduleActionState(npc, pending.ArrivalBaselineActionStateSignature, out var directConfirmMethod, out var directActionStateSignature))
+            {
+                pending.ArrivalRebindInvoked = true;
+                pending.ArrivalRebindMethod = directBehaviorMethod;
+                pending.ArrivalRebindDegraded = true;
+                pending.ActionVisibilityMethod = directConfirmMethod;
+                pending.ActionVisibilityStableTicks = EncounterArrivalActionStableTicks;
+                pending.LastObservedActionStateSignature = directActionStateSignature;
+                pending.LastActionVisibilityDetected = true;
+                pending.LastActionVisibilityTick = currentTick;
+                pending.DegradedActionSettle = false;
+                return CompleteArrivalSettle(npc, pending, currentTick, "direct_end_behavior");
+            }
+
+            if (IsArrivalPositionOnlySatisfied(npc, pending))
+            {
+                pending.ActionRestoreFailedLogged = true;
+                pending.DegradedActionSettle = true;
+                pending.ArrivalRebindMethod = string.IsNullOrWhiteSpace(pending.ArrivalRebindMethod)
+                    ? "degraded_position_only"
+                    : $"{pending.ArrivalRebindMethod}+degraded_position_only";
+                pending.ArrivalRebindDegraded = true;
+                pending.ActionVisibilityMethod = "degraded_position_only";
+                return CompleteArrivalSettle(npc, pending, currentTick, "degraded_position_only");
+            }
+
+            pending.ActionRestoreFailedLogged = true;
+            LogRuntimeThrottled(
+                $"autonomy:arrival-action-restore-failed:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: action slot restore failed for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_behavior={DescribeText(pending.ActiveBehavior)}, action_source={pending.ActiveBehaviorSource}, action_confirmed=false, action_confirm_method={pending.ActionVisibilityMethod}, action_stable_ticks={pending.ActionVisibilityStableTicks}, action_rebind_attempts={pending.ActionRebindAttemptCount}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                LogLevel.Warn);
             _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
             return ActiveSlotArrivalSettleResult.Completed;
         }
 
         Monitor.Log(
-            $"Autonomy: waiting for active-slot action handoff for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null)}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            $"Autonomy: waiting for active-slot action handoff for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, action_source={pending.ActiveBehaviorSource}, action_confirmed=false, action_confirm_method={pending.ActionVisibilityMethod}, action_stable_ticks={pending.ActionVisibilityStableTicks}, action_state_signature={DescribeText(pending.LastObservedActionStateSignature)}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null)}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         pending.NextAttemptTick = currentTick + 1;
         return ActiveSlotArrivalSettleResult.WaitingForAction;
@@ -16561,29 +16667,85 @@ public sealed class ModEntry : Mod
         }
 
         if (npc.Schedule is null
-            || !pending.ActiveScheduleTime.HasValue
-            || !TryGetScheduleEntry(npc, pending.ActiveScheduleTime.Value, out var activeScheduleEntry))
+            || pending.ActiveScheduleEntry is null)
         {
             arrivalRebindMethod = "active_schedule_missing";
             arrivalRebindDegraded = true;
             return false;
         }
 
-        if (!TryCloneScheduleEntryForArrivalRebind(activeScheduleEntry, out var mirroredScheduleEntry, out var degradedClone))
+        var originalEntry = npc.Schedule.TryGetValue(Game1.timeOfDay, out var currentTimeEntry)
+            ? currentTimeEntry
+            : null;
+        var hadCurrentTimeEntry = npc.Schedule.ContainsKey(Game1.timeOfDay);
+
+        if (TryCloneScheduleEntryForArrivalRebind(pending.ActiveScheduleEntry, out var mirroredScheduleEntry, out var degradedClone))
         {
-            arrivalRebindMethod = "schedule_entry_clone_failed";
-            arrivalRebindDegraded = true;
-            return false;
+            npc.Schedule[Game1.timeOfDay] = mirroredScheduleEntry;
+            try
+            {
+                var checkScheduleInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out var methodLabel);
+                if (checkScheduleInvoked
+                    && npc.controller is PathFindController pathFindController
+                    && TryExtractAndFireControllerEndBehavior(npc, pathFindController, pending))
+                {
+                    arrivalRebindMethod = $"full_entry_clone+{methodLabel}+direct_end_route";
+                    arrivalRebindDegraded = degradedClone;
+                    return true;
+                }
+
+                if (checkScheduleInvoked
+                    && !string.IsNullOrWhiteSpace(pending.ActiveBehavior)
+                    && TryApplyLoadEndOfRouteBehavior(npc, pending))
+                {
+                    arrivalRebindMethod = $"full_entry_clone+{methodLabel}+loadEndOfRoute";
+                    arrivalRebindDegraded = degradedClone;
+                    return true;
+                }
+
+                arrivalRebindMethod = $"full_entry_clone+{(checkScheduleInvoked ? methodLabel : "checkSchedule_failed")}";
+                arrivalRebindDegraded = degradedClone || !checkScheduleInvoked;
+                return checkScheduleInvoked;
+            }
+            finally
+            {
+                RestoreTemporaryScheduleEntry(npc, Game1.timeOfDay, hadCurrentTimeEntry, originalEntry);
+            }
         }
 
-        npc.Schedule[Game1.timeOfDay] = mirroredScheduleEntry;
-        var checkScheduleInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out var methodLabel);
-        arrivalRebindMethod = $"schedule_entry_cloned+{(checkScheduleInvoked ? methodLabel : "checkSchedule_failed")}";
-        arrivalRebindDegraded = degradedClone || !checkScheduleInvoked;
-        return checkScheduleInvoked;
+        npc.Schedule[Game1.timeOfDay] = pending.ActiveScheduleEntry;
+        try
+        {
+            var checkScheduleInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out var methodLabel);
+            if (checkScheduleInvoked
+                && npc.controller is PathFindController pathFindController
+                && TryExtractAndFireControllerEndBehavior(npc, pathFindController, pending))
+            {
+                arrivalRebindMethod = $"original_entry_fallback+{methodLabel}+direct_end_route";
+                arrivalRebindDegraded = true;
+                return true;
+            }
+
+            if (checkScheduleInvoked
+                && !string.IsNullOrWhiteSpace(pending.ActiveBehavior)
+                && TryApplyLoadEndOfRouteBehavior(npc, pending))
+            {
+                arrivalRebindMethod = $"original_entry_fallback+{methodLabel}+loadEndOfRoute";
+                arrivalRebindDegraded = true;
+                return true;
+            }
+
+            arrivalRebindMethod = $"original_entry_fallback+{(checkScheduleInvoked ? methodLabel : "checkSchedule_failed")}";
+            arrivalRebindDegraded = true;
+            return checkScheduleInvoked;
+        }
+        finally
+        {
+            RestoreTemporaryScheduleEntry(npc, Game1.timeOfDay, hadCurrentTimeEntry, originalEntry);
+        }
     }
 
-    private bool IsArrivalRebindSatisfied(NPC npc, PendingVanillaEncounterResume pending)
+    private bool IsArrivalRebindSatisfied(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
     {
         if (!IsAtExactActiveTargetTile(npc, pending))
             return false;
@@ -16600,7 +16762,19 @@ public sealed class ModEntry : Mod
         if (string.IsNullOrWhiteSpace(pending.ActiveBehavior))
             return pending.ArrivalRebindInvoked;
 
-        return pending.ArrivalRebindInvoked && HasVisibleScheduleActionState(npc, pending);
+        return pending.ArrivalRebindInvoked
+            && UpdateArrivalActionVisibilityState(npc, pending, currentTick)
+            && pending.ActionVisibilityStableTicks >= EncounterArrivalActionStableTicks;
+    }
+
+    private static bool IsArrivalPositionOnlySatisfied(NPC npc, PendingVanillaEncounterResume pending)
+    {
+        return IsAtExactActiveTargetTile(npc, pending)
+            && !IsUsingTemporaryActiveSlotFallback(npc, pending)
+            && !npc.isMoving()
+            && npc.controller is null
+            && !HasTemporaryController(npc)
+            && (!pending.ActiveFacingDirection.HasValue || npc.FacingDirection == pending.ActiveFacingDirection.Value);
     }
 
     private static bool IsAtExactActiveTargetTile(NPC npc, PendingVanillaEncounterResume pending)
@@ -16671,11 +16845,191 @@ public sealed class ModEntry : Mod
         if (!TryReadControllerPath(controller, out var pathTiles))
             return false;
 
-        return pathTiles.All(tile => tile == activeTargetTile);
+        if (!pathTiles.All(tile => tile == activeTargetTile))
+            return false;
+
+        if (TryGetMemberValue(controller, "endBehaviorFunction", out var endBehavior) && endBehavior is not null)
+            return false;
+
+        return true;
     }
 
     private static bool HasActiveSpriteAnimation(NPC npc)
     {
+        return TryDescribeActiveSpriteAnimation(npc, out _);
+    }
+
+    private bool UpdateArrivalActionVisibilityState(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        if (pending.LastActionVisibilityEvaluationTick.HasValue && pending.LastActionVisibilityEvaluationTick.Value == currentTick)
+            return pending.LastActionVisibilityDetected;
+
+        pending.LastActionVisibilityEvaluationTick = currentTick;
+        pending.LastActionVisibilityDetected = false;
+        if (string.IsNullOrWhiteSpace(pending.ActiveBehavior)
+            || !pending.ArrivalRebindInvoked
+            || !pending.ArrivalRebindInvokeTick.HasValue
+            || currentTick <= pending.ArrivalRebindInvokeTick.Value)
+        {
+            pending.ActionVisibilityStableTicks = 0;
+            pending.ActionVisibilityMethod = "unconfirmed";
+            pending.LastObservedActionStateSignature = string.Empty;
+            pending.LastActionVisibilityTick = null;
+            return false;
+        }
+
+        if (!TryDetectVisibleScheduleActionState(npc, pending.ArrivalBaselineActionStateSignature, out var method, out var currentActionStateSignature))
+        {
+            pending.ActionVisibilityStableTicks = 0;
+            pending.ActionVisibilityMethod = "unconfirmed";
+            pending.LastObservedActionStateSignature = currentActionStateSignature;
+            pending.LastActionVisibilityTick = null;
+            return false;
+        }
+
+        pending.LastActionVisibilityDetected = true;
+        if (pending.LastActionVisibilityTick.HasValue
+            && pending.LastActionVisibilityTick.Value + 1 == currentTick
+            && string.Equals(pending.ActionVisibilityMethod, method, StringComparison.Ordinal))
+        {
+            pending.ActionVisibilityStableTicks += 1;
+        }
+        else
+        {
+            pending.ActionVisibilityStableTicks = 1;
+        }
+
+        pending.ActionVisibilityMethod = method;
+        pending.LastObservedActionStateSignature = currentActionStateSignature;
+        pending.LastActionVisibilityTick = currentTick;
+        return true;
+    }
+
+    private bool TryDetectVisibleScheduleActionState(NPC npc, PendingVanillaEncounterResume pending, out string method)
+    {
+        return TryDetectVisibleScheduleActionState(npc, pending.ArrivalBaselineActionStateSignature, out method, out _);
+    }
+
+    private static bool TryDetectVisibleScheduleActionState(NPC npc, string baselineActionStateSignature, out string method, out string currentActionStateSignature)
+    {
+        method = "unconfirmed";
+        currentActionStateSignature = string.Empty;
+
+        if (!TryCaptureActionStateSignature(npc, out currentActionStateSignature, out var hasActiveAnimation))
+            return false;
+
+        if (hasActiveAnimation)
+        {
+            if (npc.controller is not null)
+                return false;
+
+            method = "stable_animation";
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(baselineActionStateSignature)
+            && !string.Equals(currentActionStateSignature, baselineActionStateSignature, StringComparison.Ordinal))
+        {
+            method = "stable_state_change";
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadCurrentSpriteFrame(NPC npc, out int currentFrame)
+    {
+        currentFrame = 0;
+        if (npc.Sprite is null)
+            return false;
+
+        foreach (var memberName in new[] { "currentFrame", "CurrentFrame", "currentFrameIndex", "CurrentFrameIndex" })
+        {
+            if (!TryGetMemberValue(npc.Sprite, memberName, out var value) || value is not int frameValue)
+                continue;
+
+            currentFrame = frameValue;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryCaptureActionStateSignature(NPC npc, out string signature, out bool hasActiveAnimation)
+    {
+        signature = string.Empty;
+        hasActiveAnimation = false;
+        if (npc.Sprite is null)
+            return false;
+
+        var parts = new List<string>
+        {
+            $"face={npc.FacingDirection.ToString(CultureInfo.InvariantCulture)}"
+        };
+
+        if (TryReadCurrentSpriteFrame(npc, out var currentFrame))
+            parts.Add($"frame={currentFrame.ToString(CultureInfo.InvariantCulture)}");
+
+        if (TryReadSpriteRectangle(npc, "sourceRect", out var sourceRect)
+            || TryReadSpriteRectangle(npc, "SourceRect", out sourceRect)
+            || TryReadSpriteRectangle(npc, "currentSourceRect", out sourceRect)
+            || TryReadSpriteRectangle(npc, "CurrentSourceRect", out sourceRect))
+        {
+            parts.Add($"src={sourceRect.X.ToString(CultureInfo.InvariantCulture)},{sourceRect.Y.ToString(CultureInfo.InvariantCulture)},{sourceRect.Width.ToString(CultureInfo.InvariantCulture)},{sourceRect.Height.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        if (TryReadSpriteIntMember(npc, "interval", out var interval)
+            || TryReadSpriteIntMember(npc, "Interval", out interval))
+        {
+            parts.Add($"interval={interval.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        if (TryReadSpriteBoolMember(npc, "loopThisAnimation", out var loopThisAnimation)
+            || TryReadSpriteBoolMember(npc, "LoopThisAnimation", out loopThisAnimation))
+        {
+            parts.Add($"loop={loopThisAnimation}");
+        }
+
+        if (TryDescribeActiveSpriteAnimation(npc, out var animationSignature))
+        {
+            hasActiveAnimation = true;
+            parts.Add($"anim={animationSignature}");
+        }
+
+        signature = string.Join("|", parts);
+        return true;
+    }
+
+    private static bool TryReadSpriteRectangle(NPC npc, string memberName, out Rectangle rectangle)
+    {
+        rectangle = Rectangle.Empty;
+        return npc.Sprite is not null
+            && TryGetMemberValue(npc.Sprite, memberName, out var value)
+            && value is Rectangle rectValue
+            && (rectangle = rectValue) != Rectangle.Empty;
+    }
+
+    private static bool TryReadSpriteIntMember(NPC npc, string memberName, out int intValue)
+    {
+        intValue = 0;
+        return npc.Sprite is not null
+            && TryGetMemberValue(npc.Sprite, memberName, out var value)
+            && value is int spriteIntValue
+            && (intValue = spriteIntValue) >= 0;
+    }
+
+    private static bool TryReadSpriteBoolMember(NPC npc, string memberName, out bool boolValue)
+    {
+        boolValue = false;
+        return npc.Sprite is not null
+            && TryGetMemberValue(npc.Sprite, memberName, out var value)
+            && value is bool spriteBoolValue
+            && (boolValue = spriteBoolValue) == spriteBoolValue;
+    }
+
+    private static bool TryDescribeActiveSpriteAnimation(NPC npc, out string animationSignature)
+    {
+        animationSignature = string.Empty;
         if (npc.Sprite is null)
             return false;
 
@@ -16685,49 +17039,34 @@ public sealed class ModEntry : Mod
                 continue;
 
             if (value is System.Collections.ICollection collection)
-                return collection.Count > 0;
+            {
+                if (collection.Count <= 0)
+                    continue;
+
+                animationSignature = $"{memberName}:{collection.Count.ToString(CultureInfo.InvariantCulture)}";
+                return true;
+            }
 
             if (value is System.Collections.IEnumerable enumerable)
             {
+                var count = 0;
                 var enumerator = enumerable.GetEnumerator();
                 try
                 {
-                    if (enumerator.MoveNext())
-                        return true;
+                    while (enumerator.MoveNext())
+                        count += 1;
                 }
                 finally
                 {
                     (enumerator as IDisposable)?.Dispose();
                 }
+
+                if (count <= 0)
+                    continue;
+
+                animationSignature = $"{memberName}:{count.ToString(CultureInfo.InvariantCulture)}";
+                return true;
             }
-        }
-
-        return false;
-    }
-
-    private bool HasVisibleScheduleActionState(NPC npc, PendingVanillaEncounterResume pending)
-    {
-        if (HasActiveSpriteAnimation(npc))
-            return true;
-
-        return HasNonIdleScheduleSpriteFrame(npc, pending.ActiveFacingDirection);
-    }
-
-    private static bool HasNonIdleScheduleSpriteFrame(NPC npc, int? activeFacingDirection)
-    {
-        if (npc.Sprite is null)
-            return false;
-
-        foreach (var memberName in new[] { "currentFrame", "CurrentFrame", "currentFrameIndex", "CurrentFrameIndex" })
-        {
-            if (!TryGetMemberValue(npc.Sprite, memberName, out var value) || value is not int currentFrame)
-                continue;
-
-            if (currentFrame > 3)
-                return true;
-
-            if (activeFacingDirection.HasValue && currentFrame != activeFacingDirection.Value)
-                return true;
         }
 
         return false;
@@ -16741,39 +17080,112 @@ public sealed class ModEntry : Mod
         degraded = false;
         clonedEntry = null!;
 
-        if (!TryReadScheduleEntryLocation(scheduleEntry, out var locationName)
-            || !TryReadScheduleEntryTile(scheduleEntry, out var targetTile))
-        {
+        if (!TryReadScheduleEntryTile(scheduleEntry, out var targetTile)
+            || !TryMemberwiseClone(scheduleEntry, out clonedEntry))
             return false;
+
+        if (!TrySetScheduleEntryTerminalRoute(clonedEntry, targetTile))
+            degraded = true;
+
+        return true;
+    }
+
+    private static bool TryMemberwiseClone<T>(T source, out T clone)
+        where T : class
+    {
+        clone = null!;
+        if (source is null)
+            return false;
+
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var memberwiseClone = typeof(object).GetMethod("MemberwiseClone", flags);
+        if (memberwiseClone?.Invoke(source, null) is not T cloned)
+            return false;
+
+        clone = cloned;
+        return true;
+    }
+
+    private static bool TrySetScheduleEntryTerminalRoute(object scheduleEntry, Point targetTile)
+    {
+        var anyRouteUpdated = false;
+        foreach (var memberName in new[] { "route", "Route", "path", "Path" })
+        {
+            if (TrySetScheduleEntryRouteMember(scheduleEntry, memberName, targetTile))
+                anyRouteUpdated = true;
         }
 
-        var facingDirection = 2;
-        if (TryReadScheduleEntryFacing(scheduleEntry, out var extractedFacingDirection))
-            facingDirection = extractedFacingDirection;
-        else
-            degraded = true;
+        foreach (var memberName in new[] { "endPoint", "EndPoint", "targetTile", "TargetTile", "tile", "Tile", "point", "Point" })
+            TrySetMemberValue(scheduleEntry, memberName, targetTile);
 
-        var route = TryCloneScheduleRoute(scheduleEntry, out var clonedRoute)
-            ? clonedRoute
-            : new Stack<Point>();
-        if (route.Count == 0)
-            degraded = true;
+        return anyRouteUpdated;
+    }
 
-        var endBehavior = TryReadScheduleEntryEndBehavior(scheduleEntry, out var extractedEndBehavior)
-            ? extractedEndBehavior
-            : string.Empty;
-        var message = TryReadScheduleEntryMessage(scheduleEntry, out var extractedMessage)
-            ? extractedMessage
-            : string.Empty;
+    private static bool TrySetScheduleEntryRouteMember(object scheduleEntry, string memberName, Point targetTile)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+        var type = scheduleEntry.GetType();
+        var property = type.GetProperty(memberName, flags);
+        if (property is not null && property.CanWrite)
+        {
+            if (!TryCreateTerminalRouteValue(property.PropertyType, targetTile, out var propertyRouteValue))
+                return false;
 
-        clonedEntry = new SchedulePathDescription(
-            route,
-            facingDirection,
-            locationName,
-            endBehavior,
-            message,
-            targetTile);
+            property.SetValue(scheduleEntry, propertyRouteValue);
+            return true;
+        }
+
+        var field = type.GetField(memberName, flags);
+        if (field is null || field.IsInitOnly)
+            return false;
+
+        if (!TryCreateTerminalRouteValue(field.FieldType, targetTile, out var fieldRouteValue))
+            return false;
+
+        field.SetValue(scheduleEntry, fieldRouteValue);
         return true;
+    }
+
+    private static bool TryCreateTerminalRouteValue(Type routeType, Point targetTile, out object routeValue)
+    {
+        routeValue = null!;
+        if (routeType == typeof(Stack<Point>))
+        {
+            routeValue = new Stack<Point>(new[] { targetTile }.Reverse());
+            return true;
+        }
+
+        if (routeType == typeof(List<Point>))
+        {
+            routeValue = new List<Point> { targetTile };
+            return true;
+        }
+
+        if (routeType == typeof(Point[]))
+        {
+            routeValue = new[] { targetTile };
+            return true;
+        }
+
+        if (routeType.IsAssignableFrom(typeof(Stack<Point>)))
+        {
+            routeValue = new Stack<Point>(new[] { targetTile }.Reverse());
+            return true;
+        }
+
+        if (routeType.IsAssignableFrom(typeof(List<Point>)))
+        {
+            routeValue = new List<Point> { targetTile };
+            return true;
+        }
+
+        if (routeType.IsInterface && routeType.IsAssignableFrom(typeof(List<Point>)))
+        {
+            routeValue = new List<Point> { targetTile };
+            return true;
+        }
+
+        return false;
     }
 
     private static bool TryCloneScheduleRoute(object scheduleEntry, out Stack<Point> route)
@@ -16804,6 +17216,208 @@ public sealed class ModEntry : Mod
         return false;
     }
 
+    private static void RestoreTemporaryScheduleEntry(NPC npc, int scheduleTime, bool hadOriginalEntry, SchedulePathDescription? originalEntry)
+    {
+        if (npc.Schedule is null)
+            return;
+
+        if (hadOriginalEntry && originalEntry is not null)
+            npc.Schedule[scheduleTime] = originalEntry;
+        else
+            npc.Schedule.Remove(scheduleTime);
+    }
+
+    private bool TryExtractAndFireControllerEndBehavior(
+        NPC npc,
+        PathFindController controller,
+        PendingVanillaEncounterResume pending)
+    {
+        if (!IsControllerRouteExhausted(controller, npc.TilePoint))
+            return false;
+
+        if (!TryGetMemberValue(controller, "endBehaviorFunction", out var endBehaviorFunc) || endBehaviorFunc is null)
+            return false;
+
+        npc.controller = null;
+        TrySetMemberValue(npc, "temporaryController", null);
+        npc.Halt();
+        ClearEncounterMotionState(npc);
+        if (pending.ActiveFacingDirection.HasValue)
+            npc.faceDirection(pending.ActiveFacingDirection.Value);
+
+        try
+        {
+            if (endBehaviorFunc is Delegate del)
+            {
+                foreach (var args in BuildControllerEndBehaviorArgumentVariants(npc))
+                {
+                    try
+                    {
+                        del.DynamicInvoke(args);
+                        return true;
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Monitor.Log(
+                $"Autonomy: failed to fire controller end behavior for {npc.Name}: {ex.Message}",
+                LogLevel.Trace);
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<object?[]?> BuildControllerEndBehaviorArgumentVariants(NPC npc)
+    {
+        yield return new object?[] { npc, npc.currentLocation };
+        yield return new object?[] { npc.currentLocation, npc };
+        yield return new object?[] { npc };
+        yield return new object?[] { npc.currentLocation };
+        yield return Array.Empty<object?>();
+    }
+
+    private static bool IsControllerRouteExhausted(PathFindController controller, Point npcTile)
+    {
+        if (!TryReadControllerPath(controller, out var pathTiles))
+            return true;
+
+        return pathTiles.All(tile => tile == npcTile);
+    }
+
+    private bool TryApplyLoadEndOfRouteBehavior(NPC npc, PendingVanillaEncounterResume pending)
+    {
+        if (string.IsNullOrWhiteSpace(pending.ActiveBehavior))
+            return false;
+
+        npc.controller = null;
+        TrySetMemberValue(npc, "temporaryController", null);
+        npc.Halt();
+        ClearEncounterMotionState(npc);
+        if (pending.ActiveFacingDirection.HasValue)
+            npc.faceDirection(pending.ActiveFacingDirection.Value);
+
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        foreach (var methodName in new[] { "loadEndOfRouteBehavior", "LoadEndOfRouteBehavior" })
+        {
+            var method = npc.GetType().GetMethod(
+                methodName,
+                flags,
+                binder: null,
+                types: new[] { typeof(string) },
+                modifiers: null);
+            if (method is null)
+                continue;
+
+            try
+            {
+                method.Invoke(npc, new object[] { pending.ActiveBehavior });
+                Monitor.Log(
+                    $"Autonomy: applied loadEndOfRouteBehavior for {npc.Name} with behavior={pending.ActiveBehavior}.",
+                    LogLevel.Debug);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Monitor.Log(
+                    $"Autonomy: loadEndOfRouteBehavior failed for {npc.Name}: {ex.Message}",
+                    LogLevel.Trace);
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryApplyDirectEndOfRouteBehavior(NPC npc, PendingVanillaEncounterResume pending, out string methodLabel)
+    {
+        methodLabel = "none";
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        foreach (var methodName in new[] { "loadEndOfRouteBehavior", "LoadEndOfRouteBehavior", "doEndOfRouteBehavior", "DoEndOfRouteBehavior", "performTenMinuteUpdate", "PerformTenMinuteUpdate" })
+        {
+            var methods = npc.GetType().GetMethods(flags)
+                .Where(candidate => string.Equals(candidate.Name, methodName, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(candidate => candidate.GetParameters().Length)
+                .ToArray();
+            foreach (var method in methods)
+            {
+                if (!TryBuildDirectEndBehaviorArguments(method.GetParameters(), pending, out var args))
+                    continue;
+
+                try
+                {
+                    method.Invoke(npc, args);
+                    methodLabel = $"direct_end_behavior:{method.Name}";
+                    return true;
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryBuildDirectEndBehaviorArguments(ParameterInfo[] parameters, PendingVanillaEncounterResume pending, out object?[] args)
+    {
+        args = new object?[parameters.Length];
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            var parameter = parameters[i];
+            var parameterType = parameter.ParameterType;
+            if (parameterType == typeof(string))
+            {
+                args[i] = pending.ActiveBehavior;
+                continue;
+            }
+
+            if (parameterType == typeof(int))
+            {
+                args[i] = Game1.timeOfDay;
+                continue;
+            }
+
+            if (parameterType == typeof(Point) && pending.ActiveTargetTile.HasValue)
+            {
+                args[i] = pending.ActiveTargetTile.Value;
+                continue;
+            }
+
+            if (parameterType == typeof(Vector2) && pending.ActiveTargetTile.HasValue)
+            {
+                var targetTile = pending.ActiveTargetTile.Value;
+                args[i] = new Vector2(targetTile.X, targetTile.Y);
+                continue;
+            }
+
+            if (parameterType == typeof(GameLocation))
+            {
+                args[i] = Game1.getLocationFromName(pending.ActiveTargetLocation) ?? Game1.currentLocation;
+                continue;
+            }
+
+            if (parameter.HasDefaultValue)
+            {
+                args[i] = parameter.DefaultValue;
+                continue;
+            }
+
+            if (!parameterType.IsValueType || Nullable.GetUnderlyingType(parameterType) is not null)
+            {
+                args[i] = null;
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
     private static bool TryReadScheduleEntryEndBehavior(object scheduleEntry, out string behavior)
     {
         behavior = string.Empty;
@@ -16820,6 +17434,208 @@ public sealed class ModEntry : Mod
         }
 
         return false;
+    }
+
+    private static bool TryReadScheduleEntryFallbackBehavior(object scheduleEntry, out string behavior)
+    {
+        behavior = string.Empty;
+        if (scheduleEntry is null)
+            return false;
+
+        var locationName = TryReadScheduleEntryLocation(scheduleEntry, out var extractedLocationName)
+            ? extractedLocationName
+            : string.Empty;
+        var message = TryReadScheduleEntryMessage(scheduleEntry, out var extractedMessage)
+            ? extractedMessage
+            : string.Empty;
+
+        foreach (var memberName in EnumerateScheduleEntryStringMemberNames(scheduleEntry, preferActionLikeNames: true))
+        {
+            if (!TryGetMemberValue(scheduleEntry, memberName, out var value)
+                || value is not string text
+                || !IsPlausibleScheduleActionText(text, locationName, message))
+            {
+                continue;
+            }
+
+            behavior = text;
+            return true;
+        }
+
+        foreach (var memberName in EnumerateScheduleEntryStringMemberNames(scheduleEntry, preferActionLikeNames: false))
+        {
+            if (!TryGetMemberValue(scheduleEntry, memberName, out var value)
+                || value is not string text
+                || !IsPlausibleScheduleActionText(text, locationName, message)
+                || text.IndexOf('_') < 0)
+            {
+                continue;
+            }
+
+            behavior = text;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadScheduleEntryActionShape(object scheduleEntry, out string behavior)
+    {
+        behavior = string.Empty;
+        if (scheduleEntry is null)
+            return false;
+
+        foreach (var memberName in EnumerateScheduleEntryActionLikeMemberNames(scheduleEntry))
+        {
+            if (!TryGetMemberValue(scheduleEntry, memberName, out var value)
+                || !IsMeaningfulActionLikeMemberValue(value))
+            {
+                continue;
+            }
+
+            behavior = memberName;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<string> EnumerateScheduleEntryActionLikeMemberNames(object scheduleEntry)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in scheduleEntry.GetType().GetProperties(flags))
+        {
+            if (property.GetIndexParameters().Length > 0 || !seen.Add(property.Name))
+                continue;
+
+            if (property.Name.IndexOf("behavior", StringComparison.OrdinalIgnoreCase) < 0
+                && property.Name.IndexOf("animation", StringComparison.OrdinalIgnoreCase) < 0
+                && property.Name.IndexOf("action", StringComparison.OrdinalIgnoreCase) < 0
+                && property.Name.IndexOf("function", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                continue;
+            }
+
+            yield return property.Name;
+        }
+
+        foreach (var field in scheduleEntry.GetType().GetFields(flags))
+        {
+            if (!seen.Add(field.Name))
+                continue;
+
+            if (field.Name.IndexOf("behavior", StringComparison.OrdinalIgnoreCase) < 0
+                && field.Name.IndexOf("animation", StringComparison.OrdinalIgnoreCase) < 0
+                && field.Name.IndexOf("action", StringComparison.OrdinalIgnoreCase) < 0
+                && field.Name.IndexOf("function", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                continue;
+            }
+
+            yield return field.Name;
+        }
+    }
+
+    private static bool IsMeaningfulActionLikeMemberValue(object? value)
+    {
+        if (value is null)
+            return false;
+
+        if (value is string text)
+            return !string.IsNullOrWhiteSpace(text);
+
+        if (value is bool boolValue)
+            return boolValue;
+
+        if (value is int intValue)
+            return intValue != 0;
+
+        if (value is Enum)
+            return true;
+
+        if (value is Delegate)
+            return true;
+
+        if (value is System.Collections.ICollection collection)
+            return collection.Count > 0;
+
+        if (value is System.Collections.IEnumerable enumerable)
+        {
+            var enumerator = enumerable.GetEnumerator();
+            try
+            {
+                return enumerator.MoveNext();
+            }
+            finally
+            {
+                (enumerator as IDisposable)?.Dispose();
+            }
+        }
+
+        return true;
+    }
+
+    private static IEnumerable<string> EnumerateScheduleEntryStringMemberNames(object scheduleEntry, bool preferActionLikeNames)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in scheduleEntry.GetType().GetProperties(flags))
+        {
+            if (property.PropertyType != typeof(string) || property.GetIndexParameters().Length > 0)
+                continue;
+
+            if (!seen.Add(property.Name))
+                continue;
+
+            var isActionLike = property.Name.IndexOf("behavior", StringComparison.OrdinalIgnoreCase) >= 0
+                || property.Name.IndexOf("animation", StringComparison.OrdinalIgnoreCase) >= 0
+                || property.Name.IndexOf("action", StringComparison.OrdinalIgnoreCase) >= 0
+                || property.Name.IndexOf("function", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (preferActionLikeNames != isActionLike)
+                continue;
+
+            yield return property.Name;
+        }
+
+        foreach (var field in scheduleEntry.GetType().GetFields(flags))
+        {
+            if (field.FieldType != typeof(string))
+                continue;
+
+            if (!seen.Add(field.Name))
+                continue;
+
+            var isActionLike = field.Name.IndexOf("behavior", StringComparison.OrdinalIgnoreCase) >= 0
+                || field.Name.IndexOf("animation", StringComparison.OrdinalIgnoreCase) >= 0
+                || field.Name.IndexOf("action", StringComparison.OrdinalIgnoreCase) >= 0
+                || field.Name.IndexOf("function", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (preferActionLikeNames != isActionLike)
+                continue;
+
+            yield return field.Name;
+        }
+    }
+
+    private static bool IsPlausibleScheduleActionText(string text, string locationName, string message)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        if (string.Equals(text, locationName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(text, message, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (text.IndexOf('/') >= 0
+            || text.IndexOf('\\') >= 0
+            || text.IndexOf(':') >= 0)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static bool TryReadScheduleEntryMessage(object scheduleEntry, out string message)
@@ -18257,7 +19073,31 @@ public sealed class ModEntry : Mod
 
     private static bool TryReadScheduleEntryBehavior(object scheduleEntry, out string behavior)
     {
-        return TryReadScheduleEntryEndBehavior(scheduleEntry, out behavior);
+        return TryReadScheduleEntryBehavior(scheduleEntry, out behavior, out _);
+    }
+
+    private static bool TryReadScheduleEntryBehavior(object scheduleEntry, out string behavior, out string source)
+    {
+        source = "none";
+        if (TryReadScheduleEntryEndBehavior(scheduleEntry, out behavior))
+        {
+            source = "standard_string";
+            return true;
+        }
+
+        if (TryReadScheduleEntryFallbackBehavior(scheduleEntry, out behavior))
+        {
+            source = "fallback_string";
+            return true;
+        }
+
+        if (TryReadScheduleEntryActionShape(scheduleEntry, out behavior))
+        {
+            source = "entry_shape";
+            return true;
+        }
+
+        return false;
     }
 
     private static bool TryReadScheduleEntryTile(object scheduleEntry, out Point targetTile)
