@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## 1.0.4 - 2026-03-28
+
+### Changed
+- Manifest version bumped to `1.0.4`.
+
+### Fixed
+- Villagers should no longer suddenly pop into random spots just because you entered a new area. This especially fixes reports of NPCs appearing around Harvey's clinic or other map entrances.
+- Background autonomy cleanup and resume logic now does less busywork during play, which should reduce the extra CPU load some players were seeing while the mod was running.
+
 ## 1.0.3 - 2026-03-24
 
 ### Changed

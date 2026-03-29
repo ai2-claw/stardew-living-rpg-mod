@@ -34,14 +34,12 @@ public sealed class NpcFaceToFaceService
 
     private readonly ModConfig _config;
     private readonly NpcWalkabilityService _walkabilityService;
-    private readonly EncounterBadTileMaskService _badTileMaskService;
     private readonly Dictionary<string, StagingState> _statesByEncounterId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _npcToEncounter = new(StringComparer.OrdinalIgnoreCase);
 
-    public NpcFaceToFaceService(NpcWalkabilityService walkabilityService, EncounterBadTileMaskService badTileMaskService, ModConfig config)
+    public NpcFaceToFaceService(NpcWalkabilityService walkabilityService, ModConfig config)
     {
         _walkabilityService = walkabilityService;
-        _badTileMaskService = badTileMaskService;
         _config = config;
     }
 
@@ -64,11 +62,6 @@ public sealed class NpcFaceToFaceService
         }
         if (_walkabilityService.IsNearEntranceTile(location, npcA.TilePoint, 1)
             || _walkabilityService.IsNearEntranceTile(location, npcB.TilePoint, 1))
-        {
-            return false;
-        }
-        if (_badTileMaskService.IsMaskedBadTile(location, npcA.TilePoint)
-            || _badTileMaskService.IsMaskedBadTile(location, npcB.TilePoint))
         {
             return false;
         }

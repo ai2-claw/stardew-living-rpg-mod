@@ -980,7 +980,6 @@ public sealed class ModEntry : Mod
     private NpcSpeechBubbleService? _npcSpeechBubbleService;
     private NpcConversationSimulationService? _npcConversationSimulationService;
     private NpcWalkabilityService? _walkabilityService;
-    private EncounterBadTileMaskService? _encounterBadTileMaskService;
     private NpcDutyRosterService? _npcDutyRosterService;
     private WorldTopologyService? _worldTopologyService;
     private NpcRoutePlannerService? _routePlannerService;
@@ -1231,7 +1230,6 @@ public sealed class ModEntry : Mod
         _npcResidenceService = new NpcResidenceService(_destinationRegistryService);
         _pairEmotionService = new PairEmotionService(_config.PairEmotionMaxDeltaPerCommand, _config.PairEmotionMaxDeltaPerDayPerAxis);
         _walkabilityService = new NpcWalkabilityService();
-        _encounterBadTileMaskService = new EncounterBadTileMaskService(helper);
         _npcDutyRosterService = new NpcDutyRosterService();
         _npcAutonomyGoalEngine = new NpcAutonomyGoalEngine(_destinationRegistryService, _npcResidenceService, _pairEmotionService, _config);
         _npcAutonomyPlannerService = new NpcAutonomyPlannerService(_destinationRegistryService, _npcDutyRosterService);
@@ -1242,7 +1240,7 @@ public sealed class ModEntry : Mod
         _routePlannerService = new NpcRoutePlannerService(_worldTopologyService, _destinationRegistryService);
         _scheduleOverrideService = new ScheduleOverrideService(_walkabilityService);
         _executionService = new NpcAutonomyExecutionService(_config, _walkabilityService);
-        _faceToFaceService = new NpcFaceToFaceService(_walkabilityService, _encounterBadTileMaskService, _config);
+        _faceToFaceService = new NpcFaceToFaceService(_walkabilityService, _config);
         _npcLocationSpotService = new NpcLocationSpotService();
         _npcTileReservationService = new NpcTileReservationService();
         _npcAmbientIndoorChatterService = new NpcAmbientIndoorChatterService(_config, _npcResidenceService);
@@ -18420,9 +18418,6 @@ public sealed class ModEntry : Mod
     {
         movementTarget = Point.Zero;
 
-        if (_encounterBadTileMaskService?.HasActiveMask(location) == true)
-            return TryResolveMaskedSameMapEncounterResumeTarget(location, npc, pending, requestedTile, excludedTile, out movementTarget);
-
         ClearSameMapFallbackRouteState(pending);
 
         foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(requestedTile, maxRadius))
@@ -18444,229 +18439,6 @@ public sealed class ModEntry : Mod
         }
 
         return false;
-    }
-
-    private bool TryResolveMaskedSameMapEncounterResumeTarget(
-        GameLocation location,
-        NPC npc,
-        PendingVanillaEncounterResume pending,
-        Point requestedTile,
-        Point? excludedTile,
-        out Point movementTarget)
-    {
-        movementTarget = Point.Zero;
-
-        List<Point> routeTiles;
-        var canReuseStoredRoute = pending.FallbackRouteTiles.Count > 1
-            && pending.FallbackRouteTiles[^1] == requestedTile
-            && pending.FallbackRouteTiles.Contains(npc.TilePoint);
-        if (canReuseStoredRoute)
-        {
-            routeTiles = pending.FallbackRouteTiles;
-        }
-        else
-        {
-            if (!TryBuildMaskedSameMapDetourRoute(location, npc.TilePoint, requestedTile, out routeTiles))
-            {
-                ClearSameMapFallbackRouteState(pending);
-                return false;
-            }
-
-            pending.FallbackRouteTiles.Clear();
-            pending.FallbackRouteTiles.AddRange(routeTiles);
-        }
-
-        var currentRouteIndex = routeTiles.FindIndex(tile => tile == npc.TilePoint);
-        if (currentRouteIndex < 0)
-        {
-            if (!TryBuildMaskedSameMapDetourRoute(location, npc.TilePoint, requestedTile, out routeTiles))
-            {
-                ClearSameMapFallbackRouteState(pending);
-                return false;
-            }
-
-            pending.FallbackRouteTiles.Clear();
-            pending.FallbackRouteTiles.AddRange(routeTiles);
-            currentRouteIndex = routeTiles.FindIndex(tile => tile == npc.TilePoint);
-            if (currentRouteIndex < 0)
-            {
-                ClearSameMapFallbackRouteState(pending);
-                return false;
-            }
-        }
-
-        pending.FallbackNextRouteTileIndex = Math.Min(currentRouteIndex + 1, routeTiles.Count - 1);
-
-        if ((!excludedTile.HasValue || requestedTile != excludedTile.Value)
-            && requestedTile != pending.LastReachedSameMapWaypoint
-            && requestedTile != pending.PreviousReachedSameMapWaypoint
-            && TryCanUseVanillaEncounterResumeTarget(location, npc, requestedTile))
-        {
-            movementTarget = requestedTile;
-            pending.FallbackCurrentLegRouteEndIndex = routeTiles.Count - 1;
-            pending.FallbackCurrentLegTarget = movementTarget;
-            return true;
-        }
-
-        for (var index = routeTiles.Count - 1; index > currentRouteIndex; index--)
-        {
-            var candidate = routeTiles[index];
-            if (excludedTile.HasValue && candidate == excludedTile.Value)
-                continue;
-
-            if (candidate != requestedTile && candidate == npc.TilePoint)
-                continue;
-
-            if (candidate == pending.LastReachedSameMapWaypoint || candidate == pending.PreviousReachedSameMapWaypoint)
-                continue;
-
-            if (!TryCanUseVanillaEncounterResumeTarget(location, npc, candidate))
-                continue;
-
-            movementTarget = candidate;
-            pending.FallbackCurrentLegRouteEndIndex = index;
-            pending.FallbackCurrentLegTarget = movementTarget;
-            return true;
-        }
-
-        ClearSameMapFallbackRouteState(pending);
-        return false;
-    }
-
-    private bool TryBuildMaskedSameMapDetourRoute(
-        GameLocation location,
-        Point startTile,
-        Point targetTile,
-        out List<Point> routeTiles)
-    {
-        if (TryBuildMaskedSameMapDetourRoute(
-                location,
-                startTile,
-                targetTile,
-                new[]
-                {
-                    new Point(0, 1),
-                    new Point(1, 0),
-                    new Point(0, -1),
-                    new Point(-1, 0),
-                },
-                out routeTiles))
-        {
-            return true;
-        }
-
-        return TryBuildMaskedSameMapDetourRoute(
-            location,
-            startTile,
-            targetTile,
-            new[]
-            {
-                new Point(0, -1),
-                new Point(1, 0),
-                new Point(0, 1),
-                new Point(-1, 0),
-            },
-            out routeTiles);
-    }
-
-    private bool TryBuildMaskedSameMapDetourRoute(
-        GameLocation location,
-        Point startTile,
-        Point targetTile,
-        IReadOnlyList<Point> neighborOffsets,
-        out List<Point> routeTiles)
-    {
-        routeTiles = new List<Point>();
-
-        var map = location.Map;
-        var backLayer = map?.GetLayer("Back");
-        if (map is null || backLayer is null)
-            return false;
-
-        if (!IsWithinLayerBounds(backLayer, startTile) || !IsWithinLayerBounds(backLayer, targetTile))
-            return false;
-
-        var frontier = new Queue<Point>();
-        var visited = new HashSet<Point>();
-        var previousByTile = new Dictionary<Point, Point>();
-
-        frontier.Enqueue(startTile);
-        visited.Add(startTile);
-
-        while (frontier.Count > 0)
-        {
-            var current = frontier.Dequeue();
-            if (current == targetTile)
-                break;
-
-            foreach (var neighbor in EnumerateMaskedSameMapNeighborTiles(current, neighborOffsets))
-            {
-                if (!visited.Add(neighbor))
-                    continue;
-
-                if (!CanTraverseMaskedSameMapRouteTile(location, backLayer, neighbor, startTile, targetTile))
-                    continue;
-
-                previousByTile[neighbor] = current;
-                frontier.Enqueue(neighbor);
-            }
-        }
-
-        if (!visited.Contains(targetTile))
-            return false;
-
-        var cursor = targetTile;
-        routeTiles.Add(cursor);
-        while (cursor != startTile)
-        {
-            if (!previousByTile.TryGetValue(cursor, out var previous))
-                return false;
-
-            cursor = previous;
-            routeTiles.Add(cursor);
-        }
-
-        routeTiles.Reverse();
-        return routeTiles.Count > 0;
-    }
-
-    private bool CanTraverseMaskedSameMapRouteTile(
-        GameLocation location,
-        xTile.Layers.Layer backLayer,
-        Point tile,
-        Point startTile,
-        Point targetTile)
-    {
-        if (!IsWithinLayerBounds(backLayer, tile))
-            return false;
-
-        if (backLayer.Tiles[tile.X, tile.Y] is null)
-            return false;
-
-        if (tile == startTile || tile == targetTile)
-            return true;
-
-        if (_encounterBadTileMaskService?.IsMaskedBadTile(location, tile) == true)
-            return false;
-
-        const int tileSize = 64;
-        var tileLocation = new xTile.Dimensions.Location(tile.X * tileSize, tile.Y * tileSize);
-        var tileViewport = new xTile.Dimensions.Rectangle(0, 0, tileSize, tileSize);
-        return location.isTilePassable(tileLocation, tileViewport);
-    }
-
-    private static IEnumerable<Point> EnumerateMaskedSameMapNeighborTiles(Point tile, IReadOnlyList<Point> neighborOffsets)
-    {
-        foreach (var neighborOffset in neighborOffsets)
-            yield return new Point(tile.X + neighborOffset.X, tile.Y + neighborOffset.Y);
-    }
-
-    private static bool IsWithinLayerBounds(xTile.Layers.Layer layer, Point tile)
-    {
-        return tile.X >= 0
-            && tile.Y >= 0
-            && tile.X < layer.LayerWidth
-            && tile.Y < layer.LayerHeight;
     }
 
     private static IEnumerable<Point> EnumerateEncounterResumeMovementTargetCandidates(Point requestedTile, int maxRadius)
@@ -18705,9 +18477,6 @@ public sealed class ModEntry : Mod
     private bool TryCanUseVanillaEncounterResumeTarget(GameLocation location, NPC npc, Point targetTile)
     {
         if (!IsEncounterResumeTileAvailable(location, npc, targetTile))
-            return false;
-
-        if (_encounterBadTileMaskService?.IsMaskedBadTile(location, targetTile) == true)
             return false;
 
         return TryCreateVanillaEncounterResumeController(location, npc, targetTile, out _, out _);
@@ -18768,46 +18537,8 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        if (TryFindEncounterResumeBadMaskTile(location, npc, controllerPath, out _))
-        {
-            controller = null;
-            pathLength = 0;
-            return false;
-        }
-
         pathLength = controllerPath.Count;
         return true;
-    }
-
-    private bool TryFindEncounterResumeBadMaskTile(
-        GameLocation location,
-        NPC npc,
-        IEnumerable<Point> pathTiles,
-        out Point badTile)
-    {
-        badTile = Point.Zero;
-        var maskService = _encounterBadTileMaskService;
-        if (maskService is null || !maskService.HasActiveMask(location))
-            return false;
-
-        var allowedOriginTile = npc.TilePoint;
-        var originTileSkipped = false;
-        foreach (var pathTile in pathTiles)
-        {
-            if (!originTileSkipped && pathTile == allowedOriginTile)
-            {
-                originTileSkipped = true;
-                continue;
-            }
-
-            if (!maskService.IsMaskedBadTile(location, pathTile))
-                continue;
-
-            badTile = pathTile;
-            return true;
-        }
-
-        return false;
     }
 
     private bool TryPlanNextCrossMapFallbackLeg(NPC npc, string targetLocationName, out RouteSegment segment)
@@ -18944,8 +18675,6 @@ public sealed class ModEntry : Mod
         var seedTile = ResolveFallbackArrivalSeed(targetLocation);
         foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(seedTile, 16))
         {
-            if (_encounterBadTileMaskService?.IsMaskedBadTile(targetLocation, candidate) == true)
-                continue;
             if (!walkabilityService.IsTileStructurallyWalkable(targetLocation, candidate, npc))
                 continue;
 
