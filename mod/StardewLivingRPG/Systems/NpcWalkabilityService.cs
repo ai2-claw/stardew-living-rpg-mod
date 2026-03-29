@@ -29,18 +29,30 @@ public sealed class NpcWalkabilityService
     {
         blockerDescription = null;
         if (location is null || location.Map is null)
+        {
+            blockerDescription = "missing_location";
             return false;
+        }
         if (tile.X < 0 || tile.Y < 0)
+        {
+            blockerDescription = "out_of_bounds";
             return false;
+        }
 
         var layer = location.Map.Layers.Count > 0 ? location.Map.Layers[0] : null;
         if (layer is null || tile.X >= layer.LayerWidth || tile.Y >= layer.LayerHeight)
+        {
+            blockerDescription = "out_of_bounds";
             return false;
+        }
 
         // Reject void tiles — interior maps have large black areas with no painted Back layer tile
         var backLayer = location.Map.GetLayer("Back");
         if (backLayer?.Tiles[tile.X, tile.Y] is null)
+        {
+            blockerDescription = "void_tile";
             return false;
+        }
 
         if (HasImpassableBuildingsTile(location, tile))
         {
@@ -52,18 +64,28 @@ public sealed class NpcWalkabilityService
         var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
         var tileViewport = new xTile.Dimensions.Rectangle(0, 0, TileSize, TileSize);
         if (!location.isTilePassable(tileLocation, tileViewport))
+        {
+            blockerDescription = "tile_passability";
             return false;
+        }
         if (HasNoPathProperty(location, tile))
+        {
+            blockerDescription = "no_path_property";
             return false;
+        }
 
         var collisionRect = BuildCollisionRect(tile);
         if (IsBlockedByCollision(location, collisionRect, actor, ignoreTransientOccupants))
+        {
+            blockerDescription = "collision";
             return false;
+        }
 
         if (location.Objects.TryGetValue(tileVector, out var obj)
             && obj is SObject placedObject
             && !placedObject.isPassable())
         {
+            blockerDescription = "object";
             return false;
         }
 
@@ -71,19 +93,26 @@ public sealed class NpcWalkabilityService
             && terrainFeature is TerrainFeature feature
             && !feature.isPassable(actor))
         {
+            blockerDescription = "terrain_feature";
             return false;
         }
 
         foreach (var largeTerrainFeature in location.largeTerrainFeatures)
         {
             if (largeTerrainFeature.getBoundingBox().Intersects(collisionRect))
+            {
+                blockerDescription = "large_terrain_feature";
                 return false;
+            }
         }
 
         foreach (var resourceClump in location.resourceClumps)
         {
             if (resourceClump.occupiesTile(tile.X, tile.Y))
+            {
+                blockerDescription = "resource_clump";
                 return false;
+            }
         }
 
         foreach (var furniture in location.furniture)
@@ -91,6 +120,7 @@ public sealed class NpcWalkabilityService
             if (furniture is Furniture placedFurniture
                 && placedFurniture.GetBoundingBox().Intersects(collisionRect))
             {
+                blockerDescription = "furniture";
                 return false;
             }
         }
@@ -102,6 +132,7 @@ public sealed class NpcWalkabilityService
                 && (int)character.Tile.X == tile.X
                 && (int)character.Tile.Y == tile.Y))
         {
+            blockerDescription = "npc_occupant";
             return false;
         }
 
@@ -111,6 +142,7 @@ public sealed class NpcWalkabilityService
             && (int)Game1.player.Tile.X == tile.X
             && (int)Game1.player.Tile.Y == tile.Y)
         {
+            blockerDescription = "player_occupant";
             return false;
         }
 
@@ -124,7 +156,10 @@ public sealed class NpcWalkabilityService
             var bw = building.tilesWide.Value;
             var bh = building.tilesHigh.Value;
             if (tile.X >= bx && tile.X < bx + bw && tile.Y >= by && tile.Y < by + bh)
+            {
+                blockerDescription = "building_footprint";
                 return false;
+            }
         }
 
         return true;
