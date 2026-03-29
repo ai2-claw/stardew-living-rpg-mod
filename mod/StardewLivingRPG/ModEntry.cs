@@ -16,6 +16,7 @@ using StardewLivingRPG.Systems;
 using StardewLivingRPG.UI;
 using StardewLivingRPG.Utils;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
@@ -125,6 +126,10 @@ public sealed class ModEntry : Mod
     private const int EncounterSettleRecoveryStableTicks = 10;
     private const int EncounterSettleRecoveryRetryDelayTicks = 5;
     private const int EncounterSettleRecoveryMaxAttempts = 2;
+    private const double AutonomyMainThreadBudgetMilliseconds = 2.5d;
+    private const int AutonomyResumeMaxNpcsPerTick = 2;
+    private const int AutonomyPlanAdvanceMaxNpcsPerPass = 6;
+    private const int AutonomyIndoorChatterMaxLocationsPerPass = 2;
     private const int NpcShipmentDebugTopDefault = 5;
     private const int MaxSimulationToastsPerDay = 2;
     private const int SimulationToastCooldownSeconds = 25;
@@ -635,6 +640,104 @@ public sealed class ModEntry : Mod
         public int WindowsTried { get; set; }
         public Point? LastOffRouteTile { get; set; }
         public string LastOffRouteReason { get; set; } = string.Empty;
+    }
+
+    private sealed class AutonomyTickBudget
+    {
+        public AutonomyTickBudget(double maxMilliseconds)
+        {
+            MaxMilliseconds = maxMilliseconds;
+            Stopwatch = Stopwatch.StartNew();
+        }
+
+        public double MaxMilliseconds { get; }
+
+        public Stopwatch Stopwatch { get; }
+
+        public bool IsExhausted => Stopwatch.Elapsed.TotalMilliseconds >= MaxMilliseconds;
+    }
+
+    private sealed class AutonomyPerformanceCounters
+    {
+        public int ResumeProcessedThisTick { get; set; }
+        public int ResumeDeferredThisTick { get; set; }
+        public double ResumeMillisecondsThisTick { get; set; }
+        public int RuntimeProcessedThisTick { get; set; }
+        public int RuntimeDeferredThisTick { get; set; }
+        public double RuntimeMillisecondsThisTick { get; set; }
+        public int ChatterLocationsProcessedThisTick { get; set; }
+        public int ChatterLocationsDeferredThisTick { get; set; }
+        public double ChatterMillisecondsThisTick { get; set; }
+        public int BudgetExhaustionsThisTick { get; set; }
+        public int DetourCacheHitsThisTick { get; set; }
+        public int DetourCacheMissesThisTick { get; set; }
+
+        public int ResumeProcessedLastTick { get; private set; }
+        public int ResumeDeferredLastTick { get; private set; }
+        public double ResumeMillisecondsLastTick { get; private set; }
+        public int RuntimeProcessedLastTick { get; private set; }
+        public int RuntimeDeferredLastTick { get; private set; }
+        public double RuntimeMillisecondsLastTick { get; private set; }
+        public int ChatterLocationsProcessedLastTick { get; private set; }
+        public int ChatterLocationsDeferredLastTick { get; private set; }
+        public double ChatterMillisecondsLastTick { get; private set; }
+        public int BudgetExhaustionsLastTick { get; private set; }
+        public int DetourCacheHitsLastTick { get; private set; }
+        public int DetourCacheMissesLastTick { get; private set; }
+        public double TotalBudgetMillisecondsLastTick { get; private set; }
+
+        public long ResumeProcessedTotal { get; private set; }
+        public long ResumeDeferredTotal { get; private set; }
+        public long RuntimeProcessedTotal { get; private set; }
+        public long RuntimeDeferredTotal { get; private set; }
+        public long ChatterLocationsProcessedTotal { get; private set; }
+        public long ChatterLocationsDeferredTotal { get; private set; }
+        public long BudgetExhaustionsTotal { get; private set; }
+        public long DetourCacheHitsTotal { get; private set; }
+        public long DetourCacheMissesTotal { get; private set; }
+
+        public void BeginTick()
+        {
+            ResumeProcessedThisTick = 0;
+            ResumeDeferredThisTick = 0;
+            ResumeMillisecondsThisTick = 0d;
+            RuntimeProcessedThisTick = 0;
+            RuntimeDeferredThisTick = 0;
+            RuntimeMillisecondsThisTick = 0d;
+            ChatterLocationsProcessedThisTick = 0;
+            ChatterLocationsDeferredThisTick = 0;
+            ChatterMillisecondsThisTick = 0d;
+            BudgetExhaustionsThisTick = 0;
+            DetourCacheHitsThisTick = 0;
+            DetourCacheMissesThisTick = 0;
+        }
+
+        public void CompleteTick(double totalBudgetMilliseconds)
+        {
+            ResumeProcessedLastTick = ResumeProcessedThisTick;
+            ResumeDeferredLastTick = ResumeDeferredThisTick;
+            ResumeMillisecondsLastTick = ResumeMillisecondsThisTick;
+            RuntimeProcessedLastTick = RuntimeProcessedThisTick;
+            RuntimeDeferredLastTick = RuntimeDeferredThisTick;
+            RuntimeMillisecondsLastTick = RuntimeMillisecondsThisTick;
+            ChatterLocationsProcessedLastTick = ChatterLocationsProcessedThisTick;
+            ChatterLocationsDeferredLastTick = ChatterLocationsDeferredThisTick;
+            ChatterMillisecondsLastTick = ChatterMillisecondsThisTick;
+            BudgetExhaustionsLastTick = BudgetExhaustionsThisTick;
+            DetourCacheHitsLastTick = DetourCacheHitsThisTick;
+            DetourCacheMissesLastTick = DetourCacheMissesThisTick;
+            TotalBudgetMillisecondsLastTick = totalBudgetMilliseconds;
+
+            ResumeProcessedTotal += ResumeProcessedThisTick;
+            ResumeDeferredTotal += ResumeDeferredThisTick;
+            RuntimeProcessedTotal += RuntimeProcessedThisTick;
+            RuntimeDeferredTotal += RuntimeDeferredThisTick;
+            ChatterLocationsProcessedTotal += ChatterLocationsProcessedThisTick;
+            ChatterLocationsDeferredTotal += ChatterLocationsDeferredThisTick;
+            BudgetExhaustionsTotal += BudgetExhaustionsThisTick;
+            DetourCacheHitsTotal += DetourCacheHitsThisTick;
+            DetourCacheMissesTotal += DetourCacheMissesThisTick;
+        }
     }
 
     private sealed class DeferredEncounterUiInterruptResume
@@ -1166,6 +1269,10 @@ public sealed class ModEntry : Mod
     private ulong _lastUpdateTick;
     private WorldGraph? _cachedWorldGraph;
     private ulong _cachedWorldGraphTick;
+    private int _pendingEncounterResumeCursor;
+    private int _autonomyRuntimeCursor;
+    private int _ambientIndoorChatterLocationCursor;
+    private readonly AutonomyPerformanceCounters _autonomyPerf = new();
 
     private string? _pendingNpcDialogueHookName;
     private NPC? _pendingNpcDialogueHookNpc;
@@ -4601,13 +4708,16 @@ public sealed class ModEntry : Mod
         TryApplyPendingAmbientConversationCompletions();
         TryApplyPendingEncounterConversationTurns();
         TryApplyPendingEncounterConversationCompletions();
-        TryAdvanceAutonomousRoutines(e);
-        TryTriggerAmbientIndoorAutonomyChatter(e);
+        BeginAutonomyPerformanceTick();
+        var autonomyBudget = new AutonomyTickBudget(AutonomyMainThreadBudgetMilliseconds);
         _faceToFaceService?.Tick(ResolveNpcByName);
         TryProcessDeferredEncounterUiInterruptResumes(_lastUpdateTick);
-        TryProcessPendingVanillaEncounterResumes(_lastUpdateTick);
+        TryProcessPendingVanillaEncounterResumes(_lastUpdateTick, autonomyBudget);
         TryProcessEncounterSettleRecoveryMonitors(_lastUpdateTick);
         TryProcessVanillaEncounterResumeMonitors(_lastUpdateTick);
+        TryAdvanceAutonomousRoutines(e, autonomyBudget);
+        TryTriggerAmbientIndoorAutonomyChatter(e, autonomyBudget);
+        CompleteAutonomyPerformanceTick(autonomyBudget);
         TryTickNpcSpeechBubbles();
 
         if (e.IsMultipleOf(60))
@@ -4857,6 +4967,16 @@ public sealed class ModEntry : Mod
                     TryApplyFallbackQuestFromPlayerChatLine(effectiveLine);
             }
         }
+    }
+
+    private void BeginAutonomyPerformanceTick()
+    {
+        _autonomyPerf.BeginTick();
+    }
+
+    private void CompleteAutonomyPerformanceTick(AutonomyTickBudget budget)
+    {
+        _autonomyPerf.CompleteTick(budget.Stopwatch.Elapsed.TotalMilliseconds);
     }
 
     private void ResetAmbientNpcConversationScheduleForDay()
@@ -13683,7 +13803,7 @@ public sealed class ModEntry : Mod
         Monitor.Log($"Autonomy: built {_autonomyRuntimeByNpcId.Count} daily plans.", LogLevel.Debug);
     }
 
-    private void TryAdvanceAutonomousRoutines(UpdateTickedEventArgs e)
+    private void TryAdvanceAutonomousRoutines(UpdateTickedEventArgs e, AutonomyTickBudget budget)
     {
         if (!_config.EnableAutonomousRoutines
             || !e.IsMultipleOf(30)
@@ -13693,118 +13813,43 @@ public sealed class ModEntry : Mod
             return;
         }
 
+        var startedAtMs = budget.Stopwatch.Elapsed.TotalMilliseconds;
         TryAdvanceAutonomyEncounterStates();
-
-        foreach (var runtime in _autonomyRuntimeByNpcId.Values.ToArray())
+        if (_autonomyRuntimeByNpcId.Count == 0)
         {
-            var npc = ResolveNpcByName(runtime.NpcId);
-            if (npc is null)
-                continue;
-
-            var block = _npcAutonomyPlannerService.AdvancePlan(runtime, Game1.timeOfDay, npc);
-            if (block is null)
-            {
-                // All blocks exhausted — let vanilla resume naturally
-                runtime.OverrideStatus = AutonomyOverrideStatus.Idle;
-                SyncExpectedStateToLoadedNpc(npc, runtime);
-                _npcTileReservationService?.Release(runtime.NpcId);
-                continue;
-            }
-
-            var isAnchor = block.Type is AutonomyPlanBlockType.BaseAnchor or AutonomyPlanBlockType.RequiredDuty;
-
-            // ── Skip movement/spatial updates for NPCs in active encounters ──
-            if ((_faceToFaceService?.IsInStaging(npc.Name) ?? false)
-                || _npcSocialEncounterService.IsNpcInActiveEncounter(npc.Name))
-            {
-                continue;
-            }
-
-            // ── Anchor blocks: 100% vanilla-driven, mod does NO movement ──
-            // Only the encounter check (below) runs for anchors.
-            if (isAnchor)
-            {
-                SyncExpectedStateToLoadedNpc(npc, runtime);
-            }
-            else if (block.Status == AutonomyPlanBlockStatus.Active)
-            {
-                TryRefreshSpatialTarget(npc, runtime, block, forceSpatialRetarget: false, reserveTarget: false);
-                UpdateAmbientDetourProjection(npc, runtime, block);
-            }
-
-            if (block.Status == AutonomyPlanBlockStatus.Completed)
-            {
-                if (!isAnchor)
-                {
-                    RecordAutonomyCooldowns(runtime, block);
-                    runtime.MovementPhase = "idle";
-                    runtime.StationaryTicks = 0;
-                    runtime.OscillationTicks = 0;
-                }
-                SyncExpectedStateToLoadedNpc(npc, runtime);
-                _npcTileReservationService?.Release(runtime.NpcId);
-                _state.Telemetry.Daily.AutonomyBlocksCompleted += 1;
-                continue;
-            }
-
-            // RequiredDuty: cancel active encounter, skip social checks
-            if (block.Type == AutonomyPlanBlockType.RequiredDuty)
-            {
-                if (!string.IsNullOrWhiteSpace(runtime.ActiveEncounterId)
-                    && _npcSocialEncounterService.GetEncounter(runtime.ActiveEncounterId) is { } activeEncounter)
-                {
-                    CancelEncounterScene(activeEncounter, "duty_recall");
-                }
-
-                runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
-                continue;
-            }
-
-            // ── New encounter eligibility ──
-
-            if (runtime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay)
-                continue;
-
-            if (DateTime.UtcNow < runtime.NextEncounterAllowedUtc)
-                continue;
-
-            var targetNpc = ResolveAutonomyTargetNpc(npc, block);
-            if (targetNpc is null)
-                continue;
-            if (!IsWithinAutonomyTalkRange(npc, targetNpc))
-            {
-                continue;
-            }
-
-            if (!_npcSocialEncounterService.ShouldStartEncounter(_state, npc, targetNpc, block))
-            {
-                Monitor.Log($"Autonomy: {npc.Name}->{targetNpc.Name} in range but ShouldStartEncounter=false (block={block.Type}).", LogLevel.Trace);
-                continue;
-            }
-
-            if (!PassesEncounterApprovalChance(npc, targetNpc, block.Type))
-                continue;
-
-            Monitor.Log($"Autonomy: {npc.Name}->{targetNpc.Name} encounter approved! block={block.Type} location={npc.currentLocation?.Name}.", LogLevel.Debug);
-            runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
-            if (_autonomyRuntimeByNpcId.TryGetValue(targetNpc.Name, out var targetCooldownRuntime))
-                targetCooldownRuntime.NextEncounterAllowedUtc = runtime.NextEncounterAllowedUtc;
-            _state.Telemetry.Daily.EncountersStarted += 1;
-            if (block.Type == AutonomyPlanBlockType.VisitNpc)
-                _state.Telemetry.Daily.EncountersPlanned += 1;
-            else
-                _state.Telemetry.Daily.EncountersOpportunistic += 1;
-
-            if (TryStartAutonomyEncounter(runtime, npc, targetNpc, block))
-            {
-                runtime.EncountersToday += 1;
-                if (_autonomyRuntimeByNpcId.TryGetValue(targetNpc.Name, out var targetRuntime))
-                    targetRuntime.EncountersToday += 1;
-            }
+            _autonomyPerf.RuntimeMillisecondsThisTick += budget.Stopwatch.Elapsed.TotalMilliseconds - startedAtMs;
+            return;
         }
+
+        var runtimes = _autonomyRuntimeByNpcId.Values.ToList();
+        if (_autonomyRuntimeCursor >= runtimes.Count)
+            _autonomyRuntimeCursor = 0;
+
+        var startIndex = _autonomyRuntimeCursor;
+        var inspected = 0;
+        var processed = 0;
+        while (inspected < runtimes.Count
+               && processed < AutonomyPlanAdvanceMaxNpcsPerPass
+               && !budget.IsExhausted)
+        {
+            var index = (startIndex + inspected) % runtimes.Count;
+            inspected += 1;
+            AdvanceAutonomousRoutineRuntime(runtimes[index]);
+            processed += 1;
+        }
+
+        _autonomyRuntimeCursor = runtimes.Count == 0
+            ? 0
+            : (startIndex + Math.Max(1, inspected)) % runtimes.Count;
+        _autonomyPerf.RuntimeProcessedThisTick += processed;
+        if (processed < runtimes.Count)
+            _autonomyPerf.RuntimeDeferredThisTick += runtimes.Count - processed;
+        if (budget.IsExhausted && processed < runtimes.Count)
+            _autonomyPerf.BudgetExhaustionsThisTick += 1;
+        _autonomyPerf.RuntimeMillisecondsThisTick += budget.Stopwatch.Elapsed.TotalMilliseconds - startedAtMs;
     }
 
-    private void TryTriggerAmbientIndoorAutonomyChatter(UpdateTickedEventArgs e)
+    private void TryTriggerAmbientIndoorAutonomyChatter(UpdateTickedEventArgs e, AutonomyTickBudget budget)
     {
         if (!_config.EnableAutonomousRoutines
             || !e.IsMultipleOf(30)
@@ -13815,91 +13860,230 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        foreach (var location in Game1.locations)
+        if (budget.IsExhausted)
         {
-            if (!_npcAmbientIndoorChatterService.SupportsLocation(location))
-                continue;
-
-            var occupants = location.characters
-                .Where(character => character is not null)
-                .Cast<NPC>()
-                .Where(IsAvailableForAmbientIndoorChatter)
-                .ToList();
-            if (occupants.Count < 2)
-                continue;
-
-            if (!_npcAmbientIndoorChatterService.TrySelectPair(location, occupants, out var speakerNpc, out var listenerNpc)
-                || speakerNpc is null
-                || listenerNpc is null)
-            {
-                continue;
-            }
-
-            if (!_autonomyRuntimeByNpcId.TryGetValue(speakerNpc.Name, out var speakerRuntime)
-                || !_autonomyRuntimeByNpcId.TryGetValue(listenerNpc.Name, out var listenerRuntime))
-            {
-                continue;
-            }
-
-            if (IsSamePairEncounterCoolingDown(speakerNpc.Name, listenerNpc.Name))
-                continue;
-
-            if (GetDailyEncounterCount(speakerNpc.Name, listenerNpc.Name) >= EncounterMaxPerPairPerDay)
-                continue;
-
-            if (speakerRuntime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay
-                || listenerRuntime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay)
-            {
-                continue;
-            }
-
-            if (!IsWithinAutonomyTalkRange(speakerNpc, listenerNpc))
-                continue;
-
-            var walkabilityService = _walkabilityService;
-            if (walkabilityService is null
-                || !walkabilityService.HasLineOfSight(
-                    location,
-                    new Point((int)speakerNpc.Tile.X, (int)speakerNpc.Tile.Y),
-                    new Point((int)listenerNpc.Tile.X, (int)listenerNpc.Tile.Y)))
-            {
-                continue;
-            }
-
-            var block = new AutonomyPlanBlock
-            {
-                BlockId = $"{speakerNpc.Name}:ambient_chatter:{Game1.timeOfDay}",
-                Type = speakerRuntime.ActivePlan is not null
-                    && speakerRuntime.ActiveBlockIndex >= 0
-                    && speakerRuntime.ActiveBlockIndex < speakerRuntime.ActivePlan.Blocks.Count
-                    ? speakerRuntime.ActivePlan.Blocks[speakerRuntime.ActiveBlockIndex].Type
-                    : AutonomyPlanBlockType.Socialize,
-                TargetLocation = location.Name,
-                TargetNpcId = listenerNpc.Name,
-                TargetSpotRole = "chat_node",
-                TargetZoneId = string.Empty,
-                StartTime = Game1.timeOfDay,
-                EndTime = AddMinutes(Game1.timeOfDay, 20),
-                Reason = "ambient indoor chatter"
-            };
-
-            if (!_npcSocialEncounterService.ShouldStartEncounter(_state, speakerNpc, listenerNpc, block))
-                continue;
-
-            if (!PassesEncounterApprovalChance(speakerNpc, listenerNpc, block.Type))
-                continue;
-
-            if (!TryStartAutonomyEncounter(speakerRuntime, speakerNpc, listenerNpc, block))
-                continue;
-
-            speakerRuntime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
-            listenerRuntime.NextEncounterAllowedUtc = speakerRuntime.NextEncounterAllowedUtc;
-            speakerRuntime.EncountersToday += 1;
-            listenerRuntime.EncountersToday += 1;
-            _npcAmbientIndoorChatterService.MarkStarted(location, speakerNpc.Name, listenerNpc.Name);
-            _state.Telemetry.Daily.EncountersStarted += 1;
-            _state.Telemetry.Daily.EncountersOpportunistic += 1;
+            if (Game1.locations.Count > 0)
+                _autonomyPerf.ChatterLocationsDeferredThisTick += Game1.locations.Count;
+            _autonomyPerf.BudgetExhaustionsThisTick += 1;
+            return;
         }
+
+        var startedAtMs = budget.Stopwatch.Elapsed.TotalMilliseconds;
+        var locations = Game1.locations.ToList();
+        if (locations.Count == 0)
+        {
+            _autonomyPerf.ChatterMillisecondsThisTick += budget.Stopwatch.Elapsed.TotalMilliseconds - startedAtMs;
+            return;
+        }
+
+        if (_ambientIndoorChatterLocationCursor >= locations.Count)
+            _ambientIndoorChatterLocationCursor = 0;
+
+        var startIndex = _ambientIndoorChatterLocationCursor;
+        var inspected = 0;
+        var processed = 0;
+        while (inspected < locations.Count
+               && processed < AutonomyIndoorChatterMaxLocationsPerPass
+               && !budget.IsExhausted)
+        {
+            var index = (startIndex + inspected) % locations.Count;
+            inspected += 1;
+            ProcessAmbientIndoorAutonomyChatterLocation(locations[index]);
+            processed += 1;
+        }
+
+        _ambientIndoorChatterLocationCursor = locations.Count == 0
+            ? 0
+            : (startIndex + Math.Max(1, inspected)) % locations.Count;
+        _autonomyPerf.ChatterLocationsProcessedThisTick += processed;
+        if (processed < locations.Count)
+            _autonomyPerf.ChatterLocationsDeferredThisTick += locations.Count - processed;
+        if (budget.IsExhausted && processed < locations.Count)
+            _autonomyPerf.BudgetExhaustionsThisTick += 1;
+        _autonomyPerf.ChatterMillisecondsThisTick += budget.Stopwatch.Elapsed.TotalMilliseconds - startedAtMs;
+    }
+
+    private void AdvanceAutonomousRoutineRuntime(AutonomyRuntimeState runtime)
+    {
+        var npc = ResolveNpcByName(runtime.NpcId);
+        if (npc is null)
+            return;
+
+        var block = _npcAutonomyPlannerService!.AdvancePlan(runtime, Game1.timeOfDay, npc);
+        if (block is null)
+        {
+            runtime.OverrideStatus = AutonomyOverrideStatus.Idle;
+            SyncExpectedStateToLoadedNpc(npc, runtime);
+            _npcTileReservationService?.Release(runtime.NpcId);
+            return;
+        }
+
+        var isAnchor = block.Type is AutonomyPlanBlockType.BaseAnchor or AutonomyPlanBlockType.RequiredDuty;
+        if ((_faceToFaceService?.IsInStaging(npc.Name) ?? false)
+            || _npcSocialEncounterService!.IsNpcInActiveEncounter(npc.Name))
+        {
+            return;
+        }
+
+        if (isAnchor)
+        {
+            SyncExpectedStateToLoadedNpc(npc, runtime);
+        }
+        else if (block.Status == AutonomyPlanBlockStatus.Active)
+        {
+            TryRefreshSpatialTarget(npc, runtime, block, forceSpatialRetarget: false, reserveTarget: false);
+            UpdateAmbientDetourProjection(npc, runtime, block);
+        }
+
+        if (block.Status == AutonomyPlanBlockStatus.Completed)
+        {
+            if (!isAnchor)
+            {
+                RecordAutonomyCooldowns(runtime, block);
+                runtime.MovementPhase = "idle";
+                runtime.StationaryTicks = 0;
+                runtime.OscillationTicks = 0;
+            }
+            SyncExpectedStateToLoadedNpc(npc, runtime);
+            _npcTileReservationService?.Release(runtime.NpcId);
+            _state.Telemetry.Daily.AutonomyBlocksCompleted += 1;
+            return;
+        }
+
+        if (block.Type == AutonomyPlanBlockType.RequiredDuty)
+        {
+            if (!string.IsNullOrWhiteSpace(runtime.ActiveEncounterId)
+                && _npcSocialEncounterService.GetEncounter(runtime.ActiveEncounterId) is { } activeEncounter)
+            {
+                CancelEncounterScene(activeEncounter, "duty_recall");
+            }
+
+            runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
+            return;
+        }
+
+        if (runtime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay)
+            return;
+
+        if (DateTime.UtcNow < runtime.NextEncounterAllowedUtc)
+            return;
+
+        var targetNpc = ResolveAutonomyTargetNpc(npc, block);
+        if (targetNpc is null || !IsWithinAutonomyTalkRange(npc, targetNpc))
+            return;
+
+        if (!_npcSocialEncounterService.ShouldStartEncounter(_state, npc, targetNpc, block))
+        {
+            Monitor.Log($"Autonomy: {npc.Name}->{targetNpc.Name} in range but ShouldStartEncounter=false (block={block.Type}).", LogLevel.Trace);
+            return;
+        }
+
+        if (!PassesEncounterApprovalChance(npc, targetNpc, block.Type))
+            return;
+
+        Monitor.Log($"Autonomy: {npc.Name}->{targetNpc.Name} encounter approved! block={block.Type} location={npc.currentLocation?.Name}.", LogLevel.Debug);
+        runtime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
+        if (_autonomyRuntimeByNpcId.TryGetValue(targetNpc.Name, out var targetCooldownRuntime))
+            targetCooldownRuntime.NextEncounterAllowedUtc = runtime.NextEncounterAllowedUtc;
+        _state.Telemetry.Daily.EncountersStarted += 1;
+        if (block.Type == AutonomyPlanBlockType.VisitNpc)
+            _state.Telemetry.Daily.EncountersPlanned += 1;
+        else
+            _state.Telemetry.Daily.EncountersOpportunistic += 1;
+
+        if (TryStartAutonomyEncounter(runtime, npc, targetNpc, block))
+        {
+            runtime.EncountersToday += 1;
+            if (_autonomyRuntimeByNpcId.TryGetValue(targetNpc.Name, out var targetRuntime))
+                targetRuntime.EncountersToday += 1;
+        }
+    }
+
+    private void ProcessAmbientIndoorAutonomyChatterLocation(GameLocation location)
+    {
+        if (_npcAmbientIndoorChatterService is null
+            || _npcSocialEncounterService is null
+            || _faceToFaceService is null
+            || !_npcAmbientIndoorChatterService.SupportsLocation(location))
+        {
+            return;
+        }
+
+        var occupants = location.characters
+            .Where(character => character is not null)
+            .Cast<NPC>()
+            .Where(IsAvailableForAmbientIndoorChatter)
+            .ToList();
+        if (occupants.Count < 2)
+            return;
+
+        if (!_npcAmbientIndoorChatterService.TrySelectPair(location, occupants, out var speakerNpc, out var listenerNpc)
+            || speakerNpc is null
+            || listenerNpc is null)
+        {
+            return;
+        }
+
+        if (!_autonomyRuntimeByNpcId.TryGetValue(speakerNpc.Name, out var speakerRuntime)
+            || !_autonomyRuntimeByNpcId.TryGetValue(listenerNpc.Name, out var listenerRuntime))
+        {
+            return;
+        }
+
+        if (IsSamePairEncounterCoolingDown(speakerNpc.Name, listenerNpc.Name)
+            || GetDailyEncounterCount(speakerNpc.Name, listenerNpc.Name) >= EncounterMaxPerPairPerDay)
+        {
+            return;
+        }
+
+        if (speakerRuntime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay
+            || listenerRuntime.EncountersToday >= _config.AutonomyMaxEncountersPerNpcPerDay
+            || !IsWithinAutonomyTalkRange(speakerNpc, listenerNpc))
+        {
+            return;
+        }
+
+        var walkabilityService = _walkabilityService;
+        if (walkabilityService is null
+            || !walkabilityService.HasLineOfSight(
+                location,
+                new Point((int)speakerNpc.Tile.X, (int)speakerNpc.Tile.Y),
+                new Point((int)listenerNpc.Tile.X, (int)listenerNpc.Tile.Y)))
+        {
+            return;
+        }
+
+        var block = new AutonomyPlanBlock
+        {
+            BlockId = $"{speakerNpc.Name}:ambient_chatter:{Game1.timeOfDay}",
+            Type = speakerRuntime.ActivePlan is not null
+                && speakerRuntime.ActiveBlockIndex >= 0
+                && speakerRuntime.ActiveBlockIndex < speakerRuntime.ActivePlan.Blocks.Count
+                ? speakerRuntime.ActivePlan.Blocks[speakerRuntime.ActiveBlockIndex].Type
+                : AutonomyPlanBlockType.Socialize,
+            TargetLocation = location.Name,
+            TargetNpcId = listenerNpc.Name,
+            TargetSpotRole = "chat_node",
+            TargetZoneId = string.Empty,
+            StartTime = Game1.timeOfDay,
+            EndTime = AddMinutes(Game1.timeOfDay, 20),
+            Reason = "ambient indoor chatter"
+        };
+
+        if (!_npcSocialEncounterService.ShouldStartEncounter(_state, speakerNpc, listenerNpc, block)
+            || !PassesEncounterApprovalChance(speakerNpc, listenerNpc, block.Type)
+            || !TryStartAutonomyEncounter(speakerRuntime, speakerNpc, listenerNpc, block))
+        {
+            return;
+        }
+
+        speakerRuntime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
+        listenerRuntime.NextEncounterAllowedUtc = speakerRuntime.NextEncounterAllowedUtc;
+        speakerRuntime.EncountersToday += 1;
+        listenerRuntime.EncountersToday += 1;
+        _npcAmbientIndoorChatterService.MarkStarted(location, speakerNpc.Name, listenerNpc.Name);
+        _state.Telemetry.Daily.EncountersStarted += 1;
+        _state.Telemetry.Daily.EncountersOpportunistic += 1;
     }
 
     private bool IsAvailableForAmbientIndoorChatter(NPC npc)
@@ -15810,184 +15994,217 @@ public sealed class ModEntry : Mod
         return IsWithinTileStepRange(Game1.player.Tile, npc.Tile, NpcManualFollowUpActivationRadiusTiles);
     }
 
-    private void TryProcessPendingVanillaEncounterResumes(ulong currentTick)
+    private void TryProcessPendingVanillaEncounterResumes(ulong currentTick, AutonomyTickBudget budget)
     {
         if (_pendingVanillaEncounterResumeByNpcId.Count == 0)
             return;
 
-        foreach (var npcId in _pendingVanillaEncounterResumeByNpcId.Keys.ToArray())
+        var startedAtMs = budget.Stopwatch.Elapsed.TotalMilliseconds;
+        var pendingNpcIds = _pendingVanillaEncounterResumeByNpcId.Keys.ToList();
+        if (_pendingEncounterResumeCursor >= pendingNpcIds.Count)
+            _pendingEncounterResumeCursor = 0;
+
+        var startIndex = _pendingEncounterResumeCursor;
+        var inspected = 0;
+        var processed = 0;
+        while (inspected < pendingNpcIds.Count
+               && processed < AutonomyResumeMaxNpcsPerTick
+               && !budget.IsExhausted)
         {
-            var pending = _pendingVanillaEncounterResumeByNpcId[npcId];
+            var index = (startIndex + inspected) % pendingNpcIds.Count;
+            var npcId = pendingNpcIds[index];
+            inspected += 1;
+            if (!_pendingVanillaEncounterResumeByNpcId.TryGetValue(npcId, out var pending))
+                continue;
+
             if (currentTick < pending.NextAttemptTick)
                 continue;
 
-            var npc = ResolvePendingEncounterResumeNpc(pending);
-            if (npc is null)
-            {
-                LogRuntimeThrottled(
-                    $"autonomy:resume-live-npc-missing:{pending.NpcId}:{pending.EncounterId}",
-                    TimeSpan.FromSeconds(20),
-                    $"Autonomy: could not resolve live NPC {pending.NpcId} while resuming vanilla schedule after encounter {pending.EncounterId}; retrying next tick.",
-                    LogLevel.Debug);
-                pending.NextAttemptTick = currentTick + 1;
-                continue;
-            }
-
-            if (pending.Attempts == 0)
-                pending.InitialTilePoint = npc.TilePoint;
-
-            var usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
-            if (usingTemporaryActiveSlotFallback
-                && pending.NextScheduleTime.HasValue
-                && Game1.timeOfDay >= pending.NextScheduleTime.Value
-                && pending.LastAttemptedTimeOfDay != Game1.timeOfDay)
-            {
-                ClearTemporaryActiveSlotFallback(npc, pending);
-                usingTemporaryActiveSlotFallback = false;
-            }
-
-            if (usingTemporaryActiveSlotFallback && pending.FallbackMode == EncounterFallbackMode.CrossMapLeg)
-            {
-                TryAdvanceCrossMapFallbackLeg(npc, pending, currentTick);
-                usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
-            }
-            else if (usingTemporaryActiveSlotFallback && pending.FallbackMode == EncounterFallbackMode.SameMapTarget)
-            {
-                TryAdvanceSameMapActiveSlotFallback(npc, pending, currentTick);
-                usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
-            }
-
-            var arrivalSettleResult = TryHandleActiveSlotArrivalSettle(npc, pending, currentTick);
-            if (arrivalSettleResult == ActiveSlotArrivalSettleResult.Completed
-                || arrivalSettleResult == ActiveSlotArrivalSettleResult.WaitingForAction)
-                continue;
-
-            var resumeValidation = ResumeValidationOutcome.Unknown;
-            var resumeMismatchReason = string.Empty;
-            Point? expectedLegTile = null;
-            if (!usingTemporaryActiveSlotFallback)
-            {
-                resumeValidation = EvaluateResumeStateForActiveSchedule(npc, pending, out resumeMismatchReason, out expectedLegTile);
-                if (TryHandleValidatedResumeState(
-                        npc,
-                        pending,
-                        currentTick,
-                        resumeValidation,
-                        resumeMismatchReason,
-                        expectedLegTile,
-                        "VanillaSchedule(update)"))
-                {
-                    continue;
-                }
-            }
-
-            if (usingTemporaryActiveSlotFallback)
-            {
-                pending.NextAttemptTick = currentTick + 1;
-                continue;
-            }
-
-            var shouldReloadSchedule = pending.Attempts == 0 || npc.Schedule is null || npc.Schedule.Count == 0;
-            var shouldAttemptCheck = shouldReloadSchedule;
-            if (!shouldAttemptCheck)
-            {
-                if (pending.NextScheduleTime.HasValue)
-                    shouldAttemptCheck = Game1.timeOfDay >= pending.NextScheduleTime.Value && pending.LastAttemptedTimeOfDay != Game1.timeOfDay;
-                else if (pending.LastAttemptedTimeOfDay.HasValue)
-                    shouldAttemptCheck = pending.LastAttemptedTimeOfDay.Value != Game1.timeOfDay;
-                else
-                    shouldAttemptCheck = true;
-            }
-
-            if (!shouldAttemptCheck)
-            {
-                pending.NextAttemptTick = currentTick + 1;
-                continue;
-            }
-
-            pending.Attempts += 1;
-            var reloadTodayOk = false;
-            var nextScheduleTime = pending.NextScheduleTime;
-            var checkScheduleInvoked = false;
-            var checkScheduleMethod = "none";
-
-            if (shouldReloadSchedule)
-            {
-                TryRebindVanillaScheduleAtCurrentTime(
-                    npc,
-                    pending,
-                    out reloadTodayOk,
-                    out nextScheduleTime,
-                    out checkScheduleInvoked,
-                    out checkScheduleMethod);
-            }
-            else
-            {
-                TryAdvanceVanillaScheduleAtCurrentTime(
-                    npc,
-                    pending,
-                    out nextScheduleTime,
-                    out checkScheduleInvoked,
-                    out checkScheduleMethod);
-            }
-
-            pending.ReloadTodayOk |= reloadTodayOk;
-            pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
-            pending.NextScheduleTime = nextScheduleTime;
-            pending.CheckScheduleInvoked |= checkScheduleInvoked;
-            if (checkScheduleInvoked)
-                pending.CheckScheduleMethod = checkScheduleMethod;
-
-            var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
-            var usingTemporaryActiveSlotFallbackAfterAttempt = IsUsingTemporaryActiveSlotFallback(npc, pending);
-            resumeValidation = ResumeValidationOutcome.Unknown;
-            resumeMismatchReason = string.Empty;
-            expectedLegTile = null;
-            if (!usingTemporaryActiveSlotFallbackAfterAttempt)
-            {
-                resumeValidation = EvaluateResumeStateForActiveSchedule(npc, pending, out resumeMismatchReason, out expectedLegTile);
-                if (TryHandleValidatedResumeState(
-                        npc,
-                        pending,
-                        currentTick,
-                        resumeValidation,
-                        resumeMismatchReason,
-                        expectedLegTile,
-                        pending.CheckScheduleMethod))
-                {
-                    continue;
-                }
-            }
-
-            if (usingTemporaryActiveSlotFallbackAfterAttempt)
-            {
-                pending.NextAttemptTick = currentTick + 1;
-                continue;
-            }
-
-            if (!pending.NextScheduleTime.HasValue)
-            {
-                Monitor.Log(
-                    $"Autonomy: vanilla schedule for {npc.Name} has no future slot after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time=none, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=false, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                    LogLevel.Debug);
-                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
-                continue;
-            }
-
-            if (pending.Attempts >= EncounterVanillaResumeMaxAttempts)
-            {
-                Monitor.Log(
-                    $"Autonomy: failed to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                    LogLevel.Warn);
-                _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
-                continue;
-            }
-
-            Monitor.Log(
-                $"Autonomy: waiting to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
-                LogLevel.Debug);
-            pending.NextAttemptTick = currentTick + 300;
+            TryProcessPendingVanillaEncounterResume(npcId, pending, currentTick);
+            processed += 1;
         }
+
+        _pendingEncounterResumeCursor = pendingNpcIds.Count == 0
+            ? 0
+            : (startIndex + Math.Max(1, inspected)) % pendingNpcIds.Count;
+        _autonomyPerf.ResumeProcessedThisTick += processed;
+        if (processed < pendingNpcIds.Count)
+            _autonomyPerf.ResumeDeferredThisTick += pendingNpcIds.Count - processed;
+        if (budget.IsExhausted && processed < pendingNpcIds.Count)
+            _autonomyPerf.BudgetExhaustionsThisTick += 1;
+        _autonomyPerf.ResumeMillisecondsThisTick += budget.Stopwatch.Elapsed.TotalMilliseconds - startedAtMs;
+    }
+
+    private void TryProcessPendingVanillaEncounterResume(string npcId, PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        var npc = ResolvePendingEncounterResumeNpc(pending);
+        if (npc is null)
+        {
+            LogRuntimeThrottled(
+                $"autonomy:resume-live-npc-missing:{pending.NpcId}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: could not resolve live NPC {pending.NpcId} while resuming vanilla schedule after encounter {pending.EncounterId}; retrying next tick.",
+                LogLevel.Debug);
+            pending.NextAttemptTick = currentTick + 1;
+            return;
+        }
+
+        if (pending.Attempts == 0)
+            pending.InitialTilePoint = npc.TilePoint;
+
+        var usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
+        if (usingTemporaryActiveSlotFallback
+            && pending.NextScheduleTime.HasValue
+            && Game1.timeOfDay >= pending.NextScheduleTime.Value
+            && pending.LastAttemptedTimeOfDay != Game1.timeOfDay)
+        {
+            ClearTemporaryActiveSlotFallback(npc, pending);
+            usingTemporaryActiveSlotFallback = false;
+        }
+
+        if (usingTemporaryActiveSlotFallback && pending.FallbackMode == EncounterFallbackMode.CrossMapLeg)
+        {
+            TryAdvanceCrossMapFallbackLeg(npc, pending, currentTick);
+            usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
+        }
+        else if (usingTemporaryActiveSlotFallback && pending.FallbackMode == EncounterFallbackMode.SameMapTarget)
+        {
+            TryAdvanceSameMapActiveSlotFallback(npc, pending, currentTick);
+            usingTemporaryActiveSlotFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
+        }
+
+        var arrivalSettleResult = TryHandleActiveSlotArrivalSettle(npc, pending, currentTick);
+        if (arrivalSettleResult == ActiveSlotArrivalSettleResult.Completed
+            || arrivalSettleResult == ActiveSlotArrivalSettleResult.WaitingForAction)
+        {
+            return;
+        }
+
+        var resumeValidation = ResumeValidationOutcome.Unknown;
+        var resumeMismatchReason = string.Empty;
+        Point? expectedLegTile = null;
+        if (!usingTemporaryActiveSlotFallback)
+        {
+            resumeValidation = EvaluateResumeStateForActiveSchedule(npc, pending, out resumeMismatchReason, out expectedLegTile);
+            if (TryHandleValidatedResumeState(
+                    npc,
+                    pending,
+                    currentTick,
+                    resumeValidation,
+                    resumeMismatchReason,
+                    expectedLegTile,
+                    "VanillaSchedule(update)"))
+            {
+                return;
+            }
+        }
+
+        if (usingTemporaryActiveSlotFallback)
+        {
+            pending.NextAttemptTick = currentTick + 1;
+            return;
+        }
+
+        var shouldReloadSchedule = pending.Attempts == 0 || npc.Schedule is null || npc.Schedule.Count == 0;
+        var shouldAttemptCheck = shouldReloadSchedule;
+        if (!shouldAttemptCheck)
+        {
+            if (pending.NextScheduleTime.HasValue)
+                shouldAttemptCheck = Game1.timeOfDay >= pending.NextScheduleTime.Value && pending.LastAttemptedTimeOfDay != Game1.timeOfDay;
+            else if (pending.LastAttemptedTimeOfDay.HasValue)
+                shouldAttemptCheck = pending.LastAttemptedTimeOfDay.Value != Game1.timeOfDay;
+            else
+                shouldAttemptCheck = true;
+        }
+
+        if (!shouldAttemptCheck)
+        {
+            pending.NextAttemptTick = currentTick + 1;
+            return;
+        }
+
+        pending.Attempts += 1;
+        var reloadTodayOk = false;
+        var nextScheduleTime = pending.NextScheduleTime;
+        var checkScheduleInvoked = false;
+        var checkScheduleMethod = "none";
+
+        if (shouldReloadSchedule)
+        {
+            TryRebindVanillaScheduleAtCurrentTime(
+                npc,
+                pending,
+                out reloadTodayOk,
+                out nextScheduleTime,
+                out checkScheduleInvoked,
+                out checkScheduleMethod);
+        }
+        else
+        {
+            TryAdvanceVanillaScheduleAtCurrentTime(
+                npc,
+                pending,
+                out nextScheduleTime,
+                out checkScheduleInvoked,
+                out checkScheduleMethod);
+        }
+
+        pending.ReloadTodayOk |= reloadTodayOk;
+        pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
+        pending.NextScheduleTime = nextScheduleTime;
+        pending.CheckScheduleInvoked |= checkScheduleInvoked;
+        if (checkScheduleInvoked)
+            pending.CheckScheduleMethod = checkScheduleMethod;
+
+        var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null;
+        var usingTemporaryActiveSlotFallbackAfterAttempt = IsUsingTemporaryActiveSlotFallback(npc, pending);
+        resumeValidation = ResumeValidationOutcome.Unknown;
+        resumeMismatchReason = string.Empty;
+        expectedLegTile = null;
+        if (!usingTemporaryActiveSlotFallbackAfterAttempt)
+        {
+            resumeValidation = EvaluateResumeStateForActiveSchedule(npc, pending, out resumeMismatchReason, out expectedLegTile);
+            if (TryHandleValidatedResumeState(
+                    npc,
+                    pending,
+                    currentTick,
+                    resumeValidation,
+                    resumeMismatchReason,
+                    expectedLegTile,
+                    pending.CheckScheduleMethod))
+            {
+                return;
+            }
+        }
+
+        if (usingTemporaryActiveSlotFallbackAfterAttempt)
+        {
+            pending.NextAttemptTick = currentTick + 1;
+            return;
+        }
+
+        if (!pending.NextScheduleTime.HasValue)
+        {
+            Monitor.Log(
+                $"Autonomy: vanilla schedule for {npc.Name} has no future slot after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time=none, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=false, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                LogLevel.Debug);
+            _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+            return;
+        }
+
+        if (pending.Attempts >= EncounterVanillaResumeMaxAttempts)
+        {
+            Monitor.Log(
+                $"Autonomy: failed to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                LogLevel.Warn);
+            _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+            return;
+        }
+
+        Monitor.Log(
+            $"Autonomy: waiting to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            LogLevel.Debug);
+        pending.NextAttemptTick = currentTick + 300;
     }
 
     private NPC? ResolvePendingEncounterResumeNpc(PendingVanillaEncounterResume pending)
@@ -18724,6 +18941,7 @@ public sealed class ModEntry : Mod
         var detourSignature = BuildEncounterDetourSignature("same_map", location.Name ?? string.Empty, npc.TilePoint, candidate, blockedTile);
         if (TrySkipCachedEncounterDetourFailure(pending, detourSignature, npc, location.Name ?? string.Empty, candidate, blockedTile, "same-map"))
             return false;
+        _autonomyPerf.DetourCacheMissesThisTick += 1;
 
         if (!TryBuildEncounterResumeDetourRoute(
                 location,
@@ -18973,6 +19191,7 @@ public sealed class ModEntry : Mod
 
         pending.RepeatedFailedDetourSkipCount += 1;
         pending.LastFailedDetourSignature = detourSignature;
+        _autonomyPerf.DetourCacheHitsThisTick += 1;
         LogRuntimeThrottled(
             $"autonomy:detour-failure-cached:{npc.Name}:{pending.EncounterId}:{locationName}:{detourModeLabel}",
             TimeSpan.FromSeconds(20),
@@ -19547,6 +19766,7 @@ public sealed class ModEntry : Mod
         var detourSignature = BuildEncounterDetourSignature("cross_map_departure", location.Name ?? string.Empty, npc.TilePoint, candidate, blockedTile);
         if (TrySkipCachedEncounterDetourFailure(pending, detourSignature, npc, location.Name ?? string.Empty, candidate, blockedTile, "cross-map departure"))
             return false;
+        _autonomyPerf.DetourCacheMissesThisTick += 1;
 
         if (!TryBuildEncounterResumeDetourRoute(
                 location,
@@ -20385,6 +20605,10 @@ public sealed class ModEntry : Mod
             Monitor.Log("Autonomy runtime: no active plans.", LogLevel.Info);
             return;
         }
+
+        Monitor.Log(
+            $"Autonomy perf | budget_ms_last={_autonomyPerf.TotalBudgetMillisecondsLastTick.ToString("0.00", CultureInfo.InvariantCulture)} resumes_last={_autonomyPerf.ResumeProcessedLastTick}/{_autonomyPerf.ResumeDeferredLastTick} resume_ms_last={_autonomyPerf.ResumeMillisecondsLastTick.ToString("0.00", CultureInfo.InvariantCulture)} runtimes_last={_autonomyPerf.RuntimeProcessedLastTick}/{_autonomyPerf.RuntimeDeferredLastTick} runtime_ms_last={_autonomyPerf.RuntimeMillisecondsLastTick.ToString("0.00", CultureInfo.InvariantCulture)} chatter_last={_autonomyPerf.ChatterLocationsProcessedLastTick}/{_autonomyPerf.ChatterLocationsDeferredLastTick} chatter_ms_last={_autonomyPerf.ChatterMillisecondsLastTick.ToString("0.00", CultureInfo.InvariantCulture)} budget_exhaustions_last={_autonomyPerf.BudgetExhaustionsLastTick} detour_cache_last={_autonomyPerf.DetourCacheHitsLastTick}/{_autonomyPerf.DetourCacheMissesLastTick} resumes_total={_autonomyPerf.ResumeProcessedTotal}/{_autonomyPerf.ResumeDeferredTotal} runtimes_total={_autonomyPerf.RuntimeProcessedTotal}/{_autonomyPerf.RuntimeDeferredTotal} chatter_total={_autonomyPerf.ChatterLocationsProcessedTotal}/{_autonomyPerf.ChatterLocationsDeferredTotal} budget_exhaustions_total={_autonomyPerf.BudgetExhaustionsTotal} detour_cache_total={_autonomyPerf.DetourCacheHitsTotal}/{_autonomyPerf.DetourCacheMissesTotal}",
+            LogLevel.Info);
 
         foreach (var runtime in _autonomyRuntimeByNpcId.Values.OrderBy(value => value.NpcId, StringComparer.OrdinalIgnoreCase))
         {
