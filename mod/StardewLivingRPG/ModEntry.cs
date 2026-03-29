@@ -5757,16 +5757,29 @@ public sealed class ModEntry : Mod
 
     private string BuildEncounterConversationTopicSeed(string speakerShortName, string listenerShortName, ConversationScenario scenario)
     {
-        var candidate = SelectNpcConversationTopicCandidate(speakerShortName, listenerShortName, includeMarketFallback: false);
+        var headlineCandidateAvailable = TryGetLatestGroundingArticle(out _);
+        var headlineAllowed = !headlineCandidateAvailable || _ambientNpcRandom.Next(2) == 0;
+        var candidate = SelectNpcConversationTopicCandidate(
+            speakerShortName,
+            listenerShortName,
+            includeMarketFallback: false,
+            includeHeadlineCandidate: headlineAllowed);
         TrackNpcConversationTopicUsage(candidate);
+        Monitor.Log(
+            $"Autonomy: encounter topic selected for {speakerShortName}->{listenerShortName}: source={candidate.SourceType}, headline_allowed={headlineAllowed}, topic='{TrimForContext(candidate.TopicText, 90, "topic")}'.",
+            LogLevel.Trace);
         return candidate.TopicText;
     }
 
-    private ConversationTopicCandidate SelectNpcConversationTopicCandidate(string speakerShortName, string listenerShortName, bool includeMarketFallback)
+    private ConversationTopicCandidate SelectNpcConversationTopicCandidate(
+        string speakerShortName,
+        string listenerShortName,
+        bool includeMarketFallback,
+        bool includeHeadlineCandidate = true)
     {
         var candidates = new List<ConversationTopicCandidate>();
 
-        if (TryGetLatestGroundingArticle(out var article))
+        if (includeHeadlineCandidate && TryGetLatestGroundingArticle(out var article))
         {
             var title = TrimForContext(article.Title, 120, "today's newspaper");
             if (!string.IsNullOrWhiteSpace(title))
@@ -15139,7 +15152,7 @@ public sealed class ModEntry : Mod
             scenario,
             currentSpeakerShortName,
             currentListenerShortName,
-            priorLine: null,
+            transcript,
             continuationContext: continuationContext,
             alreadyTalkedToday: alreadyTalkedToday,
             timeContext: timeContext,
@@ -15204,6 +15217,51 @@ public sealed class ModEntry : Mod
                 }
             }
 
+            if (TryGetEncounterDuplicateLines(transcript, currentSpeakerShortName, encounterLine, out var duplicateLines))
+            {
+                Monitor.Log(
+                    $"Autonomy: encounter {encounterId} duplicate turn detected at T{turn} for {currentSpeakerShortName}->{currentListenerShortName}; attempting repair.",
+                    LogLevel.Trace);
+
+                var repairedTurnResult = await TrySendAmbientConversationTurnAsync(
+                    client,
+                    apiBaseUrl,
+                    player2Key,
+                    currentSpeakerNpcId,
+                    currentListenerShortName,
+                    BuildEncounterDuplicateRepairPrompt(
+                        currentMessage,
+                        currentListenerShortName,
+                        transcript,
+                        duplicateLines),
+                    context,
+                    requireMessage: true);
+
+                if (!repairedTurnResult.Success)
+                {
+                    abortReason = string.IsNullOrWhiteSpace(repairedTurnResult.FailureCode)
+                        ? "E_ENCOUNTER_TURN_FAILED"
+                        : repairedTurnResult.FailureCode;
+                    break;
+                }
+
+                encounterLine = repairedTurnResult.Message;
+                if (LooksLikeEncounterCommandOutput(encounterLine))
+                {
+                    abortReason = "E_ENCOUNTER_TURN_COMMAND_OUTPUT";
+                    break;
+                }
+
+                if (TryGetEncounterDuplicateLines(transcript, currentSpeakerShortName, encounterLine, out _))
+                {
+                    Monitor.Log(
+                        $"Autonomy: encounter {encounterId} duplicate turn dropped at T{turn} for {currentSpeakerShortName}->{currentListenerShortName} after repair retry.",
+                        LogLevel.Trace);
+                    abortReason = "E_ENCOUNTER_TURN_DUPLICATE";
+                    break;
+                }
+            }
+
             transcript.Add(new AmbientConversationLine
             {
                 Turn = turn,
@@ -15240,7 +15298,7 @@ public sealed class ModEntry : Mod
                 scenario,
                 currentSpeakerShortName,
                 currentListenerShortName,
-                encounterLine,
+                transcript,
                 timeContext: timeContext,
                 pairEmotionContext: pairEmotionContext,
                 scheduleContext: encounterScheduleContext,
@@ -15283,7 +15341,7 @@ public sealed class ModEntry : Mod
         ConversationScenario scenario,
         string speakerShortName,
         string listenerShortName,
-        string? priorLine,
+        IReadOnlyList<AmbientConversationLine> transcript,
         string? continuationContext = null,
         bool alreadyTalkedToday = false,
         string? timeContext = null,
@@ -15292,11 +15350,14 @@ public sealed class ModEntry : Mod
         string? scheduleClosingHint = null)
     {
         var isContinuation = !string.IsNullOrWhiteSpace(continuationContext);
+        var priorLine = transcript.Count > 0 ? transcript[^1].Message : null;
         var priorLineWasClosing = IsLikelyConversationClosing(priorLine);
         var timeHint = !string.IsNullOrWhiteSpace(timeContext) ? $"It is {timeContext}. " : "";
         var emotionHint = !string.IsNullOrWhiteSpace(pairEmotionContext) ? pairEmotionContext + " " : "";
         var scheduleHint = !string.IsNullOrWhiteSpace(scheduleContext) ? scheduleContext + " " : "";
         var closingHint = !string.IsNullOrWhiteSpace(scheduleClosingHint) ? scheduleClosingHint + " " : "";
+        var transcriptHint = BuildEncounterTranscriptRecap(transcript);
+        var alreadySaidHint = BuildEncounterAlreadySaidHint(transcript, speakerShortName);
         const string lineRule = "Answer with one short in-character sentence (under 80 characters) that sounds like something said aloud in town. ";
 
         if (turnNumber <= 1 || string.IsNullOrWhiteSpace(priorLine))
@@ -15309,13 +15370,13 @@ public sealed class ModEntry : Mod
                     emotionHint +
                     scheduleHint +
                     $"Pick up from this thread: {continuationContext}. " +
-                    $"Scene pull: {topicSeed}. " +
-                    $"Keep the purpose around {scenario.Purpose} with a {scenario.ToneTrend} emotional drift. " +
-                    $"Speak directly to {listenerShortName}, not the player. " +
-                    "If you already said goodbye earlier, reopen naturally with one more thing before leaving. " +
-                    "Continue from the prior exchange without re-greeting or repeating the same goodbye. " +
-                    "Let the exchange carry subtext, friction, gossip, mystery, or warmth when it fits; avoid flat pleasantries. " +
-                    lineRule;
+                     $"Scene pull: {topicSeed}. " +
+                     $"Keep the purpose around {scenario.Purpose} with a {scenario.ToneTrend} emotional drift. " +
+                     $"Speak directly to {listenerShortName}, not the player. " +
+                     "If you already said goodbye earlier, reopen naturally with one more thing before leaving. " +
+                     "Continue from the prior exchange without re-greeting or repeating the same goodbye. " +
+                     "Let the exchange carry subtext, friction, gossip, mystery, or warmth when it fits; avoid flat pleasantries. " +
+                     lineRule;
             }
 
             var greetingHint = alreadyTalkedToday
@@ -15327,9 +15388,9 @@ public sealed class ModEntry : Mod
                 timeHint +
                 emotionHint +
                 scheduleHint +
-                $"Start from this scene pull: {topicSeed}. " +
-                $"Use a {scenario.OpenerStyle} opener and keep the exchange around {scenario.Purpose} with a {scenario.ToneTrend} tone trend. " +
-                $"Speak directly to {listenerShortName}; do not address the player. " +
+                 $"Start from this scene pull: {topicSeed}. " +
+                 $"Use a {scenario.OpenerStyle} opener and keep the exchange around {scenario.Purpose} with a {scenario.ToneTrend} tone trend. " +
+                 $"Speak directly to {listenerShortName}; do not address the player. " +
                 greetingHint +
                 "Use a concrete detail, feeling, or rumor hook. Let disagreement, defensiveness, excitement, or gossip appear when it fits. " +
                 lineRule;
@@ -15342,6 +15403,8 @@ public sealed class ModEntry : Mod
                 timeHint +
                 emotionHint +
                 scheduleHint +
+                transcriptHint +
+                alreadySaidHint +
                 $"Continue from: \"{priorLine}\". " +
                 $"Arc target: {scenario.ArcOutcome}. " +
                 (priorLineWasClosing
@@ -15355,6 +15418,8 @@ public sealed class ModEntry : Mod
         {
             return
                 $"You are {speakerShortName}, still in the same face-to-face scene with {listenerShortName}. " +
+                transcriptHint +
+                alreadySaidHint +
                 $"The previous line already sounded like a goodbye: \"{priorLine}\". " +
                 "If you speak again, reopen with one more thing before leaving and shift to a related new angle. " +
                 "Do not repeat the same farewell or exact phrasing. " +
@@ -15364,12 +15429,48 @@ public sealed class ModEntry : Mod
 
         return
             $"You are {speakerShortName}, still speaking only to {listenerShortName}. " +
+            timeHint +
             emotionHint +
             scheduleHint +
+            transcriptHint +
+            alreadySaidHint +
             $"Continue naturally from: \"{priorLine}\". " +
+            $"Respond to {listenerShortName}'s latest reply instead of restarting the same question or claim. " +
             $"Keep the exchange around {scenario.Purpose} with {scenario.ToneAtStart} tone and a {scenario.ToneTrend} drift. " +
             "Keep it grounded and specific. Avoid generic pleasantries. Let the exchange carry gossip, mystery, frustration, defensiveness, or warmth when it fits. " +
             lineRule;
+    }
+
+    private static string BuildEncounterTranscriptRecap(IReadOnlyList<AmbientConversationLine> transcript)
+    {
+        if (transcript.Count == 0)
+            return string.Empty;
+
+        var recentLines = transcript
+            .TakeLast(2)
+            .Select(line => $"{line.SpeakerShortName}: \"{TrimEncounterLineForState(line.Message)}\"")
+            .ToArray();
+        return recentLines.Length == 0
+            ? string.Empty
+            : $"Recent exchange: {string.Join(" ", recentLines)}. ";
+    }
+
+    private static string BuildEncounterAlreadySaidHint(IReadOnlyList<AmbientConversationLine> transcript, string speakerShortName)
+    {
+        if (transcript.Count == 0)
+            return string.Empty;
+
+        var priorSpeakerLines = transcript
+            .Where(line => string.Equals(line.SpeakerShortName, speakerShortName, StringComparison.OrdinalIgnoreCase))
+            .Select(line => TrimEncounterLineForState(line.Message))
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToArray();
+
+        return priorSpeakerLines.Length == 0
+            ? string.Empty
+            : $"You already said earlier in this encounter: {string.Join(" | ", priorSpeakerLines.Select(line => $"\"{line}\""))}. Do not restate those lines or the same question. ";
     }
 
     private string BuildEncounterPairEmotionBlock(string speakerNpcId, string listenerNpcId)
@@ -15398,6 +15499,26 @@ public sealed class ModEntry : Mod
         return currentMessage + " Your previous reply sounded like instructions instead of spoken dialogue. Say only what the character would actually say aloud.";
     }
 
+    private static string BuildEncounterDuplicateRepairPrompt(
+        string currentMessage,
+        string listenerShortName,
+        IReadOnlyList<AmbientConversationLine> transcript,
+        IReadOnlyList<string> duplicateLines)
+    {
+        var latestReply = transcript.Count == 0
+            ? string.Empty
+            : TrimEncounterLineForState(transcript[^1].Message);
+        var duplicateBlock = string.Join(" | ", duplicateLines
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Take(2)
+            .Select(line => $"\"{TrimEncounterLineForState(line)}\""));
+
+        return currentMessage
+               + $" Your previous reply repeated an earlier encounter line. Reply directly to {listenerShortName}'s latest line: \"{latestReply}\"."
+               + $" Do not reuse any of these earlier lines: {duplicateBlock}."
+               + " Give one fresh follow-up, new angle, or concrete reaction instead of restarting the same question or claim.";
+    }
+
     private static bool LooksLikeEncounterCommandOutput(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -15407,6 +15528,69 @@ public sealed class ModEntry : Mod
             || EncounterCommandRetryRegex.IsMatch(text)
             || NpcSpeechBubbleService.LooksLikeEncounterCommandLeak(text)
             || NpcSpeechBubbleService.LooksLikeEncounterPromptLeak(text);
+    }
+
+    private static bool TryGetEncounterDuplicateLines(
+        IReadOnlyList<AmbientConversationLine> transcript,
+        string speakerShortName,
+        string? candidateLine,
+        out List<string> duplicateLines)
+    {
+        duplicateLines = new List<string>();
+        var normalizedCandidate = NormalizeEncounterLineForDuplicateCheck(candidateLine);
+        if (string.IsNullOrWhiteSpace(normalizedCandidate))
+            return false;
+
+        foreach (var priorLine in transcript)
+        {
+            if (!string.Equals(priorLine.SpeakerShortName, speakerShortName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (!AreEncounterLinesNearDuplicate(normalizedCandidate, NormalizeEncounterLineForDuplicateCheck(priorLine.Message)))
+                continue;
+
+            duplicateLines.Add(priorLine.Message);
+        }
+
+        return duplicateLines.Count > 0;
+    }
+
+    private static string NormalizeEncounterLineForDuplicateCheck(string? line)
+    {
+        var cleaned = NpcSpeechBubbleService.StripEmotionMetadata(line);
+        if (string.IsNullOrWhiteSpace(cleaned))
+            return string.Empty;
+
+        var normalized = cleaned.Trim().ToLowerInvariant();
+        normalized = Regex.Replace(normalized, @"\b(?:well|so|hey|oh|ah|huh)\b", " ", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"[^\p{L}\p{N}\s]", " ", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+        return normalized;
+    }
+
+    private static bool AreEncounterLinesNearDuplicate(string normalizedA, string normalizedB)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedA) || string.IsNullOrWhiteSpace(normalizedB))
+            return false;
+
+        if (string.Equals(normalizedA, normalizedB, StringComparison.Ordinal))
+            return true;
+
+        if ((normalizedA.Length >= 24 || normalizedB.Length >= 24)
+            && (normalizedA.Contains(normalizedB, StringComparison.Ordinal)
+                || normalizedB.Contains(normalizedA, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        var tokensA = normalizedA.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var tokensB = normalizedB.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokensA.Length == 0 || tokensB.Length == 0)
+            return false;
+
+        var overlap = tokensA.Intersect(tokensB, StringComparer.Ordinal).Count();
+        var baseline = Math.Max(tokensA.Length, tokensB.Length);
+        return baseline > 0 && overlap >= Math.Max(3, (int)Math.Ceiling(baseline * 0.8d));
     }
 
     private void TryApplyPendingEncounterConversationTurns()
