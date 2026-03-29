@@ -126,6 +126,17 @@ public sealed class ModEntry : Mod
     private const int EncounterSettleRecoveryRetryDelayTicks = 5;
     private const int EncounterSettleRecoveryMaxAttempts = 2;
     private const double AutonomyMainThreadBudgetMilliseconds = 2.5d;
+    private const int AutonomyFullFidelityCurrentLocationSoftCap = 20;
+    private const int AutonomyVisibleEncounterDrySpellMinutes = 90;
+    private const int AutonomyVisibleEncounterBonusStepMinutes = 60;
+    private const int AutonomyVisibleEncounterBonusStepPercent = 10;
+    private const int AutonomyVisibleEncounterMaxBonusPercent = 30;
+    private const int AutonomyVisibleSocialCrowdThreshold = 6;
+    private const int AutonomyVisibleSocialAttemptIntervalMinutes = 10;
+    private const int AutonomyVisibleSocialLocationWindowMinutes = 20;
+    private const int AutonomyVisibleSocialBaseChancePercent = 55;
+    private const int AutonomyMaxEncounterStartsPerPass = 2;
+    private const int AutonomyMaxEncounterStartsPerLocationPerPass = 1;
     private const int AutonomyResumeMaxNpcsPerTick = 2;
     private const int AutonomyPlanAdvanceMaxNpcsPerPass = 6;
     private const int AutonomyIndoorChatterMaxLocationsPerPass = 2;
@@ -543,6 +554,13 @@ public sealed class ModEntry : Mod
         NotReady,
         WaitingForAction,
         Completed
+    }
+
+    private enum AutonomyFidelityTier
+    {
+        Dormant,
+        Light,
+        Full
     }
 
     private sealed class PendingVanillaEncounterResume
@@ -1256,6 +1274,11 @@ public sealed class ModEntry : Mod
     private readonly Dictionary<string, DeferredEncounterUiInterruptResume> _deferredEncounterUiInterruptResumeByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VanillaEncounterResumeMonitor> _vanillaEncounterResumeMonitorByNpcId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EncounterSettleRecoveryMonitor> _encounterSettleRecoveryMonitorByNpcId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AutonomyFidelityTier> _autonomyFidelityTierByNpcId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _autonomyFidelityReasonByNpcId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _visibleSocialLastAttemptTimeByLocation = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _visibleSocialLastStartTimeByLocation = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _visibleSocialLastPairKeyByLocation = new(StringComparer.OrdinalIgnoreCase);
     private int _ambientLastOverhearDay = -9999;
     private readonly Dictionary<string, RecentVanillaDialogueContext> _recentVanillaDialogueByNpcToken = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RecentNpcGiftContext> _recentGiftContextByNpcToken = new(StringComparer.OrdinalIgnoreCase);
@@ -1266,6 +1289,15 @@ public sealed class ModEntry : Mod
     private int _autonomyRuntimeCursor;
     private int _ambientIndoorChatterLocationCursor;
     private readonly AutonomyPerformanceCounters _autonomyPerf = new();
+    private bool _autonomyRelevanceDirty = true;
+    private string _currentAutonomyPlayerLocationName = string.Empty;
+    private string _previousAutonomyPlayerLocationName = string.Empty;
+    private int _lastVisibleEncounterDay = -1;
+    private int _lastVisibleEncounterTimeOfDay = 900;
+    private string _lastVisibleEncounterLocationName = string.Empty;
+    private ulong _autonomyEncounterPassTick;
+    private int _autonomyEncounterStartsThisPass;
+    private readonly Dictionary<string, int> _autonomyEncounterStartsByLocationThisPass = new(StringComparer.OrdinalIgnoreCase);
 
     private string? _pendingNpcDialogueHookName;
     private NPC? _pendingNpcDialogueHookNpc;
@@ -4685,6 +4717,7 @@ public sealed class ModEntry : Mod
         TryApplyNpcChatCursorIndicator();
         TryCaptureVanillaDialogueContextFromMenu(Game1.activeClickableMenu, _pendingNpcDialogueHookName);
         TryHandleNpcDialogueHookFallback();
+        SyncAutonomyPlayerContext();
 
         if (_config.EnablePlayer2 && _config.AutoConnectPlayer2OnLoad)
         {
@@ -4709,6 +4742,7 @@ public sealed class ModEntry : Mod
         TryProcessEncounterSettleRecoveryMonitors(_lastUpdateTick);
         TryProcessVanillaEncounterResumeMonitors(_lastUpdateTick);
         TryAdvanceAutonomousRoutines(e, autonomyBudget);
+        TryTriggerVisibleCrowdedLocationSocial(e, autonomyBudget);
         TryTriggerAmbientIndoorAutonomyChatter(e, autonomyBudget);
         CompleteAutonomyPerformanceTick(autonomyBudget);
         TryTickNpcSpeechBubbles();
@@ -4970,6 +5004,435 @@ public sealed class ModEntry : Mod
     private void CompleteAutonomyPerformanceTick(AutonomyTickBudget budget)
     {
         _autonomyPerf.CompleteTick(budget.Stopwatch.Elapsed.TotalMilliseconds);
+    }
+
+    private void SyncAutonomyPlayerContext()
+    {
+        var currentLocationName = Game1.player?.currentLocation?.Name ?? Game1.currentLocation?.Name ?? string.Empty;
+        if (!string.Equals(currentLocationName, _currentAutonomyPlayerLocationName, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(_currentAutonomyPlayerLocationName))
+                _previousAutonomyPlayerLocationName = _currentAutonomyPlayerLocationName;
+            _currentAutonomyPlayerLocationName = currentLocationName;
+            _autonomyRelevanceDirty = true;
+        }
+
+        if (_lastVisibleEncounterDay != _state.Calendar.Day)
+        {
+            _lastVisibleEncounterDay = _state.Calendar.Day;
+            _lastVisibleEncounterTimeOfDay = 900;
+            _lastVisibleEncounterLocationName = string.Empty;
+        }
+    }
+
+    private void EnsureAutonomyRelevanceFresh(bool force = false)
+    {
+        if (!force && !_autonomyRelevanceDirty)
+            return;
+
+        _autonomyRelevanceDirty = false;
+        _autonomyFidelityTierByNpcId.Clear();
+        _autonomyFidelityReasonByNpcId.Clear();
+
+        var currentLocationName = _currentAutonomyPlayerLocationName;
+        var currentLocationCandidates = new List<(NPC Npc, int Score, string Reason)>();
+        foreach (var runtime in _autonomyRuntimeByNpcId.Values)
+        {
+            var npc = ResolveNpcByName(runtime.NpcId);
+            if (npc is null)
+            {
+                SetAutonomyFidelity(runtime.NpcId, AutonomyFidelityTier.Dormant, "unresolved");
+                continue;
+            }
+
+            if (IsAutonomyRuntimePinnedFull(runtime))
+            {
+                SetAutonomyFidelity(runtime.NpcId, AutonomyFidelityTier.Full, "active_flow");
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(currentLocationName)
+                && string.Equals(npc.currentLocation?.Name, currentLocationName, StringComparison.OrdinalIgnoreCase))
+            {
+                currentLocationCandidates.Add((npc, ScoreAutonomyCurrentLocationPriority(npc, runtime), "player_location"));
+                continue;
+            }
+
+            if (IsNpcRecentlyRelevantToPlayer(npc))
+            {
+                SetAutonomyFidelity(runtime.NpcId, AutonomyFidelityTier.Full, "recent_player_interaction");
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_previousAutonomyPlayerLocationName)
+                && string.Equals(npc.currentLocation?.Name, _previousAutonomyPlayerLocationName, StringComparison.OrdinalIgnoreCase))
+            {
+                SetAutonomyFidelity(runtime.NpcId, AutonomyFidelityTier.Light, "previous_player_location");
+                continue;
+            }
+
+            SetAutonomyFidelity(runtime.NpcId, AutonomyFidelityTier.Light, "background");
+        }
+
+        foreach (var candidate in currentLocationCandidates
+                     .OrderByDescending(entry => entry.Score)
+                     .ThenBy(entry => entry.Npc.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var tier = currentLocationCandidates.Count <= AutonomyFullFidelityCurrentLocationSoftCap
+                || GetAutonomyFidelityTierCount(AutonomyFidelityTier.Full) < AutonomyFullFidelityCurrentLocationSoftCap
+                ? AutonomyFidelityTier.Full
+                : AutonomyFidelityTier.Light;
+            var reason = tier == AutonomyFidelityTier.Full ? candidate.Reason : "player_location_overflow";
+            SetAutonomyFidelity(candidate.Npc.Name, tier, reason);
+        }
+    }
+
+    private void SetAutonomyFidelity(string npcId, AutonomyFidelityTier tier, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(npcId))
+            return;
+
+        _autonomyFidelityTierByNpcId[npcId] = tier;
+        _autonomyFidelityReasonByNpcId[npcId] = string.IsNullOrWhiteSpace(reason) ? "unspecified" : reason;
+    }
+
+    private int GetAutonomyFidelityTierCount(AutonomyFidelityTier tier)
+    {
+        return _autonomyFidelityTierByNpcId.Values.Count(value => value == tier);
+    }
+
+    private AutonomyFidelityTier GetAutonomyFidelityTier(string npcId)
+    {
+        return !string.IsNullOrWhiteSpace(npcId) && _autonomyFidelityTierByNpcId.TryGetValue(npcId, out var tier)
+            ? tier
+            : AutonomyFidelityTier.Dormant;
+    }
+
+    private bool IsAutonomyFullFidelityNpc(string npcId)
+    {
+        return GetAutonomyFidelityTier(npcId) == AutonomyFidelityTier.Full;
+    }
+
+    private bool IsAutonomyRuntimePinnedFull(AutonomyRuntimeState runtime)
+    {
+        return !string.IsNullOrWhiteSpace(runtime.ActiveEncounterId)
+            || !string.IsNullOrWhiteSpace(runtime.EncounterLockedPartnerNpcId)
+            || _pendingVanillaEncounterResumeByNpcId.ContainsKey(runtime.NpcId)
+            || _encounterSettleRecoveryMonitorByNpcId.ContainsKey(runtime.NpcId)
+            || _vanillaEncounterResumeMonitorByNpcId.ContainsKey(runtime.NpcId)
+            || _deferredEncounterUiInterruptResumeByNpcId.ContainsKey(runtime.NpcId);
+    }
+
+    private bool IsNpcRecentlyRelevantToPlayer(NPC npc)
+    {
+        if (npc is null || string.IsNullOrWhiteSpace(npc.Name))
+            return false;
+
+        if (string.Equals(_manualNpcFollowUpName, npc.Name, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(_pendingNpcDialogueHookName, npc.Name, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(_pendingNpcGiftSelectionName, npc.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (_recentVanillaDialogueByNpcToken.Values.Any(context =>
+                DateTime.UtcNow - context.CapturedUtc <= VanillaDialogueContextMaxAge
+                && (string.Equals(context.NpcName, npc.Name, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(context.NpcDisplayName, npc.Name, StringComparison.OrdinalIgnoreCase)
+                    || (!string.IsNullOrWhiteSpace(npc.displayName)
+                        && (string.Equals(context.NpcName, npc.displayName, StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(context.NpcDisplayName, npc.displayName, StringComparison.OrdinalIgnoreCase))))))
+        {
+            return true;
+        }
+
+        return _recentGiftContextByNpcToken.Values.Any(context =>
+            DateTime.UtcNow - context.CapturedUtc <= RecentGiftContextMaxAge
+            && (string.Equals(context.NpcName, npc.Name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(context.NpcDisplayName, npc.Name, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(npc.displayName)
+                    && (string.Equals(context.NpcName, npc.displayName, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(context.NpcDisplayName, npc.displayName, StringComparison.OrdinalIgnoreCase)))));
+    }
+
+    private int ScoreAutonomyCurrentLocationPriority(NPC npc, AutonomyRuntimeState runtime)
+    {
+        var score = 1000;
+        var playerTile = Game1.player?.TilePoint ?? npc.TilePoint;
+        var distanceToPlayer = Math.Abs(npc.TilePoint.X - playerTile.X) + Math.Abs(npc.TilePoint.Y - playerTile.Y);
+        score -= distanceToPlayer * 10;
+
+        if (IsNpcRecentlyRelevantToPlayer(npc))
+            score += 400;
+        if (HasNearbyEncounterPeer(npc))
+            score += 150;
+        if (!string.IsNullOrWhiteSpace(runtime.LastEncounterPartnerNpcId)
+            && DateTime.UtcNow - runtime.LastEncounterEndedUtc <= TimeSpan.FromMinutes(15))
+        {
+            score += 100;
+        }
+
+        return score;
+    }
+
+    private bool HasNearbyEncounterPeer(NPC npc)
+    {
+        if (npc.currentLocation?.characters is null)
+            return false;
+
+        foreach (var candidate in npc.currentLocation.characters)
+        {
+            if (candidate is null
+                || string.Equals(candidate.Name, npc.Name, StringComparison.OrdinalIgnoreCase)
+                || (_npcSocialEncounterService?.IsNpcInActiveEncounter(candidate.Name) ?? false)
+                || (_faceToFaceService?.IsInStaging(candidate.Name) ?? false))
+            {
+                continue;
+            }
+
+            var distance = Math.Abs(candidate.TilePoint.X - npc.TilePoint.X) + Math.Abs(candidate.TilePoint.Y - npc.TilePoint.Y);
+            if (distance <= Math.Max(2, _config.AutonomyFaceToFaceDistanceTiles + 1))
+                return true;
+        }
+
+        return false;
+    }
+
+    private IReadOnlyList<AutonomyRuntimeState> GetOrderedAutonomyRuntimesForPass()
+    {
+        EnsureAutonomyRelevanceFresh();
+        return _autonomyRuntimeByNpcId.Values
+            .OrderBy(runtime => GetAutonomyFidelityTier(runtime.NpcId) == AutonomyFidelityTier.Full ? 0 : 1)
+            .ThenBy(runtime => runtime.NpcId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void ResetEncounterPassCountersIfNeeded()
+    {
+        if (_autonomyEncounterPassTick == _lastUpdateTick)
+            return;
+
+        _autonomyEncounterPassTick = _lastUpdateTick;
+        _autonomyEncounterStartsThisPass = 0;
+        _autonomyEncounterStartsByLocationThisPass.Clear();
+    }
+
+    private bool CanStartEncounterThisPass(string locationName)
+    {
+        ResetEncounterPassCountersIfNeeded();
+        if (_autonomyEncounterStartsThisPass >= AutonomyMaxEncounterStartsPerPass)
+            return false;
+
+        return !_autonomyEncounterStartsByLocationThisPass.TryGetValue(locationName ?? string.Empty, out var count)
+            || count < AutonomyMaxEncounterStartsPerLocationPerPass;
+    }
+
+    private void RegisterEncounterStartThisPass(string locationName)
+    {
+        ResetEncounterPassCountersIfNeeded();
+        _autonomyEncounterStartsThisPass += 1;
+        var key = locationName ?? string.Empty;
+        _autonomyEncounterStartsByLocationThisPass[key] = _autonomyEncounterStartsByLocationThisPass.TryGetValue(key, out var count)
+            ? count + 1
+            : 1;
+    }
+
+    private void RecordVisibleEncounterStarted(GameLocation? location)
+    {
+        var locationName = location?.Name ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(locationName)
+            || !string.Equals(locationName, _currentAutonomyPlayerLocationName, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _lastVisibleEncounterDay = _state.Calendar.Day;
+        _lastVisibleEncounterTimeOfDay = Game1.timeOfDay;
+        _lastVisibleEncounterLocationName = locationName;
+    }
+
+    private double ResolveEncounterApprovalChance(NPC speakerNpc)
+    {
+        var baseChance = Math.Clamp(_config.AutonomyFaceToFaceEncounterChancePct, 0, 100) / 100d;
+        var speakerLocationName = speakerNpc.currentLocation?.Name ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(speakerLocationName)
+            || !string.Equals(speakerLocationName, _currentAutonomyPlayerLocationName, StringComparison.OrdinalIgnoreCase))
+        {
+            return baseChance;
+        }
+
+        EnsureAutonomyRelevanceFresh();
+        if (!IsAutonomyFullFidelityNpc(speakerNpc.Name))
+            return baseChance;
+
+        var drySpellMinutes = Math.Max(0, DiffMinutes(_lastVisibleEncounterTimeOfDay, Game1.timeOfDay));
+        if (_lastVisibleEncounterDay != _state.Calendar.Day || drySpellMinutes < AutonomyVisibleEncounterDrySpellMinutes)
+            return baseChance;
+
+        var bonusSteps = 1 + ((drySpellMinutes - AutonomyVisibleEncounterDrySpellMinutes) / AutonomyVisibleEncounterBonusStepMinutes);
+        var bonusPercent = Math.Min(AutonomyVisibleEncounterMaxBonusPercent, bonusSteps * AutonomyVisibleEncounterBonusStepPercent);
+        return Math.Min(0.85d, baseChance + (bonusPercent / 100d));
+    }
+
+    private bool IsVisibleSocialAttemptDue(string locationName)
+    {
+        if (string.IsNullOrWhiteSpace(locationName)
+            || !_visibleSocialLastAttemptTimeByLocation.TryGetValue(locationName, out var lastAttemptTime))
+        {
+            return true;
+        }
+
+        return DiffMinutes(lastAttemptTime, Game1.timeOfDay) >= AutonomyVisibleSocialAttemptIntervalMinutes;
+    }
+
+    private void RecordVisibleSocialAttempt(string locationName)
+    {
+        if (!string.IsNullOrWhiteSpace(locationName))
+            _visibleSocialLastAttemptTimeByLocation[locationName] = Game1.timeOfDay;
+    }
+
+    private bool CanStartVisibleSocialInLocation(string locationName)
+    {
+        if (string.IsNullOrWhiteSpace(locationName))
+            return false;
+
+        return !_visibleSocialLastStartTimeByLocation.TryGetValue(locationName, out var lastStartTime)
+            || DiffMinutes(lastStartTime, Game1.timeOfDay) >= AutonomyVisibleSocialLocationWindowMinutes;
+    }
+
+    private void RecordVisibleSocialStart(string locationName, string speakerNpcId, string listenerNpcId)
+    {
+        if (string.IsNullOrWhiteSpace(locationName))
+            return;
+
+        _visibleSocialLastStartTimeByLocation[locationName] = Game1.timeOfDay;
+        _visibleSocialLastPairKeyByLocation[locationName] = MakeEncounterPairKey(speakerNpcId, listenerNpcId);
+    }
+
+    private bool IsEligibleVisibleSocialCandidate(NPC npc)
+    {
+        if (npc.currentLocation is null
+            || npc.currentLocation.IsOutdoors
+            || (_faceToFaceService?.IsInStaging(npc.Name) ?? false)
+            || (_npcSocialEncounterService?.IsNpcInActiveEncounter(npc.Name) ?? false)
+            || _pendingVanillaEncounterResumeByNpcId.ContainsKey(npc.Name)
+            || _encounterSettleRecoveryMonitorByNpcId.ContainsKey(npc.Name)
+            || _deferredEncounterUiInterruptResumeByNpcId.ContainsKey(npc.Name))
+        {
+            return false;
+        }
+
+        if (!_autonomyRuntimeByNpcId.TryGetValue(npc.Name, out var runtime))
+            return false;
+        if (DateTime.UtcNow < runtime.NextEncounterAllowedUtc)
+            return false;
+        if (_walkabilityService is null)
+            return false;
+        if (_walkabilityService.IsNearEntranceTile(npc.currentLocation, npc.TilePoint, 1)
+            || _walkabilityService.IsNpcOverlappingAnyNpc(npc, npc.currentLocation))
+        {
+            return false;
+        }
+
+        return IsScheduleCompatibleEncounterCandidate(npc, out _);
+    }
+
+    private bool TrySelectVisibleSocialPair(GameLocation location, IReadOnlyList<NPC> occupants, out NPC speakerNpc, out NPC listenerNpc)
+    {
+        speakerNpc = null!;
+        listenerNpc = null!;
+        if (_walkabilityService is null || occupants.Count < 2)
+            return false;
+
+        var playerTile = Game1.player?.TilePoint ?? Point.Zero;
+        _visibleSocialLastPairKeyByLocation.TryGetValue(location.Name ?? string.Empty, out var lastPairKey);
+        var bestScore = double.MinValue;
+
+        for (var i = 0; i < occupants.Count; i++)
+        {
+            for (var j = i + 1; j < occupants.Count; j++)
+            {
+                var first = occupants[i];
+                var second = occupants[j];
+                if (string.Equals(first.Name, second.Name, StringComparison.OrdinalIgnoreCase)
+                    || IsSamePairEncounterCoolingDown(first.Name, second.Name)
+                    || GetDailyEncounterCount(first.Name, second.Name) >= EncounterMaxPerPairPerDay
+                    || !IsWithinAutonomyTalkRange(first, second)
+                    || !_walkabilityService.HasLineOfSight(location, first.TilePoint, second.TilePoint))
+                {
+                    continue;
+                }
+
+                var pairKey = MakeEncounterPairKey(first.Name, second.Name);
+                var pairDistance = Math.Abs(first.TilePoint.X - second.TilePoint.X) + Math.Abs(first.TilePoint.Y - second.TilePoint.Y);
+                var firstDistanceToPlayer = Math.Abs(first.TilePoint.X - playerTile.X) + Math.Abs(first.TilePoint.Y - playerTile.Y);
+                var secondDistanceToPlayer = Math.Abs(second.TilePoint.X - playerTile.X) + Math.Abs(second.TilePoint.Y - playerTile.Y);
+                var score = 1000d
+                    - (pairDistance * 40d)
+                    - ((firstDistanceToPlayer + secondDistanceToPlayer) * 8d);
+
+                if (!string.IsNullOrWhiteSpace(lastPairKey) && string.Equals(lastPairKey, pairKey, StringComparison.OrdinalIgnoreCase))
+                    score -= 500d;
+
+                if (score <= bestScore)
+                    continue;
+
+                bestScore = score;
+                speakerNpc = first;
+                listenerNpc = second;
+            }
+        }
+
+        return bestScore > double.MinValue;
+    }
+
+    private double ResolveVisibleSocialApprovalChance(NPC speakerNpc)
+    {
+        var normalChance = ResolveEncounterApprovalChance(speakerNpc);
+        var crowdBaseChance = AutonomyVisibleSocialBaseChancePercent / 100d;
+        return Math.Min(0.90d, Math.Max(normalChance, crowdBaseChance));
+    }
+
+    private bool PassesVisibleSocialApprovalChance(NPC speakerNpc, NPC listenerNpc)
+    {
+        if (IsEncounterGateRejectedAtSameSpot(speakerNpc, listenerNpc))
+            return false;
+
+        var approvalChance = ResolveVisibleSocialApprovalChance(speakerNpc);
+        if (_ambientNpcRandom.NextDouble() < approvalChance)
+        {
+            ClearEncounterGateRejectedScene(speakerNpc.Name, listenerNpc.Name);
+            return true;
+        }
+
+        RememberEncounterGateRejectedScene(speakerNpc, listenerNpc);
+        LogRuntimeThrottled(
+            $"autonomy:visible-social-gate:{speakerNpc.currentLocation?.Name}:{speakerNpc.Name}:{listenerNpc.Name}",
+            TimeSpan.FromSeconds(10),
+            $"Autonomy: visible social lane skipped {speakerNpc.Name}->{listenerNpc.Name} by {(int)Math.Round(approvalChance * 100d)}% gate in {speakerNpc.currentLocation?.Name ?? "unknown"}.",
+            LogLevel.Trace);
+        return false;
+    }
+
+    private bool IsScheduleCompatibleEncounterCandidate(NPC npc, out string reason)
+    {
+        reason = string.Empty;
+
+        if (_scheduleOverrideService?.HasOverride(npc.Name) == true)
+        {
+            reason = "schedule_override";
+            return false;
+        }
+
+        if (!TryGetMemberValue(npc, "followSchedule", out var rawFollowSchedule)
+            || rawFollowSchedule is not bool followSchedule
+            || !followSchedule)
+        {
+            reason = "follow_schedule_disabled";
+            return false;
+        }
+
+        return true;
     }
 
     private void ResetAmbientNpcConversationScheduleForDay()
@@ -13754,6 +14217,9 @@ public sealed class ModEntry : Mod
         _encounterSettleRecoveryMonitorByNpcId.Clear();
         _dailyEncounterPairs.Clear();
         _encounterGateRejectedSceneByPairKey.Clear();
+        _visibleSocialLastAttemptTimeByLocation.Clear();
+        _visibleSocialLastStartTimeByLocation.Clear();
+        _visibleSocialLastPairKeyByLocation.Clear();
         _npcConversationTopicUsageTodayByKey.Clear();
         _npcSpeechBubbleService?.CancelAll();
         _pairEmotionService?.Decay(_state);
@@ -13807,6 +14273,7 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log($"Autonomy: built {_autonomyRuntimeByNpcId.Count} daily plans.", LogLevel.Debug);
+        _autonomyRelevanceDirty = true;
     }
 
     private void TryAdvanceAutonomousRoutines(UpdateTickedEventArgs e, AutonomyTickBudget budget)
@@ -13827,7 +14294,7 @@ public sealed class ModEntry : Mod
             return;
         }
 
-        var runtimes = _autonomyRuntimeByNpcId.Values.ToList();
+        var runtimes = GetOrderedAutonomyRuntimesForPass();
         if (_autonomyRuntimeCursor >= runtimes.Count)
             _autonomyRuntimeCursor = 0;
 
@@ -13974,8 +14441,18 @@ public sealed class ModEntry : Mod
         if (DateTime.UtcNow < runtime.NextEncounterAllowedUtc)
             return;
 
+        if (!IsAutonomyFullFidelityNpc(npc.Name))
+            return;
+
         var targetNpc = ResolveAutonomyTargetNpc(npc, block);
         if (targetNpc is null || !IsWithinAutonomyTalkRange(npc, targetNpc))
+            return;
+
+        if (!IsAutonomyFullFidelityNpc(targetNpc.Name))
+            return;
+
+        var encounterLocationName = npc.currentLocation?.Name ?? string.Empty;
+        if (!CanStartEncounterThisPass(encounterLocationName))
             return;
 
         if (!_npcSocialEncounterService.ShouldStartEncounter(_state, npc, targetNpc, block))
@@ -14003,6 +14480,91 @@ public sealed class ModEntry : Mod
             if (_autonomyRuntimeByNpcId.TryGetValue(targetNpc.Name, out var targetRuntime))
                 targetRuntime.EncountersToday += 1;
         }
+    }
+
+    private void TryTriggerVisibleCrowdedLocationSocial(UpdateTickedEventArgs e, AutonomyTickBudget budget)
+    {
+        if (!_config.EnableAutonomousRoutines
+            || !e.IsMultipleOf(30)
+            || budget.IsExhausted
+            || _npcSocialEncounterService is null
+            || _faceToFaceService is null)
+        {
+            return;
+        }
+
+        var location = Game1.player?.currentLocation ?? Game1.currentLocation;
+        if (location is null || location.IsOutdoors)
+            return;
+
+        var locationName = location.Name ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(locationName))
+            return;
+
+        if (_npcSocialEncounterService.GetActiveEncounters().Any(encounter =>
+                string.Equals(encounter.LocationId, locationName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        if (!IsVisibleSocialAttemptDue(locationName))
+            return;
+
+        var occupants = location.characters
+            .Where(character => character is not null)
+            .Cast<NPC>()
+            .Where(IsEligibleVisibleSocialCandidate)
+            .ToList();
+        RecordVisibleSocialAttempt(locationName);
+        if (occupants.Count < AutonomyVisibleSocialCrowdThreshold)
+            return;
+
+        if (!CanStartVisibleSocialInLocation(locationName))
+            return;
+
+        if (!TrySelectVisibleSocialPair(location, occupants, out var speakerNpc, out var listenerNpc))
+            return;
+
+        if (!_autonomyRuntimeByNpcId.TryGetValue(speakerNpc.Name, out var speakerRuntime)
+            || !_autonomyRuntimeByNpcId.TryGetValue(listenerNpc.Name, out var listenerRuntime))
+        {
+            return;
+        }
+
+        var block = new AutonomyPlanBlock
+        {
+            BlockId = $"{speakerNpc.Name}:visible_social:{Game1.timeOfDay}",
+            Type = AutonomyPlanBlockType.Socialize,
+            TargetLocation = locationName,
+            TargetNpcId = listenerNpc.Name,
+            TargetSpotRole = "visible_chat_node",
+            TargetZoneId = string.Empty,
+            StartTime = Game1.timeOfDay,
+            EndTime = AddMinutes(Game1.timeOfDay, 20),
+            Reason = "player-visible crowded location social"
+        };
+
+        if (!_npcSocialEncounterService.ShouldStartEncounter(_state, speakerNpc, listenerNpc, block))
+            return;
+
+        if (!PassesVisibleSocialApprovalChance(speakerNpc, listenerNpc))
+            return;
+
+        if (!TryStartAutonomyEncounter(speakerRuntime, speakerNpc, listenerNpc, block, allowVisibleSocialOverride: true))
+            return;
+
+        speakerRuntime.NextEncounterAllowedUtc = DateTime.UtcNow.AddSeconds(ResolveEncounterCooldownSeconds());
+        listenerRuntime.NextEncounterAllowedUtc = speakerRuntime.NextEncounterAllowedUtc;
+        speakerRuntime.EncountersToday += 1;
+        listenerRuntime.EncountersToday += 1;
+        _state.Telemetry.Daily.EncountersStarted += 1;
+        _state.Telemetry.Daily.EncountersOpportunistic += 1;
+        RecordVisibleSocialStart(locationName, speakerNpc.Name, listenerNpc.Name);
+        LogRuntimeThrottled(
+            $"autonomy:visible-social-start:{locationName}",
+            TimeSpan.FromSeconds(10),
+            $"Autonomy: visible social lane started {speakerNpc.Name}->{listenerNpc.Name} in {locationName} (crowd={occupants.Count}, dry_spell_min={Math.Max(0, DiffMinutes(_lastVisibleEncounterTimeOfDay, Game1.timeOfDay))}).",
+            LogLevel.Debug);
     }
 
     private void ProcessAmbientIndoorAutonomyChatterLocation(GameLocation location)
@@ -14035,6 +14597,13 @@ public sealed class ModEntry : Mod
         {
             return;
         }
+
+        if (!IsAutonomyFullFidelityNpc(speakerNpc.Name) || !IsAutonomyFullFidelityNpc(listenerNpc.Name))
+            return;
+
+        var encounterLocationName = location.Name ?? string.Empty;
+        if (!CanStartEncounterThisPass(encounterLocationName))
+            return;
 
         if (IsSamePairEncounterCoolingDown(speakerNpc.Name, listenerNpc.Name)
             || GetDailyEncounterCount(speakerNpc.Name, listenerNpc.Name) >= EncounterMaxPerPairPerDay)
@@ -14105,6 +14674,8 @@ public sealed class ModEntry : Mod
         if (!_autonomyRuntimeByNpcId.TryGetValue(npc.Name, out var runtime))
             return false;
         if (DateTime.UtcNow < runtime.NextEncounterAllowedUtc)
+            return false;
+        if (!IsAutonomyFullFidelityNpc(npc.Name))
             return false;
         return !_walkabilityService!.IsNearWarpTile(npc.currentLocation, new Point((int)npc.Tile.X, (int)npc.Tile.Y), 1);
     }
@@ -14390,7 +14961,7 @@ public sealed class ModEntry : Mod
         if (IsEncounterGateRejectedAtSameSpot(speakerNpc, listenerNpc))
             return false;
 
-        var approvalChance = Math.Clamp(_config.AutonomyFaceToFaceEncounterChancePct, 0, 100) / 100d;
+        var approvalChance = ResolveEncounterApprovalChance(speakerNpc);
         if (_ambientNpcRandom.NextDouble() < approvalChance)
         {
             ClearEncounterGateRejectedScene(speakerNpc.Name, listenerNpc.Name);
@@ -14604,7 +15175,7 @@ public sealed class ModEntry : Mod
         return false;
     }
 
-    private bool TryStartAutonomyEncounter(AutonomyRuntimeState runtime, NPC speakerNpc, NPC listenerNpc, AutonomyPlanBlock block)
+    private bool TryStartAutonomyEncounter(AutonomyRuntimeState runtime, NPC speakerNpc, NPC listenerNpc, AutonomyPlanBlock block, bool allowVisibleSocialOverride = false)
     {
         var speakerLocation = speakerNpc.currentLocation;
         if (_npcSocialEncounterService is null
@@ -14663,17 +15234,37 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        if (!IsVanillaDrivenEncounterCandidate(speakerNpc, runtime, block, out var speakerGateReason))
+        if (allowVisibleSocialOverride)
         {
-            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked because speaker is not vanilla-driven ({speakerGateReason}).", LogLevel.Trace);
-            return false;
+            if (!IsScheduleCompatibleEncounterCandidate(speakerNpc, out var speakerGateReason))
+            {
+                Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked because speaker is not schedule-compatible ({speakerGateReason}).", LogLevel.Trace);
+                return false;
+            }
+
+            if (!IsScheduleCompatibleEncounterCandidate(listenerNpc, out var listenerGateReason))
+            {
+                Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked because listener is not schedule-compatible ({listenerGateReason}).", LogLevel.Trace);
+                return false;
+            }
+        }
+        else
+        {
+            if (!IsVanillaDrivenEncounterCandidate(speakerNpc, runtime, block, out var speakerGateReason))
+            {
+                Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked because speaker is not vanilla-driven ({speakerGateReason}).", LogLevel.Trace);
+                return false;
+            }
         }
 
         _autonomyRuntimeByNpcId.TryGetValue(listenerNpc.Name, out var listenerEncounterRuntime);
-        if (!IsVanillaDrivenEncounterCandidate(listenerNpc, listenerEncounterRuntime, currentBlock: null, out var listenerGateReason))
+        if (!allowVisibleSocialOverride)
         {
-            Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked because listener is not vanilla-driven ({listenerGateReason}).", LogLevel.Trace);
-            return false;
+            if (!IsVanillaDrivenEncounterCandidate(listenerNpc, listenerEncounterRuntime, currentBlock: null, out var listenerGateReason))
+            {
+                Monitor.Log($"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} blocked because listener is not vanilla-driven ({listenerGateReason}).", LogLevel.Trace);
+                return false;
+            }
         }
 
         // ShouldStartEncounter already validated via ScoreEncounter(). Use the same scoring
@@ -14707,6 +15298,9 @@ public sealed class ModEntry : Mod
             listenerEncounterRuntime.ActiveEncounterId = encounter.EncounterId;
             listenerEncounterRuntime.EncounterLockedPartnerNpcId = speakerNpc.Name;
         }
+        RegisterEncounterStartThisPass(speakerLocation.Name ?? string.Empty);
+        RecordVisibleEncounterStarted(speakerLocation);
+        _autonomyRelevanceDirty = true;
 
         // Launch Player2-powered conversation if available; otherwise template dialogue takes over in TryAdvanceAutonomyEncounterStates
         if (_config.EnablePlayer2
@@ -15803,6 +16397,8 @@ public sealed class ModEntry : Mod
                 activeRuntime.EncounterLockedPartnerNpcId = null;
             }
         }
+
+        _autonomyRelevanceDirty = true;
     }
 
     private EncounterConversationStreamState GetOrCreateEncounterConversationStreamState(string encounterId)
@@ -20634,8 +21230,23 @@ public sealed class ModEntry : Mod
             return;
         }
 
+        EnsureAutonomyRelevanceFresh(force: true);
+        var fullCount = GetAutonomyFidelityTierCount(AutonomyFidelityTier.Full);
+        var lightCount = GetAutonomyFidelityTierCount(AutonomyFidelityTier.Light);
+        var dormantCount = GetAutonomyFidelityTierCount(AutonomyFidelityTier.Dormant);
+        var visibleDrySpellMinutes = _lastVisibleEncounterDay == _state.Calendar.Day
+            ? Math.Max(0, DiffMinutes(_lastVisibleEncounterTimeOfDay, Game1.timeOfDay))
+            : Math.Max(0, DiffMinutes(900, Game1.timeOfDay));
+        var visibleLocation = Game1.player?.currentLocation ?? Game1.currentLocation;
+        var visibleLocationName = visibleLocation?.Name ?? string.Empty;
+        var visibleCrowdCount = visibleLocation?.characters?.Count(character => character is NPC npc && IsEligibleVisibleSocialCandidate(npc)) ?? 0;
+        var visibleSocialWindowOpen = CanStartVisibleSocialInLocation(visibleLocationName);
+
         Monitor.Log(
             $"Autonomy perf | budget_ms_last={_autonomyPerf.TotalBudgetMillisecondsLastTick.ToString("0.00", CultureInfo.InvariantCulture)} resumes_last={_autonomyPerf.ResumeProcessedLastTick}/{_autonomyPerf.ResumeDeferredLastTick} resume_ms_last={_autonomyPerf.ResumeMillisecondsLastTick.ToString("0.00", CultureInfo.InvariantCulture)} runtimes_last={_autonomyPerf.RuntimeProcessedLastTick}/{_autonomyPerf.RuntimeDeferredLastTick} runtime_ms_last={_autonomyPerf.RuntimeMillisecondsLastTick.ToString("0.00", CultureInfo.InvariantCulture)} chatter_last={_autonomyPerf.ChatterLocationsProcessedLastTick}/{_autonomyPerf.ChatterLocationsDeferredLastTick} chatter_ms_last={_autonomyPerf.ChatterMillisecondsLastTick.ToString("0.00", CultureInfo.InvariantCulture)} budget_exhaustions_last={_autonomyPerf.BudgetExhaustionsLastTick} detour_cache_last={_autonomyPerf.DetourCacheHitsLastTick}/{_autonomyPerf.DetourCacheMissesLastTick} resumes_total={_autonomyPerf.ResumeProcessedTotal}/{_autonomyPerf.ResumeDeferredTotal} runtimes_total={_autonomyPerf.RuntimeProcessedTotal}/{_autonomyPerf.RuntimeDeferredTotal} chatter_total={_autonomyPerf.ChatterLocationsProcessedTotal}/{_autonomyPerf.ChatterLocationsDeferredTotal} budget_exhaustions_total={_autonomyPerf.BudgetExhaustionsTotal} detour_cache_total={_autonomyPerf.DetourCacheHitsTotal}/{_autonomyPerf.DetourCacheMissesTotal}",
+            LogLevel.Info);
+        Monitor.Log(
+            $"Autonomy relevance | full={fullCount} light={lightCount} dormant={dormantCount} player_loc={DescribeText(_currentAutonomyPlayerLocationName)} prev_loc={DescribeText(_previousAutonomyPlayerLocationName)} visible_dry_spell_min={visibleDrySpellMinutes} last_visible_loc={DescribeText(_lastVisibleEncounterLocationName)} visible_crowd={visibleCrowdCount} visible_window_open={visibleSocialWindowOpen}",
             LogLevel.Info);
 
         foreach (var runtime in _autonomyRuntimeByNpcId.Values.OrderBy(value => value.NpcId, StringComparer.OrdinalIgnoreCase))
@@ -20652,9 +21263,11 @@ public sealed class ModEntry : Mod
                 ? $"pos={npc.currentLocation?.Name ?? "?"}@({npc.TilePoint.X},{npc.TilePoint.Y})"
                 : "pos=unloaded";
             var tileInfo = block is not null ? $"tile=({block.TargetTile.X},{block.TargetTile.Y})" : "tile=n/a";
+            var fidelityTier = GetAutonomyFidelityTier(runtime.NpcId);
+            var fidelityReason = _autonomyFidelityReasonByNpcId.TryGetValue(runtime.NpcId, out var reason) ? reason : "unknown";
 
             Monitor.Log(
-                $"Autonomy | npc={runtime.NpcId} {posInfo} {tileInfo} status={runtime.OverrideStatus} block={(block?.Type.ToString() ?? "none")} targetLoc='{runtime.CurrentTargetLocation}' targetNpc='{runtime.CurrentTargetNpcId}' completed={runtime.CompletedBlocksToday} failed={runtime.FailedBlocksToday} replans={runtime.ReplanCount}",
+                $"Autonomy | npc={runtime.NpcId} {posInfo} {tileInfo} tier={fidelityTier} tier_reason={fidelityReason} status={runtime.OverrideStatus} block={(block?.Type.ToString() ?? "none")} targetLoc='{runtime.CurrentTargetLocation}' targetNpc='{runtime.CurrentTargetNpcId}' completed={runtime.CompletedBlocksToday} failed={runtime.FailedBlocksToday} replans={runtime.ReplanCount}",
                 LogLevel.Info);
         }
     }
