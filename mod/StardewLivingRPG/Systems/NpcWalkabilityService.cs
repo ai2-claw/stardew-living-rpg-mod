@@ -42,10 +42,9 @@ public sealed class NpcWalkabilityService
         if (backLayer?.Tiles[tile.X, tile.Y] is null)
             return false;
 
-        var buildingsLayer = location.Map.GetLayer("Buildings");
-        if (location.IsOutdoors && buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
+        if (HasImpassableBuildingsTile(location, tile))
         {
-            blockerDescription = "outdoor_buildings_layer";
+            blockerDescription = "buildings_layer";
             return false;
         }
 
@@ -151,8 +150,7 @@ public sealed class NpcWalkabilityService
         if (backLayer?.Tiles[tile.X, tile.Y] is null)
             return false;
 
-        var buildingsLayer = location.Map.GetLayer("Buildings");
-        if (location.IsOutdoors && buildingsLayer?.Tiles[tile.X, tile.Y] is not null)
+        if (HasImpassableBuildingsTile(location, tile))
             return false;
 
         var tileLocation = new xTile.Dimensions.Location(tile.X * TileSize, tile.Y * TileSize);
@@ -360,6 +358,30 @@ public sealed class NpcWalkabilityService
         return !string.IsNullOrWhiteSpace(location.doesTileHaveProperty(tile.X, tile.Y, "NoPath", layerName))
             || string.Equals(location.doesTileHaveProperty(tile.X, tile.Y, "NPCBarrier", layerName), "T", StringComparison.OrdinalIgnoreCase)
             || string.Equals(location.doesTileHaveProperty(tile.X, tile.Y, "TouchAction", layerName), "Door", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasImpassableBuildingsTile(GameLocation location, Point tile)
+    {
+        var buildingsLayer = location.Map?.GetLayer("Buildings");
+        if (buildingsLayer is null
+            || tile.X < 0
+            || tile.Y < 0
+            || tile.X >= buildingsLayer.LayerWidth
+            || tile.Y >= buildingsLayer.LayerHeight)
+        {
+            return false;
+        }
+
+        var buildingsTile = buildingsLayer.Tiles[tile.X, tile.Y];
+        var hasTileIndexPassable = buildingsTile is not null
+            && buildingsTile.TileIndexProperties.TryGetValue("Passable", out var tileIndexPassable)
+            && string.Equals(tileIndexPassable?.ToString(), "T", StringComparison.OrdinalIgnoreCase);
+        return buildingsTile is not null
+            && !hasTileIndexPassable
+            && !string.Equals(
+                location.doesTileHaveProperty(tile.X, tile.Y, "Passable", "Buildings"),
+                "T",
+                StringComparison.OrdinalIgnoreCase);
     }
 
     public bool HasLineOfSight(GameLocation? location, Point tileA, Point tileB)
