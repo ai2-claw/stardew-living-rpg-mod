@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## Upcoming Patch Notes (Unreleased)
+
+### Changed
+- Background NPC chats now stay offscreen when the player cannot see them. Villagers can still spread rumors, remember what was said, and shape town gossip, but invisible conversations should no longer spend as much time acting like full on-screen scenes.
+- Offscreen social encounters now happen less often, so more of the town's social activity budget is saved for encounters the player can actually witness.
+- Crowded indoor spots such as the Saloon are more likely to feel socially alive again, and smaller indoor spaces like the Seed Shop can now trigger visible social moments with as few as two eligible villagers nearby.
+- Encounter topic variety has been loosened up so the newspaper headline does not dominate as many face-to-face chats in a row.
+
+### Fixed
+- Villagers are better at recovering from post-encounter pathing mistakes by replanning from where they are now instead of stubbornly clinging to an old failed route.
+- Several cases where villagers got stranded at doorways, warp spots, or intermediate detour waypoints should now recover more naturally instead of giving up immediately.
+- Face-to-face chats are less likely to repeat the exact same line or question again in the same encounter.
+- Background autonomy work has been trimmed further so bad detour cases and failed route retries should create less hitching during play.
+
 ## 1.0.4 - 2026-03-28
 
 ### Changed

@@ -115,6 +115,11 @@ public sealed class ModEntry : Mod
     private const int EncounterVanillaResumeFallbackLegRetryLimit = 1;
     private const int EncounterVanillaResumeFallbackRepathLimit = 2;
     private const int EncounterVanillaResumeFailedRestartRetryTicks = 300;
+    private const int EncounterWaypointReplanRetryTicks = 60;
+    private const int EncounterWaypointReplanRetryLimit = 3;
+    private const int EncounterStationaryResumeRetryTicksShort = 60;
+    private const int EncounterStationaryResumeRetryTicksMedium = 120;
+    private const int EncounterStationaryResumeRetryTicksLong = 300;
     private const int EncounterSameMapWaypointHopLimit = 12;
     private const int EncounterVanillaResumeFallbackMaxLegTiles = 4;
     private const int EncounterDetourPreferredWaypointLookahead = 6;
@@ -139,6 +144,9 @@ public sealed class ModEntry : Mod
     private const int AutonomyVisibleSocialAttemptIntervalMinutes = 10;
     private const int AutonomyVisibleSocialLocationWindowMinutes = 20;
     private const int AutonomyVisibleSocialBaseChancePercent = 55;
+    private const double AutonomyOffscreenEncounterChanceMultiplier = 0.5d;
+    private const int EncounterCrossMapProgressLogMinTileDistance = 6;
+    private const int EncounterCrossMapProgressLogIntervalTicks = 30;
     private const int AutonomyMaxEncounterStartsPerPass = 2;
     private const int AutonomyMaxEncounterStartsPerLocationPerPass = 1;
     private const int AutonomyResumeMaxNpcsPerTick = 2;
@@ -662,6 +670,17 @@ public sealed class ModEntry : Mod
         public string LastFailedDetourSignature { get; set; } = string.Empty;
         public string LastFailedDetourSummary { get; set; } = string.Empty;
         public int RepeatedFailedDetourSkipCount { get; set; }
+        public ulong NextWaypointReplanTick { get; set; }
+        public int WaypointReplanRetryCount { get; set; }
+        public string LastStationaryResumeFailureSignature { get; set; } = string.Empty;
+        public int StationaryResumeFailureCount { get; set; }
+        public ulong NextStationaryResumeRetryTick { get; set; }
+        public bool FallbackCurrentTargetIsRecoveryNudge { get; set; }
+        public Point? LastRecoveryNudgeTile { get; set; }
+        public Point? PreviousRecoveryNudgeTile { get; set; }
+        public HashSet<string> VisitedRecoveryNudgeTiles { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Point? LastProgressLogTile { get; set; }
+        public string LastProgressLogLocation { get; set; } = string.Empty;
     }
 
     private sealed class DetourWaypointSelectionStats
@@ -671,6 +690,25 @@ public sealed class ModEntry : Mod
         public int NoControllerCount { get; set; }
         public int BlockedVanillaPathCount { get; set; }
         public int WindowsTried { get; set; }
+    }
+
+    private enum EncounterBlockedProgressAxis
+    {
+        None,
+        X,
+        Y
+    }
+
+    private sealed class EncounterIntermediateTargetScore
+    {
+        public int BlockedAxisPenalty { get; init; }
+        public int LateralPenalty { get; init; }
+        public int SameLinePenalty { get; init; }
+        public int ClearancePenalty { get; init; }
+        public int TargetProgressPenalty { get; init; }
+        public int DistanceToTarget { get; init; }
+        public int DistanceFromCurrent { get; init; }
+        public string SelectionReason { get; init; } = "target_progress";
     }
 
     private sealed class AutonomyFidelityCandidate
@@ -15183,7 +15221,7 @@ public sealed class ModEntry : Mod
         if (IsEncounterGateRejectedAtSameSpot(speakerNpc, listenerNpc))
             return false;
 
-        var approvalChance = ResolveEncounterApprovalChance(speakerNpc);
+        var approvalChance = ResolveOrdinaryAutonomyEncounterApprovalChance(speakerNpc);
         if (_ambientNpcRandom.NextDouble() < approvalChance)
         {
             ClearEncounterGateRejectedScene(speakerNpc.Name, listenerNpc.Name);
@@ -15196,6 +15234,16 @@ public sealed class ModEntry : Mod
             $"Autonomy: {speakerNpc.Name}->{listenerNpc.Name} skipped by {(int)Math.Round(approvalChance * 100d)}% encounter gate (block={blockType}).",
             LogLevel.Trace);
         return false;
+    }
+
+    private double ResolveOrdinaryAutonomyEncounterApprovalChance(NPC speakerNpc)
+    {
+        var approvalChance = ResolveEncounterApprovalChance(speakerNpc);
+        var speakerLocation = speakerNpc.currentLocation;
+        if (speakerLocation is not null && !IsEncounterVisibleToPlayer(speakerLocation))
+            approvalChance *= AutonomyOffscreenEncounterChanceMultiplier;
+
+        return Math.Clamp(approvalChance, 0d, 1d);
     }
 
     private bool IsEncounterGateRejectedAtSameSpot(NPC firstNpc, NPC secondNpc)
@@ -17702,12 +17750,18 @@ public sealed class ModEntry : Mod
             pending.LastRejectedResumeTimeOfDay = null;
             pending.LastRejectedResumeReason = string.Empty;
             pending.RejectedResumeCountForCurrentSlot = 0;
+            pending.LastStationaryResumeFailureSignature = string.Empty;
+            pending.StationaryResumeFailureCount = 0;
+            pending.NextStationaryResumeRetryTick = 0;
             pending.FailedResolutionTargets.Clear();
             pending.VisitedSameMapWaypoints.Clear();
+            pending.VisitedRecoveryNudgeTiles.Clear();
             pending.FailedDetourSignatures.Clear();
             pending.LastFailedDetourSignature = string.Empty;
             pending.LastFailedDetourSummary = string.Empty;
             pending.RepeatedFailedDetourSkipCount = 0;
+            pending.LastRecoveryNudgeTile = null;
+            pending.PreviousRecoveryNudgeTile = null;
         }
 
         pending.ArrivalRebindInvoked = false;
@@ -17830,6 +17884,16 @@ public sealed class ModEntry : Mod
     {
         var shouldLogRejection = pending.LastRejectedResumeTimeOfDay != Game1.timeOfDay
             || !string.Equals(pending.LastRejectedResumeReason, mismatchReason, StringComparison.Ordinal);
+        var stationaryFailureTarget = expectedLegTile
+            ?? pending.FallbackLegDepartureTile
+            ?? pending.ActiveArrivalTile
+            ?? pending.ActiveTargetTile;
+        var stationaryFailureSignature = BuildEncounterResumeStationaryFailureSignature(
+            pending.FallbackMode == EncounterFallbackMode.CrossMapLeg ? "cross_map_invalid_resume" : "same_map_invalid_resume",
+            npc,
+            pending,
+            stationaryFailureTarget,
+            mismatchReason);
 
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
@@ -17838,10 +17902,19 @@ public sealed class ModEntry : Mod
         ClearEncounterMovementBlockingState(npc);
 
         object? fallbackController = null;
-        var restartedFallback = pending.ActiveScheduleTime.HasValue
-            && TryForcePathToActiveScheduleEntry(npc, pending, currentTick, false, out fallbackController);
+        var suppressedRestart = IsEncounterResumeStationaryFailureActive(pending, stationaryFailureSignature, currentTick);
+        var restartedFallback = false;
+        if (!suppressedRestart)
+        {
+            restartedFallback = pending.ActiveScheduleTime.HasValue
+                && TryForcePathToActiveScheduleEntry(npc, pending, currentTick, false, out fallbackController);
+        }
+
         if (restartedFallback)
+        {
             SetTemporaryActiveSlotFallback(pending, fallbackController);
+            ClearEncounterResumeStationaryFailure(pending);
+        }
 
         if (shouldLogRejection)
         {
@@ -17852,7 +17925,7 @@ public sealed class ModEntry : Mod
             LogRuntimeThrottled(
                 $"autonomy:invalid-resume:{npc.Name}:{pending.EncounterId}",
                 TimeSpan.FromSeconds(20),
-                $"Autonomy: rejected invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                $"Autonomy: rejected invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, restarted_fallback={restartedFallback}, restart_suppressed={suppressedRestart}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
                 LogLevel.Debug);
         }
         else
@@ -17860,13 +17933,29 @@ public sealed class ModEntry : Mod
             LogRuntimeThrottled(
                 $"autonomy:invalid-resume-repeat:{npc.Name}:{pending.EncounterId}",
                 TimeSpan.FromSeconds(20),
-                $"Autonomy: reapplied ownership over repeat invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                $"Autonomy: reapplied ownership over repeat invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, restarted_fallback={restartedFallback}, restart_suppressed={suppressedRestart}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
                 LogLevel.Trace);
         }
 
-        pending.NextAttemptTick = restartedFallback
-            ? currentTick + 1
-            : currentTick + EncounterVanillaResumeFailedRestartRetryTicks;
+        if (restartedFallback)
+        {
+            pending.NextAttemptTick = currentTick + 1;
+        }
+        else
+        {
+            var nextRetryTick = RegisterEncounterResumeStationaryFailure(pending, stationaryFailureSignature, currentTick);
+            pending.NextAttemptTick = nextRetryTick;
+
+            if (suppressedRestart)
+            {
+                LogRuntimeThrottled(
+                    $"autonomy:invalid-resume-restart-suppressed:{npc.Name}:{pending.EncounterId}",
+                    TimeSpan.FromSeconds(15),
+                    $"Autonomy: suppressed unchanged invalid-resume restart for {npc.Name} after encounter {pending.EncounterId} while still at tile {DescribeNullablePoint(npc.TilePoint)} toward target {DescribeNullablePoint(stationaryFailureTarget)}; retrying at tick={pending.NextAttemptTick}.",
+                    LogLevel.Trace);
+            }
+        }
+
         return true;
     }
 
@@ -17986,7 +18075,7 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        return TryResolveCrossMapLegDepartureTile(npc, pending, segment.DepartureTile, out _, out expectedLegTile);
+        return TryResolveCrossMapLegDepartureTile(npc, pending, segment.DepartureTile, out _, out expectedLegTile, out _);
     }
 
     private static bool TryGetCurrentResumeEndpoint(NPC npc, out Point endpoint)
@@ -19374,7 +19463,8 @@ public sealed class ModEntry : Mod
                 arrivalTile,
                 4,
                 excludedTile: null,
-                out var movementTarget))
+                out var movementTarget,
+                out var movementTargetIsRecoveryNudge))
         {
             pending.FailedResolutionTargets.Add(targetKey);
             Monitor.Log(
@@ -19397,6 +19487,7 @@ public sealed class ModEntry : Mod
         pending.FallbackLastObservedTile = npc.TilePoint;
         pending.FallbackLastProgressTick = currentTick;
         pending.FallbackRepathCount = 0;
+        pending.FallbackCurrentTargetIsRecoveryNudge = movementTargetIsRecoveryNudge;
         pending.UsedTemporaryActiveSlotFallback = true;
 
         if (!TryActivateEncounterResumePath(
@@ -19415,12 +19506,16 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        var pathMode = movementTarget == arrivalTile ? "vanilla_exact_target" : "vanilla_approach_target";
+        var pathMode = movementTarget == arrivalTile
+            ? "vanilla_exact_target"
+            : movementTargetIsRecoveryNudge ? "vanilla_recovery_nudge" : "vanilla_approach_target";
         pending.FallbackCurrentLegTarget = movementTarget;
-        if (movementTarget != arrivalTile)
+        if (movementTargetIsRecoveryNudge)
+            RecordEncounterResumeRecoveryNudge(pending, targetLocation.Name ?? string.Empty, movementTarget);
+        else if (movementTarget != arrivalTile)
             pending.VisitedSameMapWaypoints.Add(movementTarget);
         Monitor.Log(
-            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (path_mode={pathMode}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, target_tile={DescribeNullablePoint(targetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(movementTarget)}, target_kind={(movementTarget == arrivalTile ? "final_slot" : "intermediate_waypoint")}, path_length={pathLength}, time={Game1.timeOfDay}).",
+            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (path_mode={pathMode}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, target_tile={DescribeNullablePoint(targetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(movementTarget)}, target_kind={(movementTarget == arrivalTile ? "final_slot" : movementTargetIsRecoveryNudge ? "recovery_nudge" : "intermediate_waypoint")}, path_length={pathLength}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         return true;
     }
@@ -19444,7 +19539,7 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        if (!TryResolveCrossMapLegDepartureTile(npc, pending, segment.DepartureTile, out var departureTile, out var approachTile))
+        if (!TryResolveCrossMapLegDepartureTile(npc, pending, segment.DepartureTile, out var departureTile, out var approachTile, out var approachTileIsRecoveryNudge))
         {
             Monitor.Log(
                 $"Autonomy: [CrossMapLeg(start)] {npc.Name} could not resolve departure tile {DescribeNullablePoint(segment.DepartureTile)} on {npc.currentLocation.Name} for leg to {segment.ToLocationId}.",
@@ -19468,6 +19563,7 @@ public sealed class ModEntry : Mod
         pending.FallbackLegArrivalTile = arrivalTile;
         pending.FallbackLegArrivalTileResolved = arrivalTileResolved;
         pending.FallbackCurrentLegTarget = approachTile;
+        pending.FallbackCurrentTargetIsRecoveryNudge = approachTileIsRecoveryNudge;
         pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
         pending.FallbackLastObservedTile = npc.TilePoint;
         pending.FallbackLastProgressTick = currentTick;
@@ -19513,8 +19609,11 @@ public sealed class ModEntry : Mod
 
             pathMode = approachTile == departureTile
                 ? "vanilla_exact_target"
-                : "vanilla_approach_target";
+                : approachTileIsRecoveryNudge ? "vanilla_recovery_nudge" : "vanilla_approach_target";
         }
+
+        if (approachTileIsRecoveryNudge)
+            RecordEncounterResumeRecoveryNudge(pending, npc.currentLocation.Name ?? string.Empty, approachTile);
 
         Monitor.Log(
             $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} arrival_resolved={pending.FallbackLegArrivalTileResolved} path_mode={pathMode} path_length={pathLength} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)} time={Game1.timeOfDay}.",
@@ -19532,6 +19631,9 @@ public sealed class ModEntry : Mod
 
         UpdateFallbackProgressObservation(npc, pending, currentTick);
 
+        if (IsEncounterWaypointReplanBackoffActive(pending, currentTick))
+            return;
+
         if (pending.ActiveTargetTile.HasValue
             && HasReachedSameMapFallbackWaypoint(npc, pending))
         {
@@ -19539,11 +19641,16 @@ public sealed class ModEntry : Mod
             if (!previousWaypoint.HasValue)
                 return;
 
-            pending.PreviousReachedSameMapWaypoint = pending.LastReachedSameMapWaypoint;
-            pending.LastReachedSameMapWaypoint = previousWaypoint;
-            pending.SameMapWaypointHopCount += 1;
+            var reachedRecoveryNudge = pending.FallbackCurrentTargetIsRecoveryNudge;
+            if (!reachedRecoveryNudge)
+            {
+                pending.PreviousReachedSameMapWaypoint = pending.LastReachedSameMapWaypoint;
+                pending.LastReachedSameMapWaypoint = previousWaypoint;
+                pending.SameMapWaypointHopCount += 1;
+            }
+            pending.FallbackCurrentTargetIsRecoveryNudge = false;
 
-            if (pending.SameMapWaypointHopCount > EncounterSameMapWaypointHopLimit)
+            if (!reachedRecoveryNudge && pending.SameMapWaypointHopCount > EncounterSameMapWaypointHopLimit)
             {
                 LogRuntimeThrottled(
                     $"autonomy:same-map-waypoint-hop-limit:{npc.Name}:{pending.EncounterId}",
@@ -19567,7 +19674,8 @@ public sealed class ModEntry : Mod
                     arrivalTile,
                     4,
                     previousWaypoint,
-                    out nextMovementTarget)
+                    out nextMovementTarget,
+                    out var nextMovementTargetIsRecoveryNudge)
                 && TryActivateEncounterResumePath(
                     npc,
                     pending,
@@ -19579,18 +19687,21 @@ public sealed class ModEntry : Mod
             {
                 pending.FallbackSameMapApproachTile = nextMovementTarget;
                 pending.FallbackCurrentLegTarget = nextMovementTarget;
+                pending.FallbackCurrentTargetIsRecoveryNudge = nextMovementTargetIsRecoveryNudge;
                 pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
                 pending.FallbackLastObservedTile = npc.TilePoint;
                 pending.FallbackLastProgressTick = currentTick;
-                if (nextMovementTarget != arrivalTile)
+                if (nextMovementTargetIsRecoveryNudge)
+                    RecordEncounterResumeRecoveryNudge(pending, npc.currentLocation.Name ?? string.Empty, nextMovementTarget);
+                else if (nextMovementTarget != arrivalTile)
                     pending.VisitedSameMapWaypoints.Add(nextMovementTarget);
                 var nextPathMode = nextMovementTarget == arrivalTile
                     ? "vanilla_exact_target"
-                    : "vanilla_approach_target";
+                    : nextMovementTargetIsRecoveryNudge ? "vanilla_recovery_nudge" : "vanilla_approach_target";
                 LogRuntimeThrottled(
                     $"autonomy:same-map-waypoint-advance:{npc.Name}:{pending.EncounterId}",
                     TimeSpan.FromSeconds(5),
-                    $"Autonomy: [FORCE_PATH] {npc.Name} replanned same-map active-slot fallback after reaching waypoint {DescribeNullablePoint(previousWaypoint)} from current_tile={DescribeNullablePoint(npc.TilePoint)} (path_mode={nextPathMode}, target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(nextMovementTarget)}, target_kind={(nextMovementTarget == arrivalTile ? "final_slot" : "intermediate_waypoint")}, path_length={nextPathLength}).",
+                    $"Autonomy: [FORCE_PATH] {npc.Name} replanned same-map active-slot fallback after reaching {(reachedRecoveryNudge ? "recovery nudge" : "waypoint")} {DescribeNullablePoint(previousWaypoint)} from current_tile={DescribeNullablePoint(npc.TilePoint)} (path_mode={nextPathMode}, target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(nextMovementTarget)}, target_kind={(nextMovementTarget == arrivalTile ? "final_slot" : nextMovementTargetIsRecoveryNudge ? "recovery_nudge" : "intermediate_waypoint")}, path_length={nextPathLength}).",
                     LogLevel.Trace);
                 return;
             }
@@ -19598,12 +19709,31 @@ public sealed class ModEntry : Mod
             pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
             pending.FallbackLastObservedTile = npc.TilePoint;
             pending.FallbackLastProgressTick = currentTick;
+            if (!ScheduleEncounterWaypointReplanRetry(pending, currentTick))
+            {
+                RegisterEncounterResumeStationaryFailure(
+                    pending,
+                    BuildEncounterResumeStationaryFailureSignature(
+                        "same_map_waypoint_exhausted",
+                        npc,
+                        pending,
+                        pending.ActiveTargetTile,
+                        $"after:{DescribeNullablePoint(previousWaypoint)}"),
+                    currentTick);
+                LogRuntimeThrottled(
+                    $"autonomy:same-map-waypoint-cycle:{npc.Name}:{pending.EncounterId}",
+                    TimeSpan.FromSeconds(20),
+                    $"Autonomy: [FORCE_PATH] {npc.Name} exhausted non-cycling same-map waypoint candidates for target {DescribeNullablePoint(pending.ActiveTargetTile)} after waypoint {DescribeNullablePoint(previousWaypoint)}; clearing fallback after {pending.WaypointReplanRetryCount} deferred retries.",
+                    LogLevel.Trace);
+                ClearTemporaryActiveSlotFallback(npc, pending);
+                return;
+            }
+
             LogRuntimeThrottled(
-                $"autonomy:same-map-waypoint-cycle:{npc.Name}:{pending.EncounterId}",
-                TimeSpan.FromSeconds(20),
-                $"Autonomy: [FORCE_PATH] {npc.Name} exhausted non-cycling same-map waypoint candidates for target {DescribeNullablePoint(pending.ActiveTargetTile)} after waypoint {DescribeNullablePoint(previousWaypoint)}; clearing fallback until next schedule retry.",
+                $"autonomy:same-map-waypoint-replan-deferred:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(10),
+                $"Autonomy: [FORCE_PATH] {npc.Name} could not replan after waypoint {DescribeNullablePoint(previousWaypoint)} toward target {DescribeNullablePoint(pending.ActiveTargetTile)}; preserving fallback and retrying from current_tile={DescribeNullablePoint(npc.TilePoint)} at tick={pending.NextWaypointReplanTick}.",
                 LogLevel.Trace);
-            ClearTemporaryActiveSlotFallback(npc, pending);
             return;
         }
 
@@ -19617,6 +19747,15 @@ public sealed class ModEntry : Mod
 
         if (pending.FallbackRepathCount >= EncounterVanillaResumeFallbackRepathLimit)
         {
+            RegisterEncounterResumeStationaryFailure(
+                pending,
+                BuildEncounterResumeStationaryFailureSignature(
+                    "same_map_repath_exhausted",
+                    npc,
+                    pending,
+                    pending.ActiveTargetTile,
+                    "stale_repath"),
+                currentTick);
             LogRuntimeThrottled(
                 $"autonomy:fallback-repath-exhausted:{npc.Name}:{pending.EncounterId}",
                 TimeSpan.FromSeconds(30),
@@ -19638,7 +19777,8 @@ public sealed class ModEntry : Mod
                 movementTarget.Value,
                 4,
                 excludedTile: null,
-                out var reachableMovementTarget)
+                out var reachableMovementTarget,
+                out var reachableMovementTargetIsRecoveryNudge)
             && TryActivateEncounterResumePath(
                 npc,
                 pending,
@@ -19650,20 +19790,32 @@ public sealed class ModEntry : Mod
         {
             pending.FallbackSameMapApproachTile = reachableMovementTarget;
             pending.FallbackCurrentLegTarget = reachableMovementTarget;
+            pending.FallbackCurrentTargetIsRecoveryNudge = reachableMovementTargetIsRecoveryNudge;
             pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
             pending.FallbackLastObservedTile = npc.TilePoint;
             pending.FallbackLastProgressTick = currentTick;
-            if (reachableMovementTarget != movementTarget.Value)
+            if (reachableMovementTargetIsRecoveryNudge)
+                RecordEncounterResumeRecoveryNudge(pending, npc.currentLocation.Name ?? string.Empty, reachableMovementTarget);
+            else if (reachableMovementTarget != movementTarget.Value)
                 pending.VisitedSameMapWaypoints.Add(reachableMovementTarget);
             var pathMode = reachableMovementTarget == movementTarget.Value
                 ? "vanilla_exact_target"
-                : "vanilla_approach_target";
+                : reachableMovementTargetIsRecoveryNudge ? "vanilla_recovery_nudge" : "vanilla_approach_target";
             Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (path_mode={pathMode}, repath_count={pending.FallbackRepathCount}, target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(reachableMovementTarget)}, target_kind={(reachableMovementTarget == movementTarget.Value ? "final_slot" : "intermediate_waypoint")}, path_length={pathLength}).",
+                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (path_mode={pathMode}, repath_count={pending.FallbackRepathCount}, target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(reachableMovementTarget)}, target_kind={(reachableMovementTarget == movementTarget.Value ? "final_slot" : reachableMovementTargetIsRecoveryNudge ? "recovery_nudge" : "intermediate_waypoint")}, path_length={pathLength}).",
                 LogLevel.Debug);
             return;
         }
 
+        RegisterEncounterResumeStationaryFailure(
+            pending,
+            BuildEncounterResumeStationaryFailureSignature(
+                "same_map_repath_failed",
+                npc,
+                pending,
+                pending.ActiveTargetTile,
+                "stale_repath_restart_failed"),
+            currentTick);
         LogRuntimeThrottled(
             $"autonomy:fallback-repath-failed:{npc.Name}:{pending.EncounterId}",
             TimeSpan.FromSeconds(30),
@@ -19725,20 +19877,29 @@ public sealed class ModEntry : Mod
         var currentTile = npc.TilePoint;
         var locationChanged = !string.Equals(currentLocationName, pending.FallbackLastObservedLocation, StringComparison.OrdinalIgnoreCase);
         var tileChanged = pending.FallbackLastObservedTile != currentTile;
+        var progressLogLocationChanged = !string.Equals(currentLocationName, pending.LastProgressLogLocation, StringComparison.OrdinalIgnoreCase);
+        var progressLogDistance = GetEncounterTileDistance(pending.LastProgressLogTile, currentTile);
         if (locationChanged || tileChanged)
         {
             UpdateFallbackProgressObservation(npc, pending, currentTick);
             if (IsDeveloperLoggingEnabled()
-                && (locationChanged || currentTick >= pending.NextProgressLogTick))
+                && (progressLogLocationChanged
+                    || progressLogDistance >= EncounterCrossMapProgressLogMinTileDistance
+                    || currentTick >= pending.NextProgressLogTick))
             {
                 LogRuntimeThrottled(
                     $"autonomy:cross-map-progress:{npc.Name}:{pending.EncounterId}",
-                    TimeSpan.FromSeconds(2),
+                    TimeSpan.FromSeconds(5),
                     $"Autonomy: [CrossMapLeg(progress)] {npc.Name} encounter={pending.EncounterId} map={currentLocationName} tile=({currentTile.X},{currentTile.Y}) target_leg={pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)}.",
-                    LogLevel.Debug);
-                pending.NextProgressLogTick = currentTick + 10;
+                    LogLevel.Trace);
+                pending.LastProgressLogLocation = currentLocationName;
+                pending.LastProgressLogTile = currentTile;
+                pending.NextProgressLogTick = currentTick + EncounterCrossMapProgressLogIntervalTicks;
             }
         }
+
+        if (IsEncounterWaypointReplanBackoffActive(pending, currentTick))
+            return;
 
         if (pending.FallbackWarpIssued && string.Equals(currentLocationName, pending.FallbackLegToLocation, StringComparison.OrdinalIgnoreCase))
         {
@@ -19797,6 +19958,8 @@ public sealed class ModEntry : Mod
             if (!previousWaypoint.HasValue)
                 return;
 
+            var reachedRecoveryNudge = pending.FallbackCurrentTargetIsRecoveryNudge;
+            pending.FallbackCurrentTargetIsRecoveryNudge = false;
             if (TryReplanCrossMapFallbackLegFromCurrentTile(
                     npc,
                     pending,
@@ -19808,16 +19971,40 @@ public sealed class ModEntry : Mod
                 LogRuntimeThrottled(
                     $"autonomy:cross-map-waypoint-advance:{npc.Name}:{pending.EncounterId}",
                     TimeSpan.FromSeconds(5),
-                    $"Autonomy: [CrossMapLeg(advance)] {npc.Name} encounter={pending.EncounterId} replanned source-map leg after reaching waypoint {DescribeNullablePoint(previousWaypoint)} from current_tile={DescribeNullablePoint(npc.TilePoint)} using movement_target={DescribeNullablePoint(pending.FallbackCurrentLegTarget ?? pending.FallbackLegApproachTile)} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} path_mode={nextPathMode} path_length={nextPathLength}.",
+                    $"Autonomy: [CrossMapLeg(advance)] {npc.Name} encounter={pending.EncounterId} replanned source-map leg after reaching {(reachedRecoveryNudge ? "recovery nudge" : "waypoint")} {DescribeNullablePoint(previousWaypoint)} from current_tile={DescribeNullablePoint(npc.TilePoint)} using movement_target={DescribeNullablePoint(pending.FallbackCurrentLegTarget ?? pending.FallbackLegApproachTile)} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} path_mode={nextPathMode} path_length={nextPathLength}.",
                     LogLevel.Trace);
                 return;
             }
 
             pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
             pending.FallbackLastObservedTile = npc.TilePoint;
-            pending.FallbackLastProgressTick = currentTick > EncounterVanillaResumeFallbackStaleTicks
-                ? currentTick - EncounterVanillaResumeFallbackStaleTicks
-                : 0;
+            pending.FallbackLastProgressTick = currentTick;
+            if (!ScheduleEncounterWaypointReplanRetry(pending, currentTick))
+            {
+                RegisterEncounterResumeStationaryFailure(
+                    pending,
+                    BuildEncounterResumeStationaryFailureSignature(
+                        "cross_map_waypoint_exhausted",
+                        npc,
+                        pending,
+                        pending.FallbackLegDepartureTile,
+                        $"after:{DescribeNullablePoint(previousWaypoint)}"),
+                    currentTick);
+                LogRuntimeThrottled(
+                    $"autonomy:cross-map-waypoint-replan-exhausted:{npc.Name}:{pending.EncounterId}",
+                    TimeSpan.FromSeconds(20),
+                    $"Autonomy: [CrossMapLeg(advance)] {npc.Name} could not replan source-map leg after waypoint {DescribeNullablePoint(previousWaypoint)} toward transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)}; clearing fallback after {pending.WaypointReplanRetryCount} deferred retries.",
+                    LogLevel.Trace);
+                ClearTemporaryActiveSlotFallback(npc, pending);
+                return;
+            }
+
+            LogRuntimeThrottled(
+                $"autonomy:cross-map-waypoint-replan-deferred:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(10),
+                $"Autonomy: [CrossMapLeg(advance)] {npc.Name} could not replan source-map leg after waypoint {DescribeNullablePoint(previousWaypoint)}; preserving fallback and retrying from current_tile={DescribeNullablePoint(npc.TilePoint)} toward transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} at tick={pending.NextWaypointReplanTick}.",
+                LogLevel.Trace);
+            return;
         }
 
         if (currentTick - pending.FallbackLastProgressTick < EncounterVanillaResumeFallbackStaleTicks)
@@ -19829,6 +20016,15 @@ public sealed class ModEntry : Mod
 
         if (pending.FallbackLegRetryCount >= EncounterVanillaResumeFallbackLegRetryLimit)
         {
+            RegisterEncounterResumeStationaryFailure(
+                pending,
+                BuildEncounterResumeStationaryFailureSignature(
+                    "cross_map_leg_retry_exhausted",
+                    npc,
+                    pending,
+                    pending.FallbackLegDepartureTile,
+                    $"{pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation}"),
+                currentTick);
             LogRuntimeThrottled(
                 $"autonomy:cross-map-leg-retry-exhausted:{npc.Name}:{pending.EncounterId}",
                 TimeSpan.FromSeconds(30),
@@ -19851,6 +20047,15 @@ public sealed class ModEntry : Mod
             return;
         }
 
+        RegisterEncounterResumeStationaryFailure(
+            pending,
+            BuildEncounterResumeStationaryFailureSignature(
+                "cross_map_leg_restart_failed",
+                npc,
+                pending,
+                pending.FallbackLegDepartureTile,
+                $"{pending.FallbackLegFromLocation}->{pending.FallbackLegToLocation}"),
+            currentTick);
         LogRuntimeThrottled(
             $"autonomy:cross-map-leg-restart-failed:{npc.Name}:{pending.EncounterId}",
             TimeSpan.FromSeconds(30),
@@ -19883,7 +20088,8 @@ public sealed class ModEntry : Mod
                 pending,
                 pending.FallbackLegDepartureTile.Value,
                 out var departureTile,
-                out var nextMovementTarget))
+                out var nextMovementTarget,
+                out var nextMovementTargetIsRecoveryNudge))
         {
             return false;
         }
@@ -19891,6 +20097,7 @@ public sealed class ModEntry : Mod
         pending.FallbackLegDepartureTile = departureTile;
         pending.FallbackLegApproachTile = nextMovementTarget;
         pending.FallbackCurrentLegTarget = nextMovementTarget;
+        pending.FallbackCurrentTargetIsRecoveryNudge = nextMovementTargetIsRecoveryNudge;
         pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
         pending.FallbackLastObservedTile = npc.TilePoint;
         pending.FallbackLastProgressTick = currentTick;
@@ -19914,9 +20121,12 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        if (nextMovementTargetIsRecoveryNudge)
+            RecordEncounterResumeRecoveryNudge(pending, npc.currentLocation.Name ?? string.Empty, nextMovementTarget);
+
         pathMode = nextMovementTarget == departureTile
             ? "intermediate_waypoint_replan_exact_target"
-            : "intermediate_waypoint_replan_approach_target";
+            : nextMovementTargetIsRecoveryNudge ? "intermediate_waypoint_replan_recovery_nudge" : "intermediate_waypoint_replan_approach_target";
         return true;
     }
 
@@ -19990,6 +20200,7 @@ public sealed class ModEntry : Mod
     private static void PrepareActiveSlotFallbackState(PendingVanillaEncounterResume pending, bool preserveLegRetryCount)
     {
         pending.FallbackMode = EncounterFallbackMode.None;
+        pending.FallbackCurrentTargetIsRecoveryNudge = false;
         pending.FallbackSameMapApproachTile = null;
         pending.FallbackLegFromLocation = string.Empty;
         pending.FallbackLegToLocation = string.Empty;
@@ -20008,6 +20219,15 @@ public sealed class ModEntry : Mod
         pending.LastReachedSameMapWaypoint = null;
         pending.PreviousReachedSameMapWaypoint = null;
         pending.SameMapWaypointHopCount = 0;
+        pending.LastRecoveryNudgeTile = null;
+        pending.PreviousRecoveryNudgeTile = null;
+        pending.NextWaypointReplanTick = 0;
+        pending.WaypointReplanRetryCount = 0;
+        pending.LastStationaryResumeFailureSignature = string.Empty;
+        pending.StationaryResumeFailureCount = 0;
+        pending.NextStationaryResumeRetryTick = 0;
+        pending.LastProgressLogTile = null;
+        pending.LastProgressLogLocation = string.Empty;
         if (!preserveLegRetryCount)
             pending.FallbackLegRetryCount = 0;
     }
@@ -20015,6 +20235,86 @@ public sealed class ModEntry : Mod
     private static void ClearSameMapFallbackRouteState(PendingVanillaEncounterResume pending)
     {
         pending.FallbackCurrentLegTarget = null;
+        pending.FallbackCurrentTargetIsRecoveryNudge = false;
+    }
+
+    private static int GetEncounterStationaryResumeRetryTicks(int failureCount)
+    {
+        return failureCount switch
+        {
+            <= 1 => EncounterStationaryResumeRetryTicksShort,
+            2 => EncounterStationaryResumeRetryTicksMedium,
+            _ => EncounterStationaryResumeRetryTicksLong
+        };
+    }
+
+    private static void ClearEncounterResumeStationaryFailure(PendingVanillaEncounterResume pending)
+    {
+        pending.LastStationaryResumeFailureSignature = string.Empty;
+        pending.StationaryResumeFailureCount = 0;
+        pending.NextStationaryResumeRetryTick = 0;
+    }
+
+    private static string BuildEncounterResumeStationaryFailureSignature(
+        string mode,
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        Point? targetTile,
+        string detail)
+    {
+        var currentLocationName = npc.currentLocation?.Name ?? string.Empty;
+        var currentTile = npc.TilePoint;
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"{mode}:{currentLocationName}:{currentTile.X},{currentTile.Y}:{(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}:{DescribeNullablePoint(targetTile)}:{detail}");
+    }
+
+    private static bool IsEncounterResumeStationaryFailureActive(
+        PendingVanillaEncounterResume pending,
+        string failureSignature,
+        ulong currentTick)
+    {
+        return !string.IsNullOrWhiteSpace(failureSignature)
+            && string.Equals(pending.LastStationaryResumeFailureSignature, failureSignature, StringComparison.Ordinal)
+            && pending.NextStationaryResumeRetryTick > currentTick;
+    }
+
+    private static ulong RegisterEncounterResumeStationaryFailure(
+        PendingVanillaEncounterResume pending,
+        string failureSignature,
+        ulong currentTick)
+    {
+        if (string.Equals(pending.LastStationaryResumeFailureSignature, failureSignature, StringComparison.Ordinal))
+            pending.StationaryResumeFailureCount += 1;
+        else
+        {
+            pending.LastStationaryResumeFailureSignature = failureSignature;
+            pending.StationaryResumeFailureCount = 1;
+        }
+
+        var backoffTicks = GetEncounterStationaryResumeRetryTicks(pending.StationaryResumeFailureCount);
+        pending.NextStationaryResumeRetryTick = currentTick + (ulong)backoffTicks;
+        return pending.NextStationaryResumeRetryTick;
+    }
+
+    private static int GetEncounterTileDistance(Point? firstTile, Point secondTile)
+    {
+        if (!firstTile.HasValue)
+            return int.MaxValue;
+
+        return Math.Abs(firstTile.Value.X - secondTile.X) + Math.Abs(firstTile.Value.Y - secondTile.Y);
+    }
+
+    private static bool IsEncounterWaypointReplanBackoffActive(PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        return pending.NextWaypointReplanTick > 0 && currentTick < pending.NextWaypointReplanTick;
+    }
+
+    private static bool ScheduleEncounterWaypointReplanRetry(PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        pending.WaypointReplanRetryCount += 1;
+        pending.NextWaypointReplanTick = currentTick + EncounterWaypointReplanRetryTicks;
+        return pending.WaypointReplanRetryCount <= EncounterWaypointReplanRetryLimit;
     }
 
     private static void SetTemporaryActiveSlotFallback(PendingVanillaEncounterResume pending, object? fallbackController)
@@ -20065,6 +20365,9 @@ public sealed class ModEntry : Mod
         pending.FallbackLastObservedLocation = currentLocationName;
         pending.FallbackLastObservedTile = currentTile;
         pending.FallbackLastProgressTick = currentTick;
+        pending.NextWaypointReplanTick = 0;
+        pending.WaypointReplanRetryCount = 0;
+        ClearEncounterResumeStationaryFailure(pending);
     }
 
     private bool TryActivateEncounterResumePath(
@@ -20092,6 +20395,9 @@ public sealed class ModEntry : Mod
         pending.FallbackLastObservedLocation = location.Name ?? string.Empty;
         pending.FallbackLastObservedTile = npc.TilePoint;
         pending.FallbackLastProgressTick = currentTick;
+        pending.NextWaypointReplanTick = 0;
+        pending.WaypointReplanRetryCount = 0;
+        ClearEncounterResumeStationaryFailure(pending);
         SetTemporaryActiveSlotFallback(pending, fallbackController);
         return true;
     }
@@ -20143,9 +20449,11 @@ public sealed class ModEntry : Mod
         Point requestedTile,
         int maxRadius,
         Point? excludedTile,
-        out Point movementTarget)
+        out Point movementTarget,
+        out bool movementTargetIsRecoveryNudge)
     {
         movementTarget = Point.Zero;
+        movementTargetIsRecoveryNudge = false;
 
         ClearSameMapFallbackRouteState(pending);
 
@@ -20155,7 +20463,8 @@ public sealed class ModEntry : Mod
                 pending,
                 requestedTile,
                 routeStartIndex: 0,
-                out movementTarget))
+                out movementTarget,
+                out movementTargetIsRecoveryNudge))
         {
             return true;
         }
@@ -20186,7 +20495,8 @@ public sealed class ModEntry : Mod
                     pending,
                     candidate,
                     routeStartIndex: 0,
-                    out movementTarget))
+                    out movementTarget,
+                    out movementTargetIsRecoveryNudge))
             {
                 return true;
             }
@@ -20201,9 +20511,11 @@ public sealed class ModEntry : Mod
         PendingVanillaEncounterResume pending,
         Point candidate,
         int routeStartIndex,
-        out Point movementTarget)
+        out Point movementTarget,
+        out bool movementTargetIsRecoveryNudge)
     {
         movementTarget = Point.Zero;
+        movementTargetIsRecoveryNudge = false;
         if (!CanUseEncounterResumeDestinationTile(location, npc, candidate))
             return false;
 
@@ -20246,20 +20558,40 @@ public sealed class ModEntry : Mod
                 pending,
                 detourSignature,
                 $"build_failed:{DescribeText(routeFailureReason)}:{DescribeText(routeBlockerSummary)}");
-            return false;
+            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, out var nudgeTile, out var nudgeSelectionReason))
+                return false;
+
+            movementTarget = nudgeTile;
+            movementTargetIsRecoveryNudge = true;
+            LogRuntimeThrottled(
+                $"autonomy:encounter-recovery-nudge-build-failed:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
+                TimeSpan.FromSeconds(10),
+                $"Autonomy: [FORCE_PATH] {npc.Name} could not build a detour route in {location.Name}; nudging toward {DescribeNullablePoint(nudgeTile)} before retrying canonical arrival tile {DescribeNullablePoint(candidate)} (selection_reason={nudgeSelectionReason}).",
+                LogLevel.Trace);
+            return true;
         }
 
-        if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, routeStartIndex, out var detourWaypoint, out var routeEndIndex, out var detourFailureSummary))
+        if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, routeStartIndex, candidate, blockedTile, out var detourWaypoint, out var routeEndIndex, out var detourFailureSummary, out var detourSelectionReason))
         {
             RegisterFailedEncounterDetourFailure(pending, detourSignature, detourFailureSummary);
-            return false;
+            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, out var nudgeTile, out var nudgeSelectionReason))
+                return false;
+
+            movementTarget = nudgeTile;
+            movementTargetIsRecoveryNudge = true;
+            LogRuntimeThrottled(
+                $"autonomy:encounter-recovery-nudge:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
+                TimeSpan.FromSeconds(10),
+                $"Autonomy: [FORCE_PATH] {npc.Name} exhausted detour waypoints in {location.Name}; nudging toward {DescribeNullablePoint(nudgeTile)} before retrying canonical arrival tile {DescribeNullablePoint(candidate)} (selection_reason={nudgeSelectionReason}).",
+                LogLevel.Trace);
+            return true;
         }
 
         movementTarget = detourWaypoint;
         LogRuntimeThrottled(
             $"autonomy:encounter-detour-route:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
             TimeSpan.FromSeconds(20),
-            $"Autonomy: [FORCE_PATH] {npc.Name} routing around blocked resume tile {DescribeNullablePoint(blockedTile)} in {location.Name} using detour waypoint {DescribeNullablePoint(detourWaypoint)} toward canonical arrival tile {DescribeNullablePoint(candidate)} (route_index={routeEndIndex}, route_count={routeTiles.Count}).",
+            $"Autonomy: [FORCE_PATH] {npc.Name} routing around blocked resume tile {DescribeNullablePoint(blockedTile)} in {location.Name} using detour waypoint {DescribeNullablePoint(detourWaypoint)} toward canonical arrival tile {DescribeNullablePoint(candidate)} (route_index={routeEndIndex}, route_count={routeTiles.Count}, selection_reason={detourSelectionReason}).",
             LogLevel.Trace);
         return true;
     }
@@ -20270,13 +20602,17 @@ public sealed class ModEntry : Mod
         PendingVanillaEncounterResume pending,
         IReadOnlyList<Point> routeTiles,
         int startIndex,
+        Point canonicalTarget,
+        Point? blockedTile,
         out Point movementTarget,
         out int routeEndIndex,
-        out string failureSummary)
+        out string failureSummary,
+        out string selectionReason)
     {
         movementTarget = Point.Zero;
         routeEndIndex = -1;
         failureSummary = string.Empty;
+        selectionReason = string.Empty;
         if (routeTiles.Count == 0)
             return false;
 
@@ -20291,9 +20627,12 @@ public sealed class ModEntry : Mod
                     routeTiles,
                     startIndex,
                     windowEndIndex,
+                    canonicalTarget,
+                    blockedTile,
                     selectionStats,
                     out movementTarget,
-                    out routeEndIndex))
+                    out routeEndIndex,
+                    out selectionReason))
             {
                 return true;
             }
@@ -20335,12 +20674,16 @@ public sealed class ModEntry : Mod
         IReadOnlyList<Point> routeTiles,
         int startIndex,
         int endIndex,
+        Point canonicalTarget,
+        Point? blockedTile,
         DetourWaypointSelectionStats selectionStats,
         out Point movementTarget,
-        out int routeEndIndex)
+        out int routeEndIndex,
+        out string selectionReason)
     {
         movementTarget = Point.Zero;
         routeEndIndex = -1;
+        selectionReason = string.Empty;
         if (routeTiles.Count == 0
             || startIndex < 0
             || startIndex >= routeTiles.Count
@@ -20349,6 +20692,7 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        var validCandidates = new List<(Point Tile, int Index, EncounterIntermediateTargetScore Score)>();
         for (var index = endIndex; index >= startIndex; index--)
         {
             var candidate = routeTiles[index];
@@ -20361,7 +20705,7 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            if (!CanUseEncounterResumeDestinationTile(location, npc, candidate))
+            if (!CanUseEncounterResumeWaypointTile(location, npc, candidate))
             {
                 selectionStats.UnusableDestinationCount += 1;
                 continue;
@@ -20379,12 +20723,30 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            movementTarget = candidate;
-            routeEndIndex = index;
-            return true;
+            validCandidates.Add((
+                candidate,
+                index,
+                ScoreEncounterResumeIntermediateTarget(npc.TilePoint, canonicalTarget, blockedTile, candidate)));
         }
 
-        return false;
+        if (validCandidates.Count == 0)
+            return false;
+
+        var selectedCandidate = validCandidates
+            .OrderBy(entry => entry.Score.BlockedAxisPenalty)
+            .ThenBy(entry => entry.Score.LateralPenalty)
+            .ThenBy(entry => entry.Score.SameLinePenalty)
+            .ThenBy(entry => entry.Score.ClearancePenalty)
+            .ThenBy(entry => entry.Score.TargetProgressPenalty)
+            .ThenByDescending(entry => entry.Index)
+            .ThenBy(entry => entry.Score.DistanceToTarget)
+            .ThenBy(entry => entry.Score.DistanceFromCurrent)
+            .First();
+
+        movementTarget = selectedCandidate.Tile;
+        routeEndIndex = selectedCandidate.Index;
+        selectionReason = selectedCandidate.Score.SelectionReason;
+        return true;
     }
 
     private static string BuildEncounterDetourSignature(
@@ -20672,6 +21034,179 @@ public sealed class ModEntry : Mod
         }
     }
 
+    private static string BuildEncounterResumeTileKey(string locationName, Point tile)
+    {
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"{locationName}:{tile.X},{tile.Y}");
+    }
+
+    private static void RecordEncounterResumeRecoveryNudge(PendingVanillaEncounterResume pending, string locationName, Point tile)
+    {
+        pending.PreviousRecoveryNudgeTile = pending.LastRecoveryNudgeTile;
+        pending.LastRecoveryNudgeTile = tile;
+        pending.VisitedRecoveryNudgeTiles.Add(BuildEncounterResumeTileKey(locationName, tile));
+    }
+
+    private static EncounterBlockedProgressAxis ResolveEncounterResumeBlockedProgressAxis(Point currentTile, Point canonicalTarget, Point blockedTile)
+    {
+        var targetDeltaX = canonicalTarget.X - currentTile.X;
+        var targetDeltaY = canonicalTarget.Y - currentTile.Y;
+        var blockedDeltaX = blockedTile.X - currentTile.X;
+        var blockedDeltaY = blockedTile.Y - currentTile.Y;
+
+        if (targetDeltaX != 0
+            && blockedDeltaX != 0
+            && Math.Sign(targetDeltaX) == Math.Sign(blockedDeltaX)
+            && Math.Abs(blockedDeltaX) <= Math.Max(1, Math.Abs(targetDeltaX)))
+        {
+            return EncounterBlockedProgressAxis.X;
+        }
+
+        if (targetDeltaY != 0
+            && blockedDeltaY != 0
+            && Math.Sign(targetDeltaY) == Math.Sign(blockedDeltaY)
+            && Math.Abs(blockedDeltaY) <= Math.Max(1, Math.Abs(targetDeltaY)))
+        {
+            return EncounterBlockedProgressAxis.Y;
+        }
+
+        if (Math.Abs(blockedDeltaX) >= Math.Abs(blockedDeltaY))
+            return EncounterBlockedProgressAxis.X;
+
+        return EncounterBlockedProgressAxis.Y;
+    }
+
+    private static EncounterIntermediateTargetScore ScoreEncounterResumeIntermediateTarget(
+        Point currentTile,
+        Point canonicalTarget,
+        Point? blockedTile,
+        Point candidateTile)
+    {
+        var distanceToTarget = Math.Abs(candidateTile.X - canonicalTarget.X) + Math.Abs(candidateTile.Y - canonicalTarget.Y);
+        var distanceFromCurrent = Math.Abs(candidateTile.X - currentTile.X) + Math.Abs(candidateTile.Y - currentTile.Y);
+        var currentDistanceToTarget = Math.Abs(currentTile.X - canonicalTarget.X) + Math.Abs(currentTile.Y - canonicalTarget.Y);
+        if (!blockedTile.HasValue)
+        {
+            return new EncounterIntermediateTargetScore
+            {
+                DistanceToTarget = distanceToTarget,
+                DistanceFromCurrent = distanceFromCurrent,
+                TargetProgressPenalty = distanceToTarget < currentDistanceToTarget ? 0 : 1,
+                SelectionReason = "target_progress"
+            };
+        }
+
+        var blocked = blockedTile.Value;
+        var blockedAxis = ResolveEncounterResumeBlockedProgressAxis(currentTile, canonicalTarget, blocked);
+        var currentBlockedDistance = Math.Abs(currentTile.X - blocked.X) + Math.Abs(currentTile.Y - blocked.Y);
+        var candidateBlockedDistance = Math.Abs(candidateTile.X - blocked.X) + Math.Abs(candidateTile.Y - blocked.Y);
+        var moveX = candidateTile.X - currentTile.X;
+        var moveY = candidateTile.Y - currentTile.Y;
+        var targetDeltaX = canonicalTarget.X - currentTile.X;
+        var targetDeltaY = canonicalTarget.Y - currentTile.Y;
+
+        var blockedAxisPenalty = 0;
+        var lateralPenalty = 0;
+        var sameLinePenalty = 0;
+        if (blockedAxis == EncounterBlockedProgressAxis.X)
+        {
+            var targetDirectionX = Math.Sign(targetDeltaX);
+            if (targetDirectionX != 0 && Math.Sign(moveX) == targetDirectionX && moveX != 0)
+                blockedAxisPenalty = 1;
+
+            lateralPenalty = moveY == 0 ? 1 : 0;
+            sameLinePenalty = candidateTile.Y == currentTile.Y ? 1 : 0;
+        }
+        else if (blockedAxis == EncounterBlockedProgressAxis.Y)
+        {
+            var targetDirectionY = Math.Sign(targetDeltaY);
+            if (targetDirectionY != 0 && Math.Sign(moveY) == targetDirectionY && moveY != 0)
+                blockedAxisPenalty = 1;
+
+            lateralPenalty = moveX == 0 ? 1 : 0;
+            sameLinePenalty = candidateTile.X == currentTile.X ? 1 : 0;
+        }
+
+        var clearancePenalty = candidateBlockedDistance > currentBlockedDistance ? 0 : 1;
+        var targetProgressPenalty = distanceToTarget < currentDistanceToTarget ? 0 : 1;
+        var selectionReason = lateralPenalty == 0 && sameLinePenalty == 0
+            ? "lateral_escape"
+            : clearancePenalty == 0
+                ? "clearance_gain"
+                : "target_progress";
+
+        return new EncounterIntermediateTargetScore
+        {
+            BlockedAxisPenalty = blockedAxisPenalty,
+            LateralPenalty = lateralPenalty,
+            SameLinePenalty = sameLinePenalty,
+            ClearancePenalty = clearancePenalty,
+            TargetProgressPenalty = targetProgressPenalty,
+            DistanceToTarget = distanceToTarget,
+            DistanceFromCurrent = distanceFromCurrent,
+            SelectionReason = selectionReason
+        };
+    }
+
+    private bool TryResolveEncounterResumeRecoveryNudgeTile(
+        GameLocation location,
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        Point canonicalTarget,
+        Point? blockedTile,
+        out Point nudgeTile,
+        out string selectionReason)
+    {
+        nudgeTile = Point.Zero;
+        selectionReason = string.Empty;
+        var locationName = location.Name ?? string.Empty;
+        var currentTile = npc.TilePoint;
+        var candidates = EnumerateEncounterResumeMovementTargetCandidates(currentTile, 4)
+            .Where(candidate => candidate != currentTile)
+            .Where(candidate => !blockedTile.HasValue || candidate != blockedTile.Value)
+            .Where(candidate => !IsEncounterResumeNearEntranceTile(location, candidate, 1))
+            .Where(candidate => candidate != pending.LastReachedSameMapWaypoint && candidate != pending.PreviousReachedSameMapWaypoint)
+            .Where(candidate => candidate != pending.LastRecoveryNudgeTile && candidate != pending.PreviousRecoveryNudgeTile)
+            .Where(candidate => !pending.VisitedSameMapWaypoints.Contains(candidate))
+            .Where(candidate => !pending.VisitedRecoveryNudgeTiles.Contains(BuildEncounterResumeTileKey(locationName, candidate)))
+            .ToList();
+
+        var validCandidates = new List<(Point Tile, EncounterIntermediateTargetScore Score)>();
+        foreach (var candidate in candidates)
+        {
+            if (!CanUseEncounterResumeWaypointTile(location, npc, candidate))
+                continue;
+
+            if (!TryCreateVanillaEncounterResumeController(location, npc, candidate, out _, out var controllerPath, out _))
+                continue;
+
+            if (TryFindEncounterResumePathObstacle(location, controllerPath, out _, out _))
+                continue;
+
+            validCandidates.Add((candidate, ScoreEncounterResumeIntermediateTarget(currentTile, canonicalTarget, blockedTile, candidate)));
+        }
+
+        if (validCandidates.Count == 0)
+            return false;
+
+        var selectedCandidate = validCandidates
+            .OrderBy(entry => entry.Score.BlockedAxisPenalty)
+            .ThenBy(entry => entry.Score.LateralPenalty)
+            .ThenBy(entry => entry.Score.SameLinePenalty)
+            .ThenBy(entry => entry.Score.ClearancePenalty)
+            .ThenBy(entry => entry.Score.TargetProgressPenalty)
+            .ThenBy(entry => entry.Score.DistanceToTarget)
+            .ThenBy(entry => entry.Score.DistanceFromCurrent)
+            .ThenBy(entry => entry.Tile.Y)
+            .ThenBy(entry => entry.Tile.X)
+            .First();
+
+        nudgeTile = selectedCandidate.Tile;
+        selectionReason = selectedCandidate.Score.SelectionReason;
+        return true;
+    }
+
     private bool TryCanUseVanillaEncounterResumeTarget(GameLocation location, NPC npc, Point targetTile)
     {
         if (!CanUseEncounterResumeDestinationTile(location, npc, targetTile))
@@ -20696,6 +21231,17 @@ public sealed class ModEntry : Mod
         }
 
         return true;
+    }
+
+    private bool CanUseEncounterResumeWaypointTile(GameLocation location, NPC npc, Point tile)
+    {
+        if (!IsEncounterResumeTileWithinMap(location, tile))
+            return false;
+
+        if (!HasEncounterResumeBackTile(location, tile))
+            return false;
+
+        return IsEncounterResumeTileAvailable(location, npc, tile);
     }
 
     private bool IsEncounterResumeTileAvailable(GameLocation location, NPC npc, Point tile)
@@ -20829,10 +21375,12 @@ public sealed class ModEntry : Mod
         PendingVanillaEncounterResume pending,
         Point requestedTile,
         out Point departureTile,
-        out Point approachTile)
+        out Point approachTile,
+        out bool approachTileIsRecoveryNudge)
     {
         departureTile = Point.Zero;
         approachTile = Point.Zero;
+        approachTileIsRecoveryNudge = false;
         var currentLocation = npc.currentLocation;
         if (currentLocation is null)
             return false;
@@ -20855,7 +21403,8 @@ public sealed class ModEntry : Mod
                 pending,
                 searchOrigin,
                 routeStartIndex: 0,
-                out approachTile))
+                out approachTile,
+                out approachTileIsRecoveryNudge))
         {
             departureTile = searchOrigin;
             return true;
@@ -20878,7 +21427,8 @@ public sealed class ModEntry : Mod
                     pending,
                     candidate,
                     routeStartIndex: 0,
-                    out approachTile))
+                    out approachTile,
+                    out approachTileIsRecoveryNudge))
             {
                 departureTile = candidate;
                 return true;
@@ -20895,9 +21445,11 @@ public sealed class ModEntry : Mod
         PendingVanillaEncounterResume pending,
         Point candidate,
         int routeStartIndex,
-        out Point movementTarget)
+        out Point movementTarget,
+        out bool movementTargetIsRecoveryNudge)
     {
         movementTarget = Point.Zero;
+        movementTargetIsRecoveryNudge = false;
         if (!CanUseEncounterResumeDestinationTile(location, npc, candidate))
             return false;
 
@@ -20940,20 +21492,40 @@ public sealed class ModEntry : Mod
                 pending,
                 detourSignature,
                 $"build_failed:{DescribeText(routeFailureReason)}:{DescribeText(routeBlockerSummary)}");
-            return false;
+            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, out var nudgeTile, out var nudgeSelectionReason))
+                return false;
+
+            movementTarget = nudgeTile;
+            movementTargetIsRecoveryNudge = true;
+            LogRuntimeThrottled(
+                $"autonomy:cross-map-recovery-nudge-build-failed:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
+                TimeSpan.FromSeconds(10),
+                $"Autonomy: [CrossMapLeg(start)] {npc.Name} could not build a departure detour route in {location.Name}; nudging toward {DescribeNullablePoint(nudgeTile)} before retrying transition_tile={DescribeNullablePoint(candidate)} (selection_reason={nudgeSelectionReason}).",
+                LogLevel.Trace);
+            return true;
         }
 
-        if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, routeStartIndex, out var detourWaypoint, out var routeEndIndex, out var detourFailureSummary))
+        if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, routeStartIndex, candidate, blockedTile, out var detourWaypoint, out var routeEndIndex, out var detourFailureSummary, out var detourSelectionReason))
         {
             RegisterFailedEncounterDetourFailure(pending, detourSignature, detourFailureSummary);
-            return false;
+            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, out var nudgeTile, out var nudgeSelectionReason))
+                return false;
+
+            movementTarget = nudgeTile;
+            movementTargetIsRecoveryNudge = true;
+            LogRuntimeThrottled(
+                $"autonomy:cross-map-recovery-nudge:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
+                TimeSpan.FromSeconds(10),
+                $"Autonomy: [CrossMapLeg(start)] {npc.Name} exhausted departure detour waypoints in {location.Name}; nudging toward {DescribeNullablePoint(nudgeTile)} before retrying transition_tile={DescribeNullablePoint(candidate)} (selection_reason={nudgeSelectionReason}).",
+                LogLevel.Trace);
+            return true;
         }
 
         movementTarget = detourWaypoint;
         LogRuntimeThrottled(
             $"autonomy:cross-map-departure-route:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
             TimeSpan.FromSeconds(20),
-            $"Autonomy: [CrossMapLeg(start)] {npc.Name} routing around blocked departure tile {DescribeNullablePoint(blockedTile)} in {location.Name} using movement_target={DescribeNullablePoint(detourWaypoint)} toward transition_tile={DescribeNullablePoint(candidate)} (route_index={routeEndIndex}, route_count={routeTiles.Count}).",
+            $"Autonomy: [CrossMapLeg(start)] {npc.Name} routing around blocked departure tile {DescribeNullablePoint(blockedTile)} in {location.Name} using movement_target={DescribeNullablePoint(detourWaypoint)} toward transition_tile={DescribeNullablePoint(candidate)} (route_index={routeEndIndex}, route_count={routeTiles.Count}, selection_reason={detourSelectionReason}).",
             LogLevel.Trace);
         return true;
     }
