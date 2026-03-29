@@ -682,13 +682,6 @@ public sealed class ModEntry : Mod
         public ulong NextSameMapReplanTick { get; set; }
         public bool PendingCrossMapPostWarpReplan { get; set; }
         public ulong NextCrossMapPostWarpReplanTick { get; set; }
-        public bool PendingVanillaHandoff { get; set; }
-        public int? HandoffScheduleTime { get; set; }
-        public string HandoffTargetLocation { get; set; } = string.Empty;
-        public Point? HandoffTargetTile { get; set; }
-        public ulong NextVanillaHandoffAttemptTick { get; set; }
-        public int VanillaHandoffFailureCount { get; set; }
-        public string LastVanillaHandoffFailureSignature { get; set; } = string.Empty;
         public bool FallbackCurrentTargetIsRecoveryNudge { get; set; }
         public Point? LastRecoveryNudgeTile { get; set; }
         public Point? PreviousRecoveryNudgeTile { get; set; }
@@ -698,6 +691,8 @@ public sealed class ModEntry : Mod
         public HashSet<string> VisitedIntermediateTargetTiles { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Point? LastProgressLogTile { get; set; }
         public string LastProgressLogLocation { get; set; } = string.Empty;
+        public bool PendingVanillaReleaseOnlyHandoff { get; set; }
+        public int VanillaReleaseRetryCount { get; set; }
     }
 
     private sealed class DetourWaypointSelectionStats
@@ -17313,9 +17308,9 @@ public sealed class ModEntry : Mod
         if (pending.Attempts == 0)
             pending.InitialTilePoint = npc.TilePoint;
 
-        if (pending.PendingVanillaHandoff)
+        if (pending.PendingVanillaReleaseOnlyHandoff)
         {
-            TryAdvancePendingVanillaHandoff(npcId, npc, pending, currentTick);
+            TryAdvanceVanillaReleaseOnlyHandoff(npcId, npc, pending, currentTick);
             return;
         }
 
@@ -17781,6 +17776,187 @@ public sealed class ModEntry : Mod
             LogLevel.Debug);
     }
 
+    private bool TryBootstrapVanillaReleaseOnlyFromCurrentTile(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        out string bootstrapMethod,
+        out string failureReason)
+    {
+        bootstrapMethod = "none";
+        failureReason = string.Empty;
+
+        if (npc.Schedule is null
+            || pending.ActiveScheduleEntry is null
+            || !pending.ActiveScheduleTime.HasValue
+            || string.IsNullOrWhiteSpace(pending.ActiveTargetLocation)
+            || !pending.ActiveTargetTile.HasValue)
+        {
+            failureReason = "active_schedule_missing";
+            return false;
+        }
+
+        var originalEntry = npc.Schedule.TryGetValue(Game1.timeOfDay, out var currentTimeEntry)
+            ? currentTimeEntry
+            : null;
+        var hadCurrentTimeEntry = npc.Schedule.ContainsKey(Game1.timeOfDay);
+        var shimMethod = "original_entry";
+
+        if (!TryCloneScheduleEntryForVanillaReleaseHandoff(pending.ActiveScheduleEntry, out var shimmedEntry, out var degradedClone))
+        {
+            shimmedEntry = CreateVanillaReleaseFallbackScheduleEntry(pending);
+            degradedClone = true;
+        }
+        else if (degradedClone)
+        {
+            shimmedEntry = CreateVanillaReleaseFallbackScheduleEntry(pending);
+        }
+
+        if (degradedClone)
+        {
+            shimMethod = "current_tile_fallback_entry";
+        }
+        else
+        {
+            shimMethod = "current_tile_clone";
+        }
+
+        npc.controller = null;
+        TrySetMemberValue(npc, "temporaryController", null);
+        TrySetMemberValue(npc, "followSchedule", true);
+        TrySetMemberValue(npc, "lastAttemptedSchedule", -1);
+        TrySetMemberValue(npc, "previousEndPoint", npc.TilePoint);
+        ClearEncounterMovementBlockingState(npc);
+        ClearEncounterMotionState(npc);
+
+        npc.Schedule[Game1.timeOfDay] = shimmedEntry;
+        try
+        {
+            var checkScheduleInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out var methodLabel);
+            pending.CheckScheduleInvoked |= checkScheduleInvoked;
+            if (checkScheduleInvoked)
+                pending.CheckScheduleMethod = methodLabel;
+
+            bootstrapMethod = $"{shimMethod}+{(checkScheduleInvoked ? methodLabel : "checkSchedule_failed")}";
+            if (!checkScheduleInvoked)
+            {
+                failureReason = "no_controller_after_checkschedule";
+                npc.controller = null;
+                TrySetMemberValue(npc, "temporaryController", null);
+                return false;
+            }
+
+            if (!TryValidateVanillaReleaseControllerPath(npc, pending, out failureReason))
+            {
+                npc.controller = null;
+                TrySetMemberValue(npc, "temporaryController", null);
+                return false;
+            }
+
+            return true;
+        }
+        finally
+        {
+            RestoreTemporaryScheduleEntry(npc, Game1.timeOfDay, hadCurrentTimeEntry, originalEntry);
+        }
+    }
+
+    private bool TryValidateVanillaReleaseControllerPath(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        out string failureReason)
+    {
+        failureReason = string.Empty;
+        if (npc.currentLocation is null)
+        {
+            failureReason = "current_map_unavailable";
+            return false;
+        }
+
+        var controller = GetCurrentResumeController(npc);
+        if (controller is null)
+        {
+            if (string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase)
+                && TryGetActiveArrivalTile(pending, out var activeArrivalTile)
+                && npc.TilePoint == activeArrivalTile)
+            {
+                return true;
+            }
+
+            failureReason = "no_controller_after_checkschedule";
+            return false;
+        }
+
+        if (!TryReadControllerPath(controller, out var controllerPath) || controllerPath.Count == 0)
+        {
+            failureReason = "controller_path_unreadable";
+            return false;
+        }
+
+        Point? privilegedTransitionTile = null;
+        var allowEntranceCorridor = false;
+        Point expectedEndpoint;
+        if (string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!TryGetActiveArrivalTile(pending, out expectedEndpoint))
+            {
+                failureReason = "active_arrival_unreadable";
+                return false;
+            }
+        }
+        else
+        {
+            if (!TryPlanNextCrossMapFallbackLeg(npc, pending.ActiveTargetLocation, out var segment))
+            {
+                failureReason = "cross_map_leg_unplanned";
+                return false;
+            }
+
+            expectedEndpoint = segment.DepartureTile;
+            privilegedTransitionTile = expectedEndpoint;
+            allowEntranceCorridor = true;
+        }
+
+        var actualEndpoint = controllerPath[^1];
+        if (actualEndpoint != expectedEndpoint)
+        {
+            failureReason = $"wrong_vanilla_handoff_endpoint(actual={DescribeNullablePoint(actualEndpoint)}, expected={DescribeNullablePoint(expectedEndpoint)})";
+            return false;
+        }
+
+        if (TryFindEncounterResumePathObstacle(
+                npc.currentLocation,
+                controllerPath,
+                allowEntranceCorridor,
+                privilegedTransitionTile,
+                npc,
+                out var blockedTile,
+                out var blockReason))
+        {
+            failureReason = $"{blockReason}:{DescribeNullablePoint(blockedTile)}";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static object? GetCurrentResumeController(NPC npc)
+    {
+        if (TryGetMemberValue(npc, "temporaryController", out var temporaryController) && temporaryController is not null)
+            return temporaryController;
+
+        return npc.controller;
+    }
+
+    private static ulong GetVanillaReleaseRetryDelayTicks(int retryCount)
+    {
+        return retryCount switch
+        {
+            <= 1 => 60,
+            2 => 120,
+            _ => 300
+        };
+    }
+
     private void UpdatePendingActiveScheduleState(NPC npc, PendingVanillaEncounterResume pending)
     {
         var previousActiveScheduleTime = pending.ActiveScheduleTime;
@@ -17918,72 +18094,6 @@ public sealed class ModEntry : Mod
         var wasUsingFallback = IsUsingTemporaryActiveSlotFallback(npc, pending);
         ReleaseEncounterResumeTileReservation(npc.Name);
         ResetActiveSlotFallbackState(pending);
-        pending.PendingVanillaHandoff = true;
-        pending.HandoffScheduleTime = pending.ActiveScheduleTime;
-        pending.HandoffTargetLocation = pending.ActiveTargetLocation;
-        pending.HandoffTargetTile = pending.ActiveArrivalTile ?? pending.ActiveTargetTile;
-        pending.NextVanillaHandoffAttemptTick = currentTick;
-        pending.VanillaHandoffFailureCount = 0;
-        pending.LastVanillaHandoffFailureSignature = string.Empty;
-
-        LogRuntimeThrottled(
-            $"autonomy:resume-slot-expired-handoff:{npc.Name}:{pending.EncounterId}",
-            TimeSpan.FromSeconds(20),
-            $"Autonomy: resume_slot_expired_handoff_to_vanilla for {npc.Name} after encounter {pending.EncounterId} (reason={reason}, owned_schedule_time={(pending.OwnedScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, owned_target_location={DescribeText(pending.OwnedTargetLocation)}, owned_target_tile={DescribeNullablePoint(pending.OwnedTargetTile)}, current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_was_active={wasUsingFallback}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, time={Game1.timeOfDay}, handoff_mode=preflight_pending).",
-            LogLevel.Debug);
-
-        TryAdvancePendingVanillaHandoff(npcId, npc, pending, currentTick);
-    }
-
-    private void TryAdvancePendingVanillaHandoff(string npcId, NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
-    {
-        if (!pending.PendingVanillaHandoff)
-            return;
-
-        if (currentTick < pending.NextVanillaHandoffAttemptTick)
-        {
-            pending.NextAttemptTick = pending.NextVanillaHandoffAttemptTick;
-            return;
-        }
-
-        if (npc.Schedule is null || npc.Schedule.Count == 0)
-        {
-            TryRebindVanillaScheduleAtCurrentTime(
-                npc,
-                pending,
-                allowEncounterResumeForcePath: false,
-                out var reloadTodayOk,
-                out var nextScheduleTime,
-                out var rebindCheckScheduleInvoked,
-                out var rebindCheckScheduleMethod);
-            pending.ReloadTodayOk |= reloadTodayOk;
-            pending.NextScheduleTime = nextScheduleTime;
-            pending.CheckScheduleInvoked |= rebindCheckScheduleInvoked;
-            if (rebindCheckScheduleInvoked)
-                pending.CheckScheduleMethod = rebindCheckScheduleMethod;
-        }
-        else
-        {
-            UpdatePendingActiveScheduleState(npc, pending);
-            pending.NextScheduleTime = TryGetNextScheduleTime(npc, Game1.timeOfDay);
-        }
-
-        pending.HandoffScheduleTime = pending.ActiveScheduleTime;
-        pending.HandoffTargetLocation = pending.ActiveTargetLocation;
-        pending.HandoffTargetTile = pending.ActiveArrivalTile ?? pending.ActiveTargetTile;
-
-        if ((npc.controller is not null || HasTemporaryController(npc)) && npc.isMoving())
-        {
-            pending.NextVanillaHandoffAttemptTick = currentTick + 1;
-            pending.NextAttemptTick = pending.NextVanillaHandoffAttemptTick;
-            LogRuntimeThrottled(
-                $"autonomy:vanilla-handoff-preflight-draining:{npc.Name}:{pending.EncounterId}",
-                TimeSpan.FromSeconds(5),
-                $"Autonomy: vanilla_handoff_preflight_started for {npc.Name} is waiting for the current controller to drain before invoking checkSchedule (controller={DescribeControllerType(npc)}, tile={DescribeNullablePoint(npc.TilePoint)}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, time={Game1.timeOfDay}).",
-                LogLevel.Trace);
-            return;
-        }
-
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
         TrySetMemberValue(npc, "followSchedule", true);
@@ -17992,69 +18102,85 @@ public sealed class ModEntry : Mod
         ClearEncounterMotionState(npc);
         ClearEncounterMovementBlockingState(npc);
 
-        var checkScheduleInvoked = TryCallCheckSchedule(npc, Game1.timeOfDay, out var checkScheduleMethod);
+        TryRebindVanillaScheduleAtCurrentTime(
+            npc,
+            pending,
+            allowEncounterResumeForcePath: false,
+            out var reloadTodayOk,
+            out var nextScheduleTime,
+            out var checkScheduleInvoked,
+            out var checkScheduleMethod);
+        pending.ReloadTodayOk |= reloadTodayOk;
+        pending.NextScheduleTime = nextScheduleTime;
+        pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
         pending.CheckScheduleInvoked |= checkScheduleInvoked;
         if (checkScheduleInvoked)
             pending.CheckScheduleMethod = checkScheduleMethod;
-        pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
 
-        UpdatePendingActiveScheduleState(npc, pending);
-        pending.NextScheduleTime = TryGetNextScheduleTime(npc, Game1.timeOfDay);
-        pending.HandoffScheduleTime = pending.ActiveScheduleTime;
-        pending.HandoffTargetLocation = pending.ActiveTargetLocation;
-        pending.HandoffTargetTile = pending.ActiveArrivalTile ?? pending.ActiveTargetTile;
-
-        var resumeValidation = EvaluateResumeStateForActiveSchedule(npc, pending, out var mismatchReason, out var expectedLegTile);
-        var hasValidVanillaPath = TryValidateVanillaHandoffControllerPath(npc, pending, out var pathValidationReason);
-        if (checkScheduleInvoked
-            && resumeValidation == ResumeValidationOutcome.Valid
-            && hasValidVanillaPath)
+        if (TryBootstrapVanillaReleaseOnlyFromCurrentTile(npc, pending, out var bootstrapMethod, out var bootstrapFailure))
         {
-            pending.PendingVanillaHandoff = false;
-            pending.NextVanillaHandoffAttemptTick = 0;
-            pending.VanillaHandoffFailureCount = 0;
-            pending.LastVanillaHandoffFailureSignature = string.Empty;
             LogRuntimeThrottled(
-                $"autonomy:vanilla-handoff-preflight-released:{npc.Name}:{pending.EncounterId}",
-                TimeSpan.FromSeconds(10),
-                $"Autonomy: vanilla_handoff_preflight_released for {npc.Name} after encounter {pending.EncounterId} (active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, check_schedule_method={pending.CheckScheduleMethod}, controller={DescribeControllerType(npc)}, tile={DescribeNullablePoint(npc.TilePoint)}, time={Game1.timeOfDay}).",
+                $"autonomy:resume-slot-expired-handoff:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: resume_slot_expired_released_to_vanilla for {npc.Name} after encounter {pending.EncounterId} (reason={reason}, owned_schedule_time={(pending.OwnedScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, owned_target_location={DescribeText(pending.OwnedTargetLocation)}, owned_target_tile={DescribeNullablePoint(pending.OwnedTargetTile)}, current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_was_active={wasUsingFallback}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, bootstrap_method={bootstrapMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, time={Game1.timeOfDay}, handoff_mode=vanilla_release_only).",
                 LogLevel.Debug);
             _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
             return;
         }
 
-        var failureSignature = string.Join("|",
-            npc.currentLocation?.Name ?? "unknown",
-            DescribeNullablePoint(npc.TilePoint),
-            (pending.HandoffScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none"),
-            DescribeText(pending.HandoffTargetLocation),
-            DescribeNullablePoint(pending.HandoffTargetTile),
-            checkScheduleInvoked ? "checkschedule_ok" : "checkschedule_missing",
-            DescribeResumeValidation(resumeValidation),
-            DescribeText(mismatchReason),
-            DescribeNullablePoint(expectedLegTile),
-            DescribeText(pathValidationReason));
-        pending.VanillaHandoffFailureCount = string.Equals(pending.LastVanillaHandoffFailureSignature, failureSignature, StringComparison.Ordinal)
-            ? pending.VanillaHandoffFailureCount + 1
-            : 1;
-        pending.LastVanillaHandoffFailureSignature = failureSignature;
-        var handoffRetryDelayTicks = pending.VanillaHandoffFailureCount switch
-        {
-            <= 1 => 1UL,
-            2 => 60UL,
-            3 => 120UL,
-            _ => 300UL
-        };
-        pending.NextVanillaHandoffAttemptTick = currentTick + handoffRetryDelayTicks;
-        pending.NextAttemptTick = pending.NextVanillaHandoffAttemptTick;
+        pending.PendingVanillaReleaseOnlyHandoff = true;
+        pending.VanillaReleaseRetryCount = 1;
+        pending.NextAttemptTick = currentTick + 60;
 
         LogRuntimeThrottled(
-            checkScheduleInvoked
-                ? $"autonomy:vanilla-handoff-preflight-invalid-path:{npc.Name}:{pending.EncounterId}"
-                : $"autonomy:vanilla-handoff-preflight-invalid-no-checkschedule:{npc.Name}:{pending.EncounterId}",
-            TimeSpan.FromSeconds(10),
-            $"Autonomy: {(checkScheduleInvoked ? "vanilla_handoff_preflight_invalid_path" : "vanilla_handoff_preflight_invalid_no_checkschedule")} for {npc.Name} after encounter {pending.EncounterId} (active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, path_validation_reason={DescribeText(pathValidationReason)}, failure_count={pending.VanillaHandoffFailureCount}, next_retry_tick={pending.NextVanillaHandoffAttemptTick}, tile={DescribeNullablePoint(npc.TilePoint)}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            $"autonomy:resume-slot-expired-bootstrap:{npc.Name}:{pending.EncounterId}",
+            TimeSpan.FromSeconds(15),
+            $"Autonomy: resume_slot_expired_bootstrapping_vanilla_from_current_tile for {npc.Name} after encounter {pending.EncounterId} (reason={reason}, bootstrap_failure={DescribeText(bootstrapFailure)}, current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, retry_tick={pending.NextAttemptTick}, time={Game1.timeOfDay}, handoff_mode=vanilla_release_only_retry).",
             LogLevel.Debug);
+    }
+
+    private void TryAdvanceVanillaReleaseOnlyHandoff(
+        string npcId,
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        ulong currentTick)
+    {
+        pending.Attempts += 1;
+
+        TryRebindVanillaScheduleAtCurrentTime(
+            npc,
+            pending,
+            allowEncounterResumeForcePath: false,
+            out var reloadTodayOk,
+            out var nextScheduleTime,
+            out var checkScheduleInvoked,
+            out var checkScheduleMethod);
+        pending.ReloadTodayOk |= reloadTodayOk;
+        pending.NextScheduleTime = nextScheduleTime;
+        pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
+        pending.CheckScheduleInvoked |= checkScheduleInvoked;
+        if (checkScheduleInvoked)
+            pending.CheckScheduleMethod = checkScheduleMethod;
+
+        if (TryBootstrapVanillaReleaseOnlyFromCurrentTile(npc, pending, out var bootstrapMethod, out _))
+        {
+            pending.PendingVanillaReleaseOnlyHandoff = false;
+            LogRuntimeThrottled(
+                $"autonomy:resume-slot-expired-release-complete:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(15),
+                $"Autonomy: resume_slot_expired_released_to_vanilla for {npc.Name} after encounter {pending.EncounterId} (current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, bootstrap_method={bootstrapMethod}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, time={Game1.timeOfDay}, handoff_mode=vanilla_release_only).",
+                LogLevel.Debug);
+            _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+            return;
+        }
+
+        pending.VanillaReleaseRetryCount += 1;
+        pending.NextAttemptTick = currentTick + GetVanillaReleaseRetryDelayTicks(pending.VanillaReleaseRetryCount);
+        LogRuntimeThrottled(
+            $"autonomy:resume-slot-expired-release-retry:{npc.Name}:{pending.EncounterId}",
+            TimeSpan.FromSeconds(15),
+            $"Autonomy: vanilla_rollover_shim_invalid_path for {npc.Name} after encounter {pending.EncounterId} (current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, retry_tick={pending.NextAttemptTick}, retry_count={pending.VanillaReleaseRetryCount}, time={Game1.timeOfDay}, handoff_mode=vanilla_release_only_retry).",
+            LogLevel.Trace);
     }
 
     private bool TryHandleValidatedResumeState(
@@ -18941,6 +19067,43 @@ public sealed class ModEntry : Mod
         return true;
     }
 
+    private static bool TryClearScheduleEntryRoute(object scheduleEntry)
+    {
+        var anyRouteUpdated = false;
+        foreach (var memberName in new[] { "route", "Route", "path", "Path" })
+        {
+            if (TrySetScheduleEntryEmptyRouteMember(scheduleEntry, memberName))
+                anyRouteUpdated = true;
+        }
+
+        return anyRouteUpdated;
+    }
+
+    private static bool TrySetScheduleEntryEmptyRouteMember(object scheduleEntry, string memberName)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+        var type = scheduleEntry.GetType();
+        var property = type.GetProperty(memberName, flags);
+        if (property is not null && property.CanWrite)
+        {
+            if (!TryCreateEmptyRouteValue(property.PropertyType, out var propertyRouteValue))
+                return false;
+
+            property.SetValue(scheduleEntry, propertyRouteValue);
+            return true;
+        }
+
+        var field = type.GetField(memberName, flags);
+        if (field is null || field.IsInitOnly)
+            return false;
+
+        if (!TryCreateEmptyRouteValue(field.FieldType, out var fieldRouteValue))
+            return false;
+
+        field.SetValue(scheduleEntry, fieldRouteValue);
+        return true;
+    }
+
     private static bool TryCreateTerminalRouteValue(Type routeType, Point targetTile, out object routeValue)
     {
         routeValue = null!;
@@ -18977,6 +19140,48 @@ public sealed class ModEntry : Mod
         if (routeType.IsInterface && routeType.IsAssignableFrom(typeof(List<Point>)))
         {
             routeValue = new List<Point> { targetTile };
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryCreateEmptyRouteValue(Type routeType, out object routeValue)
+    {
+        routeValue = null!;
+        if (routeType == typeof(Stack<Point>))
+        {
+            routeValue = new Stack<Point>();
+            return true;
+        }
+
+        if (routeType == typeof(List<Point>))
+        {
+            routeValue = new List<Point>();
+            return true;
+        }
+
+        if (routeType == typeof(Point[]))
+        {
+            routeValue = Array.Empty<Point>();
+            return true;
+        }
+
+        if (routeType.IsAssignableFrom(typeof(Stack<Point>)))
+        {
+            routeValue = new Stack<Point>();
+            return true;
+        }
+
+        if (routeType.IsAssignableFrom(typeof(List<Point>)))
+        {
+            routeValue = new List<Point>();
+            return true;
+        }
+
+        if (routeType.IsInterface && routeType.IsAssignableFrom(typeof(List<Point>)))
+        {
+            routeValue = new List<Point>();
             return true;
         }
 
@@ -20914,7 +21119,7 @@ public sealed class ModEntry : Mod
         if (!TryCreateVanillaEncounterResumeController(location, npc, candidate, out _, out var controllerPath, out _))
             return false;
 
-        if (!TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor: false, actor: npc, out var blockedTile, out var blockReason))
+        if (!TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor: false, privilegedTransitionTile: null, actor: npc, out var blockedTile, out var blockReason))
         {
             movementTarget = candidate;
             return true;
@@ -20950,7 +21155,7 @@ public sealed class ModEntry : Mod
                 pending,
                 detourSignature,
                 $"build_failed:{DescribeText(routeFailureReason)}:{DescribeText(routeBlockerSummary)}");
-            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, allowEntranceCorridor: false, out var nudgeTile, out var nudgeSelectionReason))
+            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, allowEntranceCorridor: false, privilegedTransitionTile: null, out var nudgeTile, out var nudgeSelectionReason))
                 return false;
 
             movementTarget = nudgeTile;
@@ -20963,10 +21168,10 @@ public sealed class ModEntry : Mod
             return true;
         }
 
-        if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, routeStartIndex, candidate, blockedTile, allowEntranceCorridor: false, out var detourWaypoint, out var routeEndIndex, out var detourFailureSummary, out var detourSelectionReason))
+        if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, routeStartIndex, candidate, blockedTile, allowEntranceCorridor: false, privilegedTransitionTile: null, out var detourWaypoint, out var routeEndIndex, out var detourFailureSummary, out var detourSelectionReason))
         {
             RegisterFailedEncounterDetourFailure(pending, detourSignature, detourFailureSummary);
-            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, allowEntranceCorridor: false, out var nudgeTile, out var nudgeSelectionReason))
+            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, allowEntranceCorridor: false, privilegedTransitionTile: null, out var nudgeTile, out var nudgeSelectionReason))
                 return false;
 
             movementTarget = nudgeTile;
@@ -20997,6 +21202,7 @@ public sealed class ModEntry : Mod
         Point canonicalTarget,
         Point? blockedTile,
         bool allowEntranceCorridor,
+        Point? privilegedTransitionTile,
         out Point movementTarget,
         out int routeEndIndex,
         out string failureSummary,
@@ -21023,6 +21229,7 @@ public sealed class ModEntry : Mod
                     canonicalTarget,
                     blockedTile,
                     allowEntranceCorridor,
+                    privilegedTransitionTile,
                     selectionStats,
                     out movementTarget,
                     out routeEndIndex,
@@ -21071,6 +21278,7 @@ public sealed class ModEntry : Mod
         Point canonicalTarget,
         Point? blockedTile,
         bool allowEntranceCorridor,
+        Point? privilegedTransitionTile,
         DetourWaypointSelectionStats selectionStats,
         out Point movementTarget,
         out int routeEndIndex,
@@ -21110,7 +21318,7 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            if (!CanUseEncounterResumeWaypointTile(location, npc, candidate, allowEntranceCorridor))
+            if (!CanUseEncounterResumeWaypointTile(location, npc, candidate, allowEntranceCorridor, privilegedTransitionTile))
             {
                 selectionStats.UnusableDestinationCount += 1;
                 continue;
@@ -21129,7 +21337,7 @@ public sealed class ModEntry : Mod
                 continue;
             }
 
-            if (TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor, actor: npc, out _, out _))
+            if (TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor, privilegedTransitionTile, actor: npc, out _, out _))
             {
                 selectionStats.BlockedVanillaPathCount += 1;
                 continue;
@@ -21584,6 +21792,7 @@ public sealed class ModEntry : Mod
         Point canonicalTarget,
         Point? blockedTile,
         bool allowEntranceCorridor,
+        Point? privilegedTransitionTile,
         out Point nudgeTile,
         out string selectionReason)
     {
@@ -21609,7 +21818,7 @@ public sealed class ModEntry : Mod
             if (IsEncounterResumeImmediateBacktrack(pending, currentTile, candidate))
                 continue;
 
-            if (!CanUseEncounterResumeWaypointTile(location, npc, candidate, allowEntranceCorridor))
+            if (!CanUseEncounterResumeWaypointTile(location, npc, candidate, allowEntranceCorridor, privilegedTransitionTile))
                 continue;
 
             if (!allowEntranceCorridor
@@ -21621,7 +21830,7 @@ public sealed class ModEntry : Mod
             if (!TryCreateVanillaEncounterResumeController(location, npc, candidate, out _, out var controllerPath, out _))
                 continue;
 
-            if (TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor, actor: npc, out _, out _))
+            if (TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor, privilegedTransitionTile, actor: npc, out _, out _))
                 continue;
 
             validCandidates.Add((candidate, ScoreEncounterResumeIntermediateTarget(currentTile, canonicalTarget, blockedTile, candidate)));
@@ -21653,7 +21862,7 @@ public sealed class ModEntry : Mod
             return false;
 
         return TryCreateVanillaEncounterResumeController(location, npc, targetTile, out _, out var controllerPath, out _)
-            && !TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor: false, actor: npc, out _, out _);
+            && !TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor: false, privilegedTransitionTile: null, actor: npc, out _, out _);
     }
 
     private bool CanUseEncounterResumeDestinationTile(GameLocation location, NPC npc, Point tile)
@@ -21673,7 +21882,7 @@ public sealed class ModEntry : Mod
         return true;
     }
 
-    private bool CanUseEncounterResumeWaypointTile(GameLocation location, NPC npc, Point tile, bool allowEntranceCorridor = false)
+    private bool CanUseEncounterResumeWaypointTile(GameLocation location, NPC npc, Point tile, bool allowEntranceCorridor = false, Point? privilegedTransitionTile = null)
     {
         if (!IsEncounterResumeTileWithinMap(location, tile))
             return false;
@@ -21684,19 +21893,51 @@ public sealed class ModEntry : Mod
         if (!IsEncounterResumeTileAvailable(location, npc, tile))
             return false;
 
-        if (HasEncounterResumeNoPathProperty(location, tile))
+        var allowedEntranceCorridorTile = allowEntranceCorridor
+            && privilegedTransitionTile.HasValue
+            && tile == privilegedTransitionTile.Value;
+
+        if (HasEncounterResumeNoPathProperty(location, tile) && !allowedEntranceCorridorTile)
             return false;
 
         if (HasEncounterResumeImpassableBuildingsTile(location, tile)
-            && !(allowEntranceCorridor && IsEncounterResumeNearEntranceTile(location, tile, 1)))
+            && !allowedEntranceCorridorTile)
         {
             return false;
         }
 
-        if (TryGetEncounterResumeStructuralBlockReason(location, npc, tile, allowEntranceCorridor, out _))
+        if (TryGetEncounterResumeStructuralBlockReason(location, npc, tile, allowEntranceCorridor, privilegedTransitionTile, out _) && !allowedEntranceCorridorTile)
             return false;
 
         return true;
+    }
+
+    private static bool TryCloneScheduleEntryForVanillaReleaseHandoff(
+        SchedulePathDescription scheduleEntry,
+        out SchedulePathDescription clonedEntry,
+        out bool degraded)
+    {
+        degraded = false;
+        clonedEntry = null!;
+
+        if (!TryMemberwiseClone(scheduleEntry, out clonedEntry))
+            return false;
+
+        if (!TryClearScheduleEntryRoute(clonedEntry))
+            degraded = true;
+
+        return true;
+    }
+
+    private static SchedulePathDescription CreateVanillaReleaseFallbackScheduleEntry(PendingVanillaEncounterResume pending)
+    {
+        return new SchedulePathDescription(
+            new Stack<Point>(),
+            pending.ActiveFacingDirection ?? 2,
+            pending.ActiveTargetLocation,
+            string.Empty,
+            string.Empty,
+            pending.ActiveTargetTile ?? Point.Zero);
     }
 
     private bool IsEncounterResumeTileAvailable(GameLocation location, NPC npc, Point tile)
@@ -21911,7 +22152,7 @@ public sealed class ModEntry : Mod
         if (!TryCreateVanillaEncounterResumeController(location, npc, candidate, out _, out var controllerPath, out _))
             return false;
 
-        if (!TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor: true, actor: npc, out var blockedTile, out var blockReason))
+        if (!TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor: true, privilegedTransitionTile: candidate, actor: npc, out var blockedTile, out var blockReason))
         {
             movementTarget = candidate;
             return true;
@@ -21947,7 +22188,7 @@ public sealed class ModEntry : Mod
                 pending,
                 detourSignature,
                 $"build_failed:{DescribeText(routeFailureReason)}:{DescribeText(routeBlockerSummary)}");
-            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, allowEntranceCorridor: true, out var nudgeTile, out var nudgeSelectionReason))
+            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, allowEntranceCorridor: true, privilegedTransitionTile: candidate, out var nudgeTile, out var nudgeSelectionReason))
                 return false;
 
             movementTarget = nudgeTile;
@@ -21960,10 +22201,10 @@ public sealed class ModEntry : Mod
             return true;
         }
 
-        if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, routeStartIndex, candidate, blockedTile, allowEntranceCorridor: true, out var detourWaypoint, out var routeEndIndex, out var detourFailureSummary, out var detourSelectionReason))
+        if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, routeStartIndex, candidate, blockedTile, allowEntranceCorridor: true, privilegedTransitionTile: candidate, out var detourWaypoint, out var routeEndIndex, out var detourFailureSummary, out var detourSelectionReason))
         {
             RegisterFailedEncounterDetourFailure(pending, detourSignature, detourFailureSummary);
-            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, allowEntranceCorridor: true, out var nudgeTile, out var nudgeSelectionReason))
+            if (!TryResolveEncounterResumeRecoveryNudgeTile(location, npc, pending, candidate, blockedTile, allowEntranceCorridor: true, privilegedTransitionTile: candidate, out var nudgeTile, out var nudgeSelectionReason))
                 return false;
 
             movementTarget = nudgeTile;
@@ -22053,6 +22294,7 @@ public sealed class ModEntry : Mod
         GameLocation location,
         IReadOnlyList<Point> controllerPath,
         bool allowEntranceCorridor,
+        Point? privilegedTransitionTile,
         NPC? actor,
         out Point blockedTile,
         out string blockReason)
@@ -22076,7 +22318,12 @@ public sealed class ModEntry : Mod
                 return true;
             }
 
-            if (TryGetEncounterResumePathPropertyBlockReason(location, pathTile, out var propertyBlockReason))
+            var allowedEntranceCorridorTile = allowEntranceCorridor
+                && privilegedTransitionTile.HasValue
+                && pathTile == privilegedTransitionTile.Value;
+
+            if (!allowedEntranceCorridorTile
+                && TryGetEncounterResumePathPropertyBlockReason(location, pathTile, out var propertyBlockReason))
             {
                 blockedTile = pathTile;
                 blockReason = propertyBlockReason;
@@ -22084,14 +22331,15 @@ public sealed class ModEntry : Mod
             }
 
             if (HasEncounterResumeImpassableBuildingsTile(location, pathTile)
-                && !(allowEntranceCorridor && IsEncounterResumeNearEntranceTile(location, pathTile, 1)))
+                && !allowedEntranceCorridorTile)
             {
                 blockedTile = pathTile;
                 blockReason = "impassable_buildings_path_tile";
                 return true;
             }
 
-            if (TryGetEncounterResumeStructuralBlockReason(location, actor, pathTile, allowEntranceCorridor, out var structuralBlockReason))
+            if (!allowedEntranceCorridorTile
+                && TryGetEncounterResumeStructuralBlockReason(location, actor, pathTile, allowEntranceCorridor, privilegedTransitionTile, out var structuralBlockReason))
             {
                 blockedTile = pathTile;
                 blockReason = structuralBlockReason;
@@ -22102,67 +22350,19 @@ public sealed class ModEntry : Mod
         return false;
     }
 
-    private bool TryValidateVanillaHandoffControllerPath(NPC npc, PendingVanillaEncounterResume pending, out string reason)
-    {
-        reason = string.Empty;
-        if (npc.currentLocation is null)
-        {
-            reason = "current_map_unavailable";
-            return false;
-        }
-
-        if (IsAtExactActiveArrivalTile(npc, pending))
-            return true;
-
-        object? activeController = npc.controller;
-        var activeControllerSource = "controller";
-        if (activeController is null
-            && TryGetMemberValue(npc, "temporaryController", out var temporaryController)
-            && temporaryController is not null)
-        {
-            activeController = temporaryController;
-            activeControllerSource = "temporary_controller";
-        }
-
-        if (activeController is null)
-        {
-            reason = npc.isMoving() ? "moving_without_controller" : "no_controller_after_checkschedule";
-            return false;
-        }
-
-        if (!TryReadControllerPath(activeController, out var controllerPath) || controllerPath.Count == 0)
-        {
-            reason = $"{activeControllerSource}_path_unreadable";
-            return false;
-        }
-
-        var allowEntranceCorridor = !string.IsNullOrWhiteSpace(pending.ActiveTargetLocation)
-            && !string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase);
-        if (TryFindEncounterResumePathObstacle(
-                npc.currentLocation,
-                controllerPath,
-                allowEntranceCorridor,
-                actor: npc,
-                out var blockedTile,
-                out var blockReason))
-        {
-            reason = $"{blockReason}@{DescribeNullablePoint(blockedTile)}";
-            return false;
-        }
-
-        return true;
-    }
-
     private bool TryGetEncounterResumeStructuralBlockReason(
         GameLocation location,
         NPC? actor,
         Point tile,
         bool allowEntranceCorridor,
+        Point? privilegedTransitionTile,
         out string blockReason)
     {
         blockReason = string.Empty;
 
-        if (allowEntranceCorridor && IsEncounterResumeNearEntranceTile(location, tile, 1))
+        if (allowEntranceCorridor
+            && privilegedTransitionTile.HasValue
+            && tile == privilegedTransitionTile.Value)
             return false;
 
         var walkabilityService = _walkabilityService;
