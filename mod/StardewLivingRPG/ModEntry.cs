@@ -562,6 +562,7 @@ public sealed class ModEntry : Mod
         public int? ActiveScheduleTime { get; set; }
         public string ActiveTargetLocation { get; set; } = string.Empty;
         public Point? ActiveTargetTile { get; set; }
+        public Point? ActiveArrivalTile { get; set; }
         public Point? HopLimitExhaustedTarget { get; set; }
         public Point? FallbackSameMapApproachTile { get; set; }
         public int? ActiveFacingDirection { get; set; }
@@ -15988,7 +15989,8 @@ public sealed class ModEntry : Mod
 
     private void StartEncounterSettleRecoveryMonitor(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
     {
-        if (string.IsNullOrWhiteSpace(pending.ActiveTargetLocation) || !pending.ActiveTargetTile.HasValue)
+        if (string.IsNullOrWhiteSpace(pending.ActiveTargetLocation)
+            || !TryGetActiveArrivalTile(pending, out var expectedArrivalTile))
             return;
 
         _encounterSettleRecoveryMonitorByNpcId[npc.Name] = new EncounterSettleRecoveryMonitor
@@ -15997,7 +15999,7 @@ public sealed class ModEntry : Mod
             EncounterId = pending.EncounterId,
             LiveNpc = npc,
             ExpectedLocation = pending.ActiveTargetLocation,
-            ExpectedTargetTile = pending.ActiveTargetTile.Value,
+            ExpectedTargetTile = expectedArrivalTile,
             ExpectedFacingDirection = pending.ActiveFacingDirection,
             ExpectedBehavior = pending.ActiveBehavior,
             ExpectedBaselineSpriteFrame = pending.ArrivalBaselineSpriteFrame,
@@ -16242,7 +16244,7 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log(
-            $"Autonomy: [REBIND] {npc.Name} reset complete: lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, check_schedule_invoked={checkScheduleInvoked}, check_schedule_method={checkScheduleMethod}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(nextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, active_behavior_source={pending.ActiveBehaviorSource}, fallback_used={pending.UsedTemporaryActiveSlotFallback}.",
+            $"Autonomy: [REBIND] {npc.Name} reset complete: lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, check_schedule_invoked={checkScheduleInvoked}, check_schedule_method={checkScheduleMethod}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(nextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, active_behavior_source={pending.ActiveBehaviorSource}, fallback_used={pending.UsedTemporaryActiveSlotFallback}.",
             LogLevel.Debug);
     }
 
@@ -16251,10 +16253,12 @@ public sealed class ModEntry : Mod
         var previousActiveScheduleTime = pending.ActiveScheduleTime;
         var previousActiveTargetLocation = pending.ActiveTargetLocation;
         var previousActiveTargetTile = pending.ActiveTargetTile;
+        var previousActiveArrivalTile = pending.ActiveArrivalTile;
         var previousActiveBehavior = pending.ActiveBehavior;
         pending.ActiveScheduleTime = TryGetActiveScheduleTime(npc, Game1.timeOfDay);
         pending.ActiveTargetLocation = string.Empty;
         pending.ActiveTargetTile = null;
+        pending.ActiveArrivalTile = null;
         pending.ActiveFacingDirection = null;
         pending.ActiveBehavior = string.Empty;
         pending.ActiveBehaviorSource = "none";
@@ -16308,6 +16312,23 @@ public sealed class ModEntry : Mod
             pending.ActiveBehaviorSource = activeBehaviorSource;
         }
 
+        if (!string.IsNullOrWhiteSpace(pending.ActiveTargetLocation)
+            && pending.ActiveTargetTile.HasValue)
+        {
+            pending.ActiveArrivalTile = pending.ActiveTargetTile;
+            var targetLocation = Game1.getLocationFromName(pending.ActiveTargetLocation);
+            if (targetLocation is not null
+                && TryResolveEncounterResumeArrivalTile(
+                    targetLocation,
+                    npc,
+                    pending.ActiveTargetTile.Value,
+                    pending.ActiveBehavior,
+                    out var activeArrivalTile))
+            {
+                pending.ActiveArrivalTile = activeArrivalTile;
+            }
+        }
+
         if (pending.ActiveScheduleTime != previousActiveScheduleTime
             && pending.HopLimitExhaustedTarget.HasValue
             && pending.ActiveTargetTile.HasValue
@@ -16319,7 +16340,7 @@ public sealed class ModEntry : Mod
         if (pending.ActiveScheduleTime != previousActiveScheduleTime && previousActiveScheduleTime.HasValue)
         {
             Monitor.Log(
-                $"Autonomy: [REBIND] {npc.Name} active-slot rolled over at time={Game1.timeOfDay} from schedule {previousActiveScheduleTime.Value.ToString(CultureInfo.InvariantCulture)} ({DescribeText(previousActiveTargetLocation)} {DescribeNullablePoint(previousActiveTargetTile)} behavior={DescribeText(previousActiveBehavior)}) to {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} ({DescribeText(pending.ActiveTargetLocation)} {DescribeNullablePoint(pending.ActiveTargetTile)} behavior={DescribeText(pending.ActiveBehavior)} source={pending.ActiveBehaviorSource}).",
+                $"Autonomy: [REBIND] {npc.Name} active-slot rolled over at time={Game1.timeOfDay} from schedule {previousActiveScheduleTime.Value.ToString(CultureInfo.InvariantCulture)} ({DescribeText(previousActiveTargetLocation)} {DescribeNullablePoint(previousActiveTargetTile)} arrival={DescribeNullablePoint(previousActiveArrivalTile)} behavior={DescribeText(previousActiveBehavior)}) to {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} ({DescribeText(pending.ActiveTargetLocation)} {DescribeNullablePoint(pending.ActiveTargetTile)} arrival={DescribeNullablePoint(pending.ActiveArrivalTile)} behavior={DescribeText(pending.ActiveBehavior)} source={pending.ActiveBehaviorSource}).",
                 LogLevel.Debug);
         }
     }
@@ -16355,7 +16376,7 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log(
-            $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(validation)}, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=true, method={successMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            $"Autonomy: returned {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(validation)}, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, resumed=true, method={successMethod}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         _encounterSettleRecoveryMonitorByNpcId.Remove(npc.Name);
         _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
@@ -16393,7 +16414,7 @@ public sealed class ModEntry : Mod
             LogRuntimeThrottled(
                 $"autonomy:invalid-resume:{npc.Name}:{pending.EncounterId}",
                 TimeSpan.FromSeconds(20),
-                $"Autonomy: rejected invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                $"Autonomy: rejected invalid vanilla schedule resume for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, resume_validation=invalid, resume_mismatch_reason={DescribeText(mismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, restarted_fallback={restartedFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={HasTemporaryController(npc)}, previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
                 LogLevel.Debug);
         }
         else
@@ -16444,6 +16465,7 @@ public sealed class ModEntry : Mod
         }
 
         var activeTargetTile = pending.ActiveTargetTile.Value;
+        var activeArrivalTile = pending.ActiveArrivalTile ?? activeTargetTile;
         var onTargetMap = string.Equals(currentMapName, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase);
 
         if (onTargetMap)
@@ -16465,10 +16487,12 @@ public sealed class ModEntry : Mod
                 return ResumeValidationOutcome.Unknown;
             }
 
-            if (sameMapEndpoint == activeTargetTile)
+            if (sameMapEndpoint == activeArrivalTile)
                 return ResumeValidationOutcome.Valid;
 
-            mismatchReason = $"wrong_same_map_endpoint(actual={DescribeNullablePoint(sameMapEndpoint)}, expected={DescribeNullablePoint(activeTargetTile)})";
+            mismatchReason = activeArrivalTile == activeTargetTile
+                ? $"wrong_same_map_endpoint(actual={DescribeNullablePoint(sameMapEndpoint)}, expected={DescribeNullablePoint(activeTargetTile)})"
+                : $"wrong_same_map_endpoint(actual={DescribeNullablePoint(sameMapEndpoint)}, expected_arrival={DescribeNullablePoint(activeArrivalTile)}, action_target={DescribeNullablePoint(activeTargetTile)})";
             return ResumeValidationOutcome.Invalid;
         }
 
@@ -16543,7 +16567,7 @@ public sealed class ModEntry : Mod
     {
         var hasTemporaryController = TryGetMemberValue(npc, "temporaryController", out var settleTempController) && settleTempController is not null;
         Monitor.Log(
-            $"Autonomy: settled {npc.Name} at active-slot destination after encounter {pending.EncounterId} ({pending.Phase}, settle_mode={settleMode}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, action_source={pending.ActiveBehaviorSource}, action_confirmed={pending.ActionVisibilityStableTicks >= EncounterArrivalActionStableTicks}, action_confirm_method={pending.ActionVisibilityMethod}, action_stable_ticks={pending.ActionVisibilityStableTicks}, degraded_action_settle={pending.DegradedActionSettle}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            $"Autonomy: settled {npc.Name} at active-slot destination after encounter {pending.EncounterId} ({pending.Phase}, settle_mode={settleMode}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, action_source={pending.ActiveBehaviorSource}, action_confirmed={pending.ActionVisibilityStableTicks >= EncounterArrivalActionStableTicks}, action_confirm_method={pending.ActionVisibilityMethod}, action_stable_ticks={pending.ActionVisibilityStableTicks}, degraded_action_settle={pending.DegradedActionSettle}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         StartEncounterSettleRecoveryMonitor(npc, pending, currentTick);
         _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
@@ -16555,15 +16579,15 @@ public sealed class ModEntry : Mod
         if (!HasReachedActiveFallbackTarget(npc, pending))
             return ActiveSlotArrivalSettleResult.NotReady;
 
-        if (!IsAtExactActiveTargetTile(npc, pending))
+        if (!IsAtExactActiveArrivalTile(npc, pending))
             return ActiveSlotArrivalSettleResult.NotReady;
 
         if (pending.NextScheduleTime.HasValue && Game1.timeOfDay >= pending.NextScheduleTime.Value)
             return ActiveSlotArrivalSettleResult.NotReady;
 
         if (npc.currentLocation is null
-            || !pending.ActiveTargetTile.HasValue
-            || !IsEncounterResumeTileAvailable(npc.currentLocation, npc, pending.ActiveTargetTile.Value))
+            || !TryGetActiveArrivalTile(pending, out var activeArrivalTile)
+            || !IsEncounterResumeTileAvailable(npc.currentLocation, npc, activeArrivalTile))
         {
             return ActiveSlotArrivalSettleResult.NotReady;
         }
@@ -16660,14 +16684,14 @@ public sealed class ModEntry : Mod
             LogRuntimeThrottled(
                 $"autonomy:arrival-action-restore-failed:{npc.Name}:{pending.EncounterId}",
                 TimeSpan.FromSeconds(20),
-                $"Autonomy: action slot restore failed for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_behavior={DescribeText(pending.ActiveBehavior)}, action_source={pending.ActiveBehaviorSource}, action_confirmed=false, action_confirm_method={pending.ActionVisibilityMethod}, action_stable_ticks={pending.ActionVisibilityStableTicks}, action_rebind_attempts={pending.ActionRebindAttemptCount}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+                $"Autonomy: action slot restore failed for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, active_behavior={DescribeText(pending.ActiveBehavior)}, action_source={pending.ActiveBehaviorSource}, action_confirmed=false, action_confirm_method={pending.ActionVisibilityMethod}, action_stable_ticks={pending.ActionVisibilityStableTicks}, action_rebind_attempts={pending.ActionRebindAttemptCount}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
                 LogLevel.Warn);
             _pendingVanillaEncounterResumeByNpcId.Remove(npc.Name);
             return ActiveSlotArrivalSettleResult.Completed;
         }
 
         Monitor.Log(
-            $"Autonomy: waiting for active-slot action handoff for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, action_source={pending.ActiveBehaviorSource}, action_confirmed=false, action_confirm_method={pending.ActionVisibilityMethod}, action_stable_ticks={pending.ActionVisibilityStableTicks}, action_state_signature={DescribeText(pending.LastObservedActionStateSignature)}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null)}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            $"Autonomy: waiting for active-slot action handoff for {npc.Name} after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, active_facing={(pending.ActiveFacingDirection?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_behavior={DescribeText(pending.ActiveBehavior)}, action_source={pending.ActiveBehaviorSource}, action_confirmed=false, action_confirm_method={pending.ActionVisibilityMethod}, action_stable_ticks={pending.ActionVisibilityStableTicks}, action_state_signature={DescribeText(pending.LastObservedActionStateSignature)}, arrival_rebind_invoked={pending.ArrivalRebindInvoked}, arrival_rebind_method={pending.ArrivalRebindMethod}, arrival_rebind_degraded={pending.ArrivalRebindDegraded}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={(TryGetMemberValue(npc, "temporaryController", out var tempCtrl) && tempCtrl is not null)}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         pending.NextAttemptTick = currentTick + 1;
         return ActiveSlotArrivalSettleResult.WaitingForAction;
@@ -16769,7 +16793,7 @@ public sealed class ModEntry : Mod
 
     private bool IsArrivalRebindSatisfied(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
     {
-        if (!IsAtExactActiveTargetTile(npc, pending))
+        if (!IsAtExactActiveArrivalTile(npc, pending))
             return false;
 
         if (IsUsingTemporaryActiveSlotFallback(npc, pending))
@@ -16791,7 +16815,7 @@ public sealed class ModEntry : Mod
 
     private static bool IsArrivalPositionOnlySatisfied(NPC npc, PendingVanillaEncounterResume pending)
     {
-        return IsAtExactActiveTargetTile(npc, pending)
+        return IsAtExactActiveArrivalTile(npc, pending)
             && !IsUsingTemporaryActiveSlotFallback(npc, pending)
             && !npc.isMoving()
             && npc.controller is null
@@ -16799,12 +16823,12 @@ public sealed class ModEntry : Mod
             && (!pending.ActiveFacingDirection.HasValue || npc.FacingDirection == pending.ActiveFacingDirection.Value);
     }
 
-    private static bool IsAtExactActiveTargetTile(NPC npc, PendingVanillaEncounterResume pending)
+    private static bool IsAtExactActiveArrivalTile(NPC npc, PendingVanillaEncounterResume pending)
     {
-        return pending.ActiveTargetTile.HasValue
+        return (pending.ActiveArrivalTile ?? pending.ActiveTargetTile).HasValue
             && npc.currentLocation is not null
             && string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase)
-            && npc.TilePoint == pending.ActiveTargetTile.Value;
+            && npc.TilePoint == (pending.ActiveArrivalTile ?? pending.ActiveTargetTile)!.Value;
     }
 
     private bool HasTerminalSafeArrivalState(NPC npc, PendingVanillaEncounterResume pending)
@@ -17894,7 +17918,8 @@ public sealed class ModEntry : Mod
     {
         fallbackController = null;
 
-        if (pending.ActiveTargetTile is null)
+        if (pending.ActiveTargetTile is null
+            || !TryGetActiveArrivalTile(pending, out var arrivalTile))
             return false;
 
         var targetTile = pending.ActiveTargetTile.Value;
@@ -17906,23 +17931,23 @@ public sealed class ModEntry : Mod
                 targetLocation,
                 npc,
                 pending,
-                targetTile,
+                arrivalTile,
                 4,
                 excludedTile: null,
                 out var movementTarget))
         {
             pending.FailedResolutionTargets.Add(targetKey);
             Monitor.Log(
-                $"Autonomy: [REBIND] {npc.Name} could not resolve a reachable movement target for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(targetTile)} in {pending.ActiveTargetLocation}.",
+                $"Autonomy: [REBIND] {npc.Name} could not resolve a reachable movement target for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(targetTile)} in {pending.ActiveTargetLocation} (arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}).",
                 LogLevel.Debug);
             return false;
         }
 
         pending.FallbackSameMapApproachTile = movementTarget;
-        if (npc.TilePoint == targetTile)
+        if (npc.TilePoint == arrivalTile)
         {
             Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} already at final active-slot destination after encounter {pending.EncounterId} (active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, tile={DescribeNullablePoint(targetTile)}, movement_target={DescribeNullablePoint(movementTarget)}, target_kind={(movementTarget == targetTile ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, time={Game1.timeOfDay}).",
+                $"Autonomy: [FORCE_PATH] {npc.Name} already at final active-slot destination after encounter {pending.EncounterId} (active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, target_tile={DescribeNullablePoint(targetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(movementTarget)}, target_kind={(movementTarget == arrivalTile ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, time={Game1.timeOfDay}).",
                 LogLevel.Debug);
             return false;
         }
@@ -17945,16 +17970,16 @@ public sealed class ModEntry : Mod
         {
             ClearTemporaryActiveSlotFallback(npc, pending);
             Monitor.Log(
-                $"Autonomy: [REBIND] {npc.Name} unable to create vanilla resume controller for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(targetTile)} in {pending.ActiveTargetLocation} using movement_target={DescribeNullablePoint(movementTarget)}.",
+                $"Autonomy: [REBIND] {npc.Name} unable to create vanilla resume controller for schedule {(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")} at {DescribeNullablePoint(targetTile)} in {pending.ActiveTargetLocation} (arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}) using movement_target={DescribeNullablePoint(movementTarget)}.",
                 LogLevel.Debug);
             return false;
         }
 
-        var pathMode = movementTarget == targetTile ? "vanilla_exact_target" : "vanilla_approach_target";
-        if (movementTarget != targetTile)
+        var pathMode = movementTarget == arrivalTile ? "vanilla_exact_target" : "vanilla_approach_target";
+        if (movementTarget != arrivalTile)
             pending.VisitedSameMapWaypoints.Add(movementTarget);
         Monitor.Log(
-            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (path_mode={pathMode}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, target_tile={DescribeNullablePoint(targetTile)}, movement_target={DescribeNullablePoint(movementTarget)}, target_kind={(movementTarget == targetTile ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, path_length={pathLength}, time={Game1.timeOfDay}).",
+            $"Autonomy: [FORCE_PATH] {npc.Name} forced same-map active-slot path after encounter {pending.EncounterId} (path_mode={pathMode}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, location={pending.ActiveTargetLocation}, target_tile={DescribeNullablePoint(targetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(movementTarget)}, target_kind={(movementTarget == arrivalTile ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, path_length={pathLength}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         return true;
     }
@@ -18035,7 +18060,7 @@ public sealed class ModEntry : Mod
         }
 
         Monitor.Log(
-            $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} arrival_resolved={pending.FallbackLegArrivalTileResolved} path_mode={pathMode} path_length={pathLength} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} time={Game1.timeOfDay}.",
+            $"Autonomy: [CrossMapLeg(start)] {npc.Name} encounter={pending.EncounterId} from={pending.FallbackLegFromLocation} to={pending.FallbackLegToLocation} transition_tile={DescribeNullablePoint(pending.FallbackLegDepartureTile)} approach_tile={DescribeNullablePoint(pending.FallbackLegApproachTile)} arrival_tile={DescribeNullablePoint(pending.FallbackLegArrivalTile)} arrival_resolved={pending.FallbackLegArrivalTileResolved} path_mode={pathMode} path_length={pathLength} active_target_location={DescribeText(pending.ActiveTargetLocation)} active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)} active_arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)} time={Game1.timeOfDay}.",
             LogLevel.Debug);
         return true;
     }
@@ -18043,6 +18068,9 @@ public sealed class ModEntry : Mod
     private void TryAdvanceSameMapActiveSlotFallback(NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
     {
         if (pending.FallbackMode != EncounterFallbackMode.SameMapTarget || npc.currentLocation is null)
+            return;
+
+        if (!TryGetActiveArrivalTile(pending, out var arrivalTile))
             return;
 
         UpdateFallbackProgressObservation(npc, pending, currentTick);
@@ -18090,15 +18118,15 @@ public sealed class ModEntry : Mod
                 pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
                 pending.FallbackLastObservedTile = npc.TilePoint;
                 pending.FallbackLastProgressTick = currentTick;
-                if (nextMovementTarget != pending.ActiveTargetTile.Value)
+                if (nextMovementTarget != arrivalTile)
                     pending.VisitedSameMapWaypoints.Add(nextMovementTarget);
-                var nextPathMode = nextMovementTarget == pending.ActiveTargetTile.Value
+                var nextPathMode = nextMovementTarget == arrivalTile
                     ? "vanilla_exact_target"
                     : "vanilla_approach_target";
                 LogRuntimeThrottled(
                     $"autonomy:same-map-waypoint-advance:{npc.Name}:{pending.EncounterId}",
                     TimeSpan.FromSeconds(5),
-                    $"Autonomy: [FORCE_PATH] {npc.Name} advanced same-map active-slot fallback after reaching waypoint {DescribeNullablePoint(previousWaypoint)} (path_mode={nextPathMode}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, movement_target={DescribeNullablePoint(nextMovementTarget)}, target_kind={(nextMovementTarget == pending.ActiveTargetTile.Value ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, path_length={nextPathLength}).",
+                    $"Autonomy: [FORCE_PATH] {npc.Name} advanced same-map active-slot fallback after reaching waypoint {DescribeNullablePoint(previousWaypoint)} (path_mode={nextPathMode}, target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(nextMovementTarget)}, target_kind={(nextMovementTarget == arrivalTile ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, path_length={nextPathLength}).",
                     LogLevel.Trace);
                 return;
             }
@@ -18108,7 +18136,7 @@ public sealed class ModEntry : Mod
                     npc.currentLocation,
                     npc,
                     pending,
-                    pending.ActiveTargetTile.Value,
+                    arrivalTile,
                     4,
                     previousWaypoint,
                     out nextMovementTarget)
@@ -18125,15 +18153,15 @@ public sealed class ModEntry : Mod
                 pending.FallbackLastObservedLocation = npc.currentLocation.Name ?? string.Empty;
                 pending.FallbackLastObservedTile = npc.TilePoint;
                 pending.FallbackLastProgressTick = currentTick;
-                if (nextMovementTarget != pending.ActiveTargetTile.Value)
+                if (nextMovementTarget != arrivalTile)
                     pending.VisitedSameMapWaypoints.Add(nextMovementTarget);
-                var nextPathMode = nextMovementTarget == pending.ActiveTargetTile.Value
+                var nextPathMode = nextMovementTarget == arrivalTile
                     ? "vanilla_exact_target"
                     : "vanilla_approach_target";
                 LogRuntimeThrottled(
                     $"autonomy:same-map-waypoint-advance:{npc.Name}:{pending.EncounterId}",
                     TimeSpan.FromSeconds(5),
-                    $"Autonomy: [FORCE_PATH] {npc.Name} advanced same-map active-slot fallback after reaching waypoint {DescribeNullablePoint(previousWaypoint)} (path_mode={nextPathMode}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, movement_target={DescribeNullablePoint(nextMovementTarget)}, target_kind={(nextMovementTarget == pending.ActiveTargetTile.Value ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, path_length={nextPathLength}).",
+                    $"Autonomy: [FORCE_PATH] {npc.Name} advanced same-map active-slot fallback after reaching waypoint {DescribeNullablePoint(previousWaypoint)} (path_mode={nextPathMode}, target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(nextMovementTarget)}, target_kind={(nextMovementTarget == arrivalTile ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, path_length={nextPathLength}).",
                     LogLevel.Trace);
                 return;
             }
@@ -18172,7 +18200,7 @@ public sealed class ModEntry : Mod
         pending.FallbackRepathCount += 1;
         ClearTemporaryActiveSlotFallbackController(npc, pending);
         ClearEncounterMotionState(npc);
-        var movementTarget = pending.ActiveTargetTile;
+        var movementTarget = pending.ActiveArrivalTile ?? pending.ActiveTargetTile;
         if (movementTarget.HasValue
             && TryResolveReachableSameMapEncounterResumeTarget(
                 npc.currentLocation,
@@ -18201,7 +18229,7 @@ public sealed class ModEntry : Mod
                 ? "vanilla_exact_target"
                 : "vanilla_approach_target";
             Monitor.Log(
-                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (path_mode={pathMode}, repath_count={pending.FallbackRepathCount}, tile={DescribeNullablePoint(pending.ActiveTargetTile)}, movement_target={DescribeNullablePoint(reachableMovementTarget)}, target_kind={(reachableMovementTarget == movementTarget.Value ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, path_length={pathLength}).",
+                $"Autonomy: [FORCE_PATH] {npc.Name} repathed same-map active-slot fallback (path_mode={pathMode}, repath_count={pending.FallbackRepathCount}, target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, arrival_tile={DescribeNullablePoint(pending.ActiveArrivalTile)}, movement_target={DescribeNullablePoint(reachableMovementTarget)}, target_kind={(reachableMovementTarget == movementTarget.Value ? "final_slot" : "intermediate_waypoint")}, route_index={pending.FallbackCurrentLegRouteEndIndex}, route_count={pending.FallbackRouteTiles.Count}, path_length={pathLength}).",
                 LogLevel.Debug);
             return;
         }
@@ -18232,14 +18260,15 @@ public sealed class ModEntry : Mod
 
     private static bool HasReachedActiveFallbackTarget(NPC npc, PendingVanillaEncounterResume pending)
     {
-        if (!pending.ActiveTargetTile.HasValue
+        var activeArrivalTile = pending.ActiveArrivalTile ?? pending.ActiveTargetTile;
+        if (!activeArrivalTile.HasValue
             || npc.currentLocation is null
             || !string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        if (Vector2.Distance(npc.Tile, new Vector2(pending.ActiveTargetTile.Value.X, pending.ActiveTargetTile.Value.Y)) <= 1.25f)
+        if (Vector2.Distance(npc.Tile, new Vector2(activeArrivalTile.Value.X, activeArrivalTile.Value.Y)) <= 1.25f)
             return true;
 
         return false;
@@ -18248,9 +18277,10 @@ public sealed class ModEntry : Mod
     private static bool HasReachedSameMapFallbackWaypoint(NPC npc, PendingVanillaEncounterResume pending)
     {
         var currentLegTarget = pending.FallbackCurrentLegTarget ?? pending.FallbackSameMapApproachTile;
-        return pending.ActiveTargetTile.HasValue
+        var activeArrivalTile = pending.ActiveArrivalTile ?? pending.ActiveTargetTile;
+        return activeArrivalTile.HasValue
             && currentLegTarget.HasValue
-            && currentLegTarget.Value != pending.ActiveTargetTile.Value
+            && currentLegTarget.Value != activeArrivalTile.Value
             && npc.currentLocation is not null
             && string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase)
             && npc.TilePoint == currentLegTarget.Value;
@@ -18499,6 +18529,46 @@ public sealed class ModEntry : Mod
         return true;
     }
 
+    private static bool TryGetActiveArrivalTile(PendingVanillaEncounterResume pending, out Point arrivalTile)
+    {
+        arrivalTile = Point.Zero;
+        var resolvedTile = pending.ActiveArrivalTile ?? pending.ActiveTargetTile;
+        if (!resolvedTile.HasValue)
+            return false;
+
+        arrivalTile = resolvedTile.Value;
+        return true;
+    }
+
+    private bool TryResolveEncounterResumeArrivalTile(
+        GameLocation location,
+        NPC npc,
+        Point targetTile,
+        string activeBehavior,
+        out Point arrivalTile)
+    {
+        arrivalTile = targetTile;
+        if (CanUseEncounterResumeDestinationTile(location, npc, targetTile))
+            return true;
+
+        if (string.IsNullOrWhiteSpace(activeBehavior))
+            return false;
+
+        foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(targetTile, 2))
+        {
+            if (candidate == targetTile)
+                continue;
+
+            if (!CanUseEncounterResumeDestinationTile(location, npc, candidate))
+                continue;
+
+            arrivalTile = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
     private bool TryResolveReachableSameMapEncounterResumeTarget(
         GameLocation location,
         NPC npc,
@@ -18512,12 +18582,29 @@ public sealed class ModEntry : Mod
 
         ClearSameMapFallbackRouteState(pending);
 
-        foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(requestedTile, maxRadius))
+        if (TryResolveSameMapEncounterResumeTargetCandidate(
+                location,
+                npc,
+                pending,
+                requestedTile,
+                routeStartIndex: 0,
+                out movementTarget))
         {
-            if (excludedTile.HasValue && candidate == excludedTile.Value)
-                continue;
+            return true;
+        }
 
-            if (candidate != requestedTile && candidate == npc.TilePoint)
+        if (CanUseEncounterResumeDestinationTile(location, npc, requestedTile))
+            return false;
+
+        foreach (var candidate in EnumerateEncounterResumeMovementTargetCandidates(requestedTile, Math.Min(maxRadius, 1)))
+        {
+            if (candidate == requestedTile
+                || (excludedTile.HasValue && candidate == excludedTile.Value))
+            {
+                continue;
+            }
+
+            if (candidate == npc.TilePoint)
                 continue;
 
             if (pending.VisitedSameMapWaypoints.Contains(candidate))
@@ -18526,41 +18613,62 @@ public sealed class ModEntry : Mod
             if (candidate == pending.LastReachedSameMapWaypoint || candidate == pending.PreviousReachedSameMapWaypoint)
                 continue;
 
-            if (!CanUseEncounterResumeDestinationTile(location, npc, candidate))
-                continue;
-
-            if (!TryCreateVanillaEncounterResumeController(location, npc, candidate, out _, out var controllerPath, out _))
-                continue;
-
-            if (!TryFindEncounterResumePathObstacle(location, controllerPath, out var blockedTile, out var blockReason))
+            if (TryResolveSameMapEncounterResumeTargetCandidate(
+                    location,
+                    npc,
+                    pending,
+                    candidate,
+                    routeStartIndex: 0,
+                    out movementTarget))
             {
-                movementTarget = candidate;
                 return true;
             }
-
-            LogRuntimeThrottled(
-                $"autonomy:encounter-path-obstacle:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
-                TimeSpan.FromSeconds(20),
-                $"Autonomy: [FORCE_PATH] {npc.Name} found blocked vanilla encounter resume path to {DescribeNullablePoint(candidate)} in {location.Name} because controller path hit {blockReason} at {DescribeNullablePoint(blockedTile)}; attempting detour.",
-                LogLevel.Trace);
-
-            if (!TryBuildEncounterResumeDetourRoute(location, npc.TilePoint, candidate, blockedTile, out var routeTiles))
-                continue;
-
-            if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, 0, out var detourWaypoint, out var routeEndIndex))
-                continue;
-
-            SetEncounterResumeDetourRouteState(pending, routeTiles, routeEndIndex, detourWaypoint);
-            movementTarget = detourWaypoint;
-            LogRuntimeThrottled(
-                $"autonomy:encounter-detour-route:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
-                TimeSpan.FromSeconds(20),
-                $"Autonomy: [FORCE_PATH] {npc.Name} routing around blocked resume tile {DescribeNullablePoint(blockedTile)} in {location.Name} using detour waypoint {DescribeNullablePoint(detourWaypoint)} toward {DescribeNullablePoint(candidate)} (route_index={routeEndIndex}, route_count={routeTiles.Count}).",
-                LogLevel.Trace);
-            return true;
         }
 
         return false;
+    }
+
+    private bool TryResolveSameMapEncounterResumeTargetCandidate(
+        GameLocation location,
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        Point candidate,
+        int routeStartIndex,
+        out Point movementTarget)
+    {
+        movementTarget = Point.Zero;
+        if (!CanUseEncounterResumeDestinationTile(location, npc, candidate))
+            return false;
+
+        if (!TryCreateVanillaEncounterResumeController(location, npc, candidate, out _, out var controllerPath, out _))
+            return false;
+
+        if (!TryFindEncounterResumePathObstacle(location, controllerPath, out var blockedTile, out var blockReason))
+        {
+            movementTarget = candidate;
+            return true;
+        }
+
+        LogRuntimeThrottled(
+            $"autonomy:encounter-path-obstacle:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
+            TimeSpan.FromSeconds(20),
+            $"Autonomy: [FORCE_PATH] {npc.Name} found blocked vanilla encounter resume path to {DescribeNullablePoint(candidate)} in {location.Name} because controller path hit {blockReason} at {DescribeNullablePoint(blockedTile)}; attempting detour to canonical arrival tile.",
+            LogLevel.Trace);
+
+        if (!TryBuildEncounterResumeDetourRoute(location, npc.TilePoint, candidate, blockedTile, out var routeTiles))
+            return false;
+
+        if (!TrySelectEncounterResumeDetourWaypoint(location, npc, pending, routeTiles, routeStartIndex, out var detourWaypoint, out var routeEndIndex))
+            return false;
+
+        SetEncounterResumeDetourRouteState(pending, routeTiles, routeEndIndex, detourWaypoint);
+        movementTarget = detourWaypoint;
+        LogRuntimeThrottled(
+            $"autonomy:encounter-detour-route:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
+            TimeSpan.FromSeconds(20),
+            $"Autonomy: [FORCE_PATH] {npc.Name} routing around blocked resume tile {DescribeNullablePoint(blockedTile)} in {location.Name} using detour waypoint {DescribeNullablePoint(detourWaypoint)} toward canonical arrival tile {DescribeNullablePoint(candidate)} (route_index={routeEndIndex}, route_count={routeTiles.Count}).",
+            LogLevel.Trace);
+        return true;
     }
 
     private bool TryAdvanceStoredSameMapDetourRoute(
@@ -18607,7 +18715,8 @@ public sealed class ModEntry : Mod
         if (routeTiles.Count == 0)
             return false;
 
-        for (var index = routeTiles.Count - 1; index >= startIndex; index--)
+        var prefixStartIndex = Math.Max(0, startIndex - 1);
+        for (var index = startIndex; index < routeTiles.Count; index++)
         {
             var candidate = routeTiles[index];
             if (candidate == npc.TilePoint
@@ -18627,12 +18736,21 @@ public sealed class ModEntry : Mod
             if (TryFindEncounterResumePathObstacle(location, controllerPath, out _, out _))
                 continue;
 
+            if (!DoesEncounterResumeControllerPathStayOnRoutePrefix(controllerPath, routeTiles, prefixStartIndex, index, npc.TilePoint, out var offRouteTile))
+            {
+                LogRuntimeThrottled(
+                    $"autonomy:encounter-detour-off-route:{npc.Name}:{pending.EncounterId}:{location.Name}:{candidate.X},{candidate.Y}",
+                    TimeSpan.FromSeconds(20),
+                    $"Autonomy: [FORCE_PATH] {npc.Name} rejected detour waypoint {DescribeNullablePoint(candidate)} in {location.Name} because controller path left the stored detour route at {DescribeNullablePoint(offRouteTile)}.",
+                    LogLevel.Trace);
+                continue;
+            }
+
             movementTarget = candidate;
             routeEndIndex = index;
-            return true;
         }
 
-        return false;
+        return routeEndIndex >= 0;
     }
 
     private static void SetEncounterResumeDetourRouteState(
@@ -18700,6 +18818,40 @@ public sealed class ModEntry : Mod
 
         routeTiles.Reverse();
         return routeTiles.Count > 0;
+    }
+
+    private static bool DoesEncounterResumeControllerPathStayOnRoutePrefix(
+        IReadOnlyList<Point> controllerPath,
+        IReadOnlyList<Point> routeTiles,
+        int prefixStartIndex,
+        int routeEndIndex,
+        Point currentTile,
+        out Point offRouteTile)
+    {
+        offRouteTile = Point.Zero;
+        if (controllerPath.Count == 0
+            || routeTiles.Count == 0
+            || prefixStartIndex < 0
+            || routeEndIndex < prefixStartIndex
+            || routeEndIndex >= routeTiles.Count)
+        {
+            return false;
+        }
+
+        var allowedTiles = new HashSet<Point> { currentTile };
+        for (var index = prefixStartIndex; index <= routeEndIndex; index++)
+            allowedTiles.Add(routeTiles[index]);
+
+        foreach (var pathTile in controllerPath)
+        {
+            if (allowedTiles.Contains(pathTile))
+                continue;
+
+            offRouteTile = pathTile;
+            return false;
+        }
+
+        return true;
     }
 
     private bool CanTraverseEncounterResumeDetourTile(
