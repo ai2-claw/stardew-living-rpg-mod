@@ -130,6 +130,7 @@ public sealed class ModEntry : Mod
     private const int EncounterSettleRecoveryStableTicks = 10;
     private const int EncounterSettleRecoveryRetryDelayTicks = 5;
     private const int EncounterSettleRecoveryMaxAttempts = 2;
+    private const int EncounterVanillaBootstrapConfirmTicks = 30;
     private const double AutonomyMainThreadBudgetMilliseconds = 2.5d;
     private const int AutonomyFullFidelityGlobalCap = 20;
     private const int AutonomyOffscreenSocialLocationsMax = 2;
@@ -682,6 +683,22 @@ public sealed class ModEntry : Mod
         public ulong NextSameMapReplanTick { get; set; }
         public bool PendingCrossMapPostWarpReplan { get; set; }
         public ulong NextCrossMapPostWarpReplanTick { get; set; }
+        public bool PendingVanillaBootstrapRelease { get; set; }
+        public ulong NextVanillaBootstrapTick { get; set; }
+        public int VanillaBootstrapFailureCount { get; set; }
+        public string VanillaBootstrapReason { get; set; } = string.Empty;
+        public bool VanillaBootstrapConfirming { get; set; }
+        public ulong VanillaBootstrapConfirmDeadlineTick { get; set; }
+        public Point VanillaBootstrapStartTile { get; set; }
+        public string VanillaBootstrapStartLocation { get; set; } = string.Empty;
+        public Point? VanillaBootstrapTargetTile { get; set; }
+        public string VanillaBootstrapTargetKind { get; set; } = string.Empty;
+        public string VanillaBootstrapMethod { get; set; } = string.Empty;
+        public int VanillaBootstrapInitialPathCount { get; set; }
+        public Point? VanillaBootstrapInitialNextTile { get; set; }
+        public bool VanillaBootstrapHadOriginalScheduleEntry { get; set; }
+        public int? VanillaBootstrapInjectedScheduleTime { get; set; }
+        public SchedulePathDescription? VanillaBootstrapOriginalScheduleEntry { get; set; }
         public bool FallbackCurrentTargetIsRecoveryNudge { get; set; }
         public Point? LastRecoveryNudgeTile { get; set; }
         public Point? PreviousRecoveryNudgeTile { get; set; }
@@ -691,8 +708,6 @@ public sealed class ModEntry : Mod
         public HashSet<string> VisitedIntermediateTargetTiles { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Point? LastProgressLogTile { get; set; }
         public string LastProgressLogLocation { get; set; } = string.Empty;
-        public bool PendingVanillaReleaseOnlyHandoff { get; set; }
-        public int VanillaReleaseRetryCount { get; set; }
     }
 
     private sealed class DetourWaypointSelectionStats
@@ -17308,9 +17323,9 @@ public sealed class ModEntry : Mod
         if (pending.Attempts == 0)
             pending.InitialTilePoint = npc.TilePoint;
 
-        if (pending.PendingVanillaReleaseOnlyHandoff)
+        if (pending.PendingVanillaBootstrapRelease)
         {
-            TryAdvanceVanillaReleaseOnlyHandoff(npcId, npc, pending, currentTick);
+            TryAdvanceVanillaBootstrapRelease(npcId, npc, pending, currentTick);
             return;
         }
 
@@ -17490,6 +17505,164 @@ public sealed class ModEntry : Mod
             $"Autonomy: waiting to return {npc.Name} to vanilla schedule after encounter {pending.EncounterId} ({pending.Phase}, restored={pending.RestoredSchedule}, attempts={pending.Attempts}, resume_validation={DescribeResumeValidation(resumeValidation)}, resume_mismatch_reason={DescribeText(resumeMismatchReason)}, expected_leg_tile={DescribeNullablePoint(expectedLegTile)}, rejected_resume_count={pending.RejectedResumeCountForCurrentSlot}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, last_attempt_time={(pending.LastAttemptedTimeOfDay?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_used={pending.UsedTemporaryActiveSlotFallback}, controller={DescribeControllerType(npc)}, isMoving={npc.isMoving()}, temporary_controller={hasTemporaryController}, TilePoint=({npc.TilePoint.X},{npc.TilePoint.Y}), previousEndPoint={DescribePointMember(npc, "previousEndPoint")}, lastAttemptedSchedule={DescribeMemberValue(npc, "lastAttemptedSchedule")}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
             LogLevel.Debug);
         pending.NextAttemptTick = currentTick + 300;
+    }
+
+    private void TryAdvanceVanillaBootstrapRelease(string npcId, NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        if (currentTick < pending.NextVanillaBootstrapTick)
+        {
+            pending.NextAttemptTick = pending.NextVanillaBootstrapTick;
+            return;
+        }
+
+        if (pending.VanillaBootstrapConfirming)
+        {
+            if (TryConfirmVanillaBootstrapProgress(npcId, npc, pending, currentTick))
+                return;
+
+            pending.NextAttemptTick = pending.NextVanillaBootstrapTick;
+            return;
+        }
+
+        pending.Attempts += 1;
+        var reloadTodayOk = false;
+        var nextScheduleTime = pending.NextScheduleTime;
+        var checkScheduleInvoked = false;
+        var checkScheduleMethod = "none";
+        TryRebindVanillaScheduleAtCurrentTime(
+            npc,
+            pending,
+            allowEncounterResumeForcePath: false,
+            out reloadTodayOk,
+            out nextScheduleTime,
+            out checkScheduleInvoked,
+            out checkScheduleMethod);
+        pending.ReloadTodayOk |= reloadTodayOk;
+        pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
+        pending.NextScheduleTime = nextScheduleTime;
+        pending.CheckScheduleInvoked |= checkScheduleInvoked;
+        if (checkScheduleInvoked)
+            pending.CheckScheduleMethod = checkScheduleMethod;
+
+        if (!pending.ActiveScheduleTime.HasValue
+            || string.IsNullOrWhiteSpace(pending.ActiveTargetLocation)
+            || !pending.ActiveTargetTile.HasValue)
+        {
+            RestorePendingVanillaBootstrapScheduleEntry(npc, pending);
+            LogRuntimeThrottled(
+                $"autonomy:vanilla-rollover-bootstrap-missing:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: vanilla_rollover_bootstrap_released_without_active_slot for {npc.Name} after encounter {pending.EncounterId} (reason={DescribeText(pending.VanillaBootstrapReason)}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, time={Game1.timeOfDay}).",
+                LogLevel.Warn);
+            _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+            return;
+        }
+
+        LogRuntimeThrottled(
+            $"autonomy:vanilla-rollover-bootstrap-started:{npc.Name}:{pending.EncounterId}",
+            TimeSpan.FromSeconds(20),
+            $"Autonomy: vanilla_rollover_bootstrap_started for {npc.Name} after encounter {pending.EncounterId} (reason={DescribeText(pending.VanillaBootstrapReason)}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, time={Game1.timeOfDay}).",
+            LogLevel.Debug);
+
+        var bootstrapApplied = TryBootstrapVanillaReleaseOnlyFromCurrentTile(
+            npc,
+            pending,
+            out var bootstrapMethod,
+            out var failureReason);
+        if (bootstrapApplied)
+        {
+            pending.VanillaBootstrapConfirming = true;
+            pending.VanillaBootstrapConfirmDeadlineTick = currentTick + EncounterVanillaBootstrapConfirmTicks;
+            pending.NextVanillaBootstrapTick = currentTick + 1;
+            pending.NextAttemptTick = pending.NextVanillaBootstrapTick;
+            LogRuntimeThrottled(
+                $"autonomy:vanilla-rollover-bootstrap-created:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: vanilla_rollover_bootstrap_controller_created for {npc.Name} after encounter {pending.EncounterId} (reason={DescribeText(pending.VanillaBootstrapReason)}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, bootstrap_method={bootstrapMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, confirm_deadline_tick={pending.VanillaBootstrapConfirmDeadlineTick}, time={Game1.timeOfDay}).",
+                LogLevel.Debug);
+            return;
+        }
+
+        RestorePendingVanillaBootstrapScheduleEntry(npc, pending);
+        pending.VanillaBootstrapFailureCount += 1;
+        pending.VanillaBootstrapConfirming = false;
+        pending.NextVanillaBootstrapTick = currentTick + (ulong)GetEncounterStationaryResumeRetryTicks(pending.VanillaBootstrapFailureCount);
+        pending.NextAttemptTick = pending.NextVanillaBootstrapTick;
+        LogRuntimeThrottled(
+            $"autonomy:vanilla-rollover-bootstrap-invalid:{npc.Name}:{pending.EncounterId}:{failureReason}",
+            TimeSpan.FromSeconds(20),
+            $"Autonomy: vanilla_rollover_bootstrap_invalid_path for {npc.Name} after encounter {pending.EncounterId} (reason={DescribeText(pending.VanillaBootstrapReason)}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, bootstrap_failure={DescribeText(failureReason)}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, retry_tick={pending.NextVanillaBootstrapTick}, time={Game1.timeOfDay}).",
+            LogLevel.Warn);
+    }
+
+    private bool TryConfirmVanillaBootstrapProgress(string npcId, NPC npc, PendingVanillaEncounterResume pending, ulong currentTick)
+    {
+        if (HasVanillaBootstrapProgressed(npc, pending, out var progressReason))
+        {
+            var bootstrapReason = pending.VanillaBootstrapReason;
+            var bootstrapMethod = pending.VanillaBootstrapMethod;
+            RestorePendingVanillaBootstrapScheduleEntry(npc, pending);
+            pending.PendingVanillaBootstrapRelease = false;
+            pending.VanillaBootstrapConfirming = false;
+            pending.NextVanillaBootstrapTick = 0;
+            pending.VanillaBootstrapConfirmDeadlineTick = 0;
+            pending.VanillaBootstrapFailureCount = 0;
+            pending.VanillaBootstrapReason = string.Empty;
+            pending.VanillaBootstrapMethod = string.Empty;
+            LogRuntimeThrottled(
+                $"autonomy:vanilla-rollover-bootstrap-confirmed:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: vanilla_rollover_bootstrap_progress_confirmed for {npc.Name} after encounter {pending.EncounterId} (reason={DescribeText(bootstrapReason)}, progress_reason={progressReason}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, bootstrap_method={bootstrapMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, time={Game1.timeOfDay}).",
+                LogLevel.Debug);
+            LogRuntimeThrottled(
+                $"autonomy:vanilla-rollover-bootstrap-release:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: vanilla_rollover_bootstrap_released for {npc.Name} after encounter {pending.EncounterId} (reason={DescribeText(bootstrapReason)}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, bootstrap_method={bootstrapMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, time={Game1.timeOfDay}).",
+                LogLevel.Debug);
+            _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
+            return true;
+        }
+
+        var controller = GetCurrentResumeController(npc);
+        if (controller is null)
+        {
+            RestorePendingVanillaBootstrapScheduleEntry(npc, pending);
+            pending.VanillaBootstrapConfirming = false;
+            pending.VanillaBootstrapFailureCount += 1;
+            pending.NextVanillaBootstrapTick = currentTick + (ulong)GetEncounterStationaryResumeRetryTicks(pending.VanillaBootstrapFailureCount);
+            pending.NextAttemptTick = pending.NextVanillaBootstrapTick;
+            LogRuntimeThrottled(
+                $"autonomy:vanilla-rollover-bootstrap-controller-lost:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: vanilla_rollover_bootstrap_controller_lost for {npc.Name} after encounter {pending.EncounterId} (reason={DescribeText(pending.VanillaBootstrapReason)}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, bootstrap_method={DescribeText(pending.VanillaBootstrapMethod)}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, retry_tick={pending.NextVanillaBootstrapTick}, time={Game1.timeOfDay}).",
+                LogLevel.Warn);
+            return false;
+        }
+
+        if (currentTick >= pending.VanillaBootstrapConfirmDeadlineTick)
+        {
+            RestorePendingVanillaBootstrapScheduleEntry(npc, pending);
+            npc.controller = null;
+            TrySetMemberValue(npc, "temporaryController", null);
+            pending.VanillaBootstrapConfirming = false;
+            pending.VanillaBootstrapFailureCount += 1;
+            pending.NextVanillaBootstrapTick = currentTick + (ulong)GetEncounterStationaryResumeRetryTicks(pending.VanillaBootstrapFailureCount);
+            pending.NextAttemptTick = pending.NextVanillaBootstrapTick;
+            LogRuntimeThrottled(
+                $"autonomy:vanilla-rollover-bootstrap-stalled:{npc.Name}:{pending.EncounterId}",
+                TimeSpan.FromSeconds(20),
+                $"Autonomy: vanilla_rollover_bootstrap_stalled_retrying for {npc.Name} after encounter {pending.EncounterId} (reason={DescribeText(pending.VanillaBootstrapReason)}, active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, active_target_location={DescribeText(pending.ActiveTargetLocation)}, active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, bootstrap_method={DescribeText(pending.VanillaBootstrapMethod)}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, retry_tick={pending.NextVanillaBootstrapTick}, time={Game1.timeOfDay}).",
+                LogLevel.Warn);
+            return false;
+        }
+
+        LogRuntimeThrottled(
+            $"autonomy:vanilla-rollover-bootstrap-confirming:{npc.Name}:{pending.EncounterId}",
+            TimeSpan.FromSeconds(20),
+            $"Autonomy: vanilla_rollover_bootstrap_confirming for {npc.Name} after encounter {pending.EncounterId} (reason={DescribeText(pending.VanillaBootstrapReason)}, bootstrap_method={DescribeText(pending.VanillaBootstrapMethod)}, start_tile={DescribeNullablePoint(pending.VanillaBootstrapStartTile)}, current_tile={DescribeNullablePoint(npc.TilePoint)}, deadline_tick={pending.VanillaBootstrapConfirmDeadlineTick}, map={npc.currentLocation?.Name ?? "unknown"}, time={Game1.timeOfDay}).",
+            LogLevel.Debug);
+        pending.NextVanillaBootstrapTick = currentTick + 1;
+        return false;
     }
 
     private NPC? ResolvePendingEncounterResumeNpc(PendingVanillaEncounterResume pending)
@@ -17799,26 +17972,33 @@ public sealed class ModEntry : Mod
             ? currentTimeEntry
             : null;
         var hadCurrentTimeEntry = npc.Schedule.ContainsKey(Game1.timeOfDay);
-        var shimMethod = "original_entry";
-
-        if (!TryCloneScheduleEntryForVanillaReleaseHandoff(pending.ActiveScheduleEntry, out var shimmedEntry, out var degradedClone))
+        var bootstrapScheduleTime = Game1.timeOfDay;
+        var shouldRestoreOriginalEntry = true;
+        if (!TryBuildVanillaReleaseBootstrapRoute(
+                npc,
+                pending,
+                out var bootstrapRoute,
+                out var bootstrapTarget,
+                out var bootstrapTargetKind,
+                out failureReason))
         {
-            shimmedEntry = CreateVanillaReleaseFallbackScheduleEntry(pending);
+            bootstrapMethod = $"current_tile_route_failed:{bootstrapTargetKind}";
+            return false;
+        }
+
+        var shimMethod = "current_tile_route_clone";
+        if (!TryCloneScheduleEntryForVanillaReleaseHandoff(pending.ActiveScheduleEntry, bootstrapRoute, out var shimmedEntry, out var degradedClone))
+        {
+            shimmedEntry = CreateVanillaReleaseFallbackScheduleEntry(pending, bootstrapRoute);
             degradedClone = true;
         }
         else if (degradedClone)
         {
-            shimmedEntry = CreateVanillaReleaseFallbackScheduleEntry(pending);
+            shimmedEntry = CreateVanillaReleaseFallbackScheduleEntry(pending, bootstrapRoute);
         }
 
         if (degradedClone)
-        {
-            shimMethod = "current_tile_fallback_entry";
-        }
-        else
-        {
-            shimMethod = "current_tile_clone";
-        }
+            shimMethod = "current_tile_route_fallback_entry";
 
         npc.controller = null;
         TrySetMemberValue(npc, "temporaryController", null);
@@ -17836,7 +18016,7 @@ public sealed class ModEntry : Mod
             if (checkScheduleInvoked)
                 pending.CheckScheduleMethod = methodLabel;
 
-            bootstrapMethod = $"{shimMethod}+{(checkScheduleInvoked ? methodLabel : "checkSchedule_failed")}";
+            bootstrapMethod = $"{shimMethod}:{bootstrapTargetKind}:{DescribeNullablePoint(bootstrapTarget)}+{(checkScheduleInvoked ? methodLabel : "checkSchedule_failed")}";
             if (!checkScheduleInvoked)
             {
                 failureReason = "no_controller_after_checkschedule";
@@ -17852,12 +18032,149 @@ public sealed class ModEntry : Mod
                 return false;
             }
 
+            pending.VanillaBootstrapStartTile = npc.TilePoint;
+            pending.VanillaBootstrapStartLocation = npc.currentLocation?.Name ?? string.Empty;
+            pending.VanillaBootstrapTargetTile = bootstrapTarget;
+            pending.VanillaBootstrapTargetKind = bootstrapTargetKind;
+            pending.VanillaBootstrapMethod = bootstrapMethod;
+            pending.VanillaBootstrapInitialPathCount = TryReadControllerPath(GetCurrentResumeController(npc), out var initialPath)
+                ? initialPath.Count
+                : 0;
+            pending.VanillaBootstrapInitialNextTile = pending.VanillaBootstrapInitialPathCount > 0 ? initialPath[0] : null;
+            pending.VanillaBootstrapHadOriginalScheduleEntry = hadCurrentTimeEntry;
+            pending.VanillaBootstrapOriginalScheduleEntry = originalEntry;
+            pending.VanillaBootstrapInjectedScheduleTime = bootstrapScheduleTime;
+            shouldRestoreOriginalEntry = false;
             return true;
         }
         finally
         {
-            RestoreTemporaryScheduleEntry(npc, Game1.timeOfDay, hadCurrentTimeEntry, originalEntry);
+            if (shouldRestoreOriginalEntry)
+                RestoreTemporaryScheduleEntry(npc, bootstrapScheduleTime, hadCurrentTimeEntry, originalEntry);
         }
+    }
+
+    private bool TryBuildVanillaReleaseBootstrapRoute(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        out IReadOnlyList<Point> routeTiles,
+        out Point routeTarget,
+        out string routeTargetKind,
+        out string failureReason)
+    {
+        routeTiles = Array.Empty<Point>();
+        routeTarget = Point.Zero;
+        routeTargetKind = "none";
+        failureReason = string.Empty;
+        var location = npc.currentLocation;
+        if (location is null)
+        {
+            failureReason = "current_map_unavailable";
+            return false;
+        }
+
+        var allowEntranceCorridor = false;
+        Point? privilegedTransitionTile = null;
+        if (string.Equals(location.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!TryGetActiveArrivalTile(pending, out routeTarget))
+            {
+                failureReason = "active_arrival_missing";
+                routeTargetKind = "same_map_arrival";
+                return false;
+            }
+
+            routeTargetKind = "same_map_arrival";
+        }
+        else
+        {
+            if (!TryPlanNextCrossMapFallbackLeg(npc, pending.ActiveTargetLocation, out var segment))
+            {
+                failureReason = "cross_map_leg_unplanned";
+                routeTargetKind = "cross_map_departure";
+                return false;
+            }
+
+            routeTarget = segment.DepartureTile;
+            routeTargetKind = "cross_map_spliced_route";
+            privilegedTransitionTile = segment.DepartureTile;
+            allowEntranceCorridor = true;
+        }
+
+        var normalizedPath = new List<Point>();
+        if (npc.TilePoint != routeTarget)
+        {
+            if (!TryCreateVanillaEncounterResumeController(location, npc, routeTarget, out _, out var controllerPath, out _))
+            {
+                failureReason = $"bootstrap_controller_unavailable:{DescribeNullablePoint(routeTarget)}";
+                return false;
+            }
+
+            if (TryFindEncounterResumePathObstacle(location, controllerPath, allowEntranceCorridor, privilegedTransitionTile, actor: npc, out var blockedTile, out var blockReason))
+            {
+                failureReason = $"{blockReason}:{DescribeNullablePoint(blockedTile)}";
+                return false;
+            }
+
+            normalizedPath = controllerPath.Count > 0 && controllerPath[0] == npc.TilePoint
+                ? controllerPath.Skip(1).ToList()
+                : controllerPath.ToList();
+        }
+
+        if (routeTargetKind == "cross_map_spliced_route")
+        {
+            if (!TryBuildVanillaReleaseBootstrapRouteWithOriginalRemainder(
+                    pending.ActiveScheduleEntry!,
+                    normalizedPath,
+                    routeTarget,
+                    out routeTiles,
+                    out failureReason))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        if (normalizedPath.Count == 0)
+            normalizedPath.Add(routeTarget);
+
+        routeTiles = normalizedPath;
+        return true;
+    }
+
+    private static bool TryBuildVanillaReleaseBootstrapRouteWithOriginalRemainder(
+        SchedulePathDescription scheduleEntry,
+        IReadOnlyList<Point> prefixRoute,
+        Point departureTile,
+        out IReadOnlyList<Point> routeTiles,
+        out string failureReason)
+    {
+        routeTiles = Array.Empty<Point>();
+        failureReason = string.Empty;
+        if (!TryCloneScheduleRoute(scheduleEntry, out var originalRouteStack) || originalRouteStack.Count == 0)
+        {
+            failureReason = "original_schedule_route_missing";
+            return false;
+        }
+
+        var originalRoute = originalRouteStack.ToList();
+        var departureIndex = originalRoute.FindIndex(tile => tile == departureTile);
+        if (departureIndex < 0)
+        {
+            failureReason = $"original_schedule_route_missing_departure_tile:{DescribeNullablePoint(departureTile)}";
+            return false;
+        }
+
+        var combinedRoute = prefixRoute.ToList();
+        if (combinedRoute.Count == 0 || combinedRoute[combinedRoute.Count - 1] != departureTile)
+            combinedRoute.Add(departureTile);
+
+        if (departureIndex + 1 < originalRoute.Count)
+            combinedRoute.AddRange(originalRoute.Skip(departureIndex + 1));
+
+        routeTiles = combinedRoute;
+        return true;
     }
 
     private bool TryValidateVanillaReleaseControllerPath(
@@ -17892,18 +18209,9 @@ public sealed class ModEntry : Mod
             return false;
         }
 
-        Point? privilegedTransitionTile = null;
         var allowEntranceCorridor = false;
-        Point expectedEndpoint;
-        if (string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase))
-        {
-            if (!TryGetActiveArrivalTile(pending, out expectedEndpoint))
-            {
-                failureReason = "active_arrival_unreadable";
-                return false;
-            }
-        }
-        else
+        Point? privilegedTransitionTile = null;
+        if (!string.Equals(npc.currentLocation.Name, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase))
         {
             if (!TryPlanNextCrossMapFallbackLeg(npc, pending.ActiveTargetLocation, out var segment))
             {
@@ -17911,16 +18219,8 @@ public sealed class ModEntry : Mod
                 return false;
             }
 
-            expectedEndpoint = segment.DepartureTile;
-            privilegedTransitionTile = expectedEndpoint;
+            privilegedTransitionTile = segment.DepartureTile;
             allowEntranceCorridor = true;
-        }
-
-        var actualEndpoint = controllerPath[^1];
-        if (actualEndpoint != expectedEndpoint)
-        {
-            failureReason = $"wrong_vanilla_handoff_endpoint(actual={DescribeNullablePoint(actualEndpoint)}, expected={DescribeNullablePoint(expectedEndpoint)})";
-            return false;
         }
 
         if (TryFindEncounterResumePathObstacle(
@@ -17936,7 +18236,98 @@ public sealed class ModEntry : Mod
             return false;
         }
 
+        if (privilegedTransitionTile.HasValue)
+        {
+            var expectedEndpoint = privilegedTransitionTile.Value;
+            var actualPathEndpoint = controllerPath[controllerPath.Count - 1];
+            if (actualPathEndpoint != expectedEndpoint)
+            {
+                failureReason = $"unexpected_cross_map_path_endpoint(actual={DescribeNullablePoint(actualPathEndpoint)}, expected={DescribeNullablePoint(expectedEndpoint)})";
+                return false;
+            }
+
+            if (TryGetCurrentResumeEndpoint(npc, out var actualResumeEndpoint) && actualResumeEndpoint != expectedEndpoint)
+            {
+                failureReason = $"unexpected_cross_map_resume_endpoint(actual={DescribeNullablePoint(actualResumeEndpoint)}, expected={DescribeNullablePoint(expectedEndpoint)})";
+                return false;
+            }
+        }
+
         return true;
+    }
+
+    private bool HasVanillaBootstrapProgressed(
+        NPC npc,
+        PendingVanillaEncounterResume pending,
+        out string progressReason)
+    {
+        progressReason = string.Empty;
+        var currentLocationName = npc.currentLocation?.Name ?? string.Empty;
+        if (pending.VanillaBootstrapTargetKind.StartsWith("cross_map", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.Equals(currentLocationName, pending.VanillaBootstrapStartLocation, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (!TryValidateVanillaReleaseControllerPath(npc, pending, out _))
+                return false;
+
+            progressReason = string.Equals(currentLocationName, pending.ActiveTargetLocation, StringComparison.OrdinalIgnoreCase)
+                ? "target_map_controller_valid"
+                : "post_warp_controller_valid";
+            return true;
+        }
+
+        if (!string.Equals(currentLocationName, pending.VanillaBootstrapStartLocation, StringComparison.OrdinalIgnoreCase))
+        {
+            progressReason = "map_changed";
+            return true;
+        }
+
+        if (npc.TilePoint != pending.VanillaBootstrapStartTile)
+        {
+            progressReason = "tile_changed";
+            return true;
+        }
+
+        var controller = GetCurrentResumeController(npc);
+        if (controller is null || !TryReadControllerPath(controller, out var currentPath) || currentPath.Count == 0)
+            return false;
+
+        if (pending.VanillaBootstrapInitialPathCount > 0 && currentPath.Count < pending.VanillaBootstrapInitialPathCount)
+        {
+            progressReason = "controller_path_advanced";
+            return true;
+        }
+
+        if (pending.VanillaBootstrapInitialNextTile.HasValue && currentPath[0] != pending.VanillaBootstrapInitialNextTile.Value)
+        {
+            progressReason = "controller_next_tile_changed";
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void RestorePendingVanillaBootstrapScheduleEntry(NPC npc, PendingVanillaEncounterResume pending)
+    {
+        if (!pending.VanillaBootstrapInjectedScheduleTime.HasValue)
+            return;
+
+        RestoreTemporaryScheduleEntry(
+            npc,
+            pending.VanillaBootstrapInjectedScheduleTime.Value,
+            pending.VanillaBootstrapHadOriginalScheduleEntry,
+            pending.VanillaBootstrapOriginalScheduleEntry);
+
+        pending.VanillaBootstrapHadOriginalScheduleEntry = false;
+        pending.VanillaBootstrapOriginalScheduleEntry = null;
+        pending.VanillaBootstrapInjectedScheduleTime = null;
+        pending.VanillaBootstrapInitialPathCount = 0;
+        pending.VanillaBootstrapInitialNextTile = null;
+        pending.VanillaBootstrapTargetTile = null;
+        pending.VanillaBootstrapTargetKind = string.Empty;
+        pending.VanillaBootstrapStartLocation = string.Empty;
+        pending.VanillaBootstrapStartTile = Point.Zero;
     }
 
     private static object? GetCurrentResumeController(NPC npc)
@@ -17945,16 +18336,6 @@ public sealed class ModEntry : Mod
             return temporaryController;
 
         return npc.controller;
-    }
-
-    private static ulong GetVanillaReleaseRetryDelayTicks(int retryCount)
-    {
-        return retryCount switch
-        {
-            <= 1 => 60,
-            2 => 120,
-            _ => 300
-        };
     }
 
     private void UpdatePendingActiveScheduleState(NPC npc, PendingVanillaEncounterResume pending)
@@ -17992,6 +18373,15 @@ public sealed class ModEntry : Mod
             pending.LastIntermediateTargetTile = null;
             pending.PreviousIntermediateTargetTile = null;
             pending.VisitedIntermediateTargetTiles.Clear();
+            pending.VanillaBootstrapConfirming = false;
+            pending.VanillaBootstrapConfirmDeadlineTick = 0;
+            pending.VanillaBootstrapInitialPathCount = 0;
+            pending.VanillaBootstrapInitialNextTile = null;
+            pending.VanillaBootstrapTargetTile = null;
+            pending.VanillaBootstrapTargetKind = string.Empty;
+            pending.VanillaBootstrapMethod = string.Empty;
+            pending.VanillaBootstrapStartTile = Point.Zero;
+            pending.VanillaBootstrapStartLocation = string.Empty;
         }
 
         pending.ArrivalRebindInvoked = false;
@@ -18101,86 +18491,23 @@ public sealed class ModEntry : Mod
         TrySetMemberValue(npc, "previousEndPoint", npc.TilePoint);
         ClearEncounterMotionState(npc);
         ClearEncounterMovementBlockingState(npc);
+        RestorePendingVanillaBootstrapScheduleEntry(npc, pending);
 
-        TryRebindVanillaScheduleAtCurrentTime(
-            npc,
-            pending,
-            allowEncounterResumeForcePath: false,
-            out var reloadTodayOk,
-            out var nextScheduleTime,
-            out var checkScheduleInvoked,
-            out var checkScheduleMethod);
-        pending.ReloadTodayOk |= reloadTodayOk;
-        pending.NextScheduleTime = nextScheduleTime;
-        pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
-        pending.CheckScheduleInvoked |= checkScheduleInvoked;
-        if (checkScheduleInvoked)
-            pending.CheckScheduleMethod = checkScheduleMethod;
-
-        if (TryBootstrapVanillaReleaseOnlyFromCurrentTile(npc, pending, out var bootstrapMethod, out var bootstrapFailure))
-        {
-            LogRuntimeThrottled(
-                $"autonomy:resume-slot-expired-handoff:{npc.Name}:{pending.EncounterId}",
-                TimeSpan.FromSeconds(20),
-                $"Autonomy: resume_slot_expired_released_to_vanilla for {npc.Name} after encounter {pending.EncounterId} (reason={reason}, owned_schedule_time={(pending.OwnedScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, owned_target_location={DescribeText(pending.OwnedTargetLocation)}, owned_target_tile={DescribeNullablePoint(pending.OwnedTargetTile)}, current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_was_active={wasUsingFallback}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, bootstrap_method={bootstrapMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, time={Game1.timeOfDay}, handoff_mode=vanilla_release_only).",
-                LogLevel.Debug);
-            _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
-            return;
-        }
-
-        pending.PendingVanillaReleaseOnlyHandoff = true;
-        pending.VanillaReleaseRetryCount = 1;
-        pending.NextAttemptTick = currentTick + 60;
+        pending.PendingVanillaBootstrapRelease = true;
+        pending.NextVanillaBootstrapTick = currentTick;
+        pending.VanillaBootstrapFailureCount = 0;
+        pending.VanillaBootstrapReason = reason;
+        pending.VanillaBootstrapConfirming = false;
+        pending.VanillaBootstrapConfirmDeadlineTick = 0;
+        pending.NextAttemptTick = currentTick;
 
         LogRuntimeThrottled(
             $"autonomy:resume-slot-expired-bootstrap:{npc.Name}:{pending.EncounterId}",
-            TimeSpan.FromSeconds(15),
-            $"Autonomy: resume_slot_expired_bootstrapping_vanilla_from_current_tile for {npc.Name} after encounter {pending.EncounterId} (reason={reason}, bootstrap_failure={DescribeText(bootstrapFailure)}, current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, retry_tick={pending.NextAttemptTick}, time={Game1.timeOfDay}, handoff_mode=vanilla_release_only_retry).",
+            TimeSpan.FromSeconds(20),
+            $"Autonomy: resume_slot_expired_bootstrapping_vanilla_from_current_tile for {npc.Name} after encounter {pending.EncounterId} (reason={reason}, owned_schedule_time={(pending.OwnedScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, owned_target_location={DescribeText(pending.OwnedTargetLocation)}, owned_target_tile={DescribeNullablePoint(pending.OwnedTargetTile)}, current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, fallback_was_active={wasUsingFallback}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, next_schedule_time={(pending.NextScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, time={Game1.timeOfDay}, handoff_mode=vanilla_bootstrap_pending).",
             LogLevel.Debug);
-    }
 
-    private void TryAdvanceVanillaReleaseOnlyHandoff(
-        string npcId,
-        NPC npc,
-        PendingVanillaEncounterResume pending,
-        ulong currentTick)
-    {
-        pending.Attempts += 1;
-
-        TryRebindVanillaScheduleAtCurrentTime(
-            npc,
-            pending,
-            allowEncounterResumeForcePath: false,
-            out var reloadTodayOk,
-            out var nextScheduleTime,
-            out var checkScheduleInvoked,
-            out var checkScheduleMethod);
-        pending.ReloadTodayOk |= reloadTodayOk;
-        pending.NextScheduleTime = nextScheduleTime;
-        pending.LastAttemptedTimeOfDay = Game1.timeOfDay;
-        pending.CheckScheduleInvoked |= checkScheduleInvoked;
-        if (checkScheduleInvoked)
-            pending.CheckScheduleMethod = checkScheduleMethod;
-
-        if (TryBootstrapVanillaReleaseOnlyFromCurrentTile(npc, pending, out var bootstrapMethod, out _))
-        {
-            pending.PendingVanillaReleaseOnlyHandoff = false;
-            LogRuntimeThrottled(
-                $"autonomy:resume-slot-expired-release-complete:{npc.Name}:{pending.EncounterId}",
-                TimeSpan.FromSeconds(15),
-                $"Autonomy: resume_slot_expired_released_to_vanilla for {npc.Name} after encounter {pending.EncounterId} (current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, bootstrap_method={bootstrapMethod}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, time={Game1.timeOfDay}, handoff_mode=vanilla_release_only).",
-                LogLevel.Debug);
-            _pendingVanillaEncounterResumeByNpcId.Remove(npcId);
-            return;
-        }
-
-        pending.VanillaReleaseRetryCount += 1;
-        pending.NextAttemptTick = currentTick + GetVanillaReleaseRetryDelayTicks(pending.VanillaReleaseRetryCount);
-        LogRuntimeThrottled(
-            $"autonomy:resume-slot-expired-release-retry:{npc.Name}:{pending.EncounterId}",
-            TimeSpan.FromSeconds(15),
-            $"Autonomy: vanilla_rollover_shim_invalid_path for {npc.Name} after encounter {pending.EncounterId} (current_active_schedule_time={(pending.ActiveScheduleTime?.ToString(CultureInfo.InvariantCulture) ?? "none")}, current_active_target_location={DescribeText(pending.ActiveTargetLocation)}, current_active_target_tile={DescribeNullablePoint(pending.ActiveTargetTile)}, check_schedule_invoked={pending.CheckScheduleInvoked}, check_schedule_method={pending.CheckScheduleMethod}, map={npc.currentLocation?.Name ?? "unknown"}, tile={DescribeNullablePoint(npc.TilePoint)}, retry_tick={pending.NextAttemptTick}, retry_count={pending.VanillaReleaseRetryCount}, time={Game1.timeOfDay}, handoff_mode=vanilla_release_only_retry).",
-            LogLevel.Trace);
+        TryAdvanceVanillaBootstrapRelease(npcId, npc, pending, currentTick);
     }
 
     private bool TryHandleValidatedResumeState(
@@ -19042,6 +19369,18 @@ public sealed class ModEntry : Mod
         return anyRouteUpdated;
     }
 
+    private static bool TrySetScheduleEntryRoute(object scheduleEntry, IReadOnlyList<Point> pathTiles)
+    {
+        var anyRouteUpdated = false;
+        foreach (var memberName in new[] { "route", "Route", "path", "Path" })
+        {
+            if (TrySetScheduleEntryRouteMember(scheduleEntry, memberName, pathTiles))
+                anyRouteUpdated = true;
+        }
+
+        return anyRouteUpdated;
+    }
+
     private static bool TrySetScheduleEntryRouteMember(object scheduleEntry, string memberName, Point targetTile)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
@@ -19146,6 +19485,31 @@ public sealed class ModEntry : Mod
         return false;
     }
 
+    private static bool TrySetScheduleEntryRouteMember(object scheduleEntry, string memberName, IReadOnlyList<Point> pathTiles)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+        var type = scheduleEntry.GetType();
+        var property = type.GetProperty(memberName, flags);
+        if (property is not null && property.CanWrite)
+        {
+            if (!TryCreateRouteValue(property.PropertyType, pathTiles, out var propertyRouteValue))
+                return false;
+
+            property.SetValue(scheduleEntry, propertyRouteValue);
+            return true;
+        }
+
+        var field = type.GetField(memberName, flags);
+        if (field is null || field.IsInitOnly)
+            return false;
+
+        if (!TryCreateRouteValue(field.FieldType, pathTiles, out var fieldRouteValue))
+            return false;
+
+        field.SetValue(scheduleEntry, fieldRouteValue);
+        return true;
+    }
+
     private static bool TryCreateEmptyRouteValue(Type routeType, out object routeValue)
     {
         routeValue = null!;
@@ -19182,6 +19546,48 @@ public sealed class ModEntry : Mod
         if (routeType.IsInterface && routeType.IsAssignableFrom(typeof(List<Point>)))
         {
             routeValue = new List<Point>();
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryCreateRouteValue(Type routeType, IReadOnlyList<Point> pathTiles, out object routeValue)
+    {
+        routeValue = null!;
+        if (routeType == typeof(Stack<Point>))
+        {
+            routeValue = new Stack<Point>(pathTiles.Reverse());
+            return true;
+        }
+
+        if (routeType == typeof(List<Point>))
+        {
+            routeValue = pathTiles.ToList();
+            return true;
+        }
+
+        if (routeType == typeof(Point[]))
+        {
+            routeValue = pathTiles.ToArray();
+            return true;
+        }
+
+        if (routeType.IsAssignableFrom(typeof(Stack<Point>)))
+        {
+            routeValue = new Stack<Point>(pathTiles.Reverse());
+            return true;
+        }
+
+        if (routeType.IsAssignableFrom(typeof(List<Point>)))
+        {
+            routeValue = pathTiles.ToList();
+            return true;
+        }
+
+        if (routeType.IsInterface && routeType.IsAssignableFrom(typeof(List<Point>)))
+        {
+            routeValue = pathTiles.ToList();
             return true;
         }
 
@@ -21914,6 +22320,7 @@ public sealed class ModEntry : Mod
 
     private static bool TryCloneScheduleEntryForVanillaReleaseHandoff(
         SchedulePathDescription scheduleEntry,
+        IReadOnlyList<Point> bootstrapRoute,
         out SchedulePathDescription clonedEntry,
         out bool degraded)
     {
@@ -21923,16 +22330,16 @@ public sealed class ModEntry : Mod
         if (!TryMemberwiseClone(scheduleEntry, out clonedEntry))
             return false;
 
-        if (!TryClearScheduleEntryRoute(clonedEntry))
+        if (!TrySetScheduleEntryRoute(clonedEntry, bootstrapRoute))
             degraded = true;
 
         return true;
     }
 
-    private static SchedulePathDescription CreateVanillaReleaseFallbackScheduleEntry(PendingVanillaEncounterResume pending)
+    private static SchedulePathDescription CreateVanillaReleaseFallbackScheduleEntry(PendingVanillaEncounterResume pending, IReadOnlyList<Point> bootstrapRoute)
     {
         return new SchedulePathDescription(
-            new Stack<Point>(),
+            new Stack<Point>(bootstrapRoute.Reverse()),
             pending.ActiveFacingDirection ?? 2,
             pending.ActiveTargetLocation,
             string.Empty,
