@@ -544,6 +544,14 @@ public sealed class TownMemoryService
 
         if (!state.TownMemory.KnowledgeByNpc.TryGetValue(npc, out var perNpc))
         {
+            var existingKey = state.TownMemory.KnowledgeByNpc.Keys.FirstOrDefault(key =>
+                string.Equals(key, npc, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(existingKey) && state.TownMemory.KnowledgeByNpc.TryGetValue(existingKey, out perNpc))
+                npc = existingKey;
+        }
+
+        if (perNpc is null)
+        {
             perNpc = new NpcTownKnowledge();
             state.TownMemory.KnowledgeByNpc[npc] = perNpc;
         }

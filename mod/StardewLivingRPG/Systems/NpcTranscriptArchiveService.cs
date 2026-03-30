@@ -443,6 +443,11 @@ public sealed class NpcTranscriptArchiveService
     {
         if (!state.TranscriptArchive.Archives.TryGetValue(npcName, out var archive))
         {
+            var existingKey = state.TranscriptArchive.Archives.Keys.FirstOrDefault(key =>
+                string.Equals(key, npcName, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(existingKey) && state.TranscriptArchive.Archives.TryGetValue(existingKey, out archive))
+                return archive;
+
             archive = new NpcTranscriptArchive();
             state.TranscriptArchive.Archives[npcName] = archive;
         }

@@ -308,11 +308,14 @@ public static class StateStore
             state.NpcMemory = new NpcMemoryState();
             changed = true;
         }
-        if (state.NpcMemory.Profiles is null)
+        var normalizedNpcProfiles = NormalizeNpcMemoryProfiles(state.NpcMemory.Profiles, out var npcProfilesChanged, out var npcProfileMergeCount);
+        if (npcProfilesChanged)
         {
-            state.NpcMemory.Profiles = new Dictionary<string, NpcMemoryProfile>(StringComparer.OrdinalIgnoreCase);
+            state.NpcMemory.Profiles = normalizedNpcProfiles;
             changed = true;
         }
+        if (npcProfileMergeCount > 0)
+            monitor.Log($"Merged {npcProfileMergeCount} case-variant NPC memory profile entries during save load normalization.", LogLevel.Info);
         foreach (var profile in state.NpcMemory.Profiles.Values)
         {
             if (profile is null)
@@ -370,11 +373,14 @@ public static class StateStore
             state.TranscriptArchive = new TranscriptArchiveState();
             changed = true;
         }
-        if (state.TranscriptArchive.Archives is null)
+        var normalizedTranscriptArchives = NormalizeTranscriptArchives(state.TranscriptArchive.Archives, out var transcriptArchivesChanged, out var transcriptArchiveMergeCount);
+        if (transcriptArchivesChanged)
         {
-            state.TranscriptArchive.Archives = new Dictionary<string, NpcTranscriptArchive>(StringComparer.OrdinalIgnoreCase);
+            state.TranscriptArchive.Archives = normalizedTranscriptArchives;
             changed = true;
         }
+        if (transcriptArchiveMergeCount > 0)
+            monitor.Log($"Merged {transcriptArchiveMergeCount} case-variant transcript archive entries during save load normalization.", LogLevel.Info);
         foreach (var archive in state.TranscriptArchive.Archives.Values)
         {
             if (archive is null)
@@ -469,11 +475,14 @@ public static class StateStore
             state.TownMemory.Events = new List<TownMemoryEvent>();
             changed = true;
         }
-        if (state.TownMemory.KnowledgeByNpc is null)
+        var normalizedTownKnowledge = NormalizeTownKnowledgeByNpc(state.TownMemory.KnowledgeByNpc, out var townKnowledgeChanged, out var townKnowledgeMergeCount);
+        if (townKnowledgeChanged)
         {
-            state.TownMemory.KnowledgeByNpc = new Dictionary<string, NpcTownKnowledge>(StringComparer.OrdinalIgnoreCase);
+            state.TownMemory.KnowledgeByNpc = normalizedTownKnowledge;
             changed = true;
         }
+        if (townKnowledgeMergeCount > 0)
+            monitor.Log($"Merged {townKnowledgeMergeCount} case-variant town memory knowledge entries during save load normalization.", LogLevel.Info);
         foreach (var ev in state.TownMemory.Events)
         {
             if (ev is null)
@@ -736,6 +745,648 @@ public static class StateStore
             return false;
 
         return current.CompareTo(target) < 0;
+    }
+
+    private static Dictionary<string, NpcMemoryProfile> NormalizeNpcMemoryProfiles(
+        Dictionary<string, NpcMemoryProfile>? source,
+        out bool changed,
+        out int mergedCaseVariantEntries)
+    {
+        changed = source is null || !ReferenceEquals(source.Comparer, StringComparer.OrdinalIgnoreCase);
+        mergedCaseVariantEntries = 0;
+
+        if (source is null)
+            return new Dictionary<string, NpcMemoryProfile>(StringComparer.OrdinalIgnoreCase);
+
+        var normalized = new Dictionary<string, NpcMemoryProfile>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, rawProfile) in source)
+        {
+            if (string.IsNullOrWhiteSpace(key) || rawProfile is null)
+            {
+                changed = true;
+                continue;
+            }
+
+            var profile = NormalizeNpcMemoryProfile(rawProfile, out var profileChanged);
+            changed |= profileChanged;
+
+            if (normalized.TryGetValue(key, out var existing))
+            {
+                MergeNpcMemoryProfile(existing, profile);
+                mergedCaseVariantEntries++;
+                changed = true;
+                continue;
+            }
+
+            normalized[key] = profile;
+        }
+
+        return changed ? normalized : source;
+    }
+
+    private static NpcMemoryProfile NormalizeNpcMemoryProfile(NpcMemoryProfile profile, out bool changed)
+    {
+        changed = false;
+        profile.Facts ??= new List<NpcMemoryFact>();
+        profile.RecentTurns ??= new List<NpcMemoryTurn>();
+        profile.ImportantMemories ??= new List<ImportantMemoryEntry>();
+
+        if (profile.TopicCounters is null)
+        {
+            profile.TopicCounters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            changed = true;
+        }
+        else
+        {
+            var normalizedTopicCounters = NormalizeSummedIntDictionary(profile.TopicCounters, out var topicCounterChanged);
+            if (topicCounterChanged)
+            {
+                profile.TopicCounters = normalizedTopicCounters;
+                changed = true;
+            }
+        }
+
+        return profile;
+    }
+
+    private static void MergeNpcMemoryProfile(NpcMemoryProfile target, NpcMemoryProfile incoming)
+    {
+        target.Facts = MergeFacts(target.Facts, incoming.Facts);
+        target.ImportantMemories = MergeImportantMemories(target.ImportantMemories, incoming.ImportantMemories);
+        target.RecentTurns = MergeRecentTurns(target.RecentTurns, incoming.RecentTurns);
+        target.TopicCounters = MergeSummedIntDictionaries(target.TopicCounters, incoming.TopicCounters);
+        target.LastUpdatedDay = Math.Max(target.LastUpdatedDay, incoming.LastUpdatedDay);
+    }
+
+    private static List<NpcMemoryFact> MergeFacts(IEnumerable<NpcMemoryFact>? existing, IEnumerable<NpcMemoryFact>? incoming)
+    {
+        var merged = new List<NpcMemoryFact>();
+        var byKey = new Dictionary<string, NpcMemoryFact>(StringComparer.OrdinalIgnoreCase);
+
+        void AddFact(NpcMemoryFact? fact)
+        {
+            if (fact is null || string.IsNullOrWhiteSpace(fact.Text))
+                return;
+
+            var key = BuildFactMergeKey(fact);
+            if (byKey.TryGetValue(key, out var current))
+            {
+                current.FactId = PreferNonEmpty(current.FactId, fact.FactId);
+                current.Category = PreferNonEmpty(current.Category, fact.Category, "event");
+                current.Text = PreferNonEmpty(current.Text, fact.Text);
+                current.Day = MergeEarliestPositiveDay(current.Day, fact.Day);
+                current.Weight = Math.Max(current.Weight, fact.Weight);
+                current.LastReferencedDay = Math.Max(current.LastReferencedDay, fact.LastReferencedDay);
+                return;
+            }
+
+            byKey[key] = fact;
+            merged.Add(fact);
+        }
+
+        foreach (var fact in existing ?? Enumerable.Empty<NpcMemoryFact>())
+            AddFact(fact);
+        foreach (var fact in incoming ?? Enumerable.Empty<NpcMemoryFact>())
+            AddFact(fact);
+
+        return merged;
+    }
+
+    private static List<ImportantMemoryEntry> MergeImportantMemories(IEnumerable<ImportantMemoryEntry>? existing, IEnumerable<ImportantMemoryEntry>? incoming)
+    {
+        var merged = new List<ImportantMemoryEntry>();
+        var byKey = new Dictionary<string, ImportantMemoryEntry>(StringComparer.OrdinalIgnoreCase);
+
+        void AddMemory(ImportantMemoryEntry? memory)
+        {
+            if (memory is null || string.IsNullOrWhiteSpace(memory.Summary))
+                return;
+
+            memory.Keywords ??= Array.Empty<string>();
+            var key = BuildImportantMemoryMergeKey(memory);
+            if (byKey.TryGetValue(key, out var current))
+            {
+                current.MemoryId = PreferNonEmpty(current.MemoryId, memory.MemoryId);
+                current.Category = PreferNonEmpty(current.Category, memory.Category, "event");
+                current.Summary = PreferNonEmpty(current.Summary, memory.Summary);
+                current.Importance = Math.Max(current.Importance, memory.Importance);
+                current.Visibility = PreferNonEmpty(current.Visibility, memory.Visibility, "npc_only");
+                current.Status = PreferNonEmpty(current.Status, memory.Status, "active");
+                current.SourceRefKind = PreferNonEmpty(current.SourceRefKind, memory.SourceRefKind, "chat_rule");
+                current.SourceRefId = PreferNonEmpty(current.SourceRefId, memory.SourceRefId);
+                current.SourceExchangeId = PreferNonEmpty(current.SourceExchangeId, memory.SourceExchangeId);
+                current.EvidenceSnippet = PreferNonEmpty(current.EvidenceSnippet, memory.EvidenceSnippet);
+                current.CreatedDay = MergeEarliestPositiveDay(current.CreatedDay, memory.CreatedDay);
+                current.LastUpdatedDay = Math.Max(current.LastUpdatedDay, memory.LastUpdatedDay);
+                current.LastReferencedDay = Math.Max(current.LastReferencedDay, memory.LastReferencedDay);
+                current.Keywords = current.Keywords
+                    .Concat(memory.Keywords)
+                    .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(18)
+                    .ToArray();
+                return;
+            }
+
+            byKey[key] = memory;
+            merged.Add(memory);
+        }
+
+        foreach (var memory in existing ?? Enumerable.Empty<ImportantMemoryEntry>())
+            AddMemory(memory);
+        foreach (var memory in incoming ?? Enumerable.Empty<ImportantMemoryEntry>())
+            AddMemory(memory);
+
+        return merged;
+    }
+
+    private static List<NpcMemoryTurn> MergeRecentTurns(IEnumerable<NpcMemoryTurn>? existing, IEnumerable<NpcMemoryTurn>? incoming)
+    {
+        var merged = new List<NpcMemoryTurn>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddTurn(NpcMemoryTurn? turn)
+        {
+            if (turn is null)
+                return;
+
+            turn.Tags ??= Array.Empty<string>();
+            var key = $"{turn.Day}|{turn.PlayerText?.Trim()}|{turn.NpcText?.Trim()}";
+            if (!seen.Add(key))
+                return;
+
+            merged.Add(turn);
+        }
+
+        foreach (var turn in existing ?? Enumerable.Empty<NpcMemoryTurn>())
+            AddTurn(turn);
+        foreach (var turn in incoming ?? Enumerable.Empty<NpcMemoryTurn>())
+            AddTurn(turn);
+
+        return merged
+            .OrderBy(turn => turn.Day)
+            .ToList();
+    }
+
+    private static string BuildFactMergeKey(NpcMemoryFact fact)
+    {
+        if (!string.IsNullOrWhiteSpace(fact.FactId))
+            return $"factid:{fact.FactId.Trim()}";
+
+        return $"text:{fact.Text.Trim()}";
+    }
+
+    private static string BuildImportantMemoryMergeKey(ImportantMemoryEntry memory)
+    {
+        if (!string.IsNullOrWhiteSpace(memory.MemoryId))
+            return $"memory:{memory.MemoryId.Trim()}";
+        if (!string.IsNullOrWhiteSpace(memory.SourceRefId))
+            return $"source:{memory.SourceRefKind.Trim()}|{memory.SourceRefId.Trim()}";
+
+        return $"summary:{memory.Category.Trim()}|{memory.Summary.Trim()}";
+    }
+
+    private static Dictionary<string, NpcTranscriptArchive> NormalizeTranscriptArchives(
+        Dictionary<string, NpcTranscriptArchive>? source,
+        out bool changed,
+        out int mergedCaseVariantEntries)
+    {
+        changed = source is null || !ReferenceEquals(source.Comparer, StringComparer.OrdinalIgnoreCase);
+        mergedCaseVariantEntries = 0;
+
+        if (source is null)
+            return new Dictionary<string, NpcTranscriptArchive>(StringComparer.OrdinalIgnoreCase);
+
+        var normalized = new Dictionary<string, NpcTranscriptArchive>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, rawArchive) in source)
+        {
+            if (string.IsNullOrWhiteSpace(key) || rawArchive is null)
+            {
+                changed = true;
+                continue;
+            }
+
+            var archive = NormalizeTranscriptArchive(rawArchive, out var archiveChanged);
+            changed |= archiveChanged;
+
+            if (normalized.TryGetValue(key, out var existing))
+            {
+                MergeTranscriptArchive(existing, archive);
+                mergedCaseVariantEntries++;
+                changed = true;
+                continue;
+            }
+
+            normalized[key] = archive;
+        }
+
+        return changed ? normalized : source;
+    }
+
+    private static NpcTranscriptArchive NormalizeTranscriptArchive(NpcTranscriptArchive archive, out bool changed)
+    {
+        changed = false;
+        archive.RawExchanges ??= new List<TranscriptExchange>();
+        archive.Chunks ??= new List<TranscriptChunkHeader>();
+        archive.PendingExchanges ??= new List<PendingTranscriptExchange>();
+
+        foreach (var exchange in archive.RawExchanges)
+        {
+            if (exchange is null)
+                continue;
+
+            if (exchange.Keywords is null)
+            {
+                exchange.Keywords = Array.Empty<string>();
+                changed = true;
+            }
+            if (exchange.LinkedImportantMemoryIds is null)
+            {
+                exchange.LinkedImportantMemoryIds = new List<string>();
+                changed = true;
+            }
+        }
+
+        foreach (var chunk in archive.Chunks)
+        {
+            if (chunk is null)
+                continue;
+
+            if (chunk.TopKeywords is null)
+            {
+                chunk.TopKeywords = Array.Empty<string>();
+                changed = true;
+            }
+        }
+
+        return archive;
+    }
+
+    private static void MergeTranscriptArchive(NpcTranscriptArchive target, NpcTranscriptArchive incoming)
+    {
+        target.RawExchanges = MergeTranscriptExchanges(target.RawExchanges, incoming.RawExchanges);
+        target.PendingExchanges = MergePendingTranscriptExchanges(target.PendingExchanges, incoming.PendingExchanges);
+        target.Chunks = MergeTranscriptChunks(target.Chunks, incoming.Chunks);
+        target.LastUpdatedDay = Math.Max(target.LastUpdatedDay, incoming.LastUpdatedDay);
+    }
+
+    private static List<TranscriptExchange> MergeTranscriptExchanges(IEnumerable<TranscriptExchange>? existing, IEnumerable<TranscriptExchange>? incoming)
+    {
+        var merged = new List<TranscriptExchange>();
+        var byKey = new Dictionary<string, TranscriptExchange>(StringComparer.OrdinalIgnoreCase);
+
+        void AddExchange(TranscriptExchange? exchange)
+        {
+            if (exchange is null)
+                return;
+
+            exchange.Keywords ??= Array.Empty<string>();
+            exchange.LinkedImportantMemoryIds ??= new List<string>();
+            var key = BuildTranscriptExchangeMergeKey(exchange);
+            if (byKey.TryGetValue(key, out var current))
+            {
+                current.RequestToken = PreferNonEmpty(current.RequestToken, exchange.RequestToken);
+                current.NpcId = PreferNonEmpty(current.NpcId, exchange.NpcId);
+                current.NpcDisplayName = PreferNonEmpty(current.NpcDisplayName, exchange.NpcDisplayName);
+                current.Day = Math.Max(current.Day, exchange.Day);
+                current.TimeOfDay = Math.Max(current.TimeOfDay, exchange.TimeOfDay);
+                current.Season = PreferNonEmpty(current.Season, exchange.Season, "spring");
+                current.Year = Math.Max(current.Year, exchange.Year);
+                current.LocationName = PreferNonEmpty(current.LocationName, exchange.LocationName);
+                current.ContextTag = PreferNonEmpty(current.ContextTag, exchange.ContextTag, "player_chat");
+                current.PlayerText = PreferNonEmpty(current.PlayerText, exchange.PlayerText);
+                current.NpcText = PreferNonEmpty(current.NpcText, exchange.NpcText);
+                current.Keywords = current.Keywords
+                    .Concat(exchange.Keywords)
+                    .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(24)
+                    .ToArray();
+                current.Importance = Math.Max(current.Importance, exchange.Importance);
+                current.Visibility = PreferNonEmpty(current.Visibility, exchange.Visibility, "npc_only");
+                current.CompletionState = PreferNonEmpty(current.CompletionState, exchange.CompletionState, "complete");
+                current.SourceRefKind = PreferNonEmpty(current.SourceRefKind, exchange.SourceRefKind, "chat");
+                current.SourceRefId = PreferNonEmpty(current.SourceRefId, exchange.SourceRefId);
+                current.LinkedImportantMemoryIds = current.LinkedImportantMemoryIds
+                    .Concat(exchange.LinkedImportantMemoryIds)
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                return;
+            }
+
+            byKey[key] = exchange;
+            merged.Add(exchange);
+        }
+
+        foreach (var exchange in existing ?? Enumerable.Empty<TranscriptExchange>())
+            AddExchange(exchange);
+        foreach (var exchange in incoming ?? Enumerable.Empty<TranscriptExchange>())
+            AddExchange(exchange);
+
+        return merged
+            .OrderBy(exchange => exchange.Day)
+            .ThenBy(exchange => exchange.TimeOfDay)
+            .ToList();
+    }
+
+    private static List<PendingTranscriptExchange> MergePendingTranscriptExchanges(IEnumerable<PendingTranscriptExchange>? existing, IEnumerable<PendingTranscriptExchange>? incoming)
+    {
+        var merged = new List<PendingTranscriptExchange>();
+        var byKey = new Dictionary<string, PendingTranscriptExchange>(StringComparer.OrdinalIgnoreCase);
+
+        void AddPending(PendingTranscriptExchange? pending)
+        {
+            if (pending is null)
+                return;
+
+            var key = BuildPendingTranscriptExchangeMergeKey(pending);
+            if (byKey.TryGetValue(key, out var current))
+            {
+                current.RequestToken = PreferNonEmpty(current.RequestToken, pending.RequestToken);
+                current.NpcId = PreferNonEmpty(current.NpcId, pending.NpcId);
+                current.NpcDisplayName = PreferNonEmpty(current.NpcDisplayName, pending.NpcDisplayName);
+                current.Day = Math.Max(current.Day, pending.Day);
+                current.TimeOfDay = Math.Max(current.TimeOfDay, pending.TimeOfDay);
+                current.Season = PreferNonEmpty(current.Season, pending.Season, "spring");
+                current.Year = Math.Max(current.Year, pending.Year);
+                current.LocationName = PreferNonEmpty(current.LocationName, pending.LocationName);
+                current.ContextTag = PreferNonEmpty(current.ContextTag, pending.ContextTag, "player_chat");
+                current.PlayerText = PreferNonEmpty(current.PlayerText, pending.PlayerText);
+                current.Visibility = PreferNonEmpty(current.Visibility, pending.Visibility, "npc_only");
+                current.SourceRefKind = PreferNonEmpty(current.SourceRefKind, pending.SourceRefKind, "chat");
+                current.SourceRefId = PreferNonEmpty(current.SourceRefId, pending.SourceRefId);
+                return;
+            }
+
+            byKey[key] = pending;
+            merged.Add(pending);
+        }
+
+        foreach (var pending in existing ?? Enumerable.Empty<PendingTranscriptExchange>())
+            AddPending(pending);
+        foreach (var pending in incoming ?? Enumerable.Empty<PendingTranscriptExchange>())
+            AddPending(pending);
+
+        return merged
+            .OrderBy(pending => pending.Day)
+            .ThenBy(pending => pending.TimeOfDay)
+            .ToList();
+    }
+
+    private static List<TranscriptChunkHeader> MergeTranscriptChunks(IEnumerable<TranscriptChunkHeader>? existing, IEnumerable<TranscriptChunkHeader>? incoming)
+    {
+        var merged = new List<TranscriptChunkHeader>();
+        var byKey = new Dictionary<string, TranscriptChunkHeader>(StringComparer.OrdinalIgnoreCase);
+
+        void AddChunk(TranscriptChunkHeader? chunk)
+        {
+            if (chunk is null)
+                return;
+
+            chunk.TopKeywords ??= Array.Empty<string>();
+            var key = string.IsNullOrWhiteSpace(chunk.ChunkId)
+                ? $"summary:{chunk.DayRangeStart}|{chunk.DayRangeEnd}|{chunk.Summary?.Trim()}"
+                : $"chunk:{chunk.ChunkId.Trim()}";
+            if (byKey.TryGetValue(key, out var current))
+            {
+                current.NpcId = PreferNonEmpty(current.NpcId, chunk.NpcId);
+                current.DayRangeStart = MergeEarliestPositiveDay(current.DayRangeStart, chunk.DayRangeStart);
+                current.DayRangeEnd = Math.Max(current.DayRangeEnd, chunk.DayRangeEnd);
+                current.ExchangeCount = Math.Max(current.ExchangeCount, chunk.ExchangeCount);
+                current.Summary = PreferLongerNonEmpty(current.Summary, chunk.Summary);
+                current.TopKeywords = current.TopKeywords
+                    .Concat(chunk.TopKeywords)
+                    .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(18)
+                    .ToArray();
+                current.ImportanceMax = Math.Max(current.ImportanceMax, chunk.ImportanceMax);
+                current.CompressionCodec = PreferNonEmpty(current.CompressionCodec, chunk.CompressionCodec, "gzip");
+                current.CompressedPayloadBase64 = PreferLongerNonEmpty(current.CompressedPayloadBase64, chunk.CompressedPayloadBase64);
+                return;
+            }
+
+            byKey[key] = chunk;
+            merged.Add(chunk);
+        }
+
+        foreach (var chunk in existing ?? Enumerable.Empty<TranscriptChunkHeader>())
+            AddChunk(chunk);
+        foreach (var chunk in incoming ?? Enumerable.Empty<TranscriptChunkHeader>())
+            AddChunk(chunk);
+
+        return merged
+            .OrderBy(chunk => chunk.DayRangeStart)
+            .ThenBy(chunk => chunk.DayRangeEnd)
+            .ToList();
+    }
+
+    private static string BuildTranscriptExchangeMergeKey(TranscriptExchange exchange)
+    {
+        if (!string.IsNullOrWhiteSpace(exchange.ExchangeId))
+            return $"exchange:{exchange.ExchangeId.Trim()}";
+        if (!string.IsNullOrWhiteSpace(exchange.RequestToken))
+            return $"request:{exchange.RequestToken.Trim()}|{exchange.Day}|{exchange.PlayerText?.Trim()}|{exchange.NpcText?.Trim()}";
+
+        return $"text:{exchange.Day}|{exchange.PlayerText?.Trim()}|{exchange.NpcText?.Trim()}";
+    }
+
+    private static string BuildPendingTranscriptExchangeMergeKey(PendingTranscriptExchange exchange)
+    {
+        if (!string.IsNullOrWhiteSpace(exchange.ExchangeId))
+            return $"pending:{exchange.ExchangeId.Trim()}";
+        if (!string.IsNullOrWhiteSpace(exchange.RequestToken))
+            return $"request:{exchange.RequestToken.Trim()}|{exchange.Day}|{exchange.PlayerText?.Trim()}";
+
+        return $"pendingtext:{exchange.Day}|{exchange.PlayerText?.Trim()}";
+    }
+
+    private static Dictionary<string, NpcTownKnowledge> NormalizeTownKnowledgeByNpc(
+        Dictionary<string, NpcTownKnowledge>? source,
+        out bool changed,
+        out int mergedCaseVariantEntries)
+    {
+        changed = source is null || !ReferenceEquals(source.Comparer, StringComparer.OrdinalIgnoreCase);
+        mergedCaseVariantEntries = 0;
+
+        if (source is null)
+            return new Dictionary<string, NpcTownKnowledge>(StringComparer.OrdinalIgnoreCase);
+
+        var normalized = new Dictionary<string, NpcTownKnowledge>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, rawKnowledge) in source)
+        {
+            if (string.IsNullOrWhiteSpace(key) || rawKnowledge is null)
+            {
+                changed = true;
+                continue;
+            }
+
+            var knowledge = NormalizeNpcTownKnowledge(rawKnowledge, out var knowledgeChanged);
+            changed |= knowledgeChanged;
+
+            if (normalized.TryGetValue(key, out var existing))
+            {
+                MergeNpcTownKnowledge(existing, knowledge);
+                mergedCaseVariantEntries++;
+                changed = true;
+                continue;
+            }
+
+            normalized[key] = knowledge;
+        }
+
+        return changed ? normalized : source;
+    }
+
+    private static NpcTownKnowledge NormalizeNpcTownKnowledge(NpcTownKnowledge knowledge, out bool changed)
+    {
+        changed = false;
+        if (knowledge.ByEventId is null)
+        {
+            knowledge.ByEventId = new Dictionary<string, TownKnowledgeEntry>(StringComparer.OrdinalIgnoreCase);
+            changed = true;
+            return knowledge;
+        }
+
+        var normalizedByEventId = new Dictionary<string, TownKnowledgeEntry>(StringComparer.OrdinalIgnoreCase);
+        var comparerChanged = !ReferenceEquals(knowledge.ByEventId.Comparer, StringComparer.OrdinalIgnoreCase);
+        var mergedEntries = 0;
+        foreach (var (eventId, entry) in knowledge.ByEventId)
+        {
+            if (string.IsNullOrWhiteSpace(eventId) || entry is null)
+            {
+                comparerChanged = true;
+                continue;
+            }
+
+            if (normalizedByEventId.TryGetValue(eventId, out var existing))
+            {
+                MergeTownKnowledgeEntry(existing, entry);
+                mergedEntries++;
+                comparerChanged = true;
+                continue;
+            }
+
+            normalizedByEventId[eventId] = entry;
+        }
+
+        if (comparerChanged || mergedEntries > 0)
+        {
+            knowledge.ByEventId = normalizedByEventId;
+            changed = true;
+        }
+
+        return knowledge;
+    }
+
+    private static void MergeNpcTownKnowledge(NpcTownKnowledge target, NpcTownKnowledge incoming)
+    {
+        target.ByEventId ??= new Dictionary<string, TownKnowledgeEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (eventId, entry) in incoming.ByEventId ?? new Dictionary<string, TownKnowledgeEntry>(StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(eventId) || entry is null)
+                continue;
+
+            if (target.ByEventId.TryGetValue(eventId, out var existing))
+            {
+                MergeTownKnowledgeEntry(existing, entry);
+                continue;
+            }
+
+            target.ByEventId[eventId] = entry;
+        }
+    }
+
+    private static void MergeTownKnowledgeEntry(TownKnowledgeEntry target, TownKnowledgeEntry incoming)
+    {
+        target.Knows |= incoming.Knows;
+        target.LearnedDay = MergeEarliestPositiveDay(target.LearnedDay, incoming.LearnedDay);
+        target.MentionCount = Math.Max(target.MentionCount, incoming.MentionCount);
+        target.LastMentionDay = Math.Max(target.LastMentionDay, incoming.LastMentionDay);
+        target.Angle = PreferNonEmpty(target.Angle, incoming.Angle, "neutral");
+        target.LearnedFromNpc = PreferNonEmpty(target.LearnedFromNpc, incoming.LearnedFromNpc);
+    }
+
+    private static Dictionary<string, int> NormalizeSummedIntDictionary(Dictionary<string, int> source, out bool changed)
+    {
+        changed = !ReferenceEquals(source.Comparer, StringComparer.OrdinalIgnoreCase);
+        var normalized = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, value) in source)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                changed = true;
+                continue;
+            }
+
+            if (normalized.TryGetValue(key, out var existing))
+            {
+                normalized[key] = existing + value;
+                changed = true;
+                continue;
+            }
+
+            normalized[key] = value;
+        }
+
+        return changed ? normalized : source;
+    }
+
+    private static Dictionary<string, int> MergeSummedIntDictionaries(
+        Dictionary<string, int>? existing,
+        Dictionary<string, int>? incoming)
+    {
+        var merged = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var source in new[] { existing, incoming })
+        {
+            if (source is null)
+                continue;
+
+            foreach (var (key, value) in source)
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                    continue;
+
+                merged.TryGetValue(key, out var current);
+                merged[key] = current + value;
+            }
+        }
+
+        return merged;
+    }
+
+    private static int MergeEarliestPositiveDay(int existing, int incoming)
+    {
+        if (existing <= 0)
+            return incoming;
+        if (incoming <= 0)
+            return existing;
+
+        return Math.Min(existing, incoming);
+    }
+
+    private static string PreferNonEmpty(string? existing, string? incoming, string fallback = "")
+    {
+        if (!string.IsNullOrWhiteSpace(existing))
+            return existing.Trim();
+        if (!string.IsNullOrWhiteSpace(incoming))
+            return incoming.Trim();
+
+        return fallback;
+    }
+
+    private static string PreferLongerNonEmpty(string? existing, string? incoming)
+    {
+        var left = existing?.Trim() ?? string.Empty;
+        var right = incoming?.Trim() ?? string.Empty;
+        if (left.Length == 0)
+            return right;
+        if (right.Length == 0)
+            return left;
+
+        return right.Length > left.Length ? right : left;
     }
 }
 

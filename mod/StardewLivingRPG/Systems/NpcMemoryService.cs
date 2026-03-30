@@ -668,6 +668,11 @@ public sealed class NpcMemoryService
     {
         if (!state.NpcMemory.Profiles.TryGetValue(npcName, out var profile))
         {
+            var existingKey = state.NpcMemory.Profiles.Keys.FirstOrDefault(key =>
+                string.Equals(key, npcName, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(existingKey) && state.NpcMemory.Profiles.TryGetValue(existingKey, out profile))
+                return profile;
+
             profile = new NpcMemoryProfile();
             state.NpcMemory.Profiles[npcName] = profile;
         }

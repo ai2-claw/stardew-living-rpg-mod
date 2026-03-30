@@ -14,6 +14,14 @@
 - Face-to-face chats are less likely to repeat the exact same line or question again in the same encounter.
 - Background autonomy work has been trimmed further so bad detour cases and failed route retries should create less hitching during play.
 
+## 1.0.5 - 2026-03-30
+
+### Changed
+- Manifest version bumped to `1.0.5`.
+
+### Fixed
+- NPC memory, transcript recall, and town-memory lookups now survive a full game restart again. Existing saves with mixed-case duplicate NPC keys such as `Caroline` and `caroline` are merged back together on load instead of making villagers act like they forgot prior secrets and conversations.
+
 ## 1.0.4 - 2026-03-28
 
 ### Changed
